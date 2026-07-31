@@ -67,6 +67,8 @@ The project will maintain a clear separation between:
 docs/       Documentation and project decisions
 src/        Application source code
 tests/      Testing resources
+```
+
 
 ## Contributing
 
