@@ -30,5 +30,35 @@ impl TimesheetRepository {
 
         Ok(())
     }
+
+pub fn get_all(&self) -> Result<Vec<TimesheetEntry>> {
+    let mut statement = self.connection.prepare(
+        "
+        SELECT id, pa_name, date, start_time, end_time, break_minutes, notes
+        FROM timesheets
+        "
+    )?;
+
+    let entries = statement.query_map([], |row| {
+        Ok(TimesheetEntry {
+            id: row.get(0)?,
+            pa_name: row.get(1)?,
+            date: row.get(2)?,
+            start_time: row.get(3)?,
+            end_time: row.get(4)?,
+            break_minutes: row.get(5)?,
+            notes: row.get(6)?,
+        })
+    })?;
+
+    let mut results = Vec::new();
+
+    for entry in entries {
+        results.push(entry?);
+    }
+
+    Ok(results)
+}
+
 }
 

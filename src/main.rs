@@ -30,9 +30,22 @@ fn main() {
         notes: Some(String::from("First database entry")),
     };
 
-    repository.insert(&entry)
-        .expect("Failed to insert timesheet");
+    let mut entries = repository.get_all()
+        .expect("Failed to read timesheets");
 
-    println!("Timesheet saved.");
+    if entries.is_empty() {
+        repository.insert(&entry)
+            .expect("Failed to insert timesheet");
+
+        println!("Timesheet saved.");
+
+        entries = repository.get_all()
+            .expect("Failed to read timesheets");
+    } else {
+        println!("Existing timesheets found. No new entry added.");
+    }
+
+    for entry in entries {
+        println!("{:?}", entry);
+    }
 }
-
