@@ -3,8 +3,8 @@ mod models;
 mod error;
 mod database;
 mod repository;
+mod csv_import;
 
-use models::TimesheetEntry;
 use repository::TimesheetRepository;
 use rusqlite::Connection;
 
@@ -20,34 +20,29 @@ fn main() {
 
     let repository = TimesheetRepository::new(connection);
 
-    let entry = TimesheetEntry {
-        id: 0,
-        pa_name: String::from("Example PA"),
-        start_time: String::from("2026-07-31 09:00:00"),
-        end_time: String::from("2026-07-31 15:31:54"),
-        break_minutes: 0,
-        worked_minutes: 405,
-        hourly_rate: 12.21,
-        amount: 82.42,
-        notes: Some(String::from("First database entry")),
-    };
+    let csv_entries = csv_import::import_csv("data/sample_timesheets.csv")
+        .expect("Failed to import CSV");
 
-    let mut entries = repository.get_all()
+    for entry in csv_entries {
+        if repository.exists(&entry)
+            .expect("Failed to check existing timesheet")
+        {
+            println!("Skipping existing entry: {} {}", entry.pa_name, entry.start_time);
+        } else {
+            repository.insert(&entry)
+                .expect("Failed to insert timesheet");
+
+            println!("Imported: {} {}", entry.pa_name, entry.start_time);
+        }
+    }
+
+    let entries = repository.get_all()
         .expect("Failed to read timesheets");
 
-    if entries.is_empty() {
-        repository.insert(&entry)
-            .expect("Failed to insert timesheet");
-
-        println!("Timesheet saved.");
-
-        entries = repository.get_all()
-            .expect("Failed to read timesheets");
-    } else {
-        println!("Existing timesheets found. No new entry added.");
-    }
+    println!("Database contains {} entries.", entries.len());
 
     for entry in entries {
         println!("{:?}", entry);
     }
 }
+

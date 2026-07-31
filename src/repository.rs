@@ -76,5 +76,27 @@ impl TimesheetRepository {
 
         Ok(entries)
     }
+
+    pub fn exists(&self, entry: &TimesheetEntry) -> Result<bool> {
+        let mut statement = self.connection.prepare(
+            "SELECT COUNT(*)
+             FROM timesheets
+             WHERE pa_name = ?1
+             AND start_time = ?2
+             AND end_time = ?3"
+        )?;
+
+        let count: i64 = statement.query_row(
+            params![
+                &entry.pa_name,
+                &entry.start_time,
+                &entry.end_time,
+            ],
+            |row| row.get(0),
+        )?;
+
+        Ok(count > 0)
+    }
+
 }
 
