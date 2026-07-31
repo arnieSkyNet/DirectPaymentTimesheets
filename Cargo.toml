@@ -7,4 +7,5 @@ edition = "2021"
 
 [dependencies]
 rusqlite = { version = "0.31", features = ["bundled"] }
+csv = "1.3"
 
