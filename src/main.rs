@@ -23,10 +23,12 @@ fn main() {
     let entry = TimesheetEntry {
         id: 0,
         pa_name: String::from("Example PA"),
-        date: String::from("2026-07-31"),
-        start_time: String::from("09:00"),
-        end_time: String::from("17:00"),
-        break_minutes: 60,
+        start_time: String::from("2026-07-31 09:00:00"),
+        end_time: String::from("2026-07-31 15:31:54"),
+        break_minutes: 0,
+        worked_minutes: 405,
+        hourly_rate: 12.21,
+        amount: 82.42,
         notes: Some(String::from("First database entry")),
     };
 

@@ -8,10 +8,12 @@ pub fn initialise_database() -> Result<()> {
         CREATE TABLE IF NOT EXISTS timesheets (
             id INTEGER PRIMARY KEY,
             pa_name TEXT NOT NULL,
-            date TEXT NOT NULL,
             start_time TEXT NOT NULL,
             end_time TEXT NOT NULL,
             break_minutes INTEGER NOT NULL,
+            worked_minutes INTEGER NOT NULL,
+            hourly_rate REAL NOT NULL,
+            amount REAL NOT NULL,
             notes TEXT
         )
         ",
