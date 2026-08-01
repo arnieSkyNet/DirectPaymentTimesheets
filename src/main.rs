@@ -23,12 +23,12 @@ fn main() {
         context.environment.data_dir
     );
 
-
-    database::initialise_database()
+    database::initialise_database(&context.environment.database_path)
         .expect("Failed to initialise database");
 
-    let connection = Connection::open("data/direct_payment_timesheets.db")
+    let connection = Connection::open(&context.environment.database_path)
         .expect("Failed to open database");
+
 
     let repository = TimesheetRepository::new(connection);
 

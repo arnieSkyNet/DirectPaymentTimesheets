@@ -1,7 +1,9 @@
+use std::path::Path;
+
 use rusqlite::{Connection, Result};
 
-pub fn initialise_database() -> Result<()> {
-    let connection = Connection::open("data/direct_payment_timesheets.db")?;
+pub fn initialise_database(database_path: &Path) -> Result<()> {
+    let connection = Connection::open(database_path)?;
 
     connection.execute(
         "
@@ -24,4 +26,3 @@ pub fn initialise_database() -> Result<()> {
 
     Ok(())
 }
-
