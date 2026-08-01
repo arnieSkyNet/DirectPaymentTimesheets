@@ -23,26 +23,51 @@ pub fn import_csv(path: &std::path::Path) -> Result<Vec<TimesheetEntry>, Box<dyn
         .has_headers(true)
         .from_reader(csv_data.as_bytes());
 
+    let headers = reader.headers()?;
+
+    if headers.len() != 8 {
+        return Err(
+            format!("Invalid CSV format: expected 8 columns, found {}", headers.len()).into()
+        );
+    }
+
     let mut entries = Vec::new();
 
-    for result in reader.records() {
+    for (line_number, result) in reader.records().enumerate() {
         let record = result?;
+
+        if record.len() != 8 {
+            return Err(
+                format!(
+                    "Invalid CSV row {}: expected 8 columns, found {}",
+                    line_number + 2,
+                    record.len()
+                )
+                .into(),
+            );
+        }
 
         let entry = TimesheetEntry {
             id: 0,
-            pa_name: record[0].to_string(),
-            start_time: record[1].to_string(),
-            end_time: record[2].to_string(),
+            pa_name: record[0].trim().to_string(),
+            start_time: record[1].trim().to_string(),
+            end_time: record[2].trim().to_string(),
             break_minutes: parse_duration(&record[3]),
             worked_minutes: parse_duration(&record[4]),
             hourly_rate: parse_money(&record[5]),
             amount: parse_money(&record[6]),
-            notes: if record[7].is_empty() {
+            notes: if record[7].trim().is_empty() {
                 None
             } else {
-                Some(record[7].to_string())
+                Some(record[7].trim().to_string())
             },
         };
+
+        if entry.pa_name.is_empty() {
+            return Err(
+                format!("Invalid CSV row {}: missing PA name", line_number + 2).into()
+            );
+        }
 
         entries.push(entry);
     }
@@ -68,7 +93,6 @@ fn parse_duration(value: &str) -> i64 {
         0
     }
 }
-
 
 fn parse_money(value: &str) -> f64 {
     value
