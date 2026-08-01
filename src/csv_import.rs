@@ -5,7 +5,7 @@ use std::io::{BufRead, BufReader};
 
 use crate::models::TimesheetEntry;
 
-pub fn import_csv(path: &str) -> Result<Vec<TimesheetEntry>, Box<dyn Error>> {
+pub fn import_csv(path: &std::path::Path) -> Result<Vec<TimesheetEntry>, Box<dyn Error>> {
     let file = File::open(path)?;
     let mut lines = BufReader::new(file).lines();
 

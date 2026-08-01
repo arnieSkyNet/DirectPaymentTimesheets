@@ -32,8 +32,11 @@ fn main() {
 
     let repository = TimesheetRepository::new(connection);
 
-    let csv_entries = csv_import::import_csv("data/sample_timesheets.csv")
+    let csv_file = context.environment.import_dir.join("sample_timesheets.csv");
+
+    let csv_entries = csv_import::import_csv(&csv_file)
         .expect("Failed to import CSV");
+
 
     for entry in csv_entries {
         if repository.exists(&entry)

@@ -6,6 +6,7 @@ use crate::error::AppError;
 pub struct AppEnvironment {
     pub data_dir: PathBuf,
     pub database_path: PathBuf,
+    pub import_dir: PathBuf,
     pub archive_dir: PathBuf,
     pub backups_dir: PathBuf,
     pub logs_dir: PathBuf,
@@ -27,7 +28,7 @@ impl AppEnvironment {
         };
 
         let database_path = data_dir.join("database.sqlite");
-
+        let import_dir = data_dir.join("import");
         let archive_dir = data_dir.join("archive");
         let backups_dir = data_dir.join("backups");
         let logs_dir = data_dir.join("logs");
@@ -37,6 +38,7 @@ impl AppEnvironment {
         for directory in [
             &data_dir,
             &archive_dir,
+            &import_dir,
             &backups_dir,
             &logs_dir,
             &templates_dir,
@@ -49,6 +51,7 @@ impl AppEnvironment {
         Ok(Self {
             data_dir,
             database_path,
+            import_dir,
             archive_dir,
             backups_dir,
             logs_dir,
