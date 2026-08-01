@@ -32,13 +32,30 @@ pub fn initialise_database(database_path: &Path) -> Result<()> {
             rows_processed INTEGER NOT NULL,
             rows_imported INTEGER NOT NULL,
             rows_skipped INTEGER NOT NULL,
-            status TEXT NOT NULL
+            status TEXT NOT NULL,
+            error_message TEXT
         )
         ",
         [],
     )?;
 
+    let column_exists: bool = connection
+        .prepare("PRAGMA table_info(import_audit)")?
+        .query_map([], |row| {
+            let name: String = row.get(1)?;
+            Ok(name == "error_message")
+        })?
+        .any(|result| result.unwrap_or(false));
+
+    if !column_exists {
+        connection.execute(
+            "ALTER TABLE import_audit ADD COLUMN error_message TEXT",
+            [],
+        )?;
+    }
+
     println!("Database initialised.");
 
     Ok(())
 }
+

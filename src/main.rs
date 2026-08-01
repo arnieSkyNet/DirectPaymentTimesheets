@@ -36,8 +36,31 @@ fn main() {
 
     let csv_file = import_dir.join("sample_timesheets.csv");
 
-    let csv_entries = csv_import::import_csv(&csv_file)
-        .expect("Failed to import CSV");
+    let csv_entries = match csv_import::import_csv(&csv_file) {
+        Ok(entries) => entries,
+
+        Err(error) => {
+            let import_time = chrono::Local::now()
+                .format("%Y-%m-%d %H:%M:%S")
+                .to_string();
+
+            repository.add_import_audit(
+                &import_time,
+                csv_file.to_string_lossy().as_ref(),
+                "",
+                0,
+                0,
+                0,
+                "FAILED",
+                Some(&error.to_string()),
+            )
+            .expect("Failed to write failed import audit");
+
+            println!("Import failed: {}", error);
+
+            return;
+        }
+    };
 
     let rows_processed = csv_entries.len() as i64;
     let mut rows_imported = 0i64;
@@ -90,7 +113,9 @@ fn main() {
         rows_imported,
         rows_skipped,
         "SUCCESS",
+        None,
     )
+
     .expect("Failed to write import audit");
 
     let entries = repository.get_all()

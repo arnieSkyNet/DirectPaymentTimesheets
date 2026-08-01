@@ -107,6 +107,7 @@ impl TimesheetRepository {
         rows_imported: i64,
         rows_skipped: i64,
         status: &str,
+        error_message: Option<&str>,
     ) -> Result<()> {
         self.connection.execute(
             "
@@ -117,9 +118,10 @@ impl TimesheetRepository {
                 rows_processed,
                 rows_imported,
                 rows_skipped,
-                status
+                status,
+                error_message
             )
-            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
             ",
             params![
                 import_time,
@@ -129,9 +131,11 @@ impl TimesheetRepository {
                 rows_imported,
                 rows_skipped,
                 status,
+                error_message,
             ],
         )?;
 
         Ok(())
     }
 }
+
