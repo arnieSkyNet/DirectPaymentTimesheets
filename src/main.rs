@@ -4,6 +4,7 @@ mod error;
 mod database;
 mod repository;
 mod csv_import;
+mod environment;
 
 use repository::TimesheetRepository;
 use rusqlite::Connection;
@@ -11,6 +12,15 @@ use rusqlite::Connection;
 fn main() {
     println!("DirectPaymentTimesheets v0.0.1");
     println!("Application foundation ready.");
+
+    let environment = environment::AppEnvironment::initialise()
+        .expect("Failed to initialise environment");
+
+    println!(
+        "Application data directory: {:?}",
+        environment.data_dir
+    );
+
 
     database::initialise_database()
         .expect("Failed to initialise database");
