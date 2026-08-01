@@ -98,5 +98,40 @@ impl TimesheetRepository {
         Ok(count > 0)
     }
 
-}
+    pub fn add_import_audit(
+        &self,
+        import_time: &str,
+        original_filename: &str,
+        archive_filename: &str,
+        rows_processed: i64,
+        rows_imported: i64,
+        rows_skipped: i64,
+        status: &str,
+    ) -> Result<()> {
+        self.connection.execute(
+            "
+            INSERT INTO import_audit (
+                import_time,
+                original_filename,
+                archive_filename,
+                rows_processed,
+                rows_imported,
+                rows_skipped,
+                status
+            )
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+            ",
+            params![
+                import_time,
+                original_filename,
+                archive_filename,
+                rows_processed,
+                rows_imported,
+                rows_skipped,
+                status,
+            ],
+        )?;
 
+        Ok(())
+    }
+}

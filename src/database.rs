@@ -22,6 +22,22 @@ pub fn initialise_database(database_path: &Path) -> Result<()> {
         [],
     )?;
 
+    connection.execute(
+        "
+        CREATE TABLE IF NOT EXISTS import_audit (
+            id INTEGER PRIMARY KEY,
+            import_time TEXT NOT NULL,
+            original_filename TEXT NOT NULL,
+            archive_filename TEXT NOT NULL,
+            rows_processed INTEGER NOT NULL,
+            rows_imported INTEGER NOT NULL,
+            rows_skipped INTEGER NOT NULL,
+            status TEXT NOT NULL
+        )
+        ",
+        [],
+    )?;
+
     println!("Database initialised.");
 
     Ok(())

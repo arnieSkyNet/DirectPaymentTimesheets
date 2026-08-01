@@ -39,6 +39,10 @@ fn main() {
     let csv_entries = csv_import::import_csv(&csv_file)
         .expect("Failed to import CSV");
 
+    let rows_processed = csv_entries.len() as i64;
+    let mut rows_imported = 0i64;
+    let mut rows_skipped = 0i64;
+
     for entry in csv_entries {
         if repository.exists(&entry)
             .expect("Failed to check existing timesheet")
@@ -48,6 +52,8 @@ fn main() {
                 entry.pa_name,
                 entry.start_time
             );
+
+            rows_skipped += 1;
         } else {
             repository.insert(&entry)
                 .expect("Failed to insert timesheet");
@@ -57,6 +63,8 @@ fn main() {
                 entry.pa_name,
                 entry.start_time
             );
+
+            rows_imported += 1;
         }
     }
 
@@ -68,6 +76,23 @@ fn main() {
 
     println!("Archived CSV: {:?}", archive_file);
 
+    let archive_filename = archive_file.to_string_lossy();
+
+    let import_time = chrono::Local::now()
+        .format("%Y-%m-%d %H:%M:%S")
+        .to_string();
+
+    repository.add_import_audit(
+        &import_time,
+        csv_file.to_string_lossy().as_ref(),
+        archive_filename.as_ref(),
+        rows_processed,
+        rows_imported,
+        rows_skipped,
+        "SUCCESS",
+    )
+    .expect("Failed to write import audit");
+
     let entries = repository.get_all()
         .expect("Failed to read timesheets");
 
@@ -77,3 +102,4 @@ fn main() {
         println!("{:?}", entry);
     }
 }
+
