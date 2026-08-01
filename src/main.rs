@@ -6,6 +6,7 @@ mod repository;
 mod csv_import;
 mod environment;
 mod context;
+mod paths;
 
 
 use repository::TimesheetRepository;
@@ -32,7 +33,9 @@ fn main() {
 
     let repository = TimesheetRepository::new(connection);
 
-    let csv_file = context.environment.import_dir.join("sample_timesheets.csv");
+    let import_dir = paths::expand_path(&context.config.folders.csv_import);
+
+    let csv_file = import_dir.join("sample_timesheets.csv");
 
     let csv_entries = csv_import::import_csv(&csv_file)
         .expect("Failed to import CSV");

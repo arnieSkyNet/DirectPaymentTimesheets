@@ -18,11 +18,14 @@ pub struct FolderConfig {
 
 impl Default for AppConfig {
     fn default() -> Self {
+        let home = dirs::home_dir()
+            .expect("Could not determine home directory");
+
         Self {
             folders: FolderConfig {
-                csv_import: PathBuf::from("~/Documents/DirectPaymentTimesheets/import"),
-                pdf_output: PathBuf::from("~/Documents/DirectPaymentTimesheets/pdf"),
-                email_archive: PathBuf::from("~/Documents/DirectPaymentTimesheets/emails"),
+                csv_import: home.join("Documents/DirectPaymentTimesheets/import"),
+                pdf_output: home.join("Documents/DirectPaymentTimesheets/pdf"),
+                email_archive: home.join("Documents/DirectPaymentTimesheets/emails"),
             },
         }
     }
@@ -34,10 +37,8 @@ impl AppConfig {
             let contents = fs::read_to_string(path)
                 .map_err(|e| AppError::Config(e.to_string()))?;
 
-            let config = toml::from_str(&contents)
-                .map_err(|e| AppError::Config(e.to_string()))?;
-
-            Ok(config)
+            toml::from_str(&contents)
+                .map_err(|e| AppError::Config(e.to_string()))
         } else {
             let config = Self::default();
 
@@ -51,4 +52,3 @@ impl AppConfig {
         }
     }
 }
-
