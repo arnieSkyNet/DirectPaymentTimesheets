@@ -15,7 +15,7 @@ fn main() {
     database::initialise_database()
         .expect("Failed to initialise database");
 
-    let connection = Connection::open("direct_payment_timesheets.db")
+    let connection = Connection::open("data/direct_payment_timesheets.db")
         .expect("Failed to open database");
 
     let repository = TimesheetRepository::new(connection);

@@ -1,7 +1,7 @@
 use rusqlite::{Connection, Result};
 
 pub fn initialise_database() -> Result<()> {
-    let connection = Connection::open("direct_payment_timesheets.db")?;
+    let connection = Connection::open("data/direct_payment_timesheets.db")?;
 
     connection.execute(
         "
