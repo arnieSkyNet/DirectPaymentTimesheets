@@ -7,7 +7,7 @@ mod csv_import;
 mod environment;
 mod context;
 mod paths;
-
+mod archive;
 
 use repository::TimesheetRepository;
 use rusqlite::Connection;
@@ -30,7 +30,6 @@ fn main() {
     let connection = Connection::open(&context.environment.database_path)
         .expect("Failed to open database");
 
-
     let repository = TimesheetRepository::new(connection);
 
     let import_dir = paths::expand_path(&context.config.folders.csv_import);
@@ -40,19 +39,34 @@ fn main() {
     let csv_entries = csv_import::import_csv(&csv_file)
         .expect("Failed to import CSV");
 
-
     for entry in csv_entries {
         if repository.exists(&entry)
             .expect("Failed to check existing timesheet")
         {
-            println!("Skipping existing entry: {} {}", entry.pa_name, entry.start_time);
+            println!(
+                "Skipping existing entry: {} {}",
+                entry.pa_name,
+                entry.start_time
+            );
         } else {
             repository.insert(&entry)
                 .expect("Failed to insert timesheet");
 
-            println!("Imported: {} {}", entry.pa_name, entry.start_time);
+            println!(
+                "Imported: {} {}",
+                entry.pa_name,
+                entry.start_time
+            );
         }
     }
+
+    let archive_file = archive::archive_csv(
+        &csv_file,
+        &context.environment.archive_dir,
+    )
+    .expect("Failed to archive CSV");
+
+    println!("Archived CSV: {:?}", archive_file);
 
     let entries = repository.get_all()
         .expect("Failed to read timesheets");
@@ -63,4 +77,3 @@ fn main() {
         println!("{:?}", entry);
     }
 }
-
