@@ -110,3 +110,43 @@ fn parse_money(value: &str) -> Result<f64, Box<dyn Error>> {
     Ok(amount)
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_duration_one_and_half_hours() {
+        assert_eq!(parse_duration("1h 30m").unwrap(), 90);
+    }
+
+    #[test]
+    fn parse_duration_two_hours() {
+        assert_eq!(parse_duration("2h 00m").unwrap(), 120);
+    }
+
+    #[test]
+    fn parse_duration_forty_five_minutes() {
+        assert_eq!(parse_duration("0h 45m").unwrap(), 45);
+    }
+
+    #[test]
+    fn parse_duration_invalid_text() {
+        assert!(parse_duration("abc").is_err());
+    }
+
+    #[test]
+    fn parse_duration_empty_string() {
+        assert!(parse_duration("").is_err());
+    }
+
+    #[test]
+    fn parse_money_valid_value() {
+        assert_eq!(parse_money("£12.50").unwrap(), 12.50);
+    }
+
+    #[test]
+    fn parse_money_invalid_value() {
+        assert!(parse_money("£abc").is_err());
+    }
+}
+
