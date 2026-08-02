@@ -1,120 +1,219 @@
-# DirectPaymentTimesheets Domain
+# DirectPaymentTimesheets Domain Guide
 
-## Overview
+## Purpose
 
-DirectPaymentTimesheets supports the administration of UK Direct Payments.
+This document describes the real-world concepts that DirectPaymentTimesheets is designed to represent.
 
-A Direct Payment allows a person with eligible care needs to manage their own support arrangements.
-
-This commonly includes employing Personal Assistants (PAs).
+The purpose is to keep the software aligned with the needs of UK Direct Payment administration.
 
 ---
 
-# Key Terms
+# Direct Payments
 
-## Direct Payment Holder
+A Direct Payment allows a person who receives care and support funding to manage their own support arrangements.
 
-The person receiving the personal budget.
+The Direct Payment holder can use the funding to employ or arrange support from Personal Assistants (PAs).
 
-They are responsible for managing the administration.
-
-In the system this is the main account holder.
+The application is designed to support the administration required around these arrangements.
 
 ---
 
-## Personal Assistant (PA)
+# Direct Payment Holder
 
-A person employed to provide support.
+The Direct Payment holder is the person responsible for managing their care funding.
 
-A PA may:
+They may:
 
-- Work scheduled hours.
-- Submit hours (future feature).
-- View approved information (future feature).
+- Employ Personal Assistants.
+- Approve timesheets.
+- Manage payroll information.
+- Maintain employment records.
+- Keep financial and audit records.
 
----
-
-## Payroll Department
-
-The organisation responsible for processing payments.
-
-The system generates information suitable for payroll submission.
+The application should support the holder by reducing administration while keeping records accurate.
 
 ---
 
-# Timesheet Information
+# Personal Assistant (PA)
 
-A payroll timesheet may include:
+A Personal Assistant provides support to the Direct Payment holder.
 
-- Week commencing date.
-- Hours worked.
-- Pay rate.
-- Annual leave.
-- Sick leave.
-- Public holiday hours.
-- Mileage.
+A PA may have:
+
+- Working hours.
+- Agreed pay rate.
+- Employment information.
+- Holiday entitlement.
+- Sick leave records.
+
+The application stores timesheet information relating to PA work.
+
+---
+
+# Timesheets
+
+A timesheet records work completed by a Personal Assistant.
+
+A timesheet entry may contain:
+
+- Personal Assistant name.
+- Start time.
+- End time.
+- Break duration.
+- Worked duration.
+- Hourly rate.
+- Calculated amount.
+- Notes.
+
+Timesheet records should be accurate, traceable and auditable.
+
+---
+
+# Working Time
+
+Working time represents the hours a Personal Assistant has provided support.
+
+The application records:
+
+- Start of work period.
+- End of work period.
+- Breaks taken.
+- Total worked minutes.
+
+Working time calculations should be consistent and transparent.
 
 ---
 
 # Pay Rates
 
-The system must support:
+A Personal Assistant may have an agreed hourly rate.
 
-- National Minimum Wage changes.
-- Effective dates.
-- Client-funded top-up rates.
-- Historical rates.
+The system should support:
 
-A rate change must not alter previous payroll records.
+- Recording hourly rates.
+- Calculating payment amounts.
+- Future rate changes.
+- Historical accuracy.
+
+Previously imported records should preserve the rate that applied at that time.
 
 ---
 
-# Leave
+# Payroll Periods
 
-The system must support:
+Payroll periods group completed work into a payment cycle.
+
+Examples:
+
+- Weekly payroll.
+- Four-weekly payroll.
+- Monthly payroll.
+
+Future payroll functionality will use imported timesheet records to create payroll periods.
+
+---
+
+# Import Records
+
+External timesheet information may be imported from sources such as Hours Keeper CSV files.
+
+The import process should:
+
+- Validate incoming data.
+- Prevent duplicate records.
+- Preserve original files.
+- Record audit information.
+
+---
+
+# Audit Trail
+
+An audit trail records important system events.
+
+The application records import activity including:
+
+- When an import occurred.
+- Which file was imported.
+- How many rows were processed.
+- How many records were created.
+- How many records were skipped.
+- Whether the import succeeded or failed.
+
+Audit information helps maintain trust and accountability.
+
+---
+
+# Leave Management
+
+Future functionality may include:
 
 ## Annual Leave
 
-Hours recorded separately from worked hours.
+Records of Personal Assistant holiday entitlement and usage.
 
 ## Sick Leave
 
-Recorded separately for payroll processing.
+Records of sickness absence and related payments.
+
+## Public Holidays
+
+Support for calculating relevant holiday rules.
+
+These areas should be implemented carefully because employment rules can vary.
 
 ---
 
-# Public Holidays
+# Employment Records
 
-Public holiday hours are recorded separately.
+Future versions may include additional employment information such as:
 
-If a PA works on a public holiday:
+- Employment start dates.
+- Contracted hours.
+- Pay history.
+- Leave balances.
+- Employment status.
 
-- Public holiday hours are recorded.
-- Normal hours worked are reduced accordingly.
-
-Future versions may support different public holiday payment rules.
-
----
-
-# Payroll Cycles
-
-Normal operation:
-
-- Timesheets are prepared every four weeks.
-
-Special situations:
-
-- Christmas payroll may require additional estimated runs.
-- Estimated hours may later require corrections and carry-forward adjustments.
+Sensitive information should only be stored when required.
 
 ---
 
-# Future Features
+# Privacy Principles
 
-Possible future support:
+Direct Payment administration contains sensitive personal information.
 
-- PA self-service.
-- Client approval.
-- Payroll provider access.
-- Mobile access.
-- Multiple Direct Payment accounts.
+The application should:
+
+- Store only necessary information.
+- Keep user data local where possible.
+- Avoid exposing personal information in filenames.
+- Maintain clear audit history.
+- Prevent accidental sharing of private records.
+
+---
+
+# Future Payroll Engine
+
+The Payroll Engine will transform approved timesheet records into payroll information.
+
+Future responsibilities may include:
+
+- Grouping work into payroll periods.
+- Calculating gross pay.
+- Applying leave rules.
+- Supporting adjustments.
+- Preparing payroll outputs.
+
+The Payroll Engine should use validated timesheet data rather than raw imported files.
+
+---
+
+# Domain Development Principle
+
+The software should reflect the real-world Direct Payment process.
+
+Business rules should be:
+
+- Clearly documented.
+- Separated from technical implementation.
+- Tested where possible.
+- Changed carefully when regulations or requirements change.
