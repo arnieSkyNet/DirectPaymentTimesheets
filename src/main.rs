@@ -8,8 +8,10 @@ mod environment;
 mod context;
 mod paths;
 mod archive;
+mod import_service;
 
 use repository::TimesheetRepository;
+use import_service::ImportService;
 use rusqlite::Connection;
 
 fn main() {
@@ -34,89 +36,26 @@ fn main() {
 
     let import_dir = paths::expand_path(&context.config.folders.csv_import);
 
-    let csv_file = import_dir.join("sample_timesheets.csv");
+    let import_service = ImportService::new(
+        &repository,
+        import_dir,
+        &context.environment.archive_dir,
+    );
 
-    let csv_entries = match csv_import::import_csv(&csv_file) {
-        Ok(entries) => entries,
+    match import_service.run() {
+        Ok(summary) => {
+            println!("Import complete.");
+            println!("Files processed: {}", summary.files_processed);
+            println!("Rows processed: {}", summary.rows_processed);
+            println!("Rows imported: {}", summary.rows_imported);
+            println!("Rows skipped: {}", summary.rows_skipped);
+            println!("Files failed: {}", summary.files_failed);
+        }
 
         Err(error) => {
-            let import_time = chrono::Local::now()
-                .format("%Y-%m-%d %H:%M:%S")
-                .to_string();
-
-            repository.add_import_audit(
-                &import_time,
-                csv_file.to_string_lossy().as_ref(),
-                "",
-                0,
-                0,
-                0,
-                "FAILED",
-                Some(&error.to_string()),
-            )
-            .expect("Failed to write failed import audit");
-
-            println!("Import failed: {}", error);
-
-            return;
-        }
-    };
-
-    let rows_processed = csv_entries.len() as i64;
-    let mut rows_imported = 0i64;
-    let mut rows_skipped = 0i64;
-
-    for entry in csv_entries {
-        if repository.exists(&entry)
-            .expect("Failed to check existing timesheet")
-        {
-            println!(
-                "Skipping existing entry: {} {}",
-                entry.pa_name,
-                entry.start_time
-            );
-
-            rows_skipped += 1;
-        } else {
-            repository.insert(&entry)
-                .expect("Failed to insert timesheet");
-
-            println!(
-                "Imported: {} {}",
-                entry.pa_name,
-                entry.start_time
-            );
-
-            rows_imported += 1;
+            println!("Import service failed: {}", error);
         }
     }
-
-    let archive_file = archive::archive_csv(
-        &csv_file,
-        &context.environment.archive_dir,
-    )
-    .expect("Failed to archive CSV");
-
-    println!("Archived CSV: {:?}", archive_file);
-
-    let archive_filename = archive_file.to_string_lossy();
-
-    let import_time = chrono::Local::now()
-        .format("%Y-%m-%d %H:%M:%S")
-        .to_string();
-
-    repository.add_import_audit(
-        &import_time,
-        csv_file.to_string_lossy().as_ref(),
-        archive_filename.as_ref(),
-        rows_processed,
-        rows_imported,
-        rows_skipped,
-        "SUCCESS",
-        None,
-    )
-
-    .expect("Failed to write import audit");
 
     let entries = repository.get_all()
         .expect("Failed to read timesheets");
