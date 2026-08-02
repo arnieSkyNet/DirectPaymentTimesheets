@@ -60,6 +60,16 @@ impl<'a> ImportService<'a> {
         csv_files.sort();
 
         for path in csv_files {
+            let filename = path.to_string_lossy();
+
+            if self.repository.has_successful_import(&filename)? {
+                println!(
+                    "Skipping already imported file: {}",
+                    filename
+                );
+                continue;
+            }
+
             summary.files_processed += 1;
 
             match self.process_file(&path) {
@@ -82,7 +92,7 @@ impl<'a> ImportService<'a> {
                         &Local::now()
                             .format("%Y-%m-%d %H:%M:%S")
                             .to_string(),
-                        path.to_string_lossy().as_ref(),
+                        filename.as_ref(),
                         "",
                         0,
                         0,
@@ -140,4 +150,3 @@ impl<'a> ImportService<'a> {
         ))
     }
 }
-

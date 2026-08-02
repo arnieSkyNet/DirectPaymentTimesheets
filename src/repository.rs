@@ -137,5 +137,26 @@ impl TimesheetRepository {
 
         Ok(())
     }
+    pub fn has_successful_import(
+        &self,
+        filename: &str,
+    ) -> Result<bool> {
+        let mut statement = self.connection.prepare(
+            "
+            SELECT COUNT(*)
+            FROM import_audit
+            WHERE original_filename = ?1
+            AND status = 'SUCCESS'
+            "
+        )?;
+
+        let count: i64 = statement.query_row(
+            params![filename],
+            |row| row.get(0),
+        )?;
+
+        Ok(count > 0)
+    }
+
 }
 
