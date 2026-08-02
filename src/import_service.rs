@@ -3,8 +3,8 @@ use std::fs;
 
 use crate::archive;
 use crate::csv_import;
-use crate::repository::TimesheetRepository;
 use crate::models::TimesheetEntry;
+use crate::repository::TimesheetRepository;
 
 use chrono::Local;
 
@@ -46,14 +46,20 @@ impl<'a> ImportService<'a> {
             files_failed: 0,
         };
 
+        let mut csv_files = Vec::new();
+
         for entry in fs::read_dir(&self.import_dir)? {
             let entry = entry?;
             let path = entry.path();
 
-            if path.extension().and_then(|s| s.to_str()) != Some("csv") {
-                continue;
+            if path.extension().and_then(|s| s.to_str()) == Some("csv") {
+                csv_files.push(path);
             }
+        }
 
+        csv_files.sort();
+
+        for path in csv_files {
             summary.files_processed += 1;
 
             match self.process_file(&path) {
@@ -95,7 +101,6 @@ impl<'a> ImportService<'a> {
         &self,
         path: &Path,
     ) -> Result<(i64, i64, i64), Box<dyn Error>> {
-
         let entries: Vec<TimesheetEntry> =
             csv_import::import_csv(path)?;
 
