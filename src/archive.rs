@@ -1,30 +1,38 @@
+use chrono::Local;
+use std::error::Error;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use crate::error::AppError;
-
 pub fn archive_csv(
-    source_file: &Path,
-    archive_root: &Path,
-) -> Result<PathBuf, AppError> {
-    let now = chrono::Local::now();
+    source: &Path,
+    archive_dir: &Path,
+) -> Result<PathBuf, Box<dyn Error>> {
+
+    let now = Local::now();
 
     let year = now.format("%Y").to_string();
-    let month = now.format("%Y-%m").to_string();
+    let month = now.format("%m").to_string();
 
-    let archive_dir = archive_root.join(year).join(month);
+    let archive_path = archive_dir
+        .join(year)
+        .join(month);
 
-    fs::create_dir_all(&archive_dir)
-        .map_err(|e| AppError::Config(e.to_string()))?;
+    fs::create_dir_all(&archive_path)?;
 
-    let filename = source_file
+    let filename = source
         .file_name()
-        .ok_or_else(|| AppError::Config("Invalid CSV filename".to_string()))?;
+        .ok_or("Invalid source filename")?
+        .to_string_lossy();
 
-    let archive_file = archive_dir.join(filename);
+    let timestamp = now.format("%Y-%m-%d_%H%M%S");
 
-    fs::copy(source_file, &archive_file)
-        .map_err(|e| AppError::Config(e.to_string()))?;
+    let archive_filename =
+        format!("{}_{}", timestamp, filename);
 
-    Ok(archive_file)
+    let destination = archive_path.join(archive_filename);
+
+    fs::copy(source, &destination)?;
+
+    Ok(destination)
 }
+
