@@ -7,10 +7,15 @@ use crate::import_service::ImportService;
 use crate::repository::TimesheetRepository;
 
 pub fn run() -> Result<(), Box<dyn Error>> {
-    println!("DirectPaymentTimesheets v0.0.1");
-    println!("Application foundation ready.");
 
-    let context = crate::context::AppContext::initialise()?;
+let context = crate::context::AppContext::initialise()?;
+
+    println!(
+        "DirectPaymentTimesheets v{}",
+        context.version
+    );
+        
+    println!("Application foundation ready.");
 
     println!(
         "Application data directory: {:?}",
