@@ -160,3 +160,121 @@ impl TimesheetRepository {
 
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::database::initialise_database;
+    use crate::models::TimesheetEntry;
+
+    fn create_test_repository() -> TimesheetRepository {
+        let connection = Connection::open_in_memory()
+            .unwrap();
+
+        initialise_database_from_connection(&connection)
+            .unwrap();
+
+        TimesheetRepository::new(connection)
+    }
+
+    fn initialise_database_from_connection(
+        connection: &Connection,
+    ) -> Result<()> {
+        connection.execute(
+            "
+            CREATE TABLE timesheets (
+                id INTEGER PRIMARY KEY,
+                pa_name TEXT NOT NULL,
+                start_time TEXT NOT NULL,
+                end_time TEXT NOT NULL,
+                break_minutes INTEGER NOT NULL,
+                worked_minutes INTEGER NOT NULL,
+                hourly_rate REAL NOT NULL,
+                amount REAL NOT NULL,
+                notes TEXT
+            )
+            ",
+            [],
+        )?;
+
+        connection.execute(
+            "
+            CREATE TABLE import_audit (
+                id INTEGER PRIMARY KEY,
+                import_time TEXT NOT NULL,
+                original_filename TEXT NOT NULL,
+                archive_filename TEXT NOT NULL,
+                rows_processed INTEGER NOT NULL,
+                rows_imported INTEGER NOT NULL,
+                rows_skipped INTEGER NOT NULL,
+                status TEXT NOT NULL,
+                error_message TEXT
+            )
+            ",
+            [],
+        )?;
+
+        Ok(())
+    }
+
+    fn test_entry() -> TimesheetEntry {
+        TimesheetEntry {
+            id: 0,
+            pa_name: "Test PA".to_string(),
+            start_time: "09:00".to_string(),
+            end_time: "17:00".to_string(),
+            break_minutes: 30,
+            worked_minutes: 450,
+            hourly_rate: 15.0,
+            amount: 112.5,
+            notes: None,
+        }
+    }
+
+    #[test]
+    fn insert_and_get_timesheet() {
+        let repository = create_test_repository();
+
+        let entry = test_entry();
+
+        repository.insert(&entry).unwrap();
+
+        let entries = repository.get_all().unwrap();
+
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].pa_name, "Test PA");
+    }
+
+    #[test]
+    fn duplicate_timesheet_is_detected() {
+        let repository = create_test_repository();
+
+        let entry = test_entry();
+
+        repository.insert(&entry).unwrap();
+
+        assert!(repository.exists(&entry).unwrap());
+    }
+
+    #[test]
+    fn successful_import_is_detected() {
+        let repository = create_test_repository();
+
+        repository.add_import_audit(
+            "2026-08-02 12:00:00",
+            "test.csv",
+            "archive/test.csv",
+            4,
+            4,
+            0,
+            "SUCCESS",
+            None,
+        )
+        .unwrap();
+
+        assert!(
+            repository.has_successful_import("test.csv")
+                .unwrap()
+        );
+    }
+}
+
