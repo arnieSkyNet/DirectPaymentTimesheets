@@ -1,6 +1,6 @@
 # DirectPaymentTimesheets
 
-**Project State**
+Project State
 
 ---
 
@@ -49,43 +49,61 @@ The application will eventually provide:
 
 # Current Architecture
 
-Repository
+The application is structured into separate layers.
 
-```
-GitHub Repository
-        
-        ¼
-Rust Source Code
-        
-        ¼
-Application
-        
-        ¼
-User Data
-```
+Current structure:
+
+    main.rs
+        |
+        v
+
+    application.rs
+        |
+        +-- Application context
+        +-- Database initialisation
+        +-- Repository creation
+        +-- Import service startup
+
+        |
+        v
+
+    ImportService
+
+        |
+        +-- Discover CSV files
+        +-- Validate CSV data
+        +-- Import records
+        +-- Archive files
+        +-- Create audit records
+
+        |
+        v
+
+    Repository
+
+        |
+        +-- Timesheet storage
+        +-- Duplicate checking
+        +-- Import audit storage
 
 Application data lives outside the repository.
 
 Application data directory:
 
-```
-~/.directpaymenttimesheets/
-```
+    ~/.directpaymenttimesheets/
 
 Current structure:
 
-```
-~/.directpaymenttimesheets/
+    ~/.directpaymenttimesheets/
 
-archive/
-backups/
-cache/
-config.toml
-database.sqlite
-import/
-logs/
-templates/
-```
+    archive/
+    backups/
+    cache/
+    config.toml
+    database.sqlite
+    import/
+    logs/
+    templates/
 
 ---
 
@@ -93,23 +111,27 @@ templates/
 
 Implemented:
 
-- Application configuration
-- Environment handling
-- Application context
-- SQLite database
-- Repository layer
-- CSV import
-- CSV validation
-- Duplicate detection
-- CSV archive
-- Import audit trail
-- Failed import logging
+- Application configuration.
+- Environment handling.
+- Application context.
+- Application startup layer.
+- SQLite database.
+- Repository layer.
+- CSV import.
+- CSV validation.
+- Money validation.
+- Duration validation.
+- Duplicate detection.
+- CSV archive.
+- Timestamped archive naming.
+- Import audit trail.
+- Failed import logging.
 
 ---
 
 # Database
 
-Current tables
+Current tables:
 
 ## timesheets
 
@@ -149,34 +171,54 @@ Current fields:
 
 # Import Pipeline
 
-Current workflow
+Current workflow:
 
-```
-Configured Import Folder
-        
-        ¼
-Discover CSV Files
-        
-        ¼
-Check Import History
-        
-         Already Imported
-               
-               ¼
-             Skip
-        
-        ¼
-Validate CSV
-        
-        ¼
-Insert Records
-        
-        ¼
-Archive CSV
-        
-        ¼
-Write Audit Record
-```
+    Configured Import Folder
+
+            |
+
+            v
+
+    Discover CSV Files
+
+            |
+
+            v
+
+    Check Previous Successful Imports
+
+            |
+
+            v
+
+    Validate CSV
+
+            |
+
+            v
+
+    Insert Records
+
+            |
+
+            v
+
+    Archive CSV
+
+            |
+
+            v
+
+    Write Audit Record
+
+The import system records:
+
+- Files processed.
+- Rows processed.
+- Rows imported.
+- Rows skipped.
+- Failed imports.
+- Archive locations.
 
 ---
 
@@ -184,26 +226,43 @@ Write Audit Record
 
 Imported CSV files are archived.
 
-Archive layout:
+Archive files use timestamped filenames to prevent collisions.
 
-```
-archive/
+Archive layout example:
 
-2026/
-    08/
+    archive/
 
-        2026-08-02_150024_Cedar Fixture_20260702-20260801.csv
-```
+    2026/
 
-Archive files are immutable.
+        08/
 
-No archive file should ever be modified after creation.
+            2026-08-02_150024_timesheet.csv
+
+Archive files are treated as historical records and should not be modified after creation.
+
+---
+
+# Testing
+
+The project includes automated Rust tests.
+
+Current coverage includes:
+
+- CSV duration parsing.
+- CSV money parsing.
+- Invalid CSV values.
+- Archive filename handling.
+- Repository database operations.
+- Duplicate detection.
+- Import audit checking.
+
+Tests use isolated databases where appropriate.
 
 ---
 
 # Design Principles
 
-The project follows several important principles.
+The project follows several important principles:
 
 - Cross-platform.
 - Rust-first.
@@ -215,6 +274,7 @@ The project follows several important principles.
 - Every significant feature committed.
 - Every import auditable.
 - Preserve historical data.
+- Keep application logic separated from startup code.
 
 ---
 
@@ -250,23 +310,16 @@ Audit Trail
 
 ---
 
-# Next Milestone
+# Next Development Milestone
 
-Implement the Payroll Engine.
+Continue strengthening the application foundation before implementing the Payroll Engine.
 
-The Payroll Engine will transform imported work records into payroll periods suitable for timesheet generation.
+Planned next areas:
 
-Planned features include:
-
-- Weekly grouping.
-- Contracted hours.
-- Estimated hours.
-- Carry-forward hours.
-- Public holidays.
-- Annual leave.
-- Sick leave.
-- Future overtime support.
-- Future top-up pay support.
+- Improve application error handling.
+- Expand automated testing.
+- Improve service separation.
+- Prepare domain models for payroll calculations.
 
 ---
 
@@ -318,8 +371,10 @@ Completed Payroll Submission
 
 Foundation Complete.
 
-Architecture Stable.
+Application structure established.
 
-Ready to begin Payroll Engine development.
+Import pipeline operational.
 
+Documentation aligned with current implementation.
 
+Ready for continued foundation improvements before Payroll Engine development.
