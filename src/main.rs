@@ -10,6 +10,7 @@ mod paths;
 mod archive;
 mod import_service;
 mod application;
+mod gui;
 
 fn main() {
     if let Err(error) = application::run() {

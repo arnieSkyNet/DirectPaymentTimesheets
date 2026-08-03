@@ -52,5 +52,18 @@ let context = crate::context::AppContext::initialise()?;
     println!("Rows skipped: {}", summary.rows_skipped);
     println!("Files failed: {}", summary.files_failed);
 
+    let options = eframe::NativeOptions::default();
+
+    eframe::run_native(
+        "DirectPaymentTimesheets",
+        options,
+        Box::new(|_cc| {
+            Ok(Box::new(crate::gui::DirectPaymentApp::new()))
+        }),
+    )
+    .map_err(|error| -> Box<dyn Error> {
+        Box::new(error)
+    })?;
+
     Ok(())
 }
