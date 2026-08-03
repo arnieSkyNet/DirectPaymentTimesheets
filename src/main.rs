@@ -11,6 +11,7 @@ mod archive;
 mod import_service;
 mod application;
 mod gui;
+mod app;
 
 fn main() {
     if let Err(error) = application::run() {
