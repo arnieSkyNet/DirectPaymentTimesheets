@@ -21,8 +21,6 @@ pub fn run() -> Result<(), Box<dyn Error>> {
 
     initialise_database(&app)?;
 
-    run_startup_import(&app)?;
-
     launch_gui(app)?;
 
     Ok(())
@@ -40,44 +38,6 @@ fn initialise_database(
     Ok(())
 }
 
-
-fn run_startup_import(
-    app: &Application,
-) -> Result<(), Box<dyn Error>> {
-
-    let service = app.create_import_service();
-
-    let summary = service.run()?;
-
-    println!("Import complete.");
-
-    println!(
-        "Files processed: {}",
-        summary.files_processed
-    );
-
-    println!(
-        "Rows processed: {}",
-        summary.rows_processed
-    );
-
-    println!(
-        "Rows imported: {}",
-        summary.rows_imported
-    );
-
-    println!(
-        "Rows skipped: {}",
-        summary.rows_skipped
-    );
-
-    println!(
-        "Files failed: {}",
-        summary.files_failed
-    );
-
-    Ok(())
-}
 
 fn launch_gui(
     app: Application,
