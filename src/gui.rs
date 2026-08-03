@@ -43,8 +43,25 @@ impl eframe::App for DirectPaymentApp {
                 ui.separator();
 
                 if ui.button("Import CSV").clicked() {
-                    self.status_message =
-                        "Import CSV selected.".to_string();
+                    match self.application.import_csv() {
+                        Ok(summary) => {
+                            self.status_message = format!(
+                                "Import complete. Files: {}, Rows: {}, Imported: {}, Skipped: {}, Failed: {}",
+                                summary.files_processed,
+                                summary.rows_processed,
+                                summary.rows_imported,
+                                summary.rows_skipped,
+                                summary.files_failed
+                            );
+                        }
+
+                        Err(error) => {
+                            self.status_message = format!(
+                                "Import failed: {}",
+                                error
+                            );
+                        }
+                    }
                 }
 
                 if ui.button("View Timesheets").clicked() {

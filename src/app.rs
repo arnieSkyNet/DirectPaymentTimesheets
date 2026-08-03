@@ -26,6 +26,7 @@ impl Application {
         })
     }
 
+
     pub fn create_import_service(
         &self,
     ) -> ImportService<'_> {
@@ -40,5 +41,17 @@ impl Application {
             import_dir,
             &self.context.environment.archive_dir,
         )
+    }
+
+
+    pub fn import_csv(
+        &self,
+    ) -> Result<crate::import_service::ImportSummary, Box<dyn std::error::Error>> {
+
+        let service = self.create_import_service();
+
+        let summary = service.run()?;
+
+        Ok(summary)
     }
 }
