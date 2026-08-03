@@ -23,7 +23,7 @@ pub fn run() -> Result<(), Box<dyn Error>> {
 
     run_startup_import(&app)?;
 
-    launch_gui()?;
+    launch_gui(app)?;
 
     Ok(())
 }
@@ -79,9 +79,10 @@ fn run_startup_import(
     Ok(())
 }
 
-
-fn launch_gui() -> Result<(), Box<dyn Error>> {
-
+fn launch_gui(
+    app: Application,
+    ) -> Result<(), Box<dyn Error>> {
+    
     let options = eframe::NativeOptions::default();
 
     eframe::run_native(
@@ -89,7 +90,7 @@ fn launch_gui() -> Result<(), Box<dyn Error>> {
         options,
         Box::new(|_cc| {
             Ok(Box::new(
-                crate::gui::DirectPaymentApp::new()
+                crate::gui::DirectPaymentApp::new(app)
             ))
         }),
     )

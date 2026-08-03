@@ -1,14 +1,18 @@
 use eframe::egui;
 
+use crate::app::Application;
+
 pub struct DirectPaymentApp {
+    application: Application,
     version: String,
     status_message: String,
 }
 
 impl DirectPaymentApp {
-    pub fn new() -> Self {
+    pub fn new(application: Application) -> Self {
         Self {
-            version: env!("CARGO_PKG_VERSION").to_string(),
+            version: application.context.version.clone(),
+            application,
             status_message: "Application ready.".to_string(),
         }
     }
