@@ -1,16 +1,23 @@
-# DirectPaymentTimesheets
+# DirectPaymentTimesheets Processor
 
-Project State
+## Project State
 
 ---
 
-## Project Overview
+# Project Overview
 
-DirectPaymentTimesheets is an open-source application for managing UK Direct Payment administration.
+DirectPaymentTimesheets Processor is an open-source application for managing UK Direct Payment administration.
 
-The long-term goal is to provide a complete workflow from recording Personal Assistant (PA) hours through to generating payroll timesheets, PDFs and payroll emails, reducing administration for Direct Payment holders.
+The long-term goal is to provide a complete workflow from recording Personal Assistant (PA) hours through to preparing payroll documentation, generating PDFs and assisting with payroll communication.
 
-The project is designed to be cross-platform and written in Rust.
+The application is designed to reduce the manual administration currently required by Direct Payment holders while maintaining accurate historical records and audit information.
+
+The project is:
+
+- Written in Rust.
+- Cross-platform.
+- Based around a local SQLite database.
+- Designed to keep user data local where possible.
 
 ---
 
@@ -18,9 +25,15 @@ The project is designed to be cross-platform and written in Rust.
 
 Pre-release
 
-Development Version: 0.0.x
+Development Version:
 
-Status: Active Development
+```
+0.0.x
+```
+
+Status:
+
+Active Development
 
 ---
 
@@ -28,22 +41,64 @@ Status: Active Development
 
 The application will eventually provide:
 
-- Recording of PA working hours.
-- Import of Hours Keeper CSV files.
-- Payroll calculations.
-- Timesheet generation.
-- PDF generation.
-- Payroll email generation.
+- Personal Assistant record management.
+- Employer information management.
+- Hours Keeper CSV import.
+- Worked shift recording.
+- Payroll period management.
+- Contracted hours history.
+- Pay rate history.
+- Employer top-up rate support.
 - Annual leave management.
-- Sick leave management.
-- Public holiday calculations.
-- Mileage recording.
-- Audit trail.
+- Public holiday detection.
+- Payroll preparation sheet generation.
+- PDF generation.
+- Payroll email preparation.
+- Import audit trail.
 - Reporting.
-- Future self-service for Personal Assistants.
-- Future client approval workflow.
+- Future Personal Assistant self-service.
+- Future approval workflow.
 - Cross-platform desktop application.
 - Future browser/mobile interface.
+
+Optional future areas:
+
+- Sick leave / SSP handling.
+- Mileage claims.
+- Additional payroll adjustments.
+
+---
+
+# Current Development Stage
+
+The project has completed the initial application foundation.
+
+The current focus is moving from the import prototype into the wider payroll domain model.
+
+The agreed direction is:
+
+```
+Employer
+
+    |
+    |
+Personal Assistant
+
+    |
+    +-- Employment history
+    |
+    +-- Contracted hours history
+    |
+    +-- Pay rate history
+    |
+    +-- Worked shifts
+    |
+    +-- Annual leave
+    |
+    +-- Public holidays
+    |
+    +-- Payroll preparation
+```
 
 ---
 
@@ -53,61 +108,95 @@ The application is structured into separate layers.
 
 Current structure:
 
-    main.rs
-        |
-        v
+```
+main.rs
 
-    application.rs
-        |
-        +-- Application context
-        +-- Database initialisation
-        +-- Repository creation
-        +-- Import service startup
+    |
 
-        |
-        v
+    v
 
-    ImportService
+Application
 
-        |
-        +-- Discover CSV files
-        +-- Validate CSV data
-        +-- Import records
-        +-- Archive files
-        +-- Create audit records
+    |
 
-        |
-        v
+    +-- Application context
+    +-- Environment handling
+    +-- Configuration loading
+    +-- Database initialisation
+    +-- Repository creation
 
-    Repository
+    |
 
-        |
-        +-- Timesheet storage
-        +-- Duplicate checking
-        +-- Import audit storage
+    v
 
-Application data lives outside the repository.
+ImportService
 
-Application data directory:
+    |
 
-    ~/.directpaymenttimesheets/
+    +-- Discover CSV files
+    +-- Validate CSV data
+    +-- Import records
+    +-- Archive files
+    +-- Create audit records
 
-Current structure:
+    |
 
-    ~/.directpaymenttimesheets/
+    v
 
-    archive/
-    backups/
-    cache/
-    config.toml
-    database.sqlite
-    import/
-    logs/
-    templates/
+Repository
+
+    |
+
+    +-- Database operations
+    +-- Duplicate checking
+    +-- Import audit storage
+```
+
+Future layers will include:
+
+```
+Payroll Domain
+
+    |
+
+    +-- Employer management
+    +-- PA management
+    +-- Pay rate management
+    +-- Leave management
+    +-- Payroll preparation
+    +-- PDF generation
+```
 
 ---
 
-# Current Components
+# Application Data Location
+
+Application data is stored outside the repository.
+
+Default location:
+
+```
+~/.directpaymenttimesheets/
+```
+
+Current structure:
+
+```
+~/.directpaymenttimesheets/
+
+archive/
+backups/
+cache/
+config.toml
+database.sqlite
+import/
+logs/
+templates/
+```
+
+---
+
+# Implemented Components
 
 Implemented:
 
@@ -126,16 +215,18 @@ Implemented:
 - Timestamped archive naming.
 - Import audit trail.
 - Failed import logging.
+- Import summary display.
+- Timesheet viewing dashboard.
 
 ---
 
-# Database
+# Current Database Implementation
 
-Current tables:
+The current database contains:
 
 ## timesheets
 
-Stores imported working records.
+Stores imported worked records.
 
 Current fields:
 
@@ -169,47 +260,65 @@ Current fields:
 
 ---
 
+# Future Database Expansion
+
+The database model will expand to include:
+
+- Employer records.
+- Personal Assistant records.
+- Employment history.
+- Contracted hours history.
+- Pay rate history.
+- Payroll periods.
+- Public holiday calendar.
+- Annual leave records.
+- Payroll adjustments.
+
+---
+
 # Import Pipeline
 
 Current workflow:
 
-    Configured Import Folder
+```
+Configured Import Folder
 
-            |
+        |
 
-            v
+        v
 
-    Discover CSV Files
+Discover CSV Files
 
-            |
+        |
 
-            v
+        v
 
-    Check Previous Successful Imports
+Check Previous Successful Imports
 
-            |
+        |
 
-            v
+        v
 
-    Validate CSV
+Validate CSV
 
-            |
+        |
 
-            v
+        v
 
-    Insert Records
+Insert Records
 
-            |
+        |
 
-            v
+        v
 
-    Archive CSV
+Archive CSV
 
-            |
+        |
 
-            v
+        v
 
-    Write Audit Record
+Write Audit Record
+```
 
 The import system records:
 
@@ -228,17 +337,41 @@ Imported CSV files are archived.
 
 Archive files use timestamped filenames to prevent collisions.
 
-Archive layout example:
+Example:
 
-    archive/
+```
+archive/
 
-    2026/
+2026/
 
-        08/
+08/
 
-            2026-08-02_150024_timesheet.csv
+2026-08-02_150024_timesheet.csv
+```
 
 Archive files are treated as historical records and should not be modified after creation.
+
+---
+
+# Documentation Status
+
+Current documentation includes:
+
+- Architecture documentation.
+- Domain guide.
+- Data model.
+- Development information.
+- Project constitution.
+
+The documentation has been updated to reflect:
+
+- Payroll workflow requirements.
+- Personal Assistant records.
+- Rate history.
+- Contract history.
+- Annual leave handling.
+- Public holiday detection.
+- Payroll document requirements.
 
 ---
 
@@ -262,7 +395,7 @@ Tests use isolated databases where appropriate.
 
 # Design Principles
 
-The project follows several important principles:
+The project follows these principles:
 
 - Cross-platform.
 - Rust-first.
@@ -274,7 +407,8 @@ The project follows several important principles:
 - Every significant feature committed.
 - Every import auditable.
 - Preserve historical data.
-- Keep application logic separated from startup code.
+- Separate imported data from payroll adjustments.
+- Keep business logic separated from technical implementation.
 
 ---
 
@@ -282,99 +416,112 @@ The project follows several important principles:
 
 The software currently performs:
 
+```
 Configuration
 
-
+        |
 
 CSV Import
 
-
+        |
 
 Validation
 
-
+        |
 
 Duplicate Detection
 
-
+        |
 
 Database Storage
 
-
+        |
 
 Archive
 
-
+        |
 
 Audit Trail
+```
 
 ---
 
 # Next Development Milestone
 
-Continue strengthening the application foundation before implementing the Payroll Engine.
+The next milestone is implementing the payroll domain foundation.
 
-Planned next areas:
+Planned areas:
 
-- Improve application error handling.
-- Expand automated testing.
-- Improve service separation.
-- Prepare domain models for payroll calculations.
+- Create Employer model.
+- Create Personal Assistant model.
+- Introduce payroll configuration.
+- Create database schema expansion.
+- Add employment history.
+- Add contracted hours history.
+- Add pay rate history.
+- Prepare payroll document generation model.
 
 ---
 
 # Long-Term Vision
 
-DirectPaymentTimesheets will eventually replace the current manual workflow consisting of:
+DirectPaymentTimesheets Processor will eventually replace the current manual workflow:
 
+```
 Hours Keeper
 
-
+        |
 
 Google Sheets
 
-
+        |
 
 Google Docs
 
-
+        |
 
 Manual PDF Export
 
-
+        |
 
 Manual Email
+```
 
 with:
 
-DirectPaymentTimesheets
+```
+DirectPaymentTimesheets Processor
 
-
+        |
 
 Payroll Engine
 
-
+        |
 
 PDF Generation
 
+        |
 
+Payroll Communication
 
-Email Generation
-
-
+        |
 
 Completed Payroll Submission
+```
 
 ---
 
 # Current Project Status
 
-Foundation Complete.
-
-Application structure established.
+Foundation complete.
 
 Import pipeline operational.
 
-Documentation aligned with current implementation.
+Core application structure established.
 
-Ready for continued foundation improvements before Payroll Engine development.
+Domain model documented.
+
+Data model documented.
+
+Ready to begin payroll domain implementation.
+
