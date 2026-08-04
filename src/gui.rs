@@ -91,6 +91,16 @@ impl eframe::App for DirectPaymentApp {
                 match &self.last_import {
                     Some(summary) => {
                         ui.label(format!(
+                            "Files discovered: {}",
+                            summary.files_discovered
+                        ));
+
+                        ui.label(format!(
+                            "Already imported: {}",
+                            summary.files_already_imported
+                        ));
+
+                        ui.label(format!(
                             "Files processed: {}",
                             summary.files_processed
                         ));
@@ -115,7 +125,6 @@ impl eframe::App for DirectPaymentApp {
                             summary.files_failed
                         ));
                     }
-
                     None => {
                         ui.label(
                             "No import performed yet."

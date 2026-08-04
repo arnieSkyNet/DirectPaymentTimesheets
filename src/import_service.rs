@@ -11,6 +11,8 @@ use chrono::Local;
 use std::path::{Path, PathBuf};
 
 pub struct ImportSummary {
+    pub files_discovered: i64,
+    pub files_already_imported: i64,
     pub files_processed: i64,
     pub rows_processed: i64,
     pub rows_imported: i64,
@@ -39,6 +41,8 @@ impl<'a> ImportService<'a> {
 
     pub fn run(&self) -> Result<ImportSummary, Box<dyn Error>> {
         let mut summary = ImportSummary {
+            files_discovered: 0,
+            files_already_imported: 0,
             files_processed: 0,
             rows_processed: 0,
             rows_imported: 0,
@@ -63,14 +67,18 @@ impl<'a> ImportService<'a> {
             let filename = path.to_string_lossy();
 
             if self.repository.has_successful_import(&filename)? {
+                summary.files_already_imported += 1;
+
                 println!(
                     "Skipping already imported file: {}",
                     filename
                 );
+
                 continue;
             }
 
             summary.files_processed += 1;
+            summary.files_discovered += 1;
 
             match self.process_file(&path) {
                 Ok((processed, imported, skipped)) => {
