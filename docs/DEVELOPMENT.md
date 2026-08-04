@@ -2,9 +2,9 @@
 
 ## Purpose
 
-This document describes the development workflow and standards used when working on DirectPaymentTimesheets.
+This document describes the development practices used for DirectPaymentTimesheets.
 
-The goal is to keep development safe, predictable and maintainable as the project grows.
+The purpose is to keep development consistent, maintainable and safe while the application grows.
 
 ---
 
@@ -12,227 +12,394 @@ The goal is to keep development safe, predictable and maintainable as the projec
 
 The project follows these principles:
 
-- Make small, controlled changes.
-- Keep features isolated.
-- Test after changes.
-- Commit working stages.
-- Preserve project history through Git.
+- Small incremental changes.
+- Test before committing.
+- Keep documentation aligned with code.
+- Preserve existing data.
 - Avoid unnecessary complexity.
-- Keep user data separate from source code.
-- Prefer maintainable solutions over quick fixes.
+- Use Git as permanent project history.
+- Build the foundation before adding advanced features.
 
 ---
 
 # Technology Stack
 
-Current technologies:
+Current technology:
 
-- Rust programming language.
-- Cargo build system.
-- SQLite database.
-- Git version control.
+```
+Rust
+
+SQLite
+
+Cargo
+
+Git
+```
+
+The application is designed to remain cross-platform.
+
+---
+
+# Development Environment
+
+The project is developed using a Rust toolchain.
+
+Required tools:
+
+```
+cargo
+
+rustc
+
+git
+```
+
+The Rust version should be kept current enough to support required dependencies.
+
+---
+
+# Common Development Commands
+
+## Check Code
+
+Use:
+
+```
+cargo check
+```
+
+Purpose:
+
+- Quickly verify compilation.
+- Detect code errors.
+
+---
+
+## Run Tests
+
+Use:
+
+```
+cargo test
+```
+
+Purpose:
+
+- Run automated tests.
+- Confirm existing functionality still works.
+
+All tests should pass before committing changes.
+
+---
+
+## Format Code
+
+Use:
+
+```
+cargo fmt
+```
+
+Purpose:
+
+- Keep Rust formatting consistent.
+- Reduce unnecessary code differences.
+
+Formatting should be run before committing Rust changes.
 
 ---
 
 # Project Structure
 
-Main source directory:
+Current source layout:
 
-    src/
-
-Important components:
+```
+src/
 
     main.rs
 
-Application entry point.
-
     application.rs
-
-Application startup and coordination.
-
     context.rs
-
-Provides application context.
-
-    config.rs
-
-Handles configuration.
+    environment.rs
 
     database.rs
 
-Handles database initialisation.
+    models.rs
 
     repository.rs
-
-Database access layer.
-
-    import_service.rs
-
-Coordinates CSV importing.
+    employer_repository.rs
+    personal_assistant_repository.rs
+    pay_rate_repository.rs
 
     csv_import.rs
-
-CSV validation and parsing.
-
+    import_service.rs
     archive.rs
 
-Handles archived CSV files.
+    config.rs
+    paths.rs
+    error.rs
 
----
-
-# Development Checks
-
-After making code changes run:
-
-    cargo check
-
-This verifies that the project compiles.
-
-For automated tests run:
-
-    cargo test
-
-Tests should pass before committing changes.
-
----
-
-# Testing Approach
-
-Tests should be added when new functionality is created.
-
-Current testing areas include:
-
-- CSV parsing.
-- Duration conversion.
-- Money conversion.
-- Invalid input handling.
-- Database operations.
-- Duplicate detection.
-- Import auditing.
-- Archive behaviour.
-
----
-
-# Git Workflow
-
-Git is used as the permanent project history.
-
-Normal workflow:
-
-1. Make a small change.
-2. Run cargo check.
-3. Run cargo test where appropriate.
-4. Review changes.
-5. Commit.
-6. Push to GitHub.
-
-Commits should describe the change clearly.
-
-Examples:
-
-    Add CSV duplicate detection
-
-    Improve archive filename handling
-
-    Update project documentation
-
----
-
-# Documentation Updates
-
-Documentation should be updated when architecture or workflow changes.
-
-Important documents:
-
-    docs/ARCHITECTURE.md
-
-Technical architecture and design decisions.
-
-    docs/PROJECT_STATE.md
-
-Current project status and completed milestones.
-
-    docs/DEVELOPMENT.md
-
-Development workflow and standards.
-
-    docs/DOMAIN.md
-
-Business concepts and domain rules.
-
----
-
-# Database Development
-
-Database changes should be handled carefully.
-
-Principles:
-
-- Preserve existing data.
-- Avoid destructive changes.
-- Use migrations when the database becomes more complex.
-- Keep repository logic separate from database setup.
+    gui.rs
+```
 
 ---
 
 # Adding New Features
 
-New features should normally follow this process:
+New features should normally follow this pattern:
 
-1. Define the requirement.
-2. Update architecture or domain documentation if needed.
-3. Add or update data models.
-4. Add repository support.
-5. Add service logic.
-6. Add tests.
-7. Update documentation.
-8. Commit the completed stage.
+## 1. Define the Domain Requirement
 
----
+Before writing code:
 
-# Error Handling
-
-Errors should be:
-
-- Clear.
-- Useful for debugging.
-- Recorded where appropriate.
-- Visible to the user when action is required.
-
-Import failures should always create audit records.
+- Describe the real-world problem.
+- Update documentation if required.
+- Define the data needed.
 
 ---
 
-# Privacy and Security
+## 2. Update the Data Model
 
-The project handles sensitive Direct Payment information.
+Add or modify:
 
-Development rules:
+```
+docs/DATA-MODEL.md
+```
 
-- Never commit user payroll data.
-- Keep personal data outside the repository.
-- Avoid unnecessary personal information in filenames.
-- Preserve audit history.
-- Prefer local storage unless a future feature requires otherwise.
+Consider:
+
+- Historical accuracy.
+- Future expansion.
+- Relationships between records.
 
 ---
 
-# Current Development Status
+## 3. Update Database Schema
 
-The foundation stage is complete.
+Database changes should use migrations.
+
+Do not manually edit existing databases.
+
+The process should be:
+
+```
+Add migration
+
+        |
+
+Update schema version
+
+        |
+
+Test upgrade path
+
+        |
+
+Commit change
+```
+
+---
+
+## 4. Add Repository Layer
+
+Database access should be contained inside repositories.
+
+Repositories handle:
+
+- Inserts.
+- Queries.
+- Updates.
+- Data retrieval.
+
+Business rules should not be placed inside repositories.
+
+---
+
+## 5. Add Tests
+
+Every new feature should include tests where practical.
+
+Tests should cover:
+
+- Normal operation.
+- Invalid data.
+- Edge cases.
+- Duplicate handling where relevant.
+
+---
+
+# Database Development
+
+The application uses SQLite.
+
+Database responsibilities:
+
+```
+database.rs
+```
+
+Handles:
+
+- Creating tables.
+- Checking schema version.
+- Running migrations.
+
+Repositories handle database operations.
+
+---
+
+# Data Storage Rules
+
+Application data is stored outside the Git repository.
+
+Default location:
+
+```
+~/.directpaymenttimesheets/
+```
+
+The repository must not contain:
+
+- Real personal information.
+- Payroll records.
+- Private signatures.
+- User databases.
+
+---
+
+# Import Development
+
+CSV imports must:
+
+- Validate incoming data.
+- Prevent duplicate imports.
+- Preserve original files.
+- Record audit information.
+
+Import changes should include tests.
+
+---
+
+# Testing Database Code
+
+Database tests should use isolated databases.
+
+Preferred approach:
+
+```
+SQLite in-memory database
+```
+
+This prevents tests from modifying real user data.
+
+---
+
+# Git Workflow
+
+Git is used as project history.
+
+Each significant change should:
+
+- Have a clear commit message.
+- Represent one logical change.
+- Pass tests before committing.
+
+Examples of good commit messages:
+
+```
+Add employer repository
+
+Add pay rate history model
+
+Improve database migration handling
+
+Update project documentation
+```
+
+---
+
+# Documentation Rules
+
+Documentation should be updated when:
+
+- A major feature is added.
+- Database structure changes.
+- Architecture changes.
+- Business rules change.
+
+Important documents:
+
+```
+docs/DATA-MODEL.md
+
+docs/DOMAIN.md
+
+docs/ARCHITECTURE.md
+
+docs/PROJECT_STATE.md
+```
+
+---
+
+# Current Development Stage
+
+The current focus is completing the application foundation.
 
 Completed:
 
 - Application structure.
 - Configuration handling.
-- Database foundation.
-- Repository layer.
+- Environment management.
+- SQLite database.
+- Database migrations.
+- Core repositories.
 - CSV import pipeline.
-- Validation.
-- Duplicate detection.
-- Archive handling.
-- Import auditing.
-- Documentation foundation.
+- Import audit system.
 
-Future development will continue by strengthening the foundation before implementing payroll processing features.
+---
+
+# Current Development Priorities
+
+Next areas:
+
+## Business Records
+
+Continue building:
+
+- Leave records.
+- Public holiday records.
+- Payroll periods.
+
+---
+
+## Payroll Engine Preparation
+
+Prepare:
+
+- Pay calculations.
+- Historical rates.
+- Payroll rules.
+
+---
+
+## Document Generation
+
+Prepare:
+
+- Timesheet PDFs.
+- Payroll outputs.
+- Email workflow.
+
+---
+
+# Future Development
+
+Future features may include:
+
+- Employer login.
+- Personal Assistant self-service.
+- Browser/mobile access.
+- Advanced payroll automation.
+
+These should only be added after the underlying data model and business rules are stable.
 

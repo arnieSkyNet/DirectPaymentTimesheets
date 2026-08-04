@@ -4,7 +4,7 @@
 
 This document describes the real-world concepts that DirectPaymentTimesheets is designed to represent.
 
-The purpose is to keep the software aligned with the needs of UK Direct Payment administration.
+The purpose is to keep the software aligned with the needs of UK Direct Payment administration and the actual workflow used by Direct Payment holders.
 
 ---
 
@@ -14,42 +14,27 @@ A Direct Payment allows a person who receives care and support funding to manage
 
 The Direct Payment holder can use the funding to employ or arrange support from Personal Assistants (PAs).
 
-The application supports the administration required around these arrangements, including:
-
-- Recording worked hours.
-- Maintaining employment information.
-- Preparing payroll documentation.
-- Keeping accurate audit records.
+The application is designed to support the administration required around these arrangements.
 
 ---
 
-# Direct Payment Holder
+# Direct Payment Holder (Employer)
 
-The Direct Payment holder is the person responsible for managing their care funding.
+The Direct Payment holder is the person responsible for managing their care funding and employment arrangements.
 
 They may:
 
 - Employ Personal Assistants.
 - Approve timesheets.
-- Manage payroll information.
 - Maintain employment records.
+- Prepare payroll information.
 - Keep financial and audit records.
 
-The application should support the holder by reducing administration while keeping records accurate.
+The employer record contains information required for:
 
----
-
-# Employer
-
-The employer is the person or organisation responsible for employing Personal Assistants.
-
-The system stores employer information including:
-
-- Employer name.
-- Address.
-- Contact details.
-- Payroll provider information.
-- Payroll document settings.
+- Timesheet documents.
+- Payroll submissions.
+- Generated PDFs.
 
 ---
 
@@ -59,93 +44,53 @@ A Personal Assistant provides support to the Direct Payment holder.
 
 A PA may have:
 
-- Personal information.
+- Working hours.
+- Agreed pay rates.
 - Employment information.
-- Contracted hours.
-- Variable or fixed working arrangements.
-- Pay rate history.
-- Holiday records.
+- Holiday entitlement.
+- Optional system access.
 
-The application stores information relating to the PA's employment and payroll preparation.
+A Personal Assistant does not automatically require a login account.
 
----
+The system should allow:
 
-# Employment Records
+- PAs who only have hours recorded.
+- PAs who can submit their own hours in future versions.
 
-Employment information may change over time.
-
-The system should preserve historical records for:
-
-- Employment start information.
-- Contracted hours.
-- Fixed or variable hour arrangements.
-- Changes of circumstances.
-
-Example:
-
-```
-Fixed hours:
-18 hours per week
-```
-
-or:
-
-```
-Variable hours:
-Hours vary according to support requirements
-```
-
-Historical records ensure previous payroll information remains accurate.
-
----
-
-# Worked Shifts
-
-A worked shift represents actual time worked by a Personal Assistant.
-
-The initial source of worked shifts is Hours Keeper CSV import.
-
-A worked shift may contain:
-
-- Personal Assistant.
-- Date.
-- Start time.
-- End time.
-- Break duration.
-- Worked duration.
-- Notes.
-- Import source.
-
-Worked shifts represent actual work completed.
-
-They do not include:
-
-- Annual leave.
-- Sick leave.
-- Travel claims.
-- Other payroll adjustments.
+Authentication and employment records should remain separate.
 
 ---
 
 # Timesheets
 
-A payroll timesheet is created by combining worked shifts and relevant adjustments.
+A timesheet records work completed by a Personal Assistant.
 
-A timesheet may include:
+A timesheet entry may contain:
 
-- Hours worked.
-- Pay rate applied.
-- Annual leave hours.
-- Public holiday hours.
-- Optional payroll adjustments.
+- Personal Assistant.
+- Date worked.
+- Start time.
+- End time.
+- Break duration.
+- Worked duration.
+- Hourly rate.
+- Calculated amount.
+- Notes.
 
-Timesheet records should be accurate, traceable and auditable.
+Timesheet records should be:
+
+- Accurate.
+- Traceable.
+- Auditable.
+- Preserved historically.
+
+Imported records should not be changed after payroll processing without an audit record.
 
 ---
 
 # Working Time
 
-Working time represents the hours a Personal Assistant has provided support.
+Working time represents hours a Personal Assistant has provided support.
 
 The application records:
 
@@ -160,33 +105,178 @@ Working time calculations should be consistent and transparent.
 
 # Pay Rates
 
-A Personal Assistant may have an agreed hourly rate.
+A Personal Assistant may have different hourly rates over time.
 
-The system should support:
+The system must support:
 
-- Recording hourly rates.
-- Recording government/minimum rates.
-- Recording employer top-ups.
-- Calculating the total hourly payment rate.
-- Recording future rate changes.
-- Maintaining historical accuracy.
+- Current hourly rate.
+- Historical rates.
+- Effective dates.
+- Employer-funded top-up rates.
 
-Previously completed payroll records should preserve the rate that applied at that time.
+Historical timesheets must retain the rate that applied when the work was completed.
+
+A future payroll calculation must not recalculate old records using a new rate.
 
 ---
 
 # Payroll Periods
 
-Payroll periods group completed work into a payment cycle.
+Payroll periods group completed records into payment cycles.
 
-The application supports:
+Examples:
 
-- Four-week payroll cycles.
-- Payroll submission dates.
-- PA pay dates.
-- Special payroll arrangements.
+- Four-weekly payroll.
+- Monthly payroll.
+- Special payroll runs.
 
-Payroll periods are used when generating payroll preparation documents.
+The application should support the Direct Payment workflow where timesheets are prepared and submitted to payroll departments.
+
+---
+
+# Annual Leave
+
+Annual leave is separate from worked hours.
+
+Annual leave records should store:
+
+- Personal Assistant.
+- Date commencing.
+- Date ending.
+- Hours taken.
+
+The dates are a record of when the leave occurred.
+
+The hours are used when producing payroll documentation.
+
+Annual leave should not appear as normal worked hours in the source timesheet data.
+
+When generating payroll PDFs, annual leave hours may need to be placed into the correct week of a four-week payroll period.
+
+---
+
+# Sick Leave and SSP
+
+The system may support sick leave and Statutory Sick Pay (SSP) in future versions.
+
+Some Direct Payment employment arrangements may require these records.
+
+The feature should remain optional because individual employers may not use sick leave payments.
+
+---
+
+# Public Holidays
+
+Public holidays require special handling.
+
+The system should maintain a list of public holiday dates.
+
+During CSV import:
+
+- Imported work dates should be checked against public holiday dates.
+- Hours worked on public holidays should be identified automatically.
+- Multiple shifts on the same public holiday should be combined.
+
+Example:
+
+Three imported shifts:
+
+```
+1.25 hours
+2.00 hours
+2.25 hours
+```
+
+On:
+
+```
+25/12/2026
+```
+
+Should become:
+
+```
+5.50 hours (25/12/2026)
+```
+
+Public holiday hours are recorded separately for payroll reporting.
+
+They should not simply replace normal worked hours.
+
+---
+
+# Travel and Mileage
+
+Some employment arrangements may include travel claims.
+
+The system should support future mileage recording.
+
+Possible information:
+
+- Miles claimed.
+- Mileage rate.
+- Total mileage payment.
+
+Example:
+
+```
+Miles claimed @ £0.40 per mile
+```
+
+Travel should remain separate from worked hours.
+
+---
+
+# PDF Timesheet Layout
+
+Generated payroll documents should support the existing four-week timesheet format.
+
+Expected columns:
+
+## Column 1
+
+```
+W/C date
+(Week commencing date)
+```
+
+## Column 2
+
+```
+Hours worked
+
+Pay Rate
+```
+
+## Column 3
+
+```
+Annual leave hours
+```
+
+## Column 4
+
+```
+Sick leave
+
+SSP
+```
+
+## Column 5
+
+```
+Public Hols. Hours worked
+```
+
+## Column 6
+
+```
+Travel
+
+Miles claimed @ £0.40 per mile
+```
+
+Unused columns should remain available because other employers may require them.
 
 ---
 
@@ -200,112 +290,7 @@ The import process should:
 - Prevent duplicate records.
 - Preserve original files.
 - Record audit information.
-- Classify worked hours where additional rules apply.
-
----
-
-# Public Holiday Calendar
-
-Public holidays are stored separately from worked shifts.
-
-The system maintains a calendar containing:
-
-- Date.
-- Holiday name.
-- Country.
-
-During import, worked shifts are checked against the public holiday calendar.
-
-If hours are worked on a public holiday, those hours are automatically shown as public holiday hours on the payroll document.
-
-Example:
-
-```
-25/12/2026
-
-Imported shifts:
-1.25 hours
-2 hours
-2.25 hours
-
-Public holiday hours:
-5.5 (25/12/2026)
-```
-
-The system records the hours.
-
-The Payroll department determines the payment treatment.
-
----
-
-# Annual Leave
-
-Annual leave is a separate record from worked shifts.
-
-Annual leave is entered manually.
-
-Records include:
-
-- Personal Assistant.
-- Date commencing.
-- Date ending.
-- Hours.
-
-The dates provide a record of when annual leave occurred.
-
-The system uses the date range and payroll period to place the correct annual leave hours into the appropriate payroll document section.
-
----
-
-# Optional Payroll Adjustments
-
-Some payroll columns exist because they are part of the Payroll department template.
-
-## Sick Leave / SSP
-
-Sick leave is supported as an optional future adjustment.
-
-The column may appear on payroll documents but is not part of the normal workflow.
-
-No automatic SSP calculation is required initially.
-
-## Travel
-
-Travel claims may be supported in future.
-
-Information may include:
-
-- Miles claimed.
-- Mileage rate.
-
----
-
-# Payroll Preparation Document
-
-The final output is a Payroll Preparation Sheet matching the Payroll department's required format.
-
-The document contains:
-
-Header information:
-
-- Employer name.
-- Employee name.
-- National Insurance number.
-- Contracted weekly hours.
-
-Main columns:
-
-1. Week commencing date.
-
-2. Hours worked and pay rate.
-
-3. Annual leave hours.
-
-4. Sick leave / SSP.
-
-5. Public holiday hours worked.
-
-6. Travel miles claimed.
+- Detect public holiday dates.
 
 ---
 
@@ -313,16 +298,46 @@ Main columns:
 
 An audit trail records important system events.
 
-The application records import activity including:
+The application records:
 
-- When an import occurred.
-- Which file was imported.
-- How many rows were processed.
-- How many records were created.
-- How many records were skipped.
-- Whether the import succeeded or failed.
+- Import activity.
+- Changes to important records.
+- Payroll preparation events.
+- Generated documents.
 
 Audit information helps maintain trust and accountability.
+
+---
+
+# Future User Accounts
+
+Future versions may support optional user access.
+
+Possible users:
+
+- Employer / Administrator.
+- Personal Assistant.
+- Payroll administrator.
+
+A user account should only exist when access is required.
+
+---
+
+# Future Payroll Engine
+
+The Payroll Engine will transform approved records into payroll information.
+
+Responsibilities may include:
+
+- Grouping work into payroll periods.
+- Applying pay rates.
+- Handling annual leave.
+- Handling public holiday reporting.
+- Preparing payroll outputs.
+- Generating PDF documents.
+- Preparing payroll emails.
+
+The Payroll Engine should use validated records rather than raw imported files.
 
 ---
 
@@ -333,25 +348,10 @@ Direct Payment administration contains sensitive personal information.
 The application should:
 
 - Store only necessary information.
-- Keep user data local where possible.
-- Avoid exposing unnecessary personal information.
+- Keep data local where possible.
+- Protect personal records.
+- Avoid unnecessary personal details in filenames.
 - Maintain clear audit history.
-- Prevent accidental sharing of private records.
-
----
-
-# Future Payroll Engine
-
-The Payroll Engine will transform validated worked shift records and payroll adjustments into payroll information.
-
-Future responsibilities may include:
-
-- Grouping work into payroll periods.
-- Calculating gross pay.
-- Supporting additional payroll rules.
-- Preparing payroll outputs.
-
-The Payroll Engine should use validated records rather than raw imported files.
 
 ---
 
@@ -364,5 +364,5 @@ Business rules should be:
 - Clearly documented.
 - Separated from technical implementation.
 - Tested where possible.
-- Changed carefully when regulations or requirements change.
+- Changed carefully when requirements or regulations change.
 
