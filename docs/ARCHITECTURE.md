@@ -1,10 +1,12 @@
-# Direct Payment Timesheets Processor Architecture
+# DirectPaymentTimesheets Architecture
 
 ## Purpose
 
-This document describes the technical architecture and design decisions of Direct Payment Timesheets Processor.
+This document describes the technical architecture and design decisions of DirectPaymentTimesheets.
 
-The application is designed as a cross-platform Rust application for managing UK Direct Payment administration, Personal Assistant records, worked hours, payroll preparation and related documentation.
+The application is designed as a cross-platform Rust application for managing UK Direct Payment timesheets, employment records and future payroll administration.
+
+The architecture is designed to support a gradual move from simple timesheet recording into a complete payroll preparation system.
 
 ---
 
@@ -19,8 +21,7 @@ The application should be:
 - Suitable for future organisational use.
 - Auditable.
 - Privacy conscious.
-- Configurable.
-- Designed to preserve historical information.
+- Expandable without major redesign.
 
 ---
 
@@ -45,6 +46,7 @@ SQLite is used as the local database because:
 - It is portable.
 - It is suitable for desktop applications.
 - It allows complete backups by copying the database file.
+- It keeps user data local.
 
 ---
 
@@ -64,6 +66,7 @@ Example:
 ~/.directpaymenttimesheets/
 
 config.toml
+
 database.sqlite
 
 archive/
@@ -74,24 +77,29 @@ logs/
 templates/
 ```
 
+The source repository contains:
+
+- Application code.
+- Documentation.
+- Tests.
+
+User information remains outside Git.
+
 ---
 
 # Configuration
 
 The application must not contain hard-coded user paths.
 
-Configuration controls locations and settings such as:
+Configuration controls locations such as:
 
 - CSV import folders.
-- Archive folders.
-- Generated document folders.
-- Email settings.
-- Application preferences.
-- Payroll settings.
+- Archive locations.
+- Generated documents.
+- Templates.
+- Future email settings.
 
-The importer does not depend on a fixed location.
-
-Users can configure their own folders.
+Application modules should obtain paths through the application context rather than creating their own locations.
 
 ---
 
@@ -108,63 +116,40 @@ main.rs
 
     v
 
-Application Layer
+application.rs
 
     |
 
-    +-- Application context
-    +-- Configuration loading
-    +-- Environment handling
-    +-- Database initialisation
+    +-- Application startup
+    +-- Environment initialisation
+    +-- Database setup
     +-- Repository creation
     +-- Service startup
-
 
     |
 
     v
 
-Service Layer
+Services
 
     |
 
     +-- Import Service
 
-
     |
 
     v
 
-Repository Layer
+Repositories
 
     |
 
-    +-- Database operations
-    +-- Timesheet storage
-    +-- Duplicate checking
-    +-- Import audit storage
+    +-- Timesheet Repository
+    +-- Import Audit Repository
+    +-- Employer Repository
+    +-- Personal Assistant Repository
+    +-- Pay Rate Repository
 ```
-
----
-
-# Domain Layer
-
-The application separates real-world business concepts from technical implementation.
-
-The domain layer represents:
-
-- Employer records.
-- Personal Assistant records.
-- Employment history.
-- Contracted hours history.
-- Pay rate history.
-- Worked shifts.
-- Annual leave records.
-- Public holiday calendar.
-- Payroll periods.
-- Payroll preparation.
-
-Technical services operate on these domain concepts.
 
 ---
 
@@ -177,10 +162,137 @@ The purpose is to provide:
 - Configuration.
 - Paths.
 - Environment information.
-- Application settings.
 - Shared application resources.
 
-Individual modules should request resources from the application context rather than creating their own paths.
+Individual modules should request resources from the application context rather than managing their own configuration.
+
+---
+
+# Database Architecture
+
+The database uses SQLite with schema version tracking.
+
+Database creation is handled through:
+
+```
+database.rs
+```
+
+Responsibilities:
+
+- Create required tables.
+- Check schema version.
+- Apply migrations.
+- Maintain database upgrades.
+
+Current migration approach:
+
+```
+schema_version
+
+        |
+
+        v
+
+migration functions
+
+        |
+
+        v
+
+updated database structure
+```
+
+This allows future changes without destroying existing data.
+
+---
+
+# Current Database Areas
+
+## Timesheets
+
+Stores imported working records.
+
+Responsibilities:
+
+- Store PA hours.
+- Preserve historical pay information.
+- Support payroll calculations.
+
+---
+
+## Employer Records
+
+Stores Direct Payment employer information.
+
+Responsibilities:
+
+- Employer details.
+- Payroll provider information.
+- Document generation details.
+
+---
+
+## Personal Assistant Records
+
+Stores PA employment information.
+
+Responsibilities:
+
+- Employee details.
+- Employment status.
+- Future payroll relationships.
+
+---
+
+## Pay Rate History
+
+Stores PA pay rate changes.
+
+Responsibilities:
+
+- Preserve historical rates.
+- Apply correct rate based on work date.
+- Support future payroll calculations.
+
+---
+
+## Import Audit
+
+Stores import history.
+
+Responsibilities:
+
+- Record imported files.
+- Track processing results.
+- Provide audit trail.
+
+---
+
+# Repository Architecture
+
+Database access is separated into repository modules.
+
+Current repositories:
+
+```
+TimesheetRepository
+
+EmployerRepository
+
+PersonalAssistantRepository
+
+PayRateRepository
+```
+
+Repositories are responsible for:
+
+- Database queries.
+- Inserts.
+- Retrieval.
+- Data persistence.
+
+Business rules should remain outside repositories.
 
 ---
 
@@ -207,13 +319,13 @@ Validate CSV Structure
 
         v
 
-Import Worked Shift Records
+Check Duplicate Imports
 
         |
 
         v
 
-Check For Duplicates
+Import Timesheet Records
 
         |
 
@@ -248,53 +360,91 @@ Each import records:
 
 # Service Architecture
 
-The application is moving towards separate services.
+The application is moving towards service-based architecture.
 
 Current service:
 
 ```
 Import Service
-
-    |
-
-    +-- Discover files
-    +-- Validate data
-    +-- Import records
-    +-- Archive files
-    +-- Create audit records
 ```
+
+Responsibilities:
+
+- Discover files.
+- Validate data.
+- Import records.
+- Archive files.
+- Create audit records.
 
 Future services:
 
 ```
 Payroll Service
 
-    |
-
-    +-- Group work into payroll periods
-    +-- Apply pay rate history
-    +-- Apply employer top-ups
-    +-- Include annual leave
-    +-- Identify public holiday hours
-    +-- Generate payroll records
-
+Leave Service
 
 Document Service
 
-    |
+Email Service
 
-    +-- Generate PDF timesheets
-    +-- Manage templates
-    +-- Prepare payroll documents
-
-
-Notification Service
-
-    |
-
-    +-- Prepare payroll emails
-    +-- Record submission information
+Authentication Service
 ```
+
+---
+
+# Authentication Design
+
+Authentication should remain separate from employment records.
+
+Future user accounts should support:
+
+- Employer access.
+- Personal Assistant access.
+- Payroll access.
+
+A Personal Assistant does not automatically require a login account.
+
+Employment records and login permissions are separate concepts.
+
+---
+
+# Leave and Public Holiday Design
+
+Future services will handle:
+
+## Annual Leave
+
+Responsibilities:
+
+- Record leave periods.
+- Record leave hours.
+- Allocate leave into payroll periods.
+
+---
+
+## Public Holidays
+
+Responsibilities:
+
+- Maintain public holiday dates.
+- Detect public holiday work during imports.
+- Support payroll reporting.
+
+---
+
+# Payroll Architecture
+
+The future Payroll Engine will transform validated records into payroll outputs.
+
+Responsibilities:
+
+- Group timesheets into payroll periods.
+- Apply historical pay rates.
+- Include leave records.
+- Include public holiday information.
+- Generate payroll documents.
+
+The Payroll Engine should not operate directly on raw imported files.
 
 ---
 
@@ -317,14 +467,18 @@ Archive
     - Timestamped archive filenames
 
 
-Repository
+Repositories
 
     - Database inserts
+    - Record retrieval
     - Duplicate detection
     - Import audit checking
+    - Employer records
+    - Personal Assistant records
+    - Pay rate history
 ```
 
-Tests use isolated in-memory databases where appropriate.
+Tests use isolated databases where appropriate.
 
 ---
 
@@ -332,21 +486,13 @@ Tests use isolated in-memory databases where appropriate.
 
 The application should minimise exposure of sensitive information.
 
-Sensitive identifiers should not be placed unnecessarily into filenames.
+The system should:
 
-Preferred:
-
-```
-timesheet_2026-08-01.csv
-```
-
-Avoid:
-
-```
-employee_name_NI_NUMBER.csv
-```
-
-Personal information should only be stored where required for the Direct Payment payroll process.
+- Store only necessary information.
+- Keep data local where possible.
+- Avoid personal information in filenames.
+- Maintain audit history.
+- Separate user access from employment data.
 
 ---
 
@@ -364,52 +510,15 @@ This prevents accidental commits of private payroll information.
 
 ---
 
-# Future Architecture Direction
+# Development Principle
 
-The long-term architecture will support:
+The architecture should evolve incrementally.
 
-```
-Direct Payment Timesheets Processor
+Changes should:
 
-        |
-
-        v
-
-Domain Management
-
-        |
-
-        +-- Employer
-        +-- Personal Assistants
-        +-- Employment Records
-        +-- Pay Rates
-        +-- Leave Records
-
-
-        |
-
-        v
-
-Payroll Engine
-
-        |
-
-        v
-
-Document Generation
-
-        |
-
-        v
-
-Payroll Communication
-```
-
-The architecture should continue to evolve while maintaining:
-
-- Clear separation of responsibilities.
-- Historical accuracy.
-- Auditability.
-- Privacy.
-- Simple maintenance.
+- Preserve existing data.
+- Use migrations for database changes.
+- Keep business logic separated from technical code.
+- Maintain clear documentation.
+- Be tested before major changes are committed.
 

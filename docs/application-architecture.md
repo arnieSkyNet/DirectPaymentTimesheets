@@ -2,17 +2,17 @@
 
 ## Document Purpose
 
-This document describes the planned architecture for DirectPaymentTimesheets.
+This document describes the overall application architecture of DirectPaymentTimesheets.
 
-The purpose is to define the structure of the application before implementation begins, ensuring that future features can be added without redesigning the system.
+The purpose is to explain how the major parts of the system fit together and how future features can be added without requiring major redesign.
 
-The application is intended to provide an open-source replacement for Hours Keeping app/software for UK Direct Payment / Personal Budget administration.
+DirectPaymentTimesheets is designed as an open-source replacement for manual UK Direct Payment / Personal Budget administration workflows.
 
 ---
 
 # 1. Design Goals
 
-DirectPaymentTimesheets will be designed around the following principles:
+DirectPaymentTimesheets is designed around the following principles:
 
 - Local-first application design.
 - Cross-platform compatibility.
@@ -20,25 +20,53 @@ DirectPaymentTimesheets will be designed around the following principles:
 - Clear separation between data storage, business logic and user interface.
 - Documentation and code evolving together.
 - Small, testable components.
+- Preservation of historical records.
 - Avoiding hard-coded assumptions about payroll arrangements.
 
 ---
 
 # 2. High-Level Architecture
 
-The application will consist of several layers:
+The application consists of several layers:
 
 ```text
 User Interface
+
       |
+
       v
-Application Logic
+
+Application Layer
+
       |
+
       v
-Data Storage
+
+Services
+
       |
+
       v
-External Services
+
+Repositories
+
+      |
+
+      v
+
+Database
+```
+
+Supporting layers provide:
+
+```text
+Configuration
+
+Environment
+
+Application Context
+
+Error Handling
 ```
 
 ---
@@ -49,30 +77,94 @@ External Services
 
 Responsible for interaction with the user.
 
+Current:
+
+- Desktop application foundation.
+
 Future capabilities:
 
 - Browser-based interface.
-- Desktop access.
 - Mobile-friendly access.
 - Timesheet entry.
 - Approval screens.
 - Reports.
+- Self-service access.
 
 ---
 
-## Application Logic Layer
+## Application Layer
 
-Responsible for the rules of the system.
+Responsible for application startup and coordination.
 
-Examples:
+Responsibilities:
 
-- Timesheet calculations.
-- Approval workflow.
-- Payroll calculations.
-- Validation.
-- Business rules.
+- Initialise environment.
+- Load configuration.
+- Create application context.
+- Start services.
+- Connect repositories.
 
-This layer should not depend directly on the user interface.
+The application layer should coordinate components without containing business rules.
+
+---
+
+## Service Layer
+
+Responsible for business workflows.
+
+Current service:
+
+```
+Import Service
+```
+
+Responsibilities:
+
+- Discover files.
+- Validate CSV data.
+- Import records.
+- Archive files.
+- Create audit records.
+
+Future services:
+
+```
+Payroll Service
+
+Leave Service
+
+Document Service
+
+Email Service
+
+Authentication Service
+```
+
+---
+
+## Repository Layer
+
+Responsible for database access.
+
+Current repositories:
+
+```
+Timesheet Repository
+
+Employer Repository
+
+Personal Assistant Repository
+
+Pay Rate Repository
+```
+
+Repositories handle:
+
+- Saving records.
+- Retrieving records.
+- Database queries.
+
+Business rules should remain outside repositories.
 
 ---
 
@@ -82,31 +174,36 @@ Responsible for permanent storage.
 
 Technology:
 
-- SQLite
+```
+SQLite
+```
 
 Responsibilities:
 
 - Store timesheets.
+- Store employer information.
 - Store Personal Assistant information.
-- Store settings.
-- Store payroll information.
+- Store pay rate history.
+- Store import audit records.
 - Maintain historical records.
+- Support schema migrations.
 
 ---
 
 ## Import / Export Layer
 
-Responsible for moving data into and out of the application.
+Responsible for moving information into and out of the application.
 
-Initial feature:
+Current:
 
 - CSV import.
 
-Future features:
+Future:
 
 - CSV export.
-- Data backup.
 - Payroll exports.
+- Backup functions.
+- Data migration tools.
 
 ---
 
@@ -114,11 +211,12 @@ Future features:
 
 Responsible for producing documents.
 
-Future features:
+Future capabilities:
 
 - PDF timesheets.
-- Reports.
 - Payroll documents.
+- Reports.
+- Submission packages.
 
 ---
 
@@ -126,47 +224,69 @@ Future features:
 
 Responsible for external communication.
 
-Future features:
+Future capabilities:
 
-- Emailing payroll departments.
-- Sending completed documents.
+- Payroll emails.
+- Document delivery.
+- Notification systems.
 
 ---
 
 # 4. Data Flow
 
-The planned workflow:
+The application workflow is:
 
 ```text
 CSV Import
+
     |
+
     v
+
 Validation
+
     |
+
     v
+
 SQLite Storage
+
     |
+
     v
+
 Timesheet Processing
+
     |
+
     v
+
 Approval Workflow
+
     |
+
     v
+
 Payroll Calculation
+
     |
+
     v
+
 PDF Generation
+
     |
+
     v
+
 Email / Export
 ```
 
 ---
 
-# 5. Planned Rust Modules
+# 5. Current Rust Structure
 
-The initial Rust application will grow towards the following structure:
+Current source structure:
 
 ```text
 src/
@@ -174,55 +294,87 @@ src/
 main.rs
     Application entry point.
 
+application.rs
+    Application startup and coordination.
+
 config.rs
-    Application settings and configuration.
+    Configuration handling.
+
+environment.rs
+    Environment management.
+
+context.rs
+    Shared application context.
 
 database.rs
-    SQLite connection and database operations.
+    SQLite setup and migrations.
 
 models.rs
     Core data structures.
 
+repository.rs
+    Timesheet database operations.
+
+employer_repository.rs
+    Employer database operations.
+
+personal_assistant_repository.rs
+    Personal Assistant database operations.
+
+pay_rate_repository.rs
+    Pay rate history operations.
+
 csv_import.rs
-    CSV file importing and validation.
+    CSV importing and validation.
 
-payroll.rs
-    Payroll calculations.
+import_service.rs
+    Import workflow.
 
-pdf.rs
-    PDF document generation.
+archive.rs
+    File archiving.
 
-email.rs
-    Email handling.
+gui.rs
+    User interface layer.
 ```
 
-Modules will be added only when required by a working feature.
+Modules should only be added when required by working features.
 
 ---
 
-# 6. Initial Development Strategy
+# 6. Development Strategy
 
-Development will use vertical slices.
+Development uses vertical slices.
 
 Each feature should provide a complete working path through the system.
 
-The first implementation milestone:
-
-## Version 0.0.1
-
-CSV Import:
+A feature should normally include:
 
 ```text
-CSV File
+Documentation
+
     |
-    v
-Importer
+
+Data Model
+
     |
-    v
-Validation
+
+Database Changes
+
     |
-    v
-SQLite Storage
+
+Repository
+
+    |
+
+Business Logic
+
+    |
+
+Tests
+
+    |
+
+Working Feature
 ```
 
 ---
@@ -233,7 +385,7 @@ Planned technologies:
 
 - Rust programming language.
 - SQLite database.
-- Embedded HTTP server.
+- Embedded services.
 - Browser-based access.
 - Cross-platform deployment.
 
@@ -249,7 +401,8 @@ Every development stage should:
 - Add the smallest useful feature.
 - Include tests where appropriate.
 - Leave the application compiling.
+- Use database migrations for structural changes.
 - Be committed to Git.
 
-The goal is a maintainable, reliable replacement for Hours keeping app/software
+The goal is a maintainable, reliable replacement for manual Direct Payment administration workflows.
 

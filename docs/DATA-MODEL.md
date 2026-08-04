@@ -1,442 +1,378 @@
-# Direct Payment Timesheets Processor Data Model
+# DirectPaymentTimesheets Data Model
 
 ## Document Purpose
 
-This document defines the information structure required by the Direct Payment Timesheets Processor application.
+This document describes the data model used by DirectPaymentTimesheets.
 
-The purpose is to describe the data the application needs to store before implementing the complete database layer.
+The purpose is to define the information the application stores and the relationships between the main business records.
 
-The application is designed to support the real-world Direct Payment payroll preparation process, including:
+The system is designed to support UK Direct Payment administration, including:
 
 - Personal Assistant records.
-- Employment information.
-- Contracted hours history.
+- Timesheet records.
+- Payroll preparation.
 - Pay rate history.
-- Hours Keeper CSV imports.
-- Payroll adjustments.
-- Payroll calendar management.
-- Payroll preparation PDF generation.
-
-The final output is a payroll preparation document compatible with the Payroll department's requirements.
+- Leave management.
+- Future self-service features.
 
 ---
 
-# 1. Core Concept
+# 1. Core Design Principles
 
-The application does not treat a timesheet as the only primary record.
+The database must:
 
-A timesheet is one part of a wider employment and payroll process.
+- Preserve historical information.
+- Avoid overwriting previous payroll information.
+- Keep employment records separate from login/security records.
+- Support future expansion.
+- Maintain an audit trail.
+- Keep user data separate from application source code.
 
-The relationship is:
+---
+
+# 2. Main Entities
+
+Current entities:
 
 ```
 Employer
 
-    |
-    |
+PersonalAssistant
+
+PersonalAssistantPayRate
+
+TimesheetEntry
+
+ImportAudit
+```
+
+Future entities:
+
+```
+UserAccount
+
+AnnualLeaveRecord
+
+PublicHoliday
+
+PayrollPeriod
+```
+
+---
+
+# 3. Employer
+
+An employer represents the Direct Payment holder responsible for managing Personal Assistants.
+
+Current fields:
+
+```
+id
+
+name
+address
+postcode
+telephone
+email
+
+payroll_provider
+payroll_provider_address
+payroll_provider_phone
+
+employer_signature
+
+default_pdf_template
+```
+
+Purpose:
+
+Stores employer details used for:
+
+- Timesheet generation.
+- Payroll preparation.
+- PDF documents.
+
+---
+
+# 4. Personal Assistant
+
+A Personal Assistant represents an employee providing support.
+
+Current fields:
+
+```
+id
+
+first_name
+surname
+
+date_of_birth
+
+national_insurance_number
+
+address
+postcode
+telephone
+email
+
+employment_status
+```
+
+Purpose:
+
+Stores employment information required for:
+
+- Timesheets.
+- Payroll administration.
+- Future leave calculations.
+
+---
+
+# 5. Personal Assistant Pay Rates
+
+Pay rates are stored separately from the Personal Assistant record.
+
+This allows historical rates to be preserved.
+
+Current fields:
+
+```
+id
+
+personal_assistant_id
+
+effective_date
+
+base_hourly_rate
+
+employer_top_up_rate
+
+created_at
+```
+
+Date storage format:
+
+```
+YYYY-MM-DD
+```
+
+Example:
+
+```
+2026-04-01
+```
+
+Display format:
+
+```
+DD/MM/YYYY
+```
+
+Example:
+
+```
+01/04/2026
+```
+
+Purpose:
+
+Allows the system to determine:
+
+- What rate applied on a particular date.
+- When a rate changed.
+- The employer-funded top-up amount.
+
+The payable hourly rate is:
+
+```
+base_hourly_rate + employer_top_up_rate
+```
+
+---
+
+# 6. Timesheet Entry
+
+A timesheet entry represents work completed by a Personal Assistant.
+
+Current fields:
+
+```
+id
+
+pa_name
+
+start_time
+end_time
+
+break_minutes
+
+worked_minutes
+
+hourly_rate
+
+amount
+
+notes
+```
+
+Current implementation stores:
+
+```
+pa_name
+```
+
+Future improvement:
+
+Replace this with:
+
+```
+personal_assistant_id
+```
+
+The transition will be gradual because imported Hours Keeper CSV files currently contain names rather than database IDs.
+
+The system should preserve historical imported information during this change.
+
+---
+
+# 7. Import Audit
+
+Import audit records track CSV imports.
+
+Fields:
+
+```
+id
+
+import_time
+
+original_filename
+
+archive_filename
+
+rows_processed
+
+rows_imported
+
+rows_skipped
+
+status
+
+error_message
+```
+
+Purpose:
+
+Provides traceability for imported Hours Keeper records.
+
+The system records:
+
+- What file was imported.
+- When it was imported.
+- How many records were processed.
+- Whether the import succeeded.
+
+---
+
+# 8. Future User Accounts
+
+Authentication should be separate from employment records.
+
+The system should eventually support optional user accounts.
+
+Possible roles:
+
+```
+Employer / Administrator
+
 Personal Assistant
 
-    |
-    +-- Employment history
-    |
-    +-- Contracted hours history
-    |
-    +-- Pay rate history
-    |
-    +-- Imported worked shifts
-    |
-    +-- Annual leave records
-    |
-    +-- Payroll adjustments
-
-    |
-    |
-Payroll preparation PDF
+Payroll User
 ```
+
+User accounts should store:
+
+```
+username
+
+password_hash
+
+role
+
+linked_person_id
+
+active_status
+```
+
+A Personal Assistant may exist without having login access.
 
 ---
 
-# 2. Employer
+# 9. Future Leave Records
 
-The system contains one employer record.
+Future versions may include:
 
-## Employer information
+## Annual Leave
 
-Fields:
-
-- Employer name.
-- Address.
-- Postcode.
-- Telephone.
-- Email.
-
-## Payroll provider information
-
-Fields:
-
-- Payroll provider name.
-- Payroll provider address.
-- Payroll provider telephone number.
-
-## Document settings
-
-Fields:
-
-- Employer signature.
-- Default PDF template.
-
-Future additions may include:
-
-- PDF naming rules.
-- Document storage preferences.
-- Email settings.
-
----
-
-# 3. Personal Assistant
-
-Each Personal Assistant has a personal record.
-
-## Personal details
-
-Fields:
-
-- First name.
-- Surname.
-- Date of birth.
-- National Insurance number.
-- Address.
-- Postcode.
-- Telephone.
-- Email.
-
-The National Insurance number may be displayed on payroll documents after the employee name to help identify employees with the same name.
-
-Example:
-
-```
-Employee's name: Cathy (NI: AB123456C)
-```
-
----
-
-# 4. Employment History
-
-Employment information must be historical because circumstances can change.
-
-Examples:
-
-- Change of contracted hours.
-- Change from fixed hours to variable hours.
-- New employment arrangements.
-
-Fields:
+Stores:
 
 - Personal Assistant.
-- Effective date.
-- Employment type.
-- Contracted weekly hours.
-- Change reason.
+- Start date.
+- End date.
+- Hours taken.
 
-Employment types:
-
-- Fixed hours.
-- Variable hours.
-
-Examples:
-
-```
-01/04/2026
-Fixed hours
-18 hours
-```
-
-```
-01/04/2026
-Variable hours
-Various
-```
+Annual leave records are separate from worked hours.
 
 ---
 
-# 5. Pay Rate History
+## Public Holidays
 
-Pay rates must be historical because rates can change.
+The system should support:
 
-Fields:
-
-- Personal Assistant.
-- Effective date.
-- Government/minimum rate.
-- Employer top-up.
-- Total hourly rate.
-- Reason for change.
-
-Example:
-
-```
-Effective date:
-01/04/2026
-
-Government rate:
-£12.21
-
-Employer top-up:
-£0.51
-
-Total paid:
-£12.72
-```
-
-The PDF displays the total applied hourly rate.
+- Public holiday dates.
+- Automatic detection during imports.
+- Correct allocation of hours.
 
 ---
 
-# 6. Worked Shift Records
+# 10. Future Payroll Periods
 
-Worked shifts represent actual hours worked.
+Payroll periods will represent the payment cycle.
 
-The initial source is the Hours Keeper CSV export.
+They may contain:
 
-A worked shift contains:
+- Period start date.
+- Period end date.
+- Submission date.
+- Payroll payment date.
 
-- Personal Assistant.
-- Date.
-- Start time.
-- End time.
-- Break duration.
-- Worked minutes.
-- Notes.
-- Import source.
-
-Hours Keeper records actual worked time only.
-
-It does not contain:
-
-- Annual leave.
-- Public holiday classification.
-- Sick leave.
-- Travel claims.
+Special periods may be required for Christmas payroll arrangements.
 
 ---
 
-# 7. Public Holiday Calendar
+# 11. Data Protection
 
-Public holidays are stored separately.
-
-Fields:
-
-- Date.
-- Name.
-- Country.
-
-During CSV import:
-
-The system checks the worked shift date against the public holiday calendar.
-
-If worked hours occur on a public holiday, they are automatically classified.
-
-Example:
-
-Imported shifts:
-
-```
-25/12/2026
-
-1.25 hours
-2 hours
-2.25 hours
-```
-
-System output:
-
-```
-Public Hols. Hours worked:
-
-5.5 (25/12/2026)
-```
-
-The system records the hours only.
-
-Payroll decides the payment treatment.
-
----
-
-# 8. Annual Leave Records
-
-Annual leave is entered manually.
-
-Annual leave does not come from Hours Keeper.
-
-A user action:
-
-```
-Enter Annual Leave
-```
-
-opens an entry form.
-
-Fields:
-
-- Personal Assistant.
-- Date commencing.
-- Date ending.
-- Hours.
-
-The dates are stored as a record of what happened.
-
-They are used to allocate annual leave hours into the correct payroll period.
-
----
-
-# 9. Optional Payroll Adjustments
-
-The Payroll PDF contains additional columns that may not always be used.
-
-Supported adjustments:
-
-## Sick Leave / SSP
-
-Status:
-
-Optional.
-
-The column exists because it is part of the Payroll department template.
-
-No automatic SSP calculation is required initially.
-
-## Travel
-
-Fields:
-
-- Miles claimed.
-- Rate per mile.
-
-Example:
-
-```
-Miles claimed @ £0.40/mile
-```
-
----
-
-# 10. Payroll Calendar
-
-The system stores payroll periods.
-
-Fields:
-
-- Payroll year.
-- Payroll period number.
-- Week commencing date.
-- Timesheet submission deadline.
-- PA pay date.
-- Notes.
-
-This supports:
-
-- Four-week payroll cycles.
-- Christmas early submission arrangements.
-- Future payroll changes.
-
----
-
-# 11. Payroll Notices
-
-Temporary payroll instructions are stored separately.
-
-Examples:
-
-- Payroll office closures.
-- Christmas submission deadlines.
-- Special arrangements.
-
-These should not be hard-coded into the application.
-
----
-
-# 12. Payroll Preparation PDF Layout
-
-The PDF follows the Payroll department's existing format.
-
-## Header
-
-Example:
-
-```
-Employer's name: Mark
-
-Employee's name: Cathy (NI: AB123456C)
-
-Contracted weekly hours of work: 18 hours
-```
-
-or:
-
-```
-Employer's name: Mark
-
-Employee's name: Andy Pandy (NI: AB123456C)
-
-Contracted weekly hours of work: Various
-```
-
----
-
-## Main table columns
-
-Column 1:
-
-```
-W/C date
-```
-
-Column 2:
-
-```
-Hours worked
-Pay Rate
-```
-
-Column 3:
-
-```
-Annual leave hours
-```
-
-Column 4:
-
-```
-Sick leave
-SSP
-```
-
-Column 5:
-
-```
-Public Hols. Hours worked
-```
-
-Column 6:
-
-```
-Travel
-
-Miles claimed @ £0.40/mile
-```
-
----
-
-# 13. Design Principles
+The application handles sensitive personal information.
 
 The system should:
 
-- Preserve historical information.
-- Avoid changing old payroll records when settings change.
-- Keep imported Hours Keeper data separate from payroll adjustments.
-- Support the current Payroll department workflow.
-- Allow future replacement of Hours Keeper functionality.
-- Avoid hard-coded payroll rules where configuration is more appropriate.
+- Store only required information.
+- Keep data local where possible.
+- Avoid unnecessary personal information in filenames.
+- Maintain audit records.
+- Protect access through future user authentication.
 
-The database structure will be based on this model.
+---
 
+# 12. Development Principle
+
+The data model should evolve carefully.
+
+Changes should:
+
+- Preserve existing data.
+- Use database migrations.
+- Maintain historical accuracy.
+- Be documented before major implementation changes.
+
+The database should represent the real-world Direct Payment employment process.
