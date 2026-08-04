@@ -78,6 +78,15 @@ fn apply_migrations(connection: &Connection) -> Result<()> {
         migrate_to_version_2(connection)?;
     }
 
+    let current_version: i64 =
+        connection.query_row("SELECT version FROM schema_version LIMIT 1", [], |row| {
+            row.get(0)
+        })?;
+
+    if current_version < 3 {
+        migrate_to_version_3(connection)?;
+    }
+
     Ok(())
 }
 
@@ -120,6 +129,26 @@ fn migrate_to_version_2(connection: &Connection) -> Result<()> {
     )?;
 
     connection.execute("UPDATE schema_version SET version = 2", [])?;
+
+    Ok(())
+}
+
+fn migrate_to_version_3(connection: &Connection) -> Result<()> {
+    connection.execute(
+        "
+        CREATE TABLE IF NOT EXISTS personal_assistant_pay_rates (
+            id INTEGER PRIMARY KEY,
+            personal_assistant_id INTEGER NOT NULL,
+            effective_date TEXT NOT NULL,
+            base_hourly_rate REAL NOT NULL,
+            employer_top_up_rate REAL NOT NULL,
+            created_at TEXT NOT NULL
+        )
+        ",
+        [],
+    )?;
+
+    connection.execute("UPDATE schema_version SET version = 3", [])?;
 
     Ok(())
 }
