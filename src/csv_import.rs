@@ -49,6 +49,7 @@ pub fn import_csv(path: &std::path::Path) -> Result<Vec<TimesheetEntry>, Box<dyn
         let entry = TimesheetEntry {
             id: 0,
             pa_name: record[0].trim().to_string(),
+            personal_assistant_id: None,
             start_time: record[1].trim().to_string(),
             end_time: record[2].trim().to_string(),
             break_minutes: parse_duration(&record[3])?,

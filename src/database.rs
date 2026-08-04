@@ -69,22 +69,23 @@ pub fn create_schema(connection: &Connection) -> Result<()> {
 }
 
 fn apply_migrations(connection: &Connection) -> Result<()> {
-    let current_version: i64 =
+    let mut current_version: i64 =
         connection.query_row("SELECT version FROM schema_version LIMIT 1", [], |row| {
             row.get(0)
         })?;
 
     if current_version < 2 {
         migrate_to_version_2(connection)?;
+        current_version = 2;
     }
-
-    let current_version: i64 =
-        connection.query_row("SELECT version FROM schema_version LIMIT 1", [], |row| {
-            row.get(0)
-        })?;
 
     if current_version < 3 {
         migrate_to_version_3(connection)?;
+        current_version = 3;
+    }
+
+    if current_version < 4 {
+        migrate_to_version_4(connection)?;
     }
 
     Ok(())
@@ -149,6 +150,20 @@ fn migrate_to_version_3(connection: &Connection) -> Result<()> {
     )?;
 
     connection.execute("UPDATE schema_version SET version = 3", [])?;
+
+    Ok(())
+}
+
+fn migrate_to_version_4(connection: &Connection) -> Result<()> {
+    connection.execute(
+        "
+        ALTER TABLE timesheets
+        ADD COLUMN personal_assistant_id INTEGER
+        ",
+        [],
+    )?;
+
+    connection.execute("UPDATE schema_version SET version = 4", [])?;
 
     Ok(())
 }

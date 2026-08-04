@@ -15,6 +15,7 @@ impl TimesheetRepository {
         self.connection.execute(
             "INSERT INTO timesheets (
                 pa_name,
+                personal_assistant_id,
                 start_time,
                 end_time,
                 break_minutes,
@@ -23,9 +24,10 @@ impl TimesheetRepository {
                 amount,
                 notes
             )
-            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
             params![
                 &entry.pa_name,
+                &entry.personal_assistant_id,
                 &entry.start_time,
                 &entry.end_time,
                 &entry.break_minutes,
@@ -44,6 +46,7 @@ impl TimesheetRepository {
             "SELECT
                 id,
                 pa_name,
+                personal_assistant_id,
                 start_time,
                 end_time,
                 break_minutes,
@@ -58,13 +61,14 @@ impl TimesheetRepository {
             Ok(TimesheetEntry {
                 id: row.get(0)?,
                 pa_name: row.get(1)?,
-                start_time: row.get(2)?,
-                end_time: row.get(3)?,
-                break_minutes: row.get(4)?,
-                worked_minutes: row.get(5)?,
-                hourly_rate: row.get(6)?,
-                amount: row.get(7)?,
-                notes: row.get(8)?,
+                personal_assistant_id: row.get(2)?,
+                start_time: row.get(3)?,
+                end_time: row.get(4)?,
+                break_minutes: row.get(5)?,
+                worked_minutes: row.get(6)?,
+                hourly_rate: row.get(7)?,
+                amount: row.get(8)?,
+                notes: row.get(9)?,
             })
         })?;
 
@@ -87,7 +91,7 @@ impl TimesheetRepository {
         )?;
 
         let count: i64 = statement.query_row(
-            params![&entry.pa_name, &entry.start_time, &entry.end_time,],
+            params![&entry.pa_name, &entry.start_time, &entry.end_time],
             |row| row.get(0),
         )?;
 
@@ -154,7 +158,6 @@ impl TimesheetRepository {
 mod tests {
     use super::*;
     use crate::database::create_schema;
-    use crate::models::TimesheetEntry;
 
     fn create_test_repository() -> TimesheetRepository {
         let connection = Connection::open_in_memory().unwrap();
@@ -168,6 +171,7 @@ mod tests {
         TimesheetEntry {
             id: 0,
             pa_name: "Test PA".to_string(),
+            personal_assistant_id: None,
             start_time: "09:00".to_string(),
             end_time: "17:00".to_string(),
             break_minutes: 30,
@@ -223,3 +227,4 @@ mod tests {
         assert!(repository.has_successful_import("test.csv").unwrap());
     }
 }
+
