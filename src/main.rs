@@ -12,6 +12,7 @@ mod gui;
 mod import_service;
 mod models;
 mod paths;
+mod pay_rate_repository;
 mod personal_assistant_repository;
 mod repository;
 
