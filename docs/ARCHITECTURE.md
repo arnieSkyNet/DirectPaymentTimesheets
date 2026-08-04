@@ -1,10 +1,10 @@
-# DirectPaymentTimesheets Architecture
+# Direct Payment Timesheets Processor Architecture
 
 ## Purpose
 
-This document describes the technical architecture and design decisions of DirectPaymentTimesheets.
+This document describes the technical architecture and design decisions of Direct Payment Timesheets Processor.
 
-The application is designed as a cross-platform Rust application for managing UK Direct Payment timesheets and payroll administration.
+The application is designed as a cross-platform Rust application for managing UK Direct Payment administration, Personal Assistant records, worked hours, payroll preparation and related documentation.
 
 ---
 
@@ -19,6 +19,8 @@ The application should be:
 - Suitable for future organisational use.
 - Auditable.
 - Privacy conscious.
+- Configurable.
+- Designed to preserve historical information.
 
 ---
 
@@ -52,21 +54,25 @@ The application stores user data outside the source repository.
 
 Default location:
 
-    ~/.directpaymenttimesheets/
+```
+~/.directpaymenttimesheets/
+```
 
 Example:
 
-    ~/.directpaymenttimesheets/
+```
+~/.directpaymenttimesheets/
 
-    config.toml
-    database.sqlite
+config.toml
+database.sqlite
 
-    archive/
-    backups/
-    cache/
-    import/
-    logs/
-    templates/
+archive/
+backups/
+cache/
+import/
+logs/
+templates/
+```
 
 ---
 
@@ -74,14 +80,18 @@ Example:
 
 The application must not contain hard-coded user paths.
 
-Configuration controls locations such as:
+Configuration controls locations and settings such as:
 
 - CSV import folders.
 - Archive folders.
-- Future generated documents.
-- Future email settings.
+- Generated document folders.
+- Email settings.
+- Application preferences.
+- Payroll settings.
 
-The importer does not depend on a fixed location. Users can configure their own import folder.
+The importer does not depend on a fixed location.
+
+Users can configure their own folders.
 
 ---
 
@@ -91,30 +101,70 @@ The application is separated into layers.
 
 Current structure:
 
-    main.rs
-        |
-        v
+```
+main.rs
 
-    application.rs
-        |
-        +-- Application context
-        +-- Database initialisation
-        +-- Repository creation
-        +-- Import service startup
+    |
 
-    ImportService
-        |
-        +-- Discover CSV files
-        +-- Validate CSV data
-        +-- Import records
-        +-- Archive files
-        +-- Create audit records
+    v
 
-    Repository
-        |
-        +-- Timesheet storage
-        +-- Duplicate checking
-        +-- Import audit storage
+Application Layer
+
+    |
+
+    +-- Application context
+    +-- Configuration loading
+    +-- Environment handling
+    +-- Database initialisation
+    +-- Repository creation
+    +-- Service startup
+
+
+    |
+
+    v
+
+Service Layer
+
+    |
+
+    +-- Import Service
+
+
+    |
+
+    v
+
+Repository Layer
+
+    |
+
+    +-- Database operations
+    +-- Timesheet storage
+    +-- Duplicate checking
+    +-- Import audit storage
+```
+
+---
+
+# Domain Layer
+
+The application separates real-world business concepts from technical implementation.
+
+The domain layer represents:
+
+- Employer records.
+- Personal Assistant records.
+- Employment history.
+- Contracted hours history.
+- Pay rate history.
+- Worked shifts.
+- Annual leave records.
+- Public holiday calendar.
+- Payroll periods.
+- Payroll preparation.
+
+Technical services operate on these domain concepts.
 
 ---
 
@@ -128,6 +178,7 @@ The purpose is to provide:
 - Paths.
 - Environment information.
 - Application settings.
+- Shared application resources.
 
 Individual modules should request resources from the application context rather than creating their own paths.
 
@@ -137,49 +188,51 @@ Individual modules should request resources from the application context rather 
 
 The current import workflow is:
 
-    Configured Import Folder
+```
+Configured Import Folder
 
-            |
+        |
 
-            v
+        v
 
-    Find CSV Files
+Find CSV Files
 
-            |
+        |
 
-            v
+        v
 
-    Validate CSV Structure
+Validate CSV Structure
 
-            |
+        |
 
-            v
+        v
 
-    Import Timesheet Records
+Import Worked Shift Records
 
-            |
+        |
 
-            v
+        v
 
-    Check For Duplicates
+Check For Duplicates
 
-            |
+        |
 
-            v
+        v
 
-    Store In SQLite Database
+Store In SQLite Database
 
-            |
+        |
 
-            v
+        v
 
-    Archive Original CSV
+Archive Original CSV
 
-            |
+        |
 
-            v
+        v
 
-    Write Import Audit Record
+Write Import Audit Record
+```
 
 Each import records:
 
@@ -195,26 +248,53 @@ Each import records:
 
 # Service Architecture
 
-The application is moving towards service-based architecture.
+The application is moving towards separate services.
 
 Current service:
 
-    Import Service
-        |
-        +-- Discover files
-        +-- Validate data
-        +-- Import records
-        +-- Archive files
-        +-- Create audit records
+```
+Import Service
+
+    |
+
+    +-- Discover files
+    +-- Validate data
+    +-- Import records
+    +-- Archive files
+    +-- Create audit records
+```
 
 Future services:
 
-    Payroll Service
-        |
-        +-- Calculate hours
-        +-- Apply rates
-        +-- Handle leave
-        +-- Generate payroll records
+```
+Payroll Service
+
+    |
+
+    +-- Group work into payroll periods
+    +-- Apply pay rate history
+    +-- Apply employer top-ups
+    +-- Include annual leave
+    +-- Identify public holiday hours
+    +-- Generate payroll records
+
+
+Document Service
+
+    |
+
+    +-- Generate PDF timesheets
+    +-- Manage templates
+    +-- Prepare payroll documents
+
+
+Notification Service
+
+    |
+
+    +-- Prepare payroll emails
+    +-- Record submission information
+```
 
 ---
 
@@ -224,18 +304,25 @@ The project uses automated Rust tests.
 
 Current coverage includes:
 
-    CSV Import
-        - Duration parsing
-        - Money parsing
-        - Invalid input handling
+```
+CSV Import
 
-    Archive
-        - Timestamped archive filenames
+    - Duration parsing
+    - Money parsing
+    - Invalid input handling
 
-    Repository
-        - Database inserts
-        - Duplicate detection
-        - Import audit checking
+
+Archive
+
+    - Timestamped archive filenames
+
+
+Repository
+
+    - Database inserts
+    - Duplicate detection
+    - Import audit checking
+```
 
 Tests use isolated in-memory databases where appropriate.
 
@@ -249,11 +336,17 @@ Sensitive identifiers should not be placed unnecessarily into filenames.
 
 Preferred:
 
-    timesheet_2026-08-01.csv
+```
+timesheet_2026-08-01.csv
+```
 
 Avoid:
 
-    employee_name_NI_NUMBER.csv
+```
+employee_name_NI_NUMBER.csv
+```
+
+Personal information should only be stored where required for the Direct Payment payroll process.
 
 ---
 
@@ -268,4 +361,55 @@ The Git repository contains:
 User data remains outside the repository.
 
 This prevents accidental commits of private payroll information.
+
+---
+
+# Future Architecture Direction
+
+The long-term architecture will support:
+
+```
+Direct Payment Timesheets Processor
+
+        |
+
+        v
+
+Domain Management
+
+        |
+
+        +-- Employer
+        +-- Personal Assistants
+        +-- Employment Records
+        +-- Pay Rates
+        +-- Leave Records
+
+
+        |
+
+        v
+
+Payroll Engine
+
+        |
+
+        v
+
+Document Generation
+
+        |
+
+        v
+
+Payroll Communication
+```
+
+The architecture should continue to evolve while maintaining:
+
+- Clear separation of responsibilities.
+- Historical accuracy.
+- Auditability.
+- Privacy.
+- Simple maintenance.
 
