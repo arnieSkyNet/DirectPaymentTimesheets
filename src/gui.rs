@@ -136,10 +136,36 @@ impl eframe::App for DirectPaymentApp {
 
                 ui.separator();
 
+                ui.heading("System Status");
+
+                ui.label(
+                    "Database: Connected"
+                );
+
+                ui.label(format!(
+                    "Data Directory: {:?}",
+                    self.application.context.environment.data_dir
+                ));
+
+                let import_folder =
+                    crate::paths::expand_path(
+                        &self.application.context.config.folders.csv_import
+                    );
+
+                ui.label(format!(
+                    "Import Folder: {:?}",
+                    import_folder
+                ));
+
+                ui.add_space(20.0);
+
+                ui.separator();
+
                 ui.label(format!(
                     "Status: {}",
                     self.status_message
                 ));
+
             });
     }
 }
