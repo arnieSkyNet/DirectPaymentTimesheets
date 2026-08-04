@@ -63,5 +63,63 @@ pub fn create_schema(connection: &Connection) -> Result<()> {
         [],
     )?;
 
+    apply_migrations(connection)?;
+
+    Ok(())
+}
+
+fn apply_migrations(connection: &Connection) -> Result<()> {
+    let current_version: i64 =
+        connection.query_row("SELECT version FROM schema_version LIMIT 1", [], |row| {
+            row.get(0)
+        })?;
+
+    if current_version < 2 {
+        migrate_to_version_2(connection)?;
+    }
+
+    Ok(())
+}
+
+fn migrate_to_version_2(connection: &Connection) -> Result<()> {
+    connection.execute(
+        "
+        CREATE TABLE IF NOT EXISTS employers (
+            id INTEGER PRIMARY KEY,
+            name TEXT NOT NULL,
+            address TEXT,
+            postcode TEXT,
+            telephone TEXT,
+            email TEXT,
+            payroll_provider TEXT,
+            payroll_provider_address TEXT,
+            payroll_provider_phone TEXT,
+            employer_signature TEXT,
+            default_pdf_template TEXT
+        )
+        ",
+        [],
+    )?;
+
+    connection.execute(
+        "
+        CREATE TABLE IF NOT EXISTS personal_assistants (
+            id INTEGER PRIMARY KEY,
+            first_name TEXT NOT NULL,
+            surname TEXT NOT NULL,
+            date_of_birth TEXT,
+            national_insurance_number TEXT,
+            address TEXT,
+            postcode TEXT,
+            telephone TEXT,
+            email TEXT,
+            employment_status TEXT
+        )
+        ",
+        [],
+    )?;
+
+    connection.execute("UPDATE schema_version SET version = 2", [])?;
+
     Ok(())
 }
