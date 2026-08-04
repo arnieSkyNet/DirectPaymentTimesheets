@@ -5,6 +5,30 @@ use rusqlite::{Connection, Result};
 pub fn initialise_database(database_path: &Path) -> Result<()> {
     let connection = Connection::open(database_path)?;
 
+    create_schema(&connection)?;
+
+    println!("Database initialised.");
+
+    Ok(())
+}
+
+pub fn create_schema(connection: &Connection) -> Result<()> {
+    connection.execute(
+        "
+        CREATE TABLE IF NOT EXISTS schema_version (
+            version INTEGER NOT NULL
+        )
+        ",
+        [],
+    )?;
+
+    let version_count: i64 =
+        connection.query_row("SELECT COUNT(*) FROM schema_version", [], |row| row.get(0))?;
+
+    if version_count == 0 {
+        connection.execute("INSERT INTO schema_version (version) VALUES (1)", [])?;
+    }
+
     connection.execute(
         "
         CREATE TABLE IF NOT EXISTS timesheets (
@@ -38,20 +62,6 @@ pub fn initialise_database(database_path: &Path) -> Result<()> {
         ",
         [],
     )?;
-
-    let column_exists: bool = connection
-        .prepare("PRAGMA table_info(import_audit)")?
-        .query_map([], |row| {
-            let name: String = row.get(1)?;
-            Ok(name == "error_message")
-        })?
-        .any(|result| result.unwrap_or(false));
-
-    if !column_exists {
-        connection.execute("ALTER TABLE import_audit ADD COLUMN error_message TEXT", [])?;
-    }
-
-    println!("Database initialised.");
 
     Ok(())
 }

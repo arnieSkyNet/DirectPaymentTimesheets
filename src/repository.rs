@@ -133,6 +133,7 @@ impl TimesheetRepository {
 
         Ok(())
     }
+
     pub fn has_successful_import(&self, filename: &str) -> Result<bool> {
         let mut statement = self.connection.prepare(
             "
@@ -152,53 +153,15 @@ impl TimesheetRepository {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::database::initialise_database;
+    use crate::database::create_schema;
     use crate::models::TimesheetEntry;
 
     fn create_test_repository() -> TimesheetRepository {
         let connection = Connection::open_in_memory().unwrap();
 
-        initialise_database_from_connection(&connection).unwrap();
+        create_schema(&connection).unwrap();
 
         TimesheetRepository::new(connection)
-    }
-
-    fn initialise_database_from_connection(connection: &Connection) -> Result<()> {
-        connection.execute(
-            "
-            CREATE TABLE timesheets (
-                id INTEGER PRIMARY KEY,
-                pa_name TEXT NOT NULL,
-                start_time TEXT NOT NULL,
-                end_time TEXT NOT NULL,
-                break_minutes INTEGER NOT NULL,
-                worked_minutes INTEGER NOT NULL,
-                hourly_rate REAL NOT NULL,
-                amount REAL NOT NULL,
-                notes TEXT
-            )
-            ",
-            [],
-        )?;
-
-        connection.execute(
-            "
-            CREATE TABLE import_audit (
-                id INTEGER PRIMARY KEY,
-                import_time TEXT NOT NULL,
-                original_filename TEXT NOT NULL,
-                archive_filename TEXT NOT NULL,
-                rows_processed INTEGER NOT NULL,
-                rows_imported INTEGER NOT NULL,
-                rows_skipped INTEGER NOT NULL,
-                status TEXT NOT NULL,
-                error_message TEXT
-            )
-            ",
-            [],
-        )?;
-
-        Ok(())
     }
 
     fn test_entry() -> TimesheetEntry {
