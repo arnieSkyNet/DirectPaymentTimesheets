@@ -3,19 +3,13 @@ use std::error::Error;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-pub fn archive_csv(
-    source: &Path,
-    archive_dir: &Path,
-) -> Result<PathBuf, Box<dyn Error>> {
-
+pub fn archive_csv(source: &Path, archive_dir: &Path) -> Result<PathBuf, Box<dyn Error>> {
     let now = Local::now();
 
     let year = now.format("%Y").to_string();
     let month = now.format("%m").to_string();
 
-    let archive_path = archive_dir
-        .join(year)
-        .join(month);
+    let archive_path = archive_dir.join(year).join(month);
 
     fs::create_dir_all(&archive_path)?;
 
@@ -26,8 +20,7 @@ pub fn archive_csv(
 
     let timestamp = now.format("%Y-%m-%d_%H%M%S");
 
-    let archive_filename =
-        format!("{}_{}", timestamp, filename);
+    let archive_filename = format!("{}_{}", timestamp, filename);
 
     let destination = archive_path.join(archive_filename);
 
@@ -49,8 +42,8 @@ mod tests {
             .unwrap()
             .as_secs();
 
-        let test_root = std::env::temp_dir()
-            .join(format!("direct_payment_archive_test_{}", unique));
+        let test_root =
+            std::env::temp_dir().join(format!("direct_payment_archive_test_{}", unique));
 
         let source_dir = test_root.join("source");
         let archive_dir = test_root.join("archive");
@@ -61,13 +54,9 @@ mod tests {
 
         File::create(&source_file).unwrap();
 
-        let result = archive_csv(&source_file, &archive_dir)
-            .unwrap();
+        let result = archive_csv(&source_file, &archive_dir).unwrap();
 
-        let filename = result
-            .file_name()
-            .unwrap()
-            .to_string_lossy();
+        let filename = result.file_name().unwrap().to_string_lossy();
 
         assert!(filename.contains("sample_timesheet.csv"));
         assert!(filename.len() > "sample_timesheet.csv".len());
@@ -77,4 +66,3 @@ mod tests {
         fs::remove_dir_all(test_root).unwrap();
     }
 }
-

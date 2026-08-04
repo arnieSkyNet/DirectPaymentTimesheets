@@ -19,11 +19,10 @@ impl AppEnvironment {
         let data_dir = match std::env::var("DIRECTPAYMENTTIMESHEETS_HOME") {
             Ok(path) => PathBuf::from(path),
             Err(_) => {
-                let home = std::env::var("HOME")
-                    .map_err(|_| AppError::Config("HOME not set".into()))?;
+                let home =
+                    std::env::var("HOME").map_err(|_| AppError::Config("HOME not set".into()))?;
 
-                PathBuf::from(home)
-                    .join(".directpaymenttimesheets")
+                PathBuf::from(home).join(".directpaymenttimesheets")
             }
         };
 
@@ -44,8 +43,7 @@ impl AppEnvironment {
             &templates_dir,
             &cache_dir,
         ] {
-            fs::create_dir_all(directory)
-                .map_err(|e| AppError::Config(e.to_string()))?;
+            fs::create_dir_all(directory).map_err(|e| AppError::Config(e.to_string()))?;
         }
 
         Ok(Self {

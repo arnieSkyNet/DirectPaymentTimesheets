@@ -83,15 +83,11 @@ impl TimesheetRepository {
              FROM timesheets
              WHERE pa_name = ?1
              AND start_time = ?2
-             AND end_time = ?3"
+             AND end_time = ?3",
         )?;
 
         let count: i64 = statement.query_row(
-            params![
-                &entry.pa_name,
-                &entry.start_time,
-                &entry.end_time,
-            ],
+            params![&entry.pa_name, &entry.start_time, &entry.end_time,],
             |row| row.get(0),
         )?;
 
@@ -137,27 +133,20 @@ impl TimesheetRepository {
 
         Ok(())
     }
-    pub fn has_successful_import(
-        &self,
-        filename: &str,
-    ) -> Result<bool> {
+    pub fn has_successful_import(&self, filename: &str) -> Result<bool> {
         let mut statement = self.connection.prepare(
             "
             SELECT COUNT(*)
             FROM import_audit
             WHERE original_filename = ?1
             AND status = 'SUCCESS'
-            "
+            ",
         )?;
 
-        let count: i64 = statement.query_row(
-            params![filename],
-            |row| row.get(0),
-        )?;
+        let count: i64 = statement.query_row(params![filename], |row| row.get(0))?;
 
         Ok(count > 0)
     }
-
 }
 
 #[cfg(test)]
@@ -167,18 +156,14 @@ mod tests {
     use crate::models::TimesheetEntry;
 
     fn create_test_repository() -> TimesheetRepository {
-        let connection = Connection::open_in_memory()
-            .unwrap();
+        let connection = Connection::open_in_memory().unwrap();
 
-        initialise_database_from_connection(&connection)
-            .unwrap();
+        initialise_database_from_connection(&connection).unwrap();
 
         TimesheetRepository::new(connection)
     }
 
-    fn initialise_database_from_connection(
-        connection: &Connection,
-    ) -> Result<()> {
+    fn initialise_database_from_connection(connection: &Connection) -> Result<()> {
         connection.execute(
             "
             CREATE TABLE timesheets (
@@ -259,22 +244,19 @@ mod tests {
     fn successful_import_is_detected() {
         let repository = create_test_repository();
 
-        repository.add_import_audit(
-            "2026-08-02 12:00:00",
-            "test.csv",
-            "archive/test.csv",
-            4,
-            4,
-            0,
-            "SUCCESS",
-            None,
-        )
-        .unwrap();
+        repository
+            .add_import_audit(
+                "2026-08-02 12:00:00",
+                "test.csv",
+                "archive/test.csv",
+                4,
+                4,
+                0,
+                "SUCCESS",
+                None,
+            )
+            .unwrap();
 
-        assert!(
-            repository.has_successful_import("test.csv")
-                .unwrap()
-        );
+        assert!(repository.has_successful_import("test.csv").unwrap());
     }
 }
-

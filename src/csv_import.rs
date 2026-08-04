@@ -25,9 +25,11 @@ pub fn import_csv(path: &std::path::Path) -> Result<Vec<TimesheetEntry>, Box<dyn
     let headers = reader.headers()?;
 
     if headers.len() != 8 {
-        return Err(
-            format!("Invalid CSV format: expected 8 columns, found {}", headers.len()).into()
-        );
+        return Err(format!(
+            "Invalid CSV format: expected 8 columns, found {}",
+            headers.len()
+        )
+        .into());
     }
 
     let mut entries = Vec::new();
@@ -36,14 +38,12 @@ pub fn import_csv(path: &std::path::Path) -> Result<Vec<TimesheetEntry>, Box<dyn
         let record = result?;
 
         if record.len() != 8 {
-            return Err(
-                format!(
-                    "Invalid CSV row {}: expected 8 columns, found {}",
-                    line_number + 2,
-                    record.len()
-                )
-                .into(),
-            );
+            return Err(format!(
+                "Invalid CSV row {}: expected 8 columns, found {}",
+                line_number + 2,
+                record.len()
+            )
+            .into());
         }
 
         let entry = TimesheetEntry {
@@ -63,9 +63,7 @@ pub fn import_csv(path: &std::path::Path) -> Result<Vec<TimesheetEntry>, Box<dyn
         };
 
         if entry.pa_name.is_empty() {
-            return Err(
-                format!("Invalid CSV row {}: missing PA name", line_number + 2).into()
-            );
+            return Err(format!("Invalid CSV row {}: missing PA name", line_number + 2).into());
         }
 
         entries.push(entry);
@@ -75,18 +73,12 @@ pub fn import_csv(path: &std::path::Path) -> Result<Vec<TimesheetEntry>, Box<dyn
 }
 
 fn parse_duration(value: &str) -> Result<i64, Box<dyn Error>> {
-    let cleaned = value
-        .replace('h', "")
-        .replace('m', "");
+    let cleaned = value.replace('h', "").replace('m', "");
 
-    let parts: Vec<&str> = cleaned
-        .split_whitespace()
-        .collect();
+    let parts: Vec<&str> = cleaned.split_whitespace().collect();
 
     if parts.len() != 2 {
-        return Err(
-            format!("Invalid duration value: {}", value).into()
-        );
+        return Err(format!("Invalid duration value: {}", value).into());
     }
 
     let hours: i64 = parts[0]
@@ -149,4 +141,3 @@ mod tests {
         assert!(parse_money("£abc").is_err());
     }
 }
-

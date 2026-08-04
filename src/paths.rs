@@ -11,4 +11,3 @@ pub fn expand_path(path: &PathBuf) -> PathBuf {
 
     path.clone()
 }
-

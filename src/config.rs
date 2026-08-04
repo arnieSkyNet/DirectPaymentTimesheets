@@ -18,8 +18,7 @@ pub struct FolderConfig {
 
 impl Default for AppConfig {
     fn default() -> Self {
-        let home = dirs::home_dir()
-            .expect("Could not determine home directory");
+        let home = dirs::home_dir().expect("Could not determine home directory");
 
         Self {
             folders: FolderConfig {
@@ -34,19 +33,16 @@ impl Default for AppConfig {
 impl AppConfig {
     pub fn load(path: &Path) -> Result<Self, AppError> {
         if path.exists() {
-            let contents = fs::read_to_string(path)
-                .map_err(|e| AppError::Config(e.to_string()))?;
+            let contents = fs::read_to_string(path).map_err(|e| AppError::Config(e.to_string()))?;
 
-            toml::from_str(&contents)
-                .map_err(|e| AppError::Config(e.to_string()))
+            toml::from_str(&contents).map_err(|e| AppError::Config(e.to_string()))
         } else {
             let config = Self::default();
 
-            let contents = toml::to_string_pretty(&config)
-                .map_err(|e| AppError::Config(e.to_string()))?;
+            let contents =
+                toml::to_string_pretty(&config).map_err(|e| AppError::Config(e.to_string()))?;
 
-            fs::write(path, contents)
-                .map_err(|e| AppError::Config(e.to_string()))?;
+            fs::write(path, contents).map_err(|e| AppError::Config(e.to_string()))?;
 
             Ok(config)
         }

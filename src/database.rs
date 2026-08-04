@@ -48,14 +48,10 @@ pub fn initialise_database(database_path: &Path) -> Result<()> {
         .any(|result| result.unwrap_or(false));
 
     if !column_exists {
-        connection.execute(
-            "ALTER TABLE import_audit ADD COLUMN error_message TEXT",
-            [],
-        )?;
+        connection.execute("ALTER TABLE import_audit ADD COLUMN error_message TEXT", [])?;
     }
 
     println!("Database initialised.");
 
     Ok(())
 }
-

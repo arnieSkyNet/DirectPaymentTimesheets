@@ -10,4 +10,3 @@ pub struct TimesheetEntry {
     pub amount: f64,
     pub notes: Option<String>,
 }
-

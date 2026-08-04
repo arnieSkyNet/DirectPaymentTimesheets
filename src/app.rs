@@ -11,12 +11,9 @@ pub struct Application {
 
 impl Application {
     pub fn initialise() -> Result<Self, Box<dyn std::error::Error>> {
-
         let context = AppContext::initialise()?;
 
-        let connection = Connection::open(
-            &context.environment.database_path
-        )?;
+        let connection = Connection::open(&context.environment.database_path)?;
 
         let repository = TimesheetRepository::new(connection);
 
@@ -26,15 +23,8 @@ impl Application {
         })
     }
 
-
-    pub fn create_import_service(
-        &self,
-    ) -> ImportService<'_> {
-
-        let import_dir =
-            crate::paths::expand_path(
-                &self.context.config.folders.csv_import
-            );
+    pub fn create_import_service(&self) -> ImportService<'_> {
+        let import_dir = crate::paths::expand_path(&self.context.config.folders.csv_import);
 
         ImportService::new(
             &self.repository,
@@ -43,11 +33,17 @@ impl Application {
         )
     }
 
+    pub fn get_timesheets(
+        &self,
+    ) -> Result<Vec<crate::models::TimesheetEntry>, Box<dyn std::error::Error>> {
+        let timesheets = self.repository.get_all()?;
+
+        Ok(timesheets)
+    }
 
     pub fn import_csv(
         &self,
     ) -> Result<crate::import_service::ImportSummary, Box<dyn std::error::Error>> {
-
         let service = self.create_import_service();
 
         let summary = service.run()?;

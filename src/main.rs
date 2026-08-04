@@ -1,17 +1,17 @@
-mod config;
-mod models;
-mod error;
-mod database;
-mod repository;
-mod csv_import;
-mod environment;
-mod context;
-mod paths;
-mod archive;
-mod import_service;
-mod application;
-mod gui;
 mod app;
+mod application;
+mod archive;
+mod config;
+mod context;
+mod csv_import;
+mod database;
+mod environment;
+mod error;
+mod gui;
+mod import_service;
+mod models;
+mod paths;
+mod repository;
 
 fn main() {
     if let Err(error) = application::run() {

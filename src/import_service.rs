@@ -69,10 +69,7 @@ impl<'a> ImportService<'a> {
             if self.repository.has_successful_import(&filename)? {
                 summary.files_already_imported += 1;
 
-                println!(
-                    "Skipping already imported file: {}",
-                    filename
-                );
+                println!("Skipping already imported file: {}", filename);
 
                 continue;
             }
@@ -90,16 +87,10 @@ impl<'a> ImportService<'a> {
                 Err(error) => {
                     summary.files_failed += 1;
 
-                    println!(
-                        "Failed importing {:?}: {}",
-                        path,
-                        error
-                    );
+                    println!("Failed importing {:?}: {}", path, error);
 
                     self.repository.add_import_audit(
-                        &Local::now()
-                            .format("%Y-%m-%d %H:%M:%S")
-                            .to_string(),
+                        &Local::now().format("%Y-%m-%d %H:%M:%S").to_string(),
                         filename.as_ref(),
                         "",
                         0,
@@ -115,12 +106,8 @@ impl<'a> ImportService<'a> {
         Ok(summary)
     }
 
-    fn process_file(
-        &self,
-        path: &Path,
-    ) -> Result<(i64, i64, i64), Box<dyn Error>> {
-        let entries: Vec<TimesheetEntry> =
-            csv_import::import_csv(path)?;
+    fn process_file(&self, path: &Path) -> Result<(i64, i64, i64), Box<dyn Error>> {
+        let entries: Vec<TimesheetEntry> = csv_import::import_csv(path)?;
 
         let rows_processed = entries.len() as i64;
         let mut rows_imported = 0;
@@ -135,13 +122,10 @@ impl<'a> ImportService<'a> {
             }
         }
 
-        let archive_file =
-            archive::archive_csv(path, self.archive_dir)?;
+        let archive_file = archive::archive_csv(path, self.archive_dir)?;
 
         self.repository.add_import_audit(
-            &Local::now()
-                .format("%Y-%m-%d %H:%M:%S")
-                .to_string(),
+            &Local::now().format("%Y-%m-%d %H:%M:%S").to_string(),
             path.to_string_lossy().as_ref(),
             archive_file.to_string_lossy().as_ref(),
             rows_processed,
@@ -151,10 +135,6 @@ impl<'a> ImportService<'a> {
             None,
         )?;
 
-        Ok((
-            rows_processed,
-            rows_imported,
-            rows_skipped,
-        ))
+        Ok((rows_processed, rows_imported, rows_skipped))
     }
 }
