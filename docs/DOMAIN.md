@@ -14,7 +14,12 @@ A Direct Payment allows a person who receives care and support funding to manage
 
 The Direct Payment holder can use the funding to employ or arrange support from Personal Assistants (PAs).
 
-The application is designed to support the administration required around these arrangements.
+The application supports the administration required around these arrangements, including:
+
+- Recording worked hours.
+- Maintaining employment information.
+- Preparing payroll documentation.
+- Keeping accurate audit records.
 
 ---
 
@@ -34,36 +39,105 @@ The application should support the holder by reducing administration while keepi
 
 ---
 
+# Employer
+
+The employer is the person or organisation responsible for employing Personal Assistants.
+
+The system stores employer information including:
+
+- Employer name.
+- Address.
+- Contact details.
+- Payroll provider information.
+- Payroll document settings.
+
+---
+
 # Personal Assistant (PA)
 
 A Personal Assistant provides support to the Direct Payment holder.
 
 A PA may have:
 
-- Working hours.
-- Agreed pay rate.
+- Personal information.
 - Employment information.
-- Holiday entitlement.
-- Sick leave records.
+- Contracted hours.
+- Variable or fixed working arrangements.
+- Pay rate history.
+- Holiday records.
 
-The application stores timesheet information relating to PA work.
+The application stores information relating to the PA's employment and payroll preparation.
+
+---
+
+# Employment Records
+
+Employment information may change over time.
+
+The system should preserve historical records for:
+
+- Employment start information.
+- Contracted hours.
+- Fixed or variable hour arrangements.
+- Changes of circumstances.
+
+Example:
+
+```
+Fixed hours:
+18 hours per week
+```
+
+or:
+
+```
+Variable hours:
+Hours vary according to support requirements
+```
+
+Historical records ensure previous payroll information remains accurate.
+
+---
+
+# Worked Shifts
+
+A worked shift represents actual time worked by a Personal Assistant.
+
+The initial source of worked shifts is Hours Keeper CSV import.
+
+A worked shift may contain:
+
+- Personal Assistant.
+- Date.
+- Start time.
+- End time.
+- Break duration.
+- Worked duration.
+- Notes.
+- Import source.
+
+Worked shifts represent actual work completed.
+
+They do not include:
+
+- Annual leave.
+- Sick leave.
+- Travel claims.
+- Other payroll adjustments.
 
 ---
 
 # Timesheets
 
-A timesheet records work completed by a Personal Assistant.
+A payroll timesheet is created by combining worked shifts and relevant adjustments.
 
-A timesheet entry may contain:
+A timesheet may include:
 
-- Personal Assistant name.
-- Start time.
-- End time.
-- Break duration.
-- Worked duration.
-- Hourly rate.
-- Calculated amount.
-- Notes.
+- Hours worked.
+- Pay rate applied.
+- Annual leave hours.
+- Public holiday hours.
+- Optional payroll adjustments.
 
 Timesheet records should be accurate, traceable and auditable.
 
@@ -91,11 +165,13 @@ A Personal Assistant may have an agreed hourly rate.
 The system should support:
 
 - Recording hourly rates.
-- Calculating payment amounts.
-- Future rate changes.
-- Historical accuracy.
+- Recording government/minimum rates.
+- Recording employer top-ups.
+- Calculating the total hourly payment rate.
+- Recording future rate changes.
+- Maintaining historical accuracy.
 
-Previously imported records should preserve the rate that applied at that time.
+Previously completed payroll records should preserve the rate that applied at that time.
 
 ---
 
@@ -103,13 +179,14 @@ Previously imported records should preserve the rate that applied at that time.
 
 Payroll periods group completed work into a payment cycle.
 
-Examples:
+The application supports:
 
-- Weekly payroll.
-- Four-weekly payroll.
-- Monthly payroll.
+- Four-week payroll cycles.
+- Payroll submission dates.
+- PA pay dates.
+- Special payroll arrangements.
 
-Future payroll functionality will use imported timesheet records to create payroll periods.
+Payroll periods are used when generating payroll preparation documents.
 
 ---
 
@@ -123,6 +200,112 @@ The import process should:
 - Prevent duplicate records.
 - Preserve original files.
 - Record audit information.
+- Classify worked hours where additional rules apply.
+
+---
+
+# Public Holiday Calendar
+
+Public holidays are stored separately from worked shifts.
+
+The system maintains a calendar containing:
+
+- Date.
+- Holiday name.
+- Country.
+
+During import, worked shifts are checked against the public holiday calendar.
+
+If hours are worked on a public holiday, those hours are automatically shown as public holiday hours on the payroll document.
+
+Example:
+
+```
+25/12/2026
+
+Imported shifts:
+1.25 hours
+2 hours
+2.25 hours
+
+Public holiday hours:
+5.5 (25/12/2026)
+```
+
+The system records the hours.
+
+The Payroll department determines the payment treatment.
+
+---
+
+# Annual Leave
+
+Annual leave is a separate record from worked shifts.
+
+Annual leave is entered manually.
+
+Records include:
+
+- Personal Assistant.
+- Date commencing.
+- Date ending.
+- Hours.
+
+The dates provide a record of when annual leave occurred.
+
+The system uses the date range and payroll period to place the correct annual leave hours into the appropriate payroll document section.
+
+---
+
+# Optional Payroll Adjustments
+
+Some payroll columns exist because they are part of the Payroll department template.
+
+## Sick Leave / SSP
+
+Sick leave is supported as an optional future adjustment.
+
+The column may appear on payroll documents but is not part of the normal workflow.
+
+No automatic SSP calculation is required initially.
+
+## Travel
+
+Travel claims may be supported in future.
+
+Information may include:
+
+- Miles claimed.
+- Mileage rate.
+
+---
+
+# Payroll Preparation Document
+
+The final output is a Payroll Preparation Sheet matching the Payroll department's required format.
+
+The document contains:
+
+Header information:
+
+- Employer name.
+- Employee name.
+- National Insurance number.
+- Contracted weekly hours.
+
+Main columns:
+
+1. Week commencing date.
+
+2. Hours worked and pay rate.
+
+3. Annual leave hours.
+
+4. Sick leave / SSP.
+
+5. Public holiday hours worked.
+
+6. Travel miles claimed.
 
 ---
 
@@ -143,40 +326,6 @@ Audit information helps maintain trust and accountability.
 
 ---
 
-# Leave Management
-
-Future functionality may include:
-
-## Annual Leave
-
-Records of Personal Assistant holiday entitlement and usage.
-
-## Sick Leave
-
-Records of sickness absence and related payments.
-
-## Public Holidays
-
-Support for calculating relevant holiday rules.
-
-These areas should be implemented carefully because employment rules can vary.
-
----
-
-# Employment Records
-
-Future versions may include additional employment information such as:
-
-- Employment start dates.
-- Contracted hours.
-- Pay history.
-- Leave balances.
-- Employment status.
-
-Sensitive information should only be stored when required.
-
----
-
 # Privacy Principles
 
 Direct Payment administration contains sensitive personal information.
@@ -185,7 +334,7 @@ The application should:
 
 - Store only necessary information.
 - Keep user data local where possible.
-- Avoid exposing personal information in filenames.
+- Avoid exposing unnecessary personal information.
 - Maintain clear audit history.
 - Prevent accidental sharing of private records.
 
@@ -193,17 +342,16 @@ The application should:
 
 # Future Payroll Engine
 
-The Payroll Engine will transform approved timesheet records into payroll information.
+The Payroll Engine will transform validated worked shift records and payroll adjustments into payroll information.
 
 Future responsibilities may include:
 
 - Grouping work into payroll periods.
 - Calculating gross pay.
-- Applying leave rules.
-- Supporting adjustments.
+- Supporting additional payroll rules.
 - Preparing payroll outputs.
 
-The Payroll Engine should use validated timesheet data rather than raw imported files.
+The Payroll Engine should use validated records rather than raw imported files.
 
 ---
 
@@ -217,3 +365,4 @@ Business rules should be:
 - Separated from technical implementation.
 - Tested where possible.
 - Changed carefully when regulations or requirements change.
+
