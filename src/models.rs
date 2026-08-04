@@ -10,3 +10,32 @@ pub struct TimesheetEntry {
     pub amount: f64,
     pub notes: Option<String>,
 }
+
+#[derive(Debug)]
+pub struct Employer {
+    pub id: i64,
+    pub name: String,
+    pub address: Option<String>,
+    pub postcode: Option<String>,
+    pub telephone: Option<String>,
+    pub email: Option<String>,
+    pub payroll_provider: Option<String>,
+    pub payroll_provider_address: Option<String>,
+    pub payroll_provider_phone: Option<String>,
+    pub employer_signature: Option<String>,
+    pub default_pdf_template: Option<String>,
+}
+
+#[derive(Debug)]
+pub struct PersonalAssistant {
+    pub id: i64,
+    pub first_name: String,
+    pub surname: String,
+    pub date_of_birth: Option<String>,
+    pub national_insurance_number: Option<String>,
+    pub address: Option<String>,
+    pub postcode: Option<String>,
+    pub telephone: Option<String>,
+    pub email: Option<String>,
+    pub employment_status: Option<String>,
+}
