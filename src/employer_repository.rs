@@ -13,56 +13,62 @@ impl EmployerRepository {
 
     pub fn insert(&self, employer: &Employer) -> Result<()> {
         self.connection.execute(
-                                            "
-                                                        INSERT INTO employers (
-                                                                        name,
-                                                                                        address,
-                                                                                                        postcode,
-                                                                                                                        telephone,
-                                                                                                                                        email,
-                                                                                                                                                        payroll_provider,
-                                                                                                                                                                        payroll_provider_address,
-                                                                                                                                                                                        payroll_provider_phone,
-                                                                                                                                                                                                        employer_signature,
-                                                                                                                                                                                                                        default_pdf_template
-                                                                                                                                                                                                                                    )
-                                                                                                                                                                                                                                                VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
-                                                                                                                                                                                                                                                            ",
-                                                                                                                                                                                                                                                                        params![
-                                                                                                                                                                                                                                                                                        &employer.name,
-                                                                                                                                                                                                                                                                                                        &employer.address,
-                                                                                                                                                                                                                                                                                                                        &employer.postcode,
-                                                                                                                                                                                                                                                                                                                                        &employer.telephone,
-                                                                                                                                                                                                                                                                                                                                                        &employer.email,
-                                                                                                                                                                                                                                                                                                                                                                        &employer.payroll_provider,
-                                                                                                                                                                                                                                                                                                                                                                                        &employer.payroll_provider_address,
-                                                                                                                                                                                                                                                                                                                                                                                                        &employer.payroll_provider_phone,
-                                                                                                                                                                                                                                                                                                                                                                                                                        &employer.employer_signature,
-                                                                                                                                                                                                                                                                                                                                                                                                                                        &employer.default_pdf_template,
-                                                                                                                                                                                                                                                                                                                                                                                                                                                    ],
-                                                                                                                                                                                                                                                                                                                                                                                                                                                            )?;
+            "
+            INSERT INTO employers (
+                name,
+                address,
+                postcode,
+                telephone,
+                email,
+                payroll_provider,
+                payroll_provider_address,
+                payroll_provider_phone,
+                employer_signature,
+                default_pdf_template,
+                sick_pay_enabled,
+                mileage_enabled
+            )
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
+            ",
+            params![
+                &employer.name,
+                &employer.address,
+                &employer.postcode,
+                &employer.telephone,
+                &employer.email,
+                &employer.payroll_provider,
+                &employer.payroll_provider_address,
+                &employer.payroll_provider_phone,
+                &employer.employer_signature,
+                &employer.default_pdf_template,
+                employer.sick_pay_enabled,
+                employer.mileage_enabled,
+            ],
+        )?;
 
         Ok(())
     }
 
     pub fn get_all(&self) -> Result<Vec<Employer>> {
         let mut statement = self.connection.prepare(
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                "
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            SELECT
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            id,
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            name,
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            address,
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            postcode,
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            telephone,
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            email,
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            payroll_provider,
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            payroll_provider_address,
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            payroll_provider_phone,
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            employer_signature,
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            default_pdf_template
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        FROM employers
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    ",
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            )?;
+            "
+            SELECT
+                id,
+                name,
+                address,
+                postcode,
+                telephone,
+                email,
+                payroll_provider,
+                payroll_provider_address,
+                payroll_provider_phone,
+                employer_signature,
+                default_pdf_template,
+                sick_pay_enabled,
+                mileage_enabled
+            FROM employers
+            ",
+        )?;
 
         let employers = statement.query_map([], |row| {
             Ok(Employer {
@@ -77,6 +83,8 @@ impl EmployerRepository {
                 payroll_provider_phone: row.get(8)?,
                 employer_signature: row.get(9)?,
                 default_pdf_template: row.get(10)?,
+                sick_pay_enabled: row.get::<_, i64>(11)? != 0,
+                mileage_enabled: row.get::<_, i64>(12)? != 0,
             })
         })?;
 
@@ -119,6 +127,8 @@ mod tests {
             payroll_provider_phone: None,
             employer_signature: None,
             default_pdf_template: None,
+            sick_pay_enabled: false,
+            mileage_enabled: false,
         };
 
         repository.insert(&employer).unwrap();

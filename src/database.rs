@@ -86,6 +86,11 @@ fn apply_migrations(connection: &Connection) -> Result<()> {
 
     if current_version < 4 {
         migrate_to_version_4(connection)?;
+        current_version = 4;
+    }
+
+    if current_version < 5 {
+        migrate_to_version_5(connection)?;
     }
 
     Ok(())
@@ -164,6 +169,44 @@ fn migrate_to_version_4(connection: &Connection) -> Result<()> {
     )?;
 
     connection.execute("UPDATE schema_version SET version = 4", [])?;
+
+    Ok(())
+}
+
+fn migrate_to_version_5(connection: &Connection) -> Result<()> {
+    connection.execute(
+        "
+        ALTER TABLE employers
+        ADD COLUMN sick_pay_enabled INTEGER NOT NULL DEFAULT 0
+        ",
+        [],
+    )?;
+
+    connection.execute(
+        "
+        ALTER TABLE employers
+        ADD COLUMN mileage_enabled INTEGER NOT NULL DEFAULT 0
+        ",
+        [],
+    )?;
+
+    connection.execute(
+        "
+        ALTER TABLE personal_assistants
+        ADD COLUMN sick_pay_enabled INTEGER NOT NULL DEFAULT 0
+        ",
+        [],
+    )?;
+
+    connection.execute(
+        "
+        ALTER TABLE personal_assistants
+        ADD COLUMN mileage_enabled INTEGER NOT NULL DEFAULT 0
+        ",
+        [],
+    )?;
+
+    connection.execute("UPDATE schema_version SET version = 5", [])?;
 
     Ok(())
 }
