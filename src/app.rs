@@ -1,25 +1,40 @@
 use rusqlite::Connection;
 
 use crate::context::AppContext;
+use crate::employer_repository::EmployerRepository;
 use crate::import_service::ImportService;
+use crate::personal_assistant_repository::PersonalAssistantRepository;
 use crate::repository::TimesheetRepository;
 
 pub struct Application {
     pub context: AppContext,
     pub repository: TimesheetRepository,
+    pub employer_repository: EmployerRepository,
+    pub personal_assistant_repository: PersonalAssistantRepository,
 }
 
 impl Application {
     pub fn initialise() -> Result<Self, Box<dyn std::error::Error>> {
         let context = AppContext::initialise()?;
 
-        let connection = Connection::open(&context.environment.database_path)?;
+        let timesheet_connection = Connection::open(&context.environment.database_path)?;
 
-        let repository = TimesheetRepository::new(connection);
+        let employer_connection = Connection::open(&context.environment.database_path)?;
+
+        let personal_assistant_connection = Connection::open(&context.environment.database_path)?;
+
+        let repository = TimesheetRepository::new(timesheet_connection);
+
+        let employer_repository = EmployerRepository::new(employer_connection);
+
+        let personal_assistant_repository =
+            PersonalAssistantRepository::new(personal_assistant_connection);
 
         Ok(Self {
             context,
             repository,
+            employer_repository,
+            personal_assistant_repository,
         })
     }
 
