@@ -45,6 +45,14 @@ impl Application {
         })
     }
 
+    pub fn save_config(&self) -> Result<(), Box<dyn std::error::Error>> {
+        let config_path = self.context.environment.data_dir.join("config.toml");
+
+        self.context.config.save(&config_path)?;
+
+        Ok(())
+    }
+
     pub fn create_import_service(&self) -> ImportService<'_> {
         let import_dir = crate::paths::expand_path(&self.context.config.folders.csv_import);
 
