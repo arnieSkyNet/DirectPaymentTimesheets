@@ -1,8 +1,16 @@
 use eframe::egui;
 
 use crate::app::Application;
+use crate::employer_screen::EmployerScreen;
 use crate::import_service::ImportSummary;
 use crate::models::TimesheetEntry;
+use crate::personal_assistant_screen::PersonalAssistantScreen;
+
+enum ActiveScreen {
+    Dashboard,
+    Employer,
+    PersonalAssistant,
+}
 
 pub struct DirectPaymentApp {
     application: Application,
@@ -10,6 +18,9 @@ pub struct DirectPaymentApp {
     status_message: String,
     last_import: Option<ImportSummary>,
     timesheets: Vec<TimesheetEntry>,
+    employer_screen: EmployerScreen,
+    personal_assistant_screen: PersonalAssistantScreen,
+    active_screen: ActiveScreen,
 }
 
 impl DirectPaymentApp {
@@ -20,6 +31,9 @@ impl DirectPaymentApp {
             status_message: "Application ready.".to_string(),
             last_import: None,
             timesheets: Vec::new(),
+            employer_screen: EmployerScreen::new(),
+            personal_assistant_screen: PersonalAssistantScreen::new(),
+            active_screen: ActiveScreen::Dashboard,
         }
     }
 }
@@ -28,124 +42,113 @@ impl eframe::App for DirectPaymentApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         egui::TopBottomPanel::top("header").show(ctx, |ui| {
             ui.heading("DirectPaymentTimesheets");
-
             ui.label(format!("Version {}", self.version));
         });
 
-        egui::CentralPanel::default().show(ctx, |ui| {
-            ui.add_space(10.0);
-
-            ui.heading("Dashboard");
-
-            ui.separator();
-
-            if ui.button("Import CSV").clicked() {
-                match self.application.import_csv() {
-                    Ok(summary) => {
-                        self.status_message = "Import completed successfully.".to_string();
-
-                        self.last_import = Some(summary);
-                    }
-
-                    Err(error) => {
-                        self.status_message = format!("Import failed: {}", error);
-
-                        self.last_import = None;
-                    }
-                }
-            }
-
-            if ui.button("View Timesheets").clicked() {
-                match self.application.get_timesheets() {
-                    Ok(entries) => {
-                        self.timesheets = entries;
-
-                        self.status_message =
-                            format!("Loaded {} timesheets.", self.timesheets.len());
-                    }
-
-                    Err(error) => {
-                        self.status_message = format!("Failed loading timesheets: {}", error);
-                    }
-                }
-            }
-
-            if ui.button("Settings").clicked() {
-                self.status_message = "Settings selected.".to_string();
-            }
-
-            if ui.button("Exit").clicked() {
-                ctx.send_viewport_cmd(egui::ViewportCommand::Close);
-            }
-
-            ui.add_space(20.0);
-
-            ui.separator();
-
-            ui.heading("Import Summary");
-
-            match &self.last_import {
-                Some(summary) => {
-                    ui.label(format!("Files discovered: {}", summary.files_discovered));
-
-                    ui.label(format!(
-                        "Already imported: {}",
-                        summary.files_already_imported
-                    ));
-
-                    ui.label(format!("Files processed: {}", summary.files_processed));
-
-                    ui.label(format!("Rows processed: {}", summary.rows_processed));
-
-                    ui.label(format!("Rows imported: {}", summary.rows_imported));
-
-                    ui.label(format!("Rows skipped: {}", summary.rows_skipped));
-
-                    ui.label(format!("Files failed: {}", summary.files_failed));
+        egui::TopBottomPanel::bottom("navigation").show(ctx, |ui| {
+            ui.horizontal(|ui| {
+                if ui.button("Dashboard").clicked() {
+                    self.active_screen = ActiveScreen::Dashboard;
                 }
 
-                None => {
-                    ui.label("No import performed yet.");
+                if ui.button("Employer Maintenance").clicked() {
+                    self.active_screen = ActiveScreen::Employer;
                 }
+
+                if ui.button("Personal Assistant Maintenance").clicked() {
+                    self.active_screen = ActiveScreen::PersonalAssistant;
+                }
+
+                if ui.button("Exit").clicked() {
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                }
+            });
+        });
+
+        egui::CentralPanel::default().show(ctx, |ui| match self.active_screen {
+            ActiveScreen::Dashboard => {
+                self.draw_dashboard(ui);
             }
 
-            ui.add_space(20.0);
+            ActiveScreen::Employer => {
+                self.employer_screen.show(ui, &self.application);
+            }
 
-            ui.separator();
-
-            ui.heading("System Status");
-
-            ui.label("Database: Connected");
-
-            ui.label(format!(
-                "Data Directory: {:?}",
-                self.application.context.environment.data_dir
-            ));
-
-            let import_folder =
-                crate::paths::expand_path(&self.application.context.config.folders.csv_import);
-
-            ui.label(format!("Import Folder: {:?}", import_folder));
-
-            draw_timesheets(ui, &self.timesheets);
-
-            ui.separator();
-
-            ui.label(format!("Status: {}", self.status_message));
+            ActiveScreen::PersonalAssistant => {
+                self.personal_assistant_screen.show(ui, &self.application);
+            }
         });
     }
 }
 
-fn draw_timesheets(ui: &mut egui::Ui, timesheets: &[TimesheetEntry]) {
-    ui.add_space(20.0);
+impl DirectPaymentApp {
+    fn draw_dashboard(&mut self, ui: &mut egui::Ui) {
+        ui.heading("Dashboard");
 
+        ui.separator();
+
+        if ui.button("Import CSV").clicked() {
+            match self.application.import_csv() {
+                Ok(summary) => {
+                    self.status_message = "Import completed successfully.".to_string();
+
+                    self.last_import = Some(summary);
+                }
+
+                Err(error) => {
+                    self.status_message = format!("Import failed: {}", error);
+
+                    self.last_import = None;
+                }
+            }
+        }
+
+        if ui.button("View Timesheets").clicked() {
+            match self.application.get_timesheets() {
+                Ok(entries) => {
+                    self.timesheets = entries;
+
+                    self.status_message = format!("Loaded {} timesheets.", self.timesheets.len());
+                }
+
+                Err(error) => {
+                    self.status_message = format!("Failed loading timesheets: {}", error);
+                }
+            }
+        }
+
+        ui.separator();
+
+        ui.heading("Import Summary");
+
+        match &self.last_import {
+            Some(summary) => {
+                ui.label(format!("Files discovered: {}", summary.files_discovered));
+                ui.label(format!("Files processed: {}", summary.files_processed));
+                ui.label(format!("Rows imported: {}", summary.rows_imported));
+                ui.label(format!("Rows skipped: {}", summary.rows_skipped));
+            }
+
+            None => {
+                ui.label("No import performed yet.");
+            }
+        }
+
+        ui.separator();
+
+        ui.label(format!("Status: {}", self.status_message));
+
+        draw_timesheets(ui, &self.timesheets);
+    }
+}
+
+fn draw_timesheets(ui: &mut egui::Ui, timesheets: &[TimesheetEntry]) {
     ui.separator();
 
     ui.heading("Timesheets");
 
     if timesheets.is_empty() {
         ui.label("No timesheets loaded.");
-
         return;
     }
 
@@ -174,11 +177,11 @@ fn draw_timesheets(ui: &mut egui::Ui, timesheets: &[TimesheetEntry]) {
                 ui.end_row();
             }
         });
+}
 
-    fn format_worked_time(minutes: i64) -> String {
-        let hours = minutes / 60;
-        let remaining_minutes = minutes % 60;
+fn format_worked_time(minutes: i64) -> String {
+    let hours = minutes / 60;
+    let remaining_minutes = minutes % 60;
 
-        format!("{}h {}m", hours, remaining_minutes)
-    }
+    format!("{}h {}m", hours, remaining_minutes)
 }
