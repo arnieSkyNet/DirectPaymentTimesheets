@@ -23,9 +23,11 @@ impl PersonalAssistantRepository {
                 postcode,
                 telephone,
                 email,
-                employment_status
+                employment_status,
+                sick_pay_enabled,
+                mileage_enabled
             )
-            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
             ",
             params![
                 &assistant.first_name,
@@ -37,6 +39,8 @@ impl PersonalAssistantRepository {
                 &assistant.telephone,
                 &assistant.email,
                 &assistant.employment_status,
+                assistant.sick_pay_enabled,
+                assistant.mileage_enabled,
             ],
         )?;
 
@@ -56,7 +60,9 @@ impl PersonalAssistantRepository {
                 postcode,
                 telephone,
                 email,
-                employment_status
+                employment_status,
+                sick_pay_enabled,
+                mileage_enabled
             FROM personal_assistants
             ",
         )?;
@@ -73,6 +79,8 @@ impl PersonalAssistantRepository {
                 telephone: row.get(7)?,
                 email: row.get(8)?,
                 employment_status: row.get(9)?,
+                sick_pay_enabled: row.get::<_, i64>(10)? != 0,
+                mileage_enabled: row.get::<_, i64>(11)? != 0,
             })
         })?;
 
@@ -114,6 +122,8 @@ mod tests {
             telephone: None,
             email: None,
             employment_status: Some("Active".to_string()),
+            sick_pay_enabled: false,
+            mileage_enabled: false,
         };
 
         repository.insert(&assistant).unwrap();

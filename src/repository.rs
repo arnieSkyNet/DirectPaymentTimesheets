@@ -227,4 +227,3 @@ mod tests {
         assert!(repository.has_successful_import("test.csv").unwrap());
     }
 }
-

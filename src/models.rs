@@ -25,6 +25,8 @@ pub struct Employer {
     pub payroll_provider_phone: Option<String>,
     pub employer_signature: Option<String>,
     pub default_pdf_template: Option<String>,
+    pub sick_pay_enabled: bool,
+    pub mileage_enabled: bool,
 }
 
 #[derive(Debug)]
@@ -39,4 +41,6 @@ pub struct PersonalAssistant {
     pub telephone: Option<String>,
     pub email: Option<String>,
     pub employment_status: Option<String>,
+    pub sick_pay_enabled: bool,
+    pub mileage_enabled: bool,
 }
