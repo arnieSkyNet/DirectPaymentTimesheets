@@ -87,7 +87,7 @@ impl eframe::App for DirectPaymentApp {
             }
 
             ActiveScreen::PayrollSettings => {
-                self.payroll_settings_screen.show(ui, &self.application);
+                self.payroll_settings_screen.show(ui, &mut self.application);
             }
         });
     }
