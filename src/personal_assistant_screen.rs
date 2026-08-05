@@ -2,11 +2,18 @@ use eframe::egui;
 
 use crate::app::Application;
 use crate::models::PersonalAssistant;
+use crate::pay_rate_repository::PersonalAssistantPayRate;
 
 pub struct PersonalAssistantScreen {
     assistants: Vec<PersonalAssistant>,
     selected_index: Option<usize>,
     editing_assistant: Option<PersonalAssistant>,
+
+    pay_rates: Vec<PersonalAssistantPayRate>,
+    new_rate_effective_date: String,
+    new_rate_base: String,
+    new_rate_top_up: String,
+
     loaded: bool,
     status_message: String,
 }
@@ -17,6 +24,12 @@ impl PersonalAssistantScreen {
             assistants: Vec::new(),
             selected_index: None,
             editing_assistant: None,
+
+            pay_rates: Vec::new(),
+            new_rate_effective_date: String::new(),
+            new_rate_base: String::new(),
+            new_rate_top_up: String::new(),
+
             loaded: false,
             status_message: "Personal Assistants not loaded.".to_string(),
         }
@@ -34,7 +47,6 @@ impl PersonalAssistantScreen {
 
         if ui.button("New Personal Assistant").clicked() {
             self.selected_index = None;
-
             self.editing_assistant = Some(PersonalAssistant {
                 id: 0,
                 first_name: String::new(),
@@ -50,6 +62,7 @@ impl PersonalAssistantScreen {
                 mileage_enabled: false,
             });
 
+            self.pay_rates.clear();
             self.status_message = "New Personal Assistant.".to_string();
         }
 
@@ -69,6 +82,11 @@ impl PersonalAssistantScreen {
                     {
                         self.selected_index = Some(index);
                         self.editing_assistant = Some(assistant.clone());
+
+                        self.pay_rates = application
+                            .pay_rate_repository
+                            .get_all_for_personal_assistant(assistant.id)
+                            .unwrap_or_default();
                     }
                 }
             });
@@ -125,13 +143,68 @@ impl PersonalAssistantScreen {
                         match result {
                             Ok(()) => {
                                 self.status_message = "Personal Assistant saved.".to_string();
-
                                 self.loaded = false;
-                                self.editing_assistant = None;
                             }
-
                             Err(error) => {
                                 self.status_message = format!("Save failed: {}", error);
+                            }
+                        }
+                    }
+
+                    ui.separator();
+
+                    ui.heading("Pay Rates");
+
+                    if assistant.id == 0 {
+                        ui.label("Save the Personal Assistant before adding pay rates.");
+                    } else {
+                        for rate in &self.pay_rates {
+                            ui.label(format!(
+                                "{}  £{:.2}  Top up £{:.2}",
+                                rate.effective_date,
+                                rate.base_hourly_rate,
+                                rate.employer_top_up_rate
+                            ));
+                        }
+
+                        ui.separator();
+
+                        ui.label("Effective Date");
+                        ui.text_edit_singleline(&mut self.new_rate_effective_date);
+
+                        ui.label("Base Hourly Rate");
+                        ui.text_edit_singleline(&mut self.new_rate_base);
+
+                        ui.label("Employer Top Up Rate");
+                        ui.text_edit_singleline(&mut self.new_rate_top_up);
+
+                        if ui.button("Save Pay Rate").clicked() {
+                            let rate = PersonalAssistantPayRate {
+                                id: 0,
+                                personal_assistant_id: assistant.id,
+                                effective_date: self.new_rate_effective_date.clone(),
+                                base_hourly_rate: self.new_rate_base.parse().unwrap_or(0.0),
+                                employer_top_up_rate: self.new_rate_top_up.parse().unwrap_or(0.0),
+                                created_at: chrono::Local::now().format("%Y-%m-%d").to_string(),
+                            };
+
+                            match application.pay_rate_repository.insert(&rate) {
+                                Ok(()) => {
+                                    self.pay_rates = application
+                                        .pay_rate_repository
+                                        .get_all_for_personal_assistant(assistant.id)
+                                        .unwrap_or_default();
+
+                                    self.status_message = "Pay rate saved.".to_string();
+
+                                    self.new_rate_effective_date.clear();
+                                    self.new_rate_base.clear();
+                                    self.new_rate_top_up.clear();
+                                }
+
+                                Err(error) => {
+                                    self.status_message = format!("Pay rate failed: {}", error);
+                                }
                             }
                         }
                     }

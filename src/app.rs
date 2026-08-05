@@ -3,6 +3,7 @@ use rusqlite::Connection;
 use crate::context::AppContext;
 use crate::employer_repository::EmployerRepository;
 use crate::import_service::ImportService;
+use crate::pay_rate_repository::PayRateRepository;
 use crate::personal_assistant_repository::PersonalAssistantRepository;
 use crate::repository::TimesheetRepository;
 
@@ -11,6 +12,7 @@ pub struct Application {
     pub repository: TimesheetRepository,
     pub employer_repository: EmployerRepository,
     pub personal_assistant_repository: PersonalAssistantRepository,
+    pub pay_rate_repository: PayRateRepository,
 }
 
 impl Application {
@@ -23,6 +25,8 @@ impl Application {
 
         let personal_assistant_connection = Connection::open(&context.environment.database_path)?;
 
+        let pay_rate_connection = Connection::open(&context.environment.database_path)?;
+
         let repository = TimesheetRepository::new(timesheet_connection);
 
         let employer_repository = EmployerRepository::new(employer_connection);
@@ -30,11 +34,14 @@ impl Application {
         let personal_assistant_repository =
             PersonalAssistantRepository::new(personal_assistant_connection);
 
+        let pay_rate_repository = PayRateRepository::new(pay_rate_connection);
+
         Ok(Self {
             context,
             repository,
             employer_repository,
             personal_assistant_repository,
+            pay_rate_repository,
         })
     }
 
