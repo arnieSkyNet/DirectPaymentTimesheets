@@ -364,7 +364,65 @@ The system should:
 
 ---
 
-# 12. Development Principle
+# 12. Payroll Adjustments (Future)
+
+Some payroll items are not part of the hours worked but still appear on payroll and timesheets.
+
+Examples include:
+
+- Statutory Sick Pay (SSP)
+- Sick hours
+- Mileage claims
+
+These should not be stored directly within the Timesheet Entry.
+
+Instead, future versions of DirectPaymentTimesheets should store them as payroll adjustments linked to an individual payroll period.
+
+Employer Settings
+
+Each employer should define default capabilities:
+
+- Sick Pay / SSP Enabled
+- Mileage Claims Enabled
+
+These defaults represent the normal policy for the employer.
+
+Personal Assistant Settings
+
+Each Personal Assistant should also store:
+
+- Sick Pay / SSP Enabled
+- Mileage Claims Enabled
+
+When a new Personal Assistant is created, these values should default from the Employer settings but may be changed for that individual if required.
+
+Timesheet Generation
+
+When generating a payroll timesheet, the application should:
+
+1. Load the Personal Assistant record.
+2. Check whether Sick Pay / SSP is enabled.
+3. Check whether Mileage Claims are enabled.
+4. If disabled, leave the corresponding sections blank on the generated PDF.
+5. If enabled, allow payroll adjustment values to be entered before PDF generation.
+6. Store those values so regenerated PDFs remain consistent.
+
+Future Entity
+
+A future PayrollAdjustment entity may contain fields such as:
+
+- payroll_period_id
+- personal_assistant_id
+- sick_hours
+- ssp_amount
+- mileage_miles
+- mileage_rate
+- mileage_amount
+- notes
+
+This approach keeps worked hours separate from payroll adjustments while allowing future expansion for additional payroll items.
+
+# 13. Development Principle
 
 The data model should evolve carefully.
 
