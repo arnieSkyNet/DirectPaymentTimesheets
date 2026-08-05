@@ -82,6 +82,10 @@ payroll_provider_phone
 employer_signature
 
 default_pdf_template
+sick_pay_enabled
+
+mileage_enabled
+
 ```
 
 Purpose:
@@ -116,6 +120,9 @@ telephone
 email
 
 employment_status
+sick_pay_enabled
+
+mileage_enabled
 ```
 
 Purpose:
