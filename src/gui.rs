@@ -4,12 +4,14 @@ use crate::app::Application;
 use crate::employer_screen::EmployerScreen;
 use crate::import_service::ImportSummary;
 use crate::models::TimesheetEntry;
+use crate::payroll_settings_screen::PayrollSettingsScreen;
 use crate::personal_assistant_screen::PersonalAssistantScreen;
 
 enum ActiveScreen {
     Dashboard,
     Employer,
     PersonalAssistant,
+    PayrollSettings,
 }
 
 pub struct DirectPaymentApp {
@@ -20,6 +22,7 @@ pub struct DirectPaymentApp {
     timesheets: Vec<TimesheetEntry>,
     employer_screen: EmployerScreen,
     personal_assistant_screen: PersonalAssistantScreen,
+    payroll_settings_screen: PayrollSettingsScreen,
     active_screen: ActiveScreen,
 }
 
@@ -33,6 +36,7 @@ impl DirectPaymentApp {
             timesheets: Vec::new(),
             employer_screen: EmployerScreen::new(),
             personal_assistant_screen: PersonalAssistantScreen::new(),
+            payroll_settings_screen: PayrollSettingsScreen::new(),
             active_screen: ActiveScreen::Dashboard,
         }
     }
@@ -59,6 +63,10 @@ impl eframe::App for DirectPaymentApp {
                     self.active_screen = ActiveScreen::PersonalAssistant;
                 }
 
+                if ui.button("Payroll Settings").clicked() {
+                    self.active_screen = ActiveScreen::PayrollSettings;
+                }
+
                 if ui.button("Exit").clicked() {
                     ctx.send_viewport_cmd(egui::ViewportCommand::Close);
                 }
@@ -76,6 +84,10 @@ impl eframe::App for DirectPaymentApp {
 
             ActiveScreen::PersonalAssistant => {
                 self.personal_assistant_screen.show(ui, &self.application);
+            }
+
+            ActiveScreen::PayrollSettings => {
+                self.payroll_settings_screen.show(ui, &self.application);
             }
         });
     }
