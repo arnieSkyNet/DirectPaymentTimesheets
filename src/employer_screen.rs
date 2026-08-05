@@ -21,7 +21,6 @@ impl EmployerScreen {
     pub fn show(&mut self, ui: &mut egui::Ui, application: &Application) {
         if !self.loaded {
             self.load(application);
-
             self.loaded = true;
         }
 
@@ -29,11 +28,31 @@ impl EmployerScreen {
 
         ui.separator();
 
+        if ui.button("New Employer").clicked() {
+            self.employer = Some(Employer {
+                id: 0,
+                name: String::new(),
+                address: None,
+                postcode: None,
+                telephone: None,
+                email: None,
+                payroll_provider: None,
+                payroll_provider_address: None,
+                payroll_provider_phone: None,
+                employer_signature: None,
+                default_pdf_template: None,
+                sick_pay_enabled: false,
+                mileage_enabled: false,
+            });
+
+            self.status_message = "New employer.".to_string();
+        }
+
+        ui.separator();
+
         match &mut self.employer {
             Some(employer) => {
                 ui.label("Employer Details");
-
-                ui.add_space(10.0);
 
                 ui.label("Name");
                 ui.text_edit_singleline(&mut employer.name);
@@ -52,6 +71,29 @@ impl EmployerScreen {
 
                 ui.separator();
 
+                ui.label("Payroll Provider");
+
+                ui.label("Provider Name");
+                edit_optional_text(ui, &mut employer.payroll_provider);
+
+                ui.label("Provider Address");
+                edit_optional_text(ui, &mut employer.payroll_provider_address);
+
+                ui.label("Provider Telephone");
+                edit_optional_text(ui, &mut employer.payroll_provider_phone);
+
+                ui.separator();
+
+                ui.label("Documents");
+
+                ui.label("Employer Signature");
+                edit_optional_text(ui, &mut employer.employer_signature);
+
+                ui.label("Default PDF Template");
+                edit_optional_text(ui, &mut employer.default_pdf_template);
+
+                ui.separator();
+
                 ui.checkbox(
                     &mut employer.sick_pay_enabled,
                     "Enable sickness hours / SSP",
@@ -62,10 +104,15 @@ impl EmployerScreen {
                 ui.separator();
 
                 if ui.button("Save Employer").clicked() {
-                    match application.employer_repository.update(employer) {
+                    let result = if employer.id == 0 {
+                        application.employer_repository.insert(employer)
+                    } else {
+                        application.employer_repository.update(employer)
+                    };
+
+                    match result {
                         Ok(()) => {
-                            self.status_message =
-                                "Employer details saved successfully.".to_string();
+                            self.status_message = "Employer saved successfully.".to_string();
                         }
 
                         Err(error) => {
@@ -76,37 +123,9 @@ impl EmployerScreen {
             }
 
             None => {
-                ui.label("No employer record found.");
+                ui.label("No employer loaded.");
 
-                if ui.button("Create Employer").clicked() {
-                    let employer = Employer {
-                        id: 0,
-                        name: "New Employer".to_string(),
-                        address: None,
-                        postcode: None,
-                        telephone: None,
-                        email: None,
-                        payroll_provider: None,
-                        payroll_provider_address: None,
-                        payroll_provider_phone: None,
-                        employer_signature: None,
-                        default_pdf_template: None,
-                        sick_pay_enabled: false,
-                        mileage_enabled: false,
-                    };
-
-                    match application.employer_repository.insert(&employer) {
-                        Ok(()) => {
-                            self.loaded = false;
-
-                            self.status_message = "Employer created.".to_string();
-                        }
-
-                        Err(error) => {
-                            self.status_message = format!("Failed creating employer: {}", error);
-                        }
-                    }
-                }
+                ui.label("Click New Employer to create one.");
             }
         }
 
@@ -131,17 +150,11 @@ impl EmployerScreen {
 }
 
 fn edit_optional_text(ui: &mut egui::Ui, value: &mut Option<String>) {
-    match value {
-        Some(text) => {
-            ui.text_edit_singleline(text);
-        }
+    if value.is_none() {
+        *value = Some(String::new());
+    }
 
-        None => {
-            let mut new_value = String::new();
-
-            if ui.text_edit_singleline(&mut new_value).changed() {
-                *value = Some(new_value);
-            }
-        }
+    if let Some(text) = value {
+        ui.text_edit_singleline(text);
     }
 }
