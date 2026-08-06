@@ -4,12 +4,22 @@ use crate::app::Application;
 
 pub struct PayrollSettingsScreen {
     loaded: bool,
+
     frequency: String,
     rounding_minutes: String,
+
     payroll_email: String,
-    bcc_email: String,
+
+    provider_name: String,
+    provider_email: String,
+    provider_address: String,
+    provider_telephone: String,
+
+    email_subject_format: String,
+
     overtime_enabled: bool,
     public_holiday_enabled: bool,
+
     status_message: String,
 }
 
@@ -17,12 +27,22 @@ impl PayrollSettingsScreen {
     pub fn new() -> Self {
         Self {
             loaded: false,
+
             frequency: String::new(),
             rounding_minutes: String::new(),
+
             payroll_email: String::new(),
-            bcc_email: String::new(),
+
+            provider_name: String::new(),
+            provider_email: String::new(),
+            provider_address: String::new(),
+            provider_telephone: String::new(),
+
+            email_subject_format: String::new(),
+
             overtime_enabled: false,
             public_holiday_enabled: false,
+
             status_message: "Payroll settings not loaded.".to_string(),
         }
     }
@@ -43,11 +63,39 @@ impl PayrollSettingsScreen {
         ui.label("Rounding minutes");
         ui.text_edit_singleline(&mut self.rounding_minutes);
 
-        ui.label("Payroll email");
+        ui.separator();
+
+        ui.heading("Payroll Department");
+
+        ui.label("Payroll email (To)");
         ui.text_edit_singleline(&mut self.payroll_email);
 
-        ui.label("BCC email");
-        ui.text_edit_singleline(&mut self.bcc_email);
+        ui.separator();
+
+        ui.heading("Payroll Provider");
+
+        ui.label("Provider name");
+        ui.text_edit_singleline(&mut self.provider_name);
+
+        ui.label("Provider email");
+        ui.text_edit_singleline(&mut self.provider_email);
+
+        ui.label("Provider address");
+        ui.add(egui::TextEdit::multiline(&mut self.provider_address).desired_rows(4));
+
+        ui.label("Provider telephone");
+        ui.text_edit_singleline(&mut self.provider_telephone);
+
+        ui.separator();
+
+        ui.heading("Email");
+
+        ui.label("Timesheet PDF subject format");
+        ui.text_edit_singleline(&mut self.email_subject_format);
+
+        ui.label("Example: YYYYMMwWW becomes 202604w02");
+
+        ui.separator();
 
         ui.checkbox(&mut self.overtime_enabled, "Enable overtime calculations");
 
@@ -76,7 +124,15 @@ impl PayrollSettingsScreen {
 
         self.payroll_email = payroll.payroll_email.clone().unwrap_or_default();
 
-        self.bcc_email = payroll.bcc_email.clone().unwrap_or_default();
+        self.provider_name = payroll.provider_name.clone().unwrap_or_default();
+
+        self.provider_email = payroll.provider_email.clone().unwrap_or_default();
+
+        self.provider_address = payroll.provider_address.clone().unwrap_or_default();
+
+        self.provider_telephone = payroll.provider_telephone.clone().unwrap_or_default();
+
+        self.email_subject_format = payroll.email_subject_format.clone();
 
         self.overtime_enabled = payroll.overtime_enabled;
 
@@ -86,26 +142,27 @@ impl PayrollSettingsScreen {
     }
 
     fn save(&mut self, application: &mut Application) {
-        application.context.config.payroll.frequency = self.frequency.clone();
+        let payroll = &mut application.context.config.payroll;
 
-        application.context.config.payroll.rounding_minutes =
-            self.rounding_minutes.parse().unwrap_or(15);
+        payroll.frequency = self.frequency.clone();
 
-        application.context.config.payroll.payroll_email = if self.payroll_email.trim().is_empty() {
-            None
-        } else {
-            Some(self.payroll_email.clone())
-        };
+        payroll.rounding_minutes = self.rounding_minutes.parse().unwrap_or(15);
 
-        application.context.config.payroll.bcc_email = if self.bcc_email.trim().is_empty() {
-            None
-        } else {
-            Some(self.bcc_email.clone())
-        };
+        payroll.payroll_email = optional_value(&self.payroll_email);
 
-        application.context.config.payroll.overtime_enabled = self.overtime_enabled;
+        payroll.provider_name = optional_value(&self.provider_name);
 
-        application.context.config.payroll.public_holiday_enabled = self.public_holiday_enabled;
+        payroll.provider_email = optional_value(&self.provider_email);
+
+        payroll.provider_address = optional_value(&self.provider_address);
+
+        payroll.provider_telephone = optional_value(&self.provider_telephone);
+
+        payroll.email_subject_format = self.email_subject_format.clone();
+
+        payroll.overtime_enabled = self.overtime_enabled;
+
+        payroll.public_holiday_enabled = self.public_holiday_enabled;
 
         match application.save_config() {
             Ok(()) => {
@@ -116,5 +173,13 @@ impl PayrollSettingsScreen {
                 self.status_message = format!("Failed saving payroll settings: {}", error);
             }
         }
+    }
+}
+
+fn optional_value(value: &str) -> Option<String> {
+    if value.trim().is_empty() {
+        None
+    } else {
+        Some(value.to_string())
     }
 }

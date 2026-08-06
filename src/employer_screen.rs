@@ -58,7 +58,7 @@ impl EmployerScreen {
                 ui.text_edit_singleline(&mut employer.name);
 
                 ui.label("Address");
-                edit_optional_text(ui, &mut employer.address);
+                edit_optional_multiline(ui, &mut employer.address);
 
                 ui.label("Postcode");
                 edit_optional_text(ui, &mut employer.postcode);
@@ -68,19 +68,6 @@ impl EmployerScreen {
 
                 ui.label("Email");
                 edit_optional_text(ui, &mut employer.email);
-
-                ui.separator();
-
-                ui.label("Payroll Provider");
-
-                ui.label("Provider Name");
-                edit_optional_text(ui, &mut employer.payroll_provider);
-
-                ui.label("Provider Address");
-                edit_optional_text(ui, &mut employer.payroll_provider_address);
-
-                ui.label("Provider Telephone");
-                edit_optional_text(ui, &mut employer.payroll_provider_phone);
 
                 ui.separator();
 
@@ -156,5 +143,15 @@ fn edit_optional_text(ui: &mut egui::Ui, value: &mut Option<String>) {
 
     if let Some(text) = value {
         ui.text_edit_singleline(text);
+    }
+}
+
+fn edit_optional_multiline(ui: &mut egui::Ui, value: &mut Option<String>) {
+    if value.is_none() {
+        *value = Some(String::new());
+    }
+
+    if let Some(text) = value {
+        ui.text_edit_multiline(text);
     }
 }
