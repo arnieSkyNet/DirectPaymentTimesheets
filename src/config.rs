@@ -24,6 +24,12 @@ pub struct PayrollConfig {
     pub frequency: String,
     pub rounding_minutes: i64,
 
+    #[serde(default = "default_rounding_direction")]
+    pub rounding_direction: String,
+
+    #[serde(default = "default_workweek")]
+    pub start_of_workweek: String,
+
     pub payroll_email: Option<String>,
 
     pub email_subject_format: String,
@@ -32,11 +38,23 @@ pub struct PayrollConfig {
     pub public_holiday_enabled: bool,
 }
 
+fn default_rounding_direction() -> String {
+    "Up".to_string()
+}
+
+fn default_workweek() -> String {
+    "Monday".to_string()
+}
+
 impl Default for PayrollConfig {
     fn default() -> Self {
         Self {
-            frequency: "Four weekly".to_string(),
+            frequency: "Every Four Weeks".to_string(),
+
             rounding_minutes: 15,
+            rounding_direction: "Up".to_string(),
+
+            start_of_workweek: "Monday".to_string(),
 
             payroll_email: None,
 
