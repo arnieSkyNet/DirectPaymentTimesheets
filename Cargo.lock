@@ -741,7 +741,7 @@ checksum = "f27ae1dd37df86211c42e150270f82743308803d90a6f6e6651cd730d5e1732f"
 
 [[package]]
 name = "direct_payment_timesheets"
-version = "0.0.5"
+version = "0.0.6"
 dependencies = [
  "chrono",
  "csv",

@@ -96,6 +96,11 @@ fn apply_migrations(connection: &Connection) -> Result<()> {
 
     if current_version < 6 {
         migrate_to_version_6(connection)?;
+        current_version = 6;
+    }
+
+    if current_version < 7 {
+        migrate_to_version_7(connection)?;
     }
 
     Ok(())
@@ -231,6 +236,36 @@ fn migrate_to_version_6(connection: &Connection) -> Result<()> {
                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 )?;
 
     connection.execute("UPDATE schema_version SET version = 6", [])?;
+
+    Ok(())
+}
+
+fn migrate_to_version_7(connection: &Connection) -> Result<()> {
+    connection.execute(
+        "
+                    ALTER TABLE employers
+                            ADD COLUMN date_of_birth TEXT
+                                    ",
+        [],
+    )?;
+
+    connection.execute(
+                                                            "
+                                                                    ALTER TABLE employers
+                                                                            ADD COLUMN national_insurance_number TEXT
+                                                                                    ",
+                                                                                            [],
+                                                                                                )?;
+
+    connection.execute(
+                                                                                                            "
+                                                                                                                    ALTER TABLE employers
+                                                                                                                            ADD COLUMN reference_account_number TEXT
+                                                                                                                                    ",
+                                                                                                                                            [],
+                                                                                                                                                )?;
+
+    connection.execute("UPDATE schema_version SET version = 7", [])?;
 
     Ok(())
 }

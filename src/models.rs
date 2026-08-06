@@ -16,13 +16,15 @@ pub struct TimesheetEntry {
 pub struct Employer {
     pub id: i64,
     pub name: String,
+
+    pub date_of_birth: Option<String>,
+    pub national_insurance_number: Option<String>,
+    pub reference_account_number: Option<String>,
+
     pub address: Option<String>,
-    pub postcode: Option<String>,
     pub telephone: Option<String>,
     pub email: Option<String>,
-    pub payroll_provider: Option<String>,
-    pub payroll_provider_address: Option<String>,
-    pub payroll_provider_phone: Option<String>,
+
     pub employer_signature: Option<String>,
     pub default_pdf_template: Option<String>,
     pub sick_pay_enabled: bool,

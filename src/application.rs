@@ -32,7 +32,7 @@ fn launch_gui(app: Application) -> Result<(), Box<dyn Error>> {
     let options = eframe::NativeOptions::default();
 
     eframe::run_native(
-        "DirectPaymentTimesheets",
+        "Direct Payments Timesheets",
         options,
         Box::new(|_cc| Ok(Box::new(crate::gui::DirectPaymentApp::new(app)))),
     )
