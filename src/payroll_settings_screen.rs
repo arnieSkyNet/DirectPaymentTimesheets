@@ -62,6 +62,38 @@ impl PayrollSettingsScreen {
 
         ui.separator();
 
+        ui.heading("Payroll Provider");
+
+        ui.columns(2, |columns| {
+            columns[0].label("Provider Name");
+            columns[0].text_edit_singleline(&mut self.provider_name);
+
+            columns[0].label("Provider Email");
+            columns[0].text_edit_singleline(&mut self.provider_email);
+
+            columns[0].label("Provider Telephone");
+            columns[0].text_edit_singleline(&mut self.provider_telephone);
+
+            columns[1].label("Provider Address");
+            columns[1].add(egui::TextEdit::multiline(&mut self.provider_address).desired_rows(5));
+        });
+
+        ui.separator();
+
+        ui.heading("Payroll Department");
+
+        ui.columns(2, |columns| {
+            columns[0].label("Send Timesheet PDF To");
+            columns[0].text_edit_singleline(&mut self.payroll_email);
+
+            columns[1].label("PDF Email Subject Format");
+            columns[1].text_edit_singleline(&mut self.email_subject_format);
+
+            columns[1].label("Example: YYYYMMwWW becomes 202604w02");
+        });
+
+        ui.separator();
+
         ui.heading("Payroll Rules");
 
         ui.horizontal(|ui| {
@@ -109,13 +141,15 @@ impl PayrollSettingsScreen {
                             (60, "Up"),
                             (60, "Down"),
                         ] {
-                            ui.selectable_value(
-                                &mut self.rounding_minutes,
-                                minutes,
-                                format!("{} Minutes {}", minutes, direction),
-                            );
-
-                            if self.rounding_minutes == minutes {
+                            if ui
+                                .selectable_label(
+                                    self.rounding_minutes == minutes
+                                        && self.rounding_direction == direction,
+                                    format!("{} Minutes {}", minutes, direction),
+                                )
+                                .clicked()
+                            {
+                                self.rounding_minutes = minutes;
                                 self.rounding_direction = direction.to_string();
                             }
                         }
@@ -173,6 +207,10 @@ impl PayrollSettingsScreen {
         self.rounding_direction = payroll.rounding_direction.clone();
         self.start_of_workweek = payroll.start_of_workweek.clone();
 
+        self.payroll_email = payroll.payroll_email.clone().unwrap_or_default();
+
+        self.email_subject_format = payroll.email_subject_format.clone();
+
         self.overtime_enabled = payroll.overtime_enabled;
         self.public_holiday_enabled = payroll.public_holiday_enabled;
 
@@ -190,11 +228,18 @@ impl PayrollSettingsScreen {
         let payroll = &mut application.context.config.payroll;
 
         payroll.frequency = self.frequency.clone();
+
         payroll.rounding_minutes = self.rounding_minutes;
         payroll.rounding_direction = self.rounding_direction.clone();
+
         payroll.start_of_workweek = self.start_of_workweek.clone();
 
+        payroll.payroll_email = optional_value(&self.payroll_email);
+
+        payroll.email_subject_format = self.email_subject_format.clone();
+
         payroll.overtime_enabled = self.overtime_enabled;
+
         payroll.public_holiday_enabled = self.public_holiday_enabled;
 
         let provider = PayrollProvider {
