@@ -45,7 +45,7 @@ impl DirectPaymentApp {
 impl eframe::App for DirectPaymentApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         egui::TopBottomPanel::top("header").show(ctx, |ui| {
-            ui.heading("DirectPaymentTimesheets");
+            ui.heading("Direct Payments Timesheets");
             ui.label(format!("Version {}", self.version));
         });
 

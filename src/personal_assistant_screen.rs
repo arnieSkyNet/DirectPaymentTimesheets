@@ -47,6 +47,7 @@ impl PersonalAssistantScreen {
 
         if ui.button("New Personal Assistant").clicked() {
             self.selected_index = None;
+
             self.editing_assistant = Some(PersonalAssistant {
                 id: 0,
                 first_name: String::new(),
@@ -63,6 +64,7 @@ impl PersonalAssistantScreen {
             });
 
             self.pay_rates.clear();
+
             self.status_message = "New Personal Assistant.".to_string();
         }
 
@@ -97,39 +99,49 @@ impl PersonalAssistantScreen {
                 ui.heading("Details");
 
                 if let Some(assistant) = &mut self.editing_assistant {
-                    ui.label("First Name");
-                    ui.text_edit_singleline(&mut assistant.first_name);
+                    ui.columns(2, |columns| {
+                        columns[0].label("First Name");
+                        columns[0].text_edit_singleline(&mut assistant.first_name);
 
-                    ui.label("Surname");
-                    ui.text_edit_singleline(&mut assistant.surname);
+                        columns[1].label("Surname");
+                        columns[1].text_edit_singleline(&mut assistant.surname);
 
-                    ui.label("Date of Birth");
-                    edit_optional_text(ui, &mut assistant.date_of_birth);
+                        columns[0].label("Date of Birth");
+                        edit_optional_text(&mut columns[0], &mut assistant.date_of_birth);
 
-                    ui.label("National Insurance Number");
-                    edit_optional_text(ui, &mut assistant.national_insurance_number);
+                        columns[1].label("Address");
+                        edit_optional_multiline(&mut columns[1], &mut assistant.address);
 
-                    ui.label("Address");
-                    edit_optional_text(ui, &mut assistant.address);
+                        columns[0].label("National Insurance Number");
+                        edit_optional_text(
+                            &mut columns[0],
+                            &mut assistant.national_insurance_number,
+                        );
 
-                    ui.label("Postcode");
-                    edit_optional_text(ui, &mut assistant.postcode);
+                        columns[0].label("Email Address");
+                        edit_optional_text(&mut columns[0], &mut assistant.email);
 
-                    ui.label("Telephone");
-                    edit_optional_text(ui, &mut assistant.telephone);
+                        columns[1].label("Telephone Number");
+                        edit_optional_text(&mut columns[1], &mut assistant.telephone);
+                    });
 
-                    ui.label("Email");
-                    edit_optional_text(ui, &mut assistant.email);
+                    ui.separator();
 
-                    ui.label("Employment Status");
-                    edit_optional_text(ui, &mut assistant.employment_status);
+                    let mut active = assistant.employment_status.as_deref() == Some("Active");
 
-                    ui.checkbox(
-                        &mut assistant.sick_pay_enabled,
-                        "Enable sickness hours / SSP",
-                    );
+                    ui.horizontal(|ui| {
+                        if ui.checkbox(&mut active, "Active").changed() {
+                            assistant.employment_status = if active {
+                                Some("Active".to_string())
+                            } else {
+                                Some("Inactive".to_string())
+                            };
+                        }
 
-                    ui.checkbox(&mut assistant.mileage_enabled, "Enable mileage claims");
+                        ui.checkbox(&mut assistant.sick_pay_enabled, "Enable sickness");
+
+                        ui.checkbox(&mut assistant.mileage_enabled, "Enable mileage");
+                    });
 
                     ui.separator();
 
@@ -145,6 +157,7 @@ impl PersonalAssistantScreen {
                                 self.status_message = "Personal Assistant saved.".to_string();
                                 self.loaded = false;
                             }
+
                             Err(error) => {
                                 self.status_message = format!("Save failed: {}", error);
                             }
@@ -169,14 +182,16 @@ impl PersonalAssistantScreen {
 
                         ui.separator();
 
-                        ui.label("Effective Date");
-                        ui.text_edit_singleline(&mut self.new_rate_effective_date);
+                        ui.columns(3, |columns| {
+                            columns[0].label("Effective Date");
+                            columns[0].text_edit_singleline(&mut self.new_rate_effective_date);
 
-                        ui.label("Base Hourly Rate");
-                        ui.text_edit_singleline(&mut self.new_rate_base);
+                            columns[1].label("Base Hourly Rate");
+                            columns[1].text_edit_singleline(&mut self.new_rate_base);
 
-                        ui.label("Employer Top Up Rate");
-                        ui.text_edit_singleline(&mut self.new_rate_top_up);
+                            columns[2].label("Employer Top Up Rate");
+                            columns[2].text_edit_singleline(&mut self.new_rate_top_up);
+                        });
 
                         if ui.button("Save Pay Rate").clicked() {
                             let rate = PersonalAssistantPayRate {
@@ -240,5 +255,15 @@ fn edit_optional_text(ui: &mut egui::Ui, value: &mut Option<String>) {
 
     if let Some(text) = value {
         ui.text_edit_singleline(text);
+    }
+}
+
+fn edit_optional_multiline(ui: &mut egui::Ui, value: &mut Option<String>) {
+    if value.is_none() {
+        *value = Some(String::new());
+    }
+
+    if let Some(text) = value {
+        ui.add(egui::TextEdit::multiline(text).desired_rows(4));
     }
 }

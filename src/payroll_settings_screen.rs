@@ -21,8 +21,6 @@ pub struct PayrollSettingsScreen {
     overtime_enabled: bool,
     public_holiday_enabled: bool,
 
-    provider_id: i64,
-
     status_message: String,
 }
 
@@ -46,8 +44,6 @@ impl PayrollSettingsScreen {
             overtime_enabled: false,
             public_holiday_enabled: false,
 
-            provider_id: 1,
-
             status_message: "Payroll settings not loaded.".to_string(),
         }
     }
@@ -62,43 +58,47 @@ impl PayrollSettingsScreen {
 
         ui.separator();
 
-        ui.label("Payroll frequency");
-        ui.text_edit_singleline(&mut self.frequency);
+        ui.heading("Payroll Provider");
 
-        ui.label("Rounding minutes");
-        ui.text_edit_singleline(&mut self.rounding_minutes);
+        ui.columns(2, |columns| {
+            columns[0].label("Provider Name");
+            columns[0].text_edit_singleline(&mut self.provider_name);
+
+            columns[0].label("Provider Email");
+            columns[0].text_edit_singleline(&mut self.provider_email);
+
+            columns[0].label("Provider Telephone");
+            columns[0].text_edit_singleline(&mut self.provider_telephone);
+
+            columns[1].label("Provider Address");
+            columns[1].add(egui::TextEdit::multiline(&mut self.provider_address).desired_rows(5));
+        });
 
         ui.separator();
 
         ui.heading("Payroll Department");
 
-        ui.label("Payroll email (To)");
-        ui.text_edit_singleline(&mut self.payroll_email);
+        ui.columns(2, |columns| {
+            columns[0].label("Send Timesheet PDF To");
+            columns[0].text_edit_singleline(&mut self.payroll_email);
+
+            columns[1].label("PDF Email Subject Format");
+            columns[1].text_edit_singleline(&mut self.email_subject_format);
+
+            columns[1].label("Example: YYYYMMwWW becomes 202604w02");
+        });
 
         ui.separator();
 
-        ui.heading("Payroll Provider");
+        ui.heading("Payroll Rules");
 
-        ui.label("Provider name");
-        ui.text_edit_singleline(&mut self.provider_name);
+        ui.columns(2, |columns| {
+            columns[0].label("Payroll Frequency");
+            columns[0].text_edit_singleline(&mut self.frequency);
 
-        ui.label("Provider email");
-        ui.text_edit_singleline(&mut self.provider_email);
-
-        ui.label("Provider address");
-        ui.add(egui::TextEdit::multiline(&mut self.provider_address).desired_rows(4));
-
-        ui.label("Provider telephone");
-        ui.text_edit_singleline(&mut self.provider_telephone);
-
-        ui.separator();
-
-        ui.heading("Email");
-
-        ui.label("Timesheet PDF subject format");
-        ui.text_edit_singleline(&mut self.email_subject_format);
-
-        ui.label("Example: YYYYMMwWW becomes 202604w02");
+            columns[1].label("Rounding Minutes");
+            columns[1].text_edit_singleline(&mut self.rounding_minutes);
+        });
 
         ui.separator();
 
@@ -136,8 +136,6 @@ impl PayrollSettingsScreen {
         self.public_holiday_enabled = payroll.public_holiday_enabled;
 
         if let Ok(Some(provider)) = application.payroll_provider_repository.get() {
-            self.provider_id = provider.id;
-
             self.provider_name = provider.name.unwrap_or_default();
             self.provider_email = provider.email.unwrap_or_default();
             self.provider_address = provider.address.unwrap_or_default();
@@ -163,21 +161,16 @@ impl PayrollSettingsScreen {
         payroll.public_holiday_enabled = self.public_holiday_enabled;
 
         let provider = PayrollProvider {
-            id: self.provider_id,
+            id: 1,
             name: optional_value(&self.provider_name),
             email: optional_value(&self.provider_email),
             address: optional_value(&self.provider_address),
             telephone: optional_value(&self.provider_telephone),
         };
 
-        match application.payroll_provider_repository.save(&provider) {
-            Ok(()) => {}
-
-            Err(error) => {
-                self.status_message = format!("Failed saving provider: {}", error);
-
-                return;
-            }
+        if let Err(error) = application.payroll_provider_repository.save(&provider) {
+            self.status_message = format!("Failed saving payroll provider: {}", error);
+            return;
         }
 
         match application.save_config() {
@@ -186,7 +179,7 @@ impl PayrollSettingsScreen {
             }
 
             Err(error) => {
-                self.status_message = format!("Failed saving settings: {}", error);
+                self.status_message = format!("Failed saving payroll settings: {}", error);
             }
         }
     }

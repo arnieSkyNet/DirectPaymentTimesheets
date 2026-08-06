@@ -24,96 +24,125 @@ impl EmployerScreen {
             self.loaded = true;
         }
 
-        ui.heading("Employer Maintenance");
+        ui.horizontal(|ui| {
+            ui.heading("Employer Maintenance");
+
+            if self.employer.is_none() {
+                if ui.button("New Employer").clicked() {
+                    self.employer = Some(Employer {
+                        id: 0,
+                        name: String::new(),
+                        date_of_birth: None,
+                        national_insurance_number: None,
+                        reference_account_number: None,
+                        address: None,
+                        telephone: None,
+                        email: None,
+                        employer_signature: None,
+                        default_pdf_template: None,
+                        sick_pay_enabled: false,
+                        mileage_enabled: false,
+                    });
+
+                    self.status_message = "New employer.".to_string();
+                }
+            }
+        });
 
         ui.separator();
 
-        if ui.button("New Employer").clicked() {
-            self.employer = Some(Employer {
-                id: 0,
-                name: String::new(),
-                address: None,
-                postcode: None,
-                telephone: None,
-                email: None,
-                payroll_provider: None,
-                payroll_provider_address: None,
-                payroll_provider_phone: None,
-                employer_signature: None,
-                default_pdf_template: None,
-                sick_pay_enabled: false,
-                mileage_enabled: false,
+        if let Some(employer) = &mut self.employer {
+            ui.columns(3, |columns| {
+                // LEFT COLUMN
+
+                columns[0].label("Employer Name");
+
+                columns[0].text_edit_singleline(&mut employer.name);
+
+                columns[0].add_space(15.0);
+
+                columns[0].label("Email Address");
+
+                let email = employer.email.get_or_insert(String::new());
+
+                columns[0].text_edit_singleline(email);
+
+                columns[0].add_space(15.0);
+
+                columns[0].label("Telephone Number");
+
+                let telephone = employer.telephone.get_or_insert(String::new());
+
+                columns[0].text_edit_singleline(telephone);
+
+                // MIDDLE COLUMN
+
+                columns[1].label("Date of Birth");
+
+                let dob = employer.date_of_birth.get_or_insert(String::new());
+
+                columns[1].add_sized([120.0, 20.0], egui::TextEdit::singleline(dob));
+
+                columns[1].add_space(15.0);
+
+                columns[1].label("National Insurance Number");
+
+                let ni = employer
+                    .national_insurance_number
+                    .get_or_insert(String::new());
+
+                columns[1].add_sized([140.0, 20.0], egui::TextEdit::singleline(ni));
+
+                columns[1].add_space(15.0);
+
+                columns[1].label("DP Account");
+
+                let account = employer
+                    .reference_account_number
+                    .get_or_insert(String::new());
+
+                columns[1].add_sized([140.0, 20.0], egui::TextEdit::singleline(account));
+
+                // RIGHT COLUMN
+
+                columns[2].label("Address");
+
+                let address = employer.address.get_or_insert(String::new());
+
+                columns[2].add_sized([250.0, 140.0], egui::TextEdit::multiline(address));
             });
 
-            self.status_message = "New employer.".to_string();
-        }
+            ui.separator();
 
-        ui.separator();
+            ui.heading("Enable PA Features");
 
-        match &mut self.employer {
-            Some(employer) => {
-                ui.label("Employer Details");
+            ui.horizontal(|ui| {
+                ui.checkbox(&mut employer.sick_pay_enabled, "Sickness / SSP");
 
-                ui.label("Name");
-                ui.text_edit_singleline(&mut employer.name);
+                ui.checkbox(&mut employer.mileage_enabled, "Mileage Claims");
+            });
 
-                ui.label("Address");
-                edit_optional_multiline(ui, &mut employer.address);
+            ui.separator();
 
-                ui.label("Postcode");
-                edit_optional_text(ui, &mut employer.postcode);
+            if ui.button("Save Employer").clicked() {
+                let result = if employer.id == 0 {
+                    application.employer_repository.insert(employer)
+                } else {
+                    application.employer_repository.update(employer)
+                };
 
-                ui.label("Telephone");
-                edit_optional_text(ui, &mut employer.telephone);
+                match result {
+                    Ok(()) => {
+                        self.status_message = "Employer saved successfully.".to_string();
+                    }
 
-                ui.label("Email");
-                edit_optional_text(ui, &mut employer.email);
-
-                ui.separator();
-
-                ui.label("Documents");
-
-                ui.label("Employer Signature");
-                edit_optional_text(ui, &mut employer.employer_signature);
-
-                ui.label("Default PDF Template");
-                edit_optional_text(ui, &mut employer.default_pdf_template);
-
-                ui.separator();
-
-                ui.checkbox(
-                    &mut employer.sick_pay_enabled,
-                    "Enable sickness hours / SSP",
-                );
-
-                ui.checkbox(&mut employer.mileage_enabled, "Enable mileage claims");
-
-                ui.separator();
-
-                if ui.button("Save Employer").clicked() {
-                    let result = if employer.id == 0 {
-                        application.employer_repository.insert(employer)
-                    } else {
-                        application.employer_repository.update(employer)
-                    };
-
-                    match result {
-                        Ok(()) => {
-                            self.status_message = "Employer saved successfully.".to_string();
-                        }
-
-                        Err(error) => {
-                            self.status_message = format!("Failed saving employer: {}", error);
-                        }
+                    Err(error) => {
+                        self.status_message = format!("Failed saving employer: {}", error);
                     }
                 }
             }
-
-            None => {
-                ui.label("No employer loaded.");
-
-                ui.label("Click New Employer to create one.");
-            }
+        } else {
+            ui.label("No employer loaded.");
         }
 
         ui.separator();
@@ -133,25 +162,5 @@ impl EmployerScreen {
                 self.status_message = format!("Failed loading employer: {}", error);
             }
         }
-    }
-}
-
-fn edit_optional_text(ui: &mut egui::Ui, value: &mut Option<String>) {
-    if value.is_none() {
-        *value = Some(String::new());
-    }
-
-    if let Some(text) = value {
-        ui.text_edit_singleline(text);
-    }
-}
-
-fn edit_optional_multiline(ui: &mut egui::Ui, value: &mut Option<String>) {
-    if value.is_none() {
-        *value = Some(String::new());
-    }
-
-    if let Some(text) = value {
-        ui.text_edit_multiline(text);
     }
 }
