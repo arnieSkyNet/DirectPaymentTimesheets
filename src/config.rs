@@ -23,8 +23,16 @@ pub struct FolderConfig {
 pub struct PayrollConfig {
     pub frequency: String,
     pub rounding_minutes: i64,
+
     pub payroll_email: Option<String>,
-    pub bcc_email: Option<String>,
+
+    pub provider_name: Option<String>,
+    pub provider_email: Option<String>,
+    pub provider_address: Option<String>,
+    pub provider_telephone: Option<String>,
+
+    pub email_subject_format: String,
+
     pub overtime_enabled: bool,
     pub public_holiday_enabled: bool,
 }
@@ -34,8 +42,16 @@ impl Default for PayrollConfig {
         Self {
             frequency: "Four weekly".to_string(),
             rounding_minutes: 15,
+
             payroll_email: None,
-            bcc_email: None,
+
+            provider_name: None,
+            provider_email: None,
+            provider_address: None,
+            provider_telephone: None,
+
+            email_subject_format: "YYYYMMwWW".to_string(),
+
             overtime_enabled: false,
             public_holiday_enabled: false,
         }
