@@ -4,6 +4,7 @@ use crate::context::AppContext;
 use crate::employer_repository::EmployerRepository;
 use crate::import_service::ImportService;
 use crate::pay_rate_repository::PayRateRepository;
+use crate::payroll_provider_repository::PayrollProviderRepository;
 use crate::personal_assistant_repository::PersonalAssistantRepository;
 use crate::repository::TimesheetRepository;
 
@@ -13,6 +14,7 @@ pub struct Application {
     pub employer_repository: EmployerRepository,
     pub personal_assistant_repository: PersonalAssistantRepository,
     pub pay_rate_repository: PayRateRepository,
+    pub payroll_provider_repository: PayrollProviderRepository,
 }
 
 impl Application {
@@ -36,12 +38,18 @@ impl Application {
 
         let pay_rate_repository = PayRateRepository::new(pay_rate_connection);
 
+        let payroll_provider_connection = Connection::open(&context.environment.database_path)?;
+
+        let payroll_provider_repository =
+            PayrollProviderRepository::new(payroll_provider_connection);
+
         Ok(Self {
             context,
             repository,
             employer_repository,
             personal_assistant_repository,
             pay_rate_repository,
+            payroll_provider_repository,
         })
     }
 

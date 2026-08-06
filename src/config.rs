@@ -26,11 +26,6 @@ pub struct PayrollConfig {
 
     pub payroll_email: Option<String>,
 
-    pub provider_name: Option<String>,
-    pub provider_email: Option<String>,
-    pub provider_address: Option<String>,
-    pub provider_telephone: Option<String>,
-
     pub email_subject_format: String,
 
     pub overtime_enabled: bool,
@@ -44,11 +39,6 @@ impl Default for PayrollConfig {
             rounding_minutes: 15,
 
             payroll_email: None,
-
-            provider_name: None,
-            provider_email: None,
-            provider_address: None,
-            provider_telephone: None,
 
             email_subject_format: "YYYYMMwWW".to_string(),
 

@@ -1,6 +1,7 @@
 use eframe::egui;
 
 use crate::app::Application;
+use crate::payroll_provider_repository::PayrollProvider;
 
 pub struct PayrollSettingsScreen {
     loaded: bool,
@@ -19,6 +20,8 @@ pub struct PayrollSettingsScreen {
 
     overtime_enabled: bool,
     public_holiday_enabled: bool,
+
+    provider_id: i64,
 
     status_message: String,
 }
@@ -42,6 +45,8 @@ impl PayrollSettingsScreen {
 
             overtime_enabled: false,
             public_holiday_enabled: false,
+
+            provider_id: 1,
 
             status_message: "Payroll settings not loaded.".to_string(),
         }
@@ -124,19 +129,20 @@ impl PayrollSettingsScreen {
 
         self.payroll_email = payroll.payroll_email.clone().unwrap_or_default();
 
-        self.provider_name = payroll.provider_name.clone().unwrap_or_default();
-
-        self.provider_email = payroll.provider_email.clone().unwrap_or_default();
-
-        self.provider_address = payroll.provider_address.clone().unwrap_or_default();
-
-        self.provider_telephone = payroll.provider_telephone.clone().unwrap_or_default();
-
         self.email_subject_format = payroll.email_subject_format.clone();
 
         self.overtime_enabled = payroll.overtime_enabled;
 
         self.public_holiday_enabled = payroll.public_holiday_enabled;
+
+        if let Ok(Some(provider)) = application.payroll_provider_repository.get() {
+            self.provider_id = provider.id;
+
+            self.provider_name = provider.name.unwrap_or_default();
+            self.provider_email = provider.email.unwrap_or_default();
+            self.provider_address = provider.address.unwrap_or_default();
+            self.provider_telephone = provider.telephone.unwrap_or_default();
+        }
 
         self.status_message = "Payroll settings loaded.".to_string();
     }
@@ -150,19 +156,29 @@ impl PayrollSettingsScreen {
 
         payroll.payroll_email = optional_value(&self.payroll_email);
 
-        payroll.provider_name = optional_value(&self.provider_name);
-
-        payroll.provider_email = optional_value(&self.provider_email);
-
-        payroll.provider_address = optional_value(&self.provider_address);
-
-        payroll.provider_telephone = optional_value(&self.provider_telephone);
-
         payroll.email_subject_format = self.email_subject_format.clone();
 
         payroll.overtime_enabled = self.overtime_enabled;
 
         payroll.public_holiday_enabled = self.public_holiday_enabled;
+
+        let provider = PayrollProvider {
+            id: self.provider_id,
+            name: optional_value(&self.provider_name),
+            email: optional_value(&self.provider_email),
+            address: optional_value(&self.provider_address),
+            telephone: optional_value(&self.provider_telephone),
+        };
+
+        match application.payroll_provider_repository.save(&provider) {
+            Ok(()) => {}
+
+            Err(error) => {
+                self.status_message = format!("Failed saving provider: {}", error);
+
+                return;
+            }
+        }
 
         match application.save_config() {
             Ok(()) => {
@@ -170,7 +186,7 @@ impl PayrollSettingsScreen {
             }
 
             Err(error) => {
-                self.status_message = format!("Failed saving payroll settings: {}", error);
+                self.status_message = format!("Failed saving settings: {}", error);
             }
         }
     }
