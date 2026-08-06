@@ -13,6 +13,7 @@ pub struct PersonalAssistantScreen {
     new_rate_effective_date: String,
     new_rate_base: String,
     new_rate_top_up: String,
+    editing_pay_rate_id: Option<i64>,
 
     loaded: bool,
     status_message: String,
@@ -29,6 +30,7 @@ impl PersonalAssistantScreen {
             new_rate_effective_date: String::new(),
             new_rate_base: String::new(),
             new_rate_top_up: String::new(),
+            editing_pay_rate_id: None,
 
             loaded: false,
             status_message: "Personal Assistants not loaded.".to_string(),
@@ -139,7 +141,6 @@ impl PersonalAssistantScreen {
                         }
 
                         ui.checkbox(&mut assistant.sick_pay_enabled, "Enable sickness");
-
                         ui.checkbox(&mut assistant.mileage_enabled, "Enable mileage");
                     });
 
@@ -171,13 +172,43 @@ impl PersonalAssistantScreen {
                     if assistant.id == 0 {
                         ui.label("Save the Personal Assistant before adding pay rates.");
                     } else {
-                        for rate in &self.pay_rates {
-                            ui.label(format!(
-                                "{}  £{:.2}  Top up £{:.2}",
-                                rate.effective_date,
-                                rate.base_hourly_rate,
-                                rate.employer_top_up_rate
-                            ));
+                        for rate in self.pay_rates.clone() {
+                            ui.horizontal(|ui| {
+                                ui.label(format!(
+                                    "{}  £{:.2}  Top up £{:.2}",
+                                    rate.effective_date,
+                                    rate.base_hourly_rate,
+                                    rate.employer_top_up_rate
+                                ));
+
+                                if ui.button("Edit").clicked() {
+                                    self.editing_pay_rate_id = Some(rate.id);
+
+                                    self.new_rate_effective_date = rate.effective_date.clone();
+
+                                    self.new_rate_base = rate.base_hourly_rate.to_string();
+
+                                    self.new_rate_top_up = rate.employer_top_up_rate.to_string();
+                                }
+
+                                if ui.button("Delete").clicked() {
+                                    match application.pay_rate_repository.delete(rate.id) {
+                                        Ok(()) => {
+                                            self.pay_rates = application
+                                                .pay_rate_repository
+                                                .get_all_for_personal_assistant(assistant.id)
+                                                .unwrap_or_default();
+
+                                            self.status_message = "Pay rate deleted.".to_string();
+                                        }
+
+                                        Err(error) => {
+                                            self.status_message =
+                                                format!("Delete failed: {}", error);
+                                        }
+                                    }
+                                }
+                            });
                         }
 
                         ui.separator();
@@ -193,9 +224,15 @@ impl PersonalAssistantScreen {
                             columns[2].text_edit_singleline(&mut self.new_rate_top_up);
                         });
 
-                        if ui.button("Save Pay Rate").clicked() {
+                        let button_text = if self.editing_pay_rate_id.is_some() {
+                            "Update Pay Rate"
+                        } else {
+                            "Save Pay Rate"
+                        };
+
+                        if ui.button(button_text).clicked() {
                             let rate = PersonalAssistantPayRate {
-                                id: 0,
+                                id: self.editing_pay_rate_id.unwrap_or(0),
                                 personal_assistant_id: assistant.id,
                                 effective_date: self.new_rate_effective_date.clone(),
                                 base_hourly_rate: self.new_rate_base.parse().unwrap_or(0.0),
@@ -203,7 +240,13 @@ impl PersonalAssistantScreen {
                                 created_at: chrono::Local::now().format("%Y-%m-%d").to_string(),
                             };
 
-                            match application.pay_rate_repository.insert(&rate) {
+                            let result = if self.editing_pay_rate_id.is_some() {
+                                application.pay_rate_repository.update(&rate)
+                            } else {
+                                application.pay_rate_repository.insert(&rate)
+                            };
+
+                            match result {
                                 Ok(()) => {
                                     self.pay_rates = application
                                         .pay_rate_repository
@@ -215,6 +258,8 @@ impl PersonalAssistantScreen {
                                     self.new_rate_effective_date.clear();
                                     self.new_rate_base.clear();
                                     self.new_rate_top_up.clear();
+
+                                    self.editing_pay_rate_id = None;
                                 }
 
                                 Err(error) => {
@@ -247,7 +292,6 @@ impl PersonalAssistantScreen {
         }
     }
 }
-
 fn edit_optional_text(ui: &mut egui::Ui, value: &mut Option<String>) {
     if value.is_none() {
         *value = Some(String::new());
