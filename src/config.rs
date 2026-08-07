@@ -30,8 +30,6 @@ pub struct PayrollConfig {
     #[serde(default = "default_workweek")]
     pub start_of_workweek: String,
 
-    pub payroll_email: Option<String>,
-
     pub email_subject_format: String,
 
     pub overtime_enabled: bool,
@@ -55,8 +53,6 @@ impl Default for PayrollConfig {
             rounding_direction: "Up".to_string(),
 
             start_of_workweek: "Monday".to_string(),
-
-            payroll_email: None,
 
             email_subject_format: "YYYYMMwWW".to_string(),
 
