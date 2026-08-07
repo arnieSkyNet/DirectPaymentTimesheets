@@ -63,6 +63,7 @@ impl PersonalAssistantScreen {
                 employment_status: Some("Active".to_string()),
                 sick_pay_enabled: false,
                 mileage_enabled: false,
+                start_date: None,
             });
 
             self.pay_rates.clear();
@@ -142,6 +143,16 @@ impl PersonalAssistantScreen {
 
                         ui.checkbox(&mut assistant.sick_pay_enabled, "Enable sickness");
                         ui.checkbox(&mut assistant.mileage_enabled, "Enable mileage");
+
+                        ui.label("Start date");
+
+                        if assistant.start_date.is_none() {
+                            assistant.start_date = Some(String::new());
+                        }
+
+                        if let Some(start_date) = &mut assistant.start_date {
+                            ui.text_edit_singleline(start_date);
+                        }
                     });
 
                     ui.separator();

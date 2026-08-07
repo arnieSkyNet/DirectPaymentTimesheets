@@ -1,7 +1,9 @@
 use eframe::egui;
 
 use crate::app::Application;
+use crate::pay_rate_repository::PersonalAssistantPayRate;
 use crate::payroll_provider_repository::PayrollProvider;
+use chrono::Local;
 
 pub struct PayrollSettingsScreen {
     loaded: bool,
@@ -19,11 +21,14 @@ pub struct PayrollSettingsScreen {
     provider_telephone: String,
 
     email_subject_format: String,
-
+    standard_rate_effective_date: String,
+    standard_rate_base: String,
+    standard_rate_top_up: String,
     overtime_enabled: bool,
     public_holiday_enabled: bool,
 
     status_message: String,
+    confirm_bulk_pay_rate_update: bool,
 }
 
 impl PayrollSettingsScreen {
@@ -44,11 +49,14 @@ impl PayrollSettingsScreen {
             provider_telephone: String::new(),
 
             email_subject_format: String::new(),
-
+            standard_rate_effective_date: String::new(),
+            standard_rate_base: String::new(),
+            standard_rate_top_up: String::new(),
             overtime_enabled: false,
             public_holiday_enabled: false,
 
             status_message: "Payroll settings not loaded.".to_string(),
+            confirm_bulk_pay_rate_update: false,
         }
     }
 
@@ -91,6 +99,66 @@ impl PayrollSettingsScreen {
 
             columns[1].label("Example: YYYYMMwWW becomes 202604w02");
         });
+
+        ui.separator();
+        ui.heading("National / Standard Pay Rate Update");
+
+        ui.columns(3, |columns| {
+            columns[0].label("Effective date:");
+            columns[0].text_edit_singleline(&mut self.standard_rate_effective_date);
+
+            columns[1].label("Basic hourly rate:");
+            columns[1].text_edit_singleline(&mut self.standard_rate_base);
+
+            columns[2].label("Employer top up rate:");
+            columns[2].text_edit_singleline(&mut self.standard_rate_top_up);
+        });
+
+        if ui
+            .button("Create new pay-rate entry for all active Personal Assistants")
+            .clicked()
+        {
+            self.confirm_bulk_pay_rate_update = true;
+        }
+
+        if self.confirm_bulk_pay_rate_update {
+            ui.separator();
+
+            ui.label("Create new pay-rate entry for all active Personal Assistants?");
+
+            ui.horizontal(|ui| {
+                if ui.button("Cancel").clicked() {
+                    self.confirm_bulk_pay_rate_update = false;
+                }
+
+                if ui.button("Create Pay Rates").clicked() {
+                    match create_bulk_pay_rates(
+                        application,
+                        &self.standard_rate_effective_date,
+                        &self.standard_rate_base,
+                        &self.standard_rate_top_up,
+                    ) {
+                        Ok(count) => {
+                            self.status_message = format!(
+                                "Created new pay-rate entries for {} active Personal Assistants.",
+                                count
+                            );
+
+                            self.standard_rate_effective_date.clear();
+                            self.standard_rate_base.clear();
+                            self.standard_rate_top_up.clear();
+                        }
+
+                        Err(error) => {
+                            self.status_message =
+                                format!("Failed creating pay-rate entries: {}", error);
+                        }
+                    }
+
+                    self.confirm_bulk_pay_rate_update = false;
+                }
+            });
+        }
 
         ui.separator();
 
@@ -181,12 +249,16 @@ impl PayrollSettingsScreen {
 
         ui.separator();
 
-        ui.checkbox(&mut self.overtime_enabled, "Enable overtime calculations");
+        ui.horizontal(|ui| {
+            ui.checkbox(&mut self.overtime_enabled, "Enable overtime calculations");
 
-        ui.checkbox(
-            &mut self.public_holiday_enabled,
-            "Enable public holiday payments",
-        );
+            ui.add_space(30.0);
+
+            ui.checkbox(
+                &mut self.public_holiday_enabled,
+                "Enable public holiday payments",
+            );
+        });
 
         ui.separator();
 
@@ -265,6 +337,52 @@ impl PayrollSettingsScreen {
             }
         }
     }
+}
+
+fn create_bulk_pay_rates(
+    application: &Application,
+    effective_date: &str,
+    base_rate: &str,
+    top_up_rate: &str,
+) -> Result<usize, String> {
+    let base_hourly_rate: f64 = base_rate
+        .parse()
+        .map_err(|_| "Basic hourly rate must be a valid number.".to_string())?;
+
+    let employer_top_up_rate: f64 = if top_up_rate.trim().is_empty() {
+        0.0
+    } else {
+        top_up_rate
+            .parse()
+            .map_err(|_| "Employer top up rate must be a valid number.".to_string())?
+    };
+
+    let assistants = application
+        .personal_assistant_repository
+        .get_active()
+        .map_err(|error| error.to_string())?;
+
+    let mut created = 0;
+
+    for assistant in assistants {
+        let rate = PersonalAssistantPayRate {
+            id: 0,
+            personal_assistant_id: assistant.id,
+            effective_date: effective_date.to_string(),
+            base_hourly_rate,
+            employer_top_up_rate,
+            created_at: Local::now().format("%Y-%m-%d").to_string(),
+        };
+
+        application
+            .pay_rate_repository
+            .insert(&rate)
+            .map_err(|error| error.to_string())?;
+
+        created += 1;
+    }
+
+    Ok(created)
 }
 
 fn optional_value(value: &str) -> Option<String> {
