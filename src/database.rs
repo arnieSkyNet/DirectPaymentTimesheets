@@ -110,6 +110,11 @@ fn apply_migrations(connection: &Connection) -> Result<()> {
 
     if current_version < 9 {
         migrate_to_version_9(connection)?;
+        current_version = 9;
+    }
+
+    if current_version < 10 {
+        migrate_to_version_10(connection)?;
     }
 
     Ok(())
@@ -301,6 +306,25 @@ fn migrate_to_version_9(connection: &Connection) -> Result<()> {
     )?;
 
     connection.execute("UPDATE schema_version SET version = 9", [])?;
+
+    Ok(())
+}
+
+fn migrate_to_version_10(connection: &Connection) -> Result<()> {
+    connection.execute(
+            "
+                    CREATE TABLE IF NOT EXISTS personal_assistant_contracted_hours (
+                                id INTEGER PRIMARY KEY,
+                                            personal_assistant_id INTEGER NOT NULL,
+                                                        effective_date TEXT NOT NULL,
+                                                                    contracted_hours TEXT NOT NULL,
+                                                                                created_at TEXT NOT NULL
+                                                                                        )
+                                                                                                ",
+                                                                                                        [],
+                                                                                                            )?;
+
+    connection.execute("UPDATE schema_version SET version = 10", [])?;
 
     Ok(())
 }

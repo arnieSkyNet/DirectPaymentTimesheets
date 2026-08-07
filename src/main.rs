@@ -3,6 +3,7 @@ mod application;
 mod archive;
 mod config;
 mod context;
+mod contracted_hours_repository;
 mod csv_import;
 mod database;
 mod date_utils;
