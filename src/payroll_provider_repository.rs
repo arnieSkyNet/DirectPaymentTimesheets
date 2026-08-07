@@ -7,6 +7,7 @@ pub struct PayrollProvider {
     pub email: Option<String>,
     pub address: Option<String>,
     pub telephone: Option<String>,
+    pub payroll_department_email: Option<String>,
 }
 
 pub struct PayrollProviderRepository {
@@ -23,12 +24,13 @@ impl PayrollProviderRepository {
             "
             SELECT
                 id,
-                name,
-                email,
-                address,
-                telephone
-            FROM payroll_provider
-            LIMIT 1
+                    name,
+                        email,
+                            address,
+                                telephone,
+                                    payroll_department_email
+                                    FROM payroll_provider
+                                    LIMIT 1
             ",
         )?;
 
@@ -41,6 +43,7 @@ impl PayrollProviderRepository {
                 email: row.get(2)?,
                 address: row.get(3)?,
                 telephone: row.get(4)?,
+                payroll_department_email: row.get(5)?,
             }))
         } else {
             Ok(None)
@@ -52,25 +55,28 @@ impl PayrollProviderRepository {
             "
             INSERT INTO payroll_provider (
                 id,
-                name,
-                email,
-                address,
-                telephone
-            )
-            VALUES (?1, ?2, ?3, ?4, ?5)
-            ON CONFLICT(id) DO UPDATE SET
-                name = excluded.name,
-                email = excluded.email,
-                address = excluded.address,
-                telephone = excluded.telephone
+                    name,
+                        email,
+                            address,
+                                telephone,
+                                    payroll_department_email
+                                    )
+                                    VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+                                    ON CONFLICT(id) DO UPDATE SET
+                                        name = excluded.name,
+                                            email = excluded.email,
+                                                address = excluded.address,
+                                                    telephone = excluded.telephone,
+                                                        payroll_department_email = excluded.payroll_department_email
             ",
             params![
                 provider.id,
-                provider.name,
-                provider.email,
-                provider.address,
-                provider.telephone,
-            ],
+                    provider.name,
+                        provider.email,
+                            provider.address,
+                                provider.telephone,
+                                    provider.payroll_department_email,
+                                    ],
         )?;
 
         Ok(())

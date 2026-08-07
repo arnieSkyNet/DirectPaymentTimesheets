@@ -108,6 +108,10 @@ fn apply_migrations(connection: &Connection) -> Result<()> {
         current_version = 8;
     }
 
+    if current_version < 9 {
+        migrate_to_version_9(connection)?;
+    }
+
     Ok(())
 }
 
@@ -284,6 +288,19 @@ fn migrate_to_version_8(connection: &Connection) -> Result<()> {
     )?;
 
     connection.execute("UPDATE schema_version SET version = 8", [])?;
+
+    Ok(())
+}
+fn migrate_to_version_9(connection: &Connection) -> Result<()> {
+    connection.execute(
+        "
+                    ALTER TABLE payroll_provider
+                            ADD COLUMN payroll_department_email TEXT
+                                    ",
+        [],
+    )?;
+
+    connection.execute("UPDATE schema_version SET version = 9", [])?;
 
     Ok(())
 }

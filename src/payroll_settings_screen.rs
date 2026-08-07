@@ -279,7 +279,9 @@ impl PayrollSettingsScreen {
         self.rounding_direction = payroll.rounding_direction.clone();
         self.start_of_workweek = payroll.start_of_workweek.clone();
 
-        self.payroll_email = payroll.payroll_email.clone().unwrap_or_default();
+        if let Ok(Some(provider)) = application.payroll_provider_repository.get() {
+            self.payroll_email = provider.payroll_department_email.unwrap_or_default();
+        }
 
         self.email_subject_format = payroll.email_subject_format.clone();
 
@@ -306,8 +308,6 @@ impl PayrollSettingsScreen {
 
         payroll.start_of_workweek = self.start_of_workweek.clone();
 
-        payroll.payroll_email = optional_value(&self.payroll_email);
-
         payroll.email_subject_format = self.email_subject_format.clone();
 
         payroll.overtime_enabled = self.overtime_enabled;
@@ -320,6 +320,7 @@ impl PayrollSettingsScreen {
             email: optional_value(&self.provider_email),
             address: optional_value(&self.provider_address),
             telephone: optional_value(&self.provider_telephone),
+            payroll_department_email: optional_value(&self.payroll_email),
         };
 
         if let Err(error) = application.payroll_provider_repository.save(&provider) {
