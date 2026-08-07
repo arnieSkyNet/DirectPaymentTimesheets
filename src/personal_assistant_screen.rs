@@ -15,6 +15,10 @@ pub struct PersonalAssistantScreen {
     new_rate_top_up: String,
     editing_pay_rate_id: Option<i64>,
 
+    contracted_hours: Vec<crate::contracted_hours_repository::ContractedHoursEntry>,
+    new_hours_effective_date: String,
+    new_contracted_hours: String,
+    editing_contracted_hours_id: Option<i64>,
     loaded: bool,
     status_message: String,
 }
@@ -31,6 +35,10 @@ impl PersonalAssistantScreen {
             new_rate_base: String::new(),
             new_rate_top_up: String::new(),
             editing_pay_rate_id: None,
+            contracted_hours: Vec::new(),
+            new_hours_effective_date: String::new(),
+            new_contracted_hours: String::new(),
+            editing_contracted_hours_id: None,
 
             loaded: false,
             status_message: "Personal Assistants not loaded.".to_string(),
@@ -67,6 +75,7 @@ impl PersonalAssistantScreen {
             });
 
             self.pay_rates.clear();
+            self.contracted_hours.clear();
 
             self.status_message = "New Personal Assistant.".to_string();
         }
@@ -90,6 +99,11 @@ impl PersonalAssistantScreen {
 
                         self.pay_rates = application
                             .pay_rate_repository
+                            .get_all_for_personal_assistant(assistant.id)
+                            .unwrap_or_default();
+
+                        self.contracted_hours = application
+                            .contracted_hours_repository
                             .get_all_for_personal_assistant(assistant.id)
                             .unwrap_or_default();
                     }
@@ -172,6 +186,98 @@ impl PersonalAssistantScreen {
 
                             Err(error) => {
                                 self.status_message = format!("Save failed: {}", error);
+                            }
+                        }
+                    }
+
+                    ui.separator();
+
+                    ui.heading("Contracted Weekly Hours");
+
+                    if assistant.id == 0 {
+                        ui.label("Save the Personal Assistant before adding contracted hours.");
+                    } else {
+                        for hours in self.contracted_hours.clone() {
+                            ui.horizontal(|ui| {
+                                ui.label(format!(
+                                    "{}  {}",
+                                    hours.effective_date, hours.contracted_hours
+                                ));
+
+                                if ui.button("Edit").clicked() {
+                                    self.editing_contracted_hours_id = Some(hours.id);
+
+                                    self.new_hours_effective_date = hours.effective_date.clone();
+
+                                    self.new_contracted_hours = hours.contracted_hours.clone();
+                                }
+
+                                if ui.button("Delete").clicked() {
+                                    match application.contracted_hours_repository.delete(hours.id) {
+                                        Ok(()) => {
+                                            self.contracted_hours = application
+                                                .contracted_hours_repository
+                                                .get_all_for_personal_assistant(assistant.id)
+                                                .unwrap_or_default();
+
+                                            self.status_message =
+                                                "Contracted hours deleted.".to_string();
+                                        }
+
+                                        Err(error) => {
+                                            self.status_message =
+                                                format!("Delete failed: {}", error);
+                                        }
+                                    }
+                                }
+                            });
+                        }
+
+                        ui.separator();
+
+                        ui.horizontal(|ui| {
+                            ui.label("Effective Date");
+
+                            ui.text_edit_singleline(&mut self.new_hours_effective_date);
+
+                            ui.label("Contracted Hours");
+
+                            ui.text_edit_singleline(&mut self.new_contracted_hours);
+                        });
+
+                        if ui.button("Save Contracted Hours").clicked() {
+                            let hours = crate::contracted_hours_repository::ContractedHoursEntry {
+                                id: self.editing_contracted_hours_id.unwrap_or(0),
+                                personal_assistant_id: assistant.id,
+                                effective_date: self.new_hours_effective_date.clone(),
+                                contracted_hours: self.new_contracted_hours.clone(),
+                                created_at: chrono::Local::now().format("%Y-%m-%d").to_string(),
+                            };
+
+                            let result = if self.editing_contracted_hours_id.is_some() {
+                                application.contracted_hours_repository.update(&hours)
+                            } else {
+                                application.contracted_hours_repository.insert(&hours)
+                            };
+
+                            match result {
+                                Ok(()) => {
+                                    self.contracted_hours = application
+                                        .contracted_hours_repository
+                                        .get_all_for_personal_assistant(assistant.id)
+                                        .unwrap_or_default();
+
+                                    self.new_hours_effective_date.clear();
+                                    self.new_contracted_hours.clear();
+                                    self.editing_contracted_hours_id = None;
+
+                                    self.status_message = "Contracted hours saved.".to_string();
+                                }
+
+                                Err(error) => {
+                                    self.status_message =
+                                        format!("Contracted hours save failed: {}", error);
+                                }
                             }
                         }
                     }

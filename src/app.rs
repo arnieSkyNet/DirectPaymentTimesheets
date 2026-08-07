@@ -1,6 +1,7 @@
 use rusqlite::Connection;
 
 use crate::context::AppContext;
+use crate::contracted_hours_repository::ContractedHoursRepository;
 use crate::employer_repository::EmployerRepository;
 use crate::import_service::ImportService;
 use crate::pay_rate_repository::PayRateRepository;
@@ -14,6 +15,7 @@ pub struct Application {
     pub employer_repository: EmployerRepository,
     pub personal_assistant_repository: PersonalAssistantRepository,
     pub pay_rate_repository: PayRateRepository,
+    pub contracted_hours_repository: ContractedHoursRepository,
     pub payroll_provider_repository: PayrollProviderRepository,
 }
 
@@ -28,6 +30,7 @@ impl Application {
         let personal_assistant_connection = Connection::open(&context.environment.database_path)?;
 
         let pay_rate_connection = Connection::open(&context.environment.database_path)?;
+        let contracted_hours_connection = Connection::open(&context.environment.database_path)?;
 
         let repository = TimesheetRepository::new(timesheet_connection);
 
@@ -37,6 +40,9 @@ impl Application {
             PersonalAssistantRepository::new(personal_assistant_connection);
 
         let pay_rate_repository = PayRateRepository::new(pay_rate_connection);
+
+        let contracted_hours_repository =
+            ContractedHoursRepository::new(contracted_hours_connection);
 
         let payroll_provider_connection = Connection::open(&context.environment.database_path)?;
 
@@ -49,6 +55,7 @@ impl Application {
             employer_repository,
             personal_assistant_repository,
             pay_rate_repository,
+            contracted_hours_repository,
             payroll_provider_repository,
         })
     }
