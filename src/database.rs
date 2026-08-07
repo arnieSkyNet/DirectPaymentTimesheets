@@ -103,6 +103,11 @@ fn apply_migrations(connection: &Connection) -> Result<()> {
         migrate_to_version_7(connection)?;
     }
 
+    if current_version < 8 {
+        migrate_to_version_8(connection)?;
+        current_version = 8;
+    }
+
     Ok(())
 }
 
@@ -266,6 +271,19 @@ fn migrate_to_version_7(connection: &Connection) -> Result<()> {
                                                                                                                                                 )?;
 
     connection.execute("UPDATE schema_version SET version = 7", [])?;
+
+    Ok(())
+}
+fn migrate_to_version_8(connection: &Connection) -> Result<()> {
+    connection.execute(
+        "
+                    ALTER TABLE personal_assistants
+                            ADD COLUMN start_date TEXT
+                                    ",
+        [],
+    )?;
+
+    connection.execute("UPDATE schema_version SET version = 8", [])?;
 
     Ok(())
 }
