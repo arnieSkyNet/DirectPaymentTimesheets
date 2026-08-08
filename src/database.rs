@@ -123,6 +123,11 @@ fn apply_migrations(connection: &Connection) -> Result<()> {
         current_version = 11;
     }
 
+    if current_version < 12 {
+        migrate_to_version_12(connection)?;
+        current_version = 12;
+    }
+
     Ok(())
 }
 
@@ -352,6 +357,20 @@ fn migrate_to_version_11(connection: &Connection) -> Result<()> {
                                                                                                                                     )?;
 
     connection.execute("UPDATE schema_version SET version = 11", [])?;
+
+    Ok(())
+}
+
+fn migrate_to_version_12(connection: &Connection) -> Result<()> {
+    connection.execute(
+        "
+                    ALTER TABLE personal_assistants
+                            ADD COLUMN signature TEXT
+                                    ",
+        [],
+    )?;
+
+    connection.execute("UPDATE schema_version SET version = 12", [])?;
 
     Ok(())
 }
