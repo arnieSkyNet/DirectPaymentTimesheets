@@ -72,6 +72,7 @@ impl PersonalAssistantScreen {
                 sick_pay_enabled: false,
                 mileage_enabled: false,
                 start_date: None,
+                signature: None,
             });
 
             self.pay_rates.clear();

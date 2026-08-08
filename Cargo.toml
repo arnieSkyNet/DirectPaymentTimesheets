@@ -16,4 +16,5 @@ eframe = "0.33"
 egui = "0.33"
 pdf-extract = "0.7"
 rfd = "0.15"
+printpdf = "0.8"
 

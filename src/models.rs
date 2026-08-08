@@ -46,4 +46,5 @@ pub struct PersonalAssistant {
     pub sick_pay_enabled: bool,
     pub mileage_enabled: bool,
     pub start_date: Option<String>,
+    pub signature: Option<String>,
 }
