@@ -115,6 +115,12 @@ fn apply_migrations(connection: &Connection) -> Result<()> {
 
     if current_version < 10 {
         migrate_to_version_10(connection)?;
+        current_version = 10;
+    }
+
+    if current_version < 11 {
+        migrate_to_version_11(connection)?;
+        current_version = 11;
     }
 
     Ok(())
@@ -325,6 +331,27 @@ fn migrate_to_version_10(connection: &Connection) -> Result<()> {
                                                                                                             )?;
 
     connection.execute("UPDATE schema_version SET version = 10", [])?;
+
+    Ok(())
+}
+
+fn migrate_to_version_11(connection: &Connection) -> Result<()> {
+    connection.execute(
+            "
+                    CREATE TABLE IF NOT EXISTS payroll_schedules (
+                                id INTEGER PRIMARY KEY,
+                                            payroll_year TEXT NOT NULL,
+                                                        cycle_number INTEGER NOT NULL,
+                                                                    first_week_commencing TEXT NOT NULL,
+                                                                                latest_posting_date TEXT NOT NULL,
+                                                                                            pay_date TEXT NOT NULL,
+                                                                                                        created_at TEXT NOT NULL
+                                                                                                                )
+                                                                                                                        ",
+                                                                                                                                [],
+                                                                                                                                    )?;
+
+    connection.execute("UPDATE schema_version SET version = 11", [])?;
 
     Ok(())
 }

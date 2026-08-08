@@ -14,4 +14,6 @@ dirs = "5.0"
 chrono = "0.4.45"
 eframe = "0.33"
 egui = "0.33"
+pdf-extract = "0.7"
+rfd = "0.15"
 
