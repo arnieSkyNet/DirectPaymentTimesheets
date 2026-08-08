@@ -115,6 +115,25 @@ impl DirectPaymentApp {
             }
         }
 
+        if ui.button("Import Payroll Prep Sheet").clicked() {
+            if let Some(path) = rfd::FileDialog::new()
+                .add_filter("Payroll Prep Sheet", &["pdf", "docx"])
+                .pick_file()
+            {
+                match self.application.import_payroll_prep_sheet(&path) {
+                    Ok(count) => {
+                        self.status_message =
+                            format!("Payroll Prep Sheet imported: {} schedule entries.", count);
+                    }
+
+                    Err(error) => {
+                        self.status_message =
+                            format!("Payroll Prep Sheet import failed: {}", error);
+                    }
+                }
+            }
+        }
+
         if ui.button("View Timesheets").clicked() {
             match self.application.get_timesheets() {
                 Ok(entries) => {

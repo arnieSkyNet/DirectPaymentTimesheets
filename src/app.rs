@@ -5,7 +5,9 @@ use crate::contracted_hours_repository::ContractedHoursRepository;
 use crate::employer_repository::EmployerRepository;
 use crate::import_service::ImportService;
 use crate::pay_rate_repository::PayRateRepository;
+use crate::payroll_prep_sheet_import_service::PayrollPrepSheetImportService;
 use crate::payroll_provider_repository::PayrollProviderRepository;
+use crate::payroll_schedule_repository::PayrollScheduleRepository;
 use crate::personal_assistant_repository::PersonalAssistantRepository;
 use crate::repository::TimesheetRepository;
 
@@ -17,6 +19,7 @@ pub struct Application {
     pub pay_rate_repository: PayRateRepository,
     pub contracted_hours_repository: ContractedHoursRepository,
     pub payroll_provider_repository: PayrollProviderRepository,
+    pub payroll_schedule_repository: PayrollScheduleRepository,
 }
 
 impl Application {
@@ -49,6 +52,11 @@ impl Application {
         let payroll_provider_repository =
             PayrollProviderRepository::new(payroll_provider_connection);
 
+        let payroll_schedule_connection = Connection::open(&context.environment.database_path)?;
+
+        let payroll_schedule_repository =
+            PayrollScheduleRepository::new(payroll_schedule_connection);
+
         Ok(Self {
             context,
             repository,
@@ -57,6 +65,7 @@ impl Application {
             pay_rate_repository,
             contracted_hours_repository,
             payroll_provider_repository,
+            payroll_schedule_repository,
         })
     }
 
@@ -94,5 +103,14 @@ impl Application {
         let summary = service.run()?;
 
         Ok(summary)
+    }
+
+    pub fn import_payroll_prep_sheet(
+        &self,
+        path: &std::path::Path,
+    ) -> Result<usize, Box<dyn std::error::Error>> {
+        let service = PayrollPrepSheetImportService::new(&self.payroll_schedule_repository);
+
+        service.import(path)
     }
 }
