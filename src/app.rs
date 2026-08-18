@@ -8,6 +8,7 @@ use crate::pay_rate_repository::PayRateRepository;
 use crate::payroll_prep_sheet_import_service::PayrollPrepSheetImportService;
 use crate::payroll_provider_repository::PayrollProviderRepository;
 use crate::payroll_schedule_repository::PayrollScheduleRepository;
+use crate::pdf_generator::{PdfGenerator, TimesheetPdfData};
 use crate::personal_assistant_repository::PersonalAssistantRepository;
 use crate::repository::TimesheetRepository;
 
@@ -112,5 +113,16 @@ impl Application {
         let service = PayrollPrepSheetImportService::new(&self.payroll_schedule_repository);
 
         service.import(path)
+    }
+
+    pub fn generate_timesheet_pdf(
+        &self,
+        data: &TimesheetPdfData<'_>,
+    ) -> Result<std::path::PathBuf, Box<dyn std::error::Error>> {
+        let output_dir = crate::paths::expand_path(&self.context.config.folders.pdf_output);
+
+        let output_path = PdfGenerator::generate(&output_dir, data)?;
+
+        Ok(output_path)
     }
 }
