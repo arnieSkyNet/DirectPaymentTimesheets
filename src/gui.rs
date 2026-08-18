@@ -5,6 +5,7 @@ use crate::employer_screen::EmployerScreen;
 use crate::import_service::ImportSummary;
 use crate::models::TimesheetEntry;
 use crate::payroll_settings_screen::PayrollSettingsScreen;
+use crate::pdf_generator::TimesheetPdfData;
 use crate::personal_assistant_screen::PersonalAssistantScreen;
 
 enum ActiveScreen {
@@ -130,6 +131,29 @@ impl DirectPaymentApp {
                         self.status_message =
                             format!("Payroll Prep Sheet import failed: {}", error);
                     }
+                }
+            }
+        }
+
+        if ui.button("Generate Test PDF").clicked() {
+            let data = TimesheetPdfData {
+                employer_name: "Mark Barnes",
+                personal_assistant_name: "Andy Pandy",
+                national_insurance_number: "AB123456C",
+                contracted_weekly_hours: "25",
+                pay_rate: 12.72,
+                week_commencing_dates: ["13/07/2026", "20/07/2026", "27/07/2026", "03/08/2026"],
+                hours_worked: ["25", "25", "25", "25"],
+                previous_cycle_hours: Some("5.25"),
+            };
+
+            match self.application.generate_timesheet_pdf(&data) {
+                Ok(path) => {
+                    self.status_message = format!("Test PDF generated: {}", path.display());
+                }
+
+                Err(error) => {
+                    self.status_message = format!("PDF generation failed: {}", error);
                 }
             }
         }
