@@ -96,6 +96,18 @@ impl Application {
         Ok(timesheets)
     }
 
+    pub fn get_payroll_schedule(
+        &self,
+        payroll_year: &str,
+    ) -> Result<Vec<crate::payroll_schedule_repository::PayrollSchedule>, Box<dyn std::error::Error>>
+    {
+        let schedules = self
+            .payroll_schedule_repository
+            .get_all_for_year(payroll_year)?;
+
+        Ok(schedules)
+    }
+
     pub fn import_csv(
         &self,
     ) -> Result<crate::import_service::ImportSummary, Box<dyn std::error::Error>> {

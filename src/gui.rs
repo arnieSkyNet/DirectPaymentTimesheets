@@ -4,6 +4,7 @@ use crate::app::Application;
 use crate::employer_screen::EmployerScreen;
 use crate::import_service::ImportSummary;
 use crate::models::TimesheetEntry;
+use crate::payroll_schedule_repository::PayrollSchedule;
 use crate::payroll_settings_screen::PayrollSettingsScreen;
 use crate::pdf_generator::TimesheetPdfData;
 use crate::personal_assistant_screen::PersonalAssistantScreen;
@@ -21,6 +22,7 @@ pub struct DirectPaymentApp {
     status_message: String,
     last_import: Option<ImportSummary>,
     timesheets: Vec<TimesheetEntry>,
+    payroll_schedules: Vec<PayrollSchedule>,
     employer_screen: EmployerScreen,
     personal_assistant_screen: PersonalAssistantScreen,
     payroll_settings_screen: PayrollSettingsScreen,
@@ -35,6 +37,7 @@ impl DirectPaymentApp {
             status_message: "Application ready.".to_string(),
             last_import: None,
             timesheets: Vec::new(),
+            payroll_schedules: Vec::new(),
             employer_screen: EmployerScreen::new(),
             personal_assistant_screen: PersonalAssistantScreen::new(),
             payroll_settings_screen: PayrollSettingsScreen::new(),
@@ -135,6 +138,22 @@ impl DirectPaymentApp {
             }
         }
 
+        if ui.button("View Payroll Schedule").clicked() {
+            match self.application.get_payroll_schedule("2026/27") {
+                Ok(schedules) => {
+                    self.payroll_schedules = schedules;
+                    self.status_message = format!(
+                        "Loaded {} payroll schedule entries.",
+                        self.payroll_schedules.len()
+                    );
+                }
+
+                Err(error) => {
+                    self.status_message = format!("Failed loading payroll schedule: {}", error);
+                }
+            }
+        }
+
         if ui.button("Generate Test PDF").clicked() {
             let data = TimesheetPdfData {
                 employer_name: "Mark Barnes",
@@ -192,7 +211,7 @@ impl DirectPaymentApp {
         ui.separator();
 
         ui.label(format!("Status: {}", self.status_message));
-
+        draw_payroll_schedule(ui, &self.payroll_schedules);
         draw_timesheets(ui, &self.timesheets);
     }
 }
@@ -239,4 +258,33 @@ fn format_worked_time(minutes: i64) -> String {
     let remaining_minutes = minutes % 60;
 
     format!("{}h {}m", hours, remaining_minutes)
+}
+
+fn draw_payroll_schedule(ui: &mut egui::Ui, schedules: &[PayrollSchedule]) {
+    ui.separator();
+
+    ui.heading("Payroll Schedule");
+
+    if schedules.is_empty() {
+        ui.label("No payroll schedule loaded.");
+        return;
+    }
+
+    egui::Grid::new("payroll_schedule_grid")
+        .striped(true)
+        .show(ui, |ui| {
+            ui.label("Cycle");
+            ui.label("First Week Commencing");
+            ui.label("Latest Posting Date");
+            ui.label("Pay Date");
+            ui.end_row();
+
+            for schedule in schedules {
+                ui.label(schedule.cycle_number.to_string());
+                ui.label(&schedule.first_week_commencing);
+                ui.label(&schedule.latest_posting_date);
+                ui.label(&schedule.pay_date);
+                ui.end_row();
+            }
+        });
 }
