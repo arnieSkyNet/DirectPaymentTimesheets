@@ -12,6 +12,20 @@ impl TimesheetRepository {
     }
 
     pub fn insert(&self, entry: &TimesheetEntry) -> Result<()> {
+        let personal_assistant_id: Option<i64> = self
+            .connection
+            .query_row(
+                "
+                SELECT id
+                FROM personal_assistants
+                WHERE first_name || ' ' || surname = ?1
+                LIMIT 1
+                ",
+                params![&entry.pa_name],
+                |row| row.get(0),
+            )
+            .ok();
+
         self.connection.execute(
             "INSERT INTO timesheets (
                 pa_name,
@@ -27,7 +41,7 @@ impl TimesheetRepository {
             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
             params![
                 &entry.pa_name,
-                &entry.personal_assistant_id,
+                personal_assistant_id,
                 &entry.start_time,
                 &entry.end_time,
                 &entry.break_minutes,
@@ -186,9 +200,7 @@ mod tests {
     fn insert_and_get_timesheet() {
         let repository = create_test_repository();
 
-        let entry = test_entry();
-
-        repository.insert(&entry).unwrap();
+        repository.insert(&test_entry()).unwrap();
 
         let entries = repository.get_all().unwrap();
 
@@ -208,22 +220,22 @@ mod tests {
     }
 
     #[test]
-    fn successful_import_is_detected() {
+    fn import_audit_is_recorded() {
         let repository = create_test_repository();
 
         repository
             .add_import_audit(
-                "2026-08-02 12:00:00",
-                "test.csv",
-                "archive/test.csv",
-                4,
-                4,
+                "2026-01-01 12:00:00",
+                "/test/file.csv",
+                "/archive/file.csv",
+                1,
+                1,
                 0,
                 "SUCCESS",
                 None,
             )
             .unwrap();
 
-        assert!(repository.has_successful_import("test.csv").unwrap());
+        assert!(repository.has_successful_import("/test/file.csv").unwrap());
     }
 }
