@@ -1,3 +1,4 @@
+use chrono::Datelike;
 use eframe::egui;
 
 use crate::app::Application;
@@ -148,7 +149,9 @@ impl DirectPaymentApp {
         }
 
         if ui.button("View Payroll Schedule").clicked() {
-            match self.application.get_payroll_schedule("2026/27") {
+            let payroll_year = current_payroll_year();
+
+            match self.application.get_payroll_schedule(&payroll_year) {
                 Ok(schedules) => {
                     self.payroll_schedules = schedules;
 
@@ -198,11 +201,8 @@ impl DirectPaymentApp {
         match &self.last_import {
             Some(summary) => {
                 ui.label(format!("Files discovered: {}", summary.files_discovered));
-
                 ui.label(format!("Files processed: {}", summary.files_processed));
-
                 ui.label(format!("Rows imported: {}", summary.rows_imported));
-
                 ui.label(format!("Rows skipped: {}", summary.rows_skipped));
             }
 
@@ -227,15 +227,19 @@ impl DirectPaymentApp {
             .next()
             .ok_or("No employer has been configured.")?;
 
-        let schedules = self.application.get_payroll_schedule("2026/27")?;
+        let payroll_year = current_payroll_year();
+
+        let schedules = self.application.get_payroll_schedule(&payroll_year)?;
 
         if schedules.is_empty() {
-            return Err("No payroll schedule has been loaded for 2026/27.".into());
+            return Err(
+                format!("No payroll schedule has been loaded for {}.", payroll_year).into(),
+            );
         }
 
         let today = chrono::Local::now().date_naive();
 
-        // Find the most recently completed payroll cycle.
+        // Find the payroll cycle containing today.
         let current_schedule = schedules
             .into_iter()
             .filter_map(|schedule| {
@@ -280,20 +284,11 @@ impl DirectPaymentApp {
         let output_dir =
             crate::paths::expand_path(&self.application.context.config.folders.pdf_output);
 
-        let signatures_dir = crate::paths::expand_path(&std::path::PathBuf::from(
-            "~/.directpaymenttimesheets/signatures",
-        ));
-
-        let pa_signatures_dir = signatures_dir.join("pa");
-
-        let employer_signature = signatures_dir.join("employer-rgb.png");
-
         let mut generated = 0usize;
 
         for assistant in &assistants {
             let is_active = match &assistant.employment_status {
                 Some(status) => status.trim().eq_ignore_ascii_case("active"),
-
                 None => true,
             };
 
@@ -310,7 +305,7 @@ impl DirectPaymentApp {
             let payroll_timesheet = self
                 .application
                 .payroll_timesheet_repository
-                .get_for_cycle_and_pa("2026/27", current_schedule.cycle_number, assistant.id)?
+                .get_for_cycle_and_pa(&payroll_year, current_schedule.cycle_number, assistant.id)?
                 .ok_or_else(|| {
                     format!(
                         "No Payroll Timesheet Preparation record exists for {}.",
@@ -342,7 +337,6 @@ impl DirectPaymentApp {
 
             let pay_rate = match pay_rate {
                 Some(rate) => rate.base_hourly_rate + rate.employer_top_up_rate,
-
                 None => 0.0,
             };
 
@@ -457,25 +451,23 @@ impl DirectPaymentApp {
             let previous_cycle_hours = payroll_timesheet.previous_cycle_hours.map(format_pdf_hours);
 
             // --------------------------------------------------------
-            // PA signature
+            // Signatures
+            //
+            // These paths come directly from the Employer and
+            // Personal Assistant database records.
             // --------------------------------------------------------
 
-            let pa_signature_filename =
-                signature_filename(&assistant.first_name, &assistant.surname);
+            let employer_signature_path = employer
+                .employer_signature
+                .as_deref()
+                .map(|path| crate::paths::expand_path(&std::path::PathBuf::from(path)))
+                .filter(|path| path.exists());
 
-            let pa_signature = pa_signatures_dir.join(pa_signature_filename);
-
-            let employer_signature_path = if employer_signature.exists() {
-                Some(employer_signature.as_path())
-            } else {
-                None
-            };
-
-            let pa_signature_path = if pa_signature.exists() {
-                Some(pa_signature.as_path())
-            } else {
-                None
-            };
+            let pa_signature_path = assistant
+                .signature
+                .as_deref()
+                .map(|path| crate::paths::expand_path(&std::path::PathBuf::from(path)))
+                .filter(|path| path.exists());
 
             // --------------------------------------------------------
             // Build PDF data from the SAVED preparation record.
@@ -546,9 +538,9 @@ impl DirectPaymentApp {
 
                 previous_cycle_hours: previous_cycle_hours.as_deref(),
 
-                employer_signature_path,
+                employer_signature_path: employer_signature_path.as_deref(),
 
-                pa_signature_path,
+                pa_signature_path: pa_signature_path.as_deref(),
             };
 
             PdfGenerator::generate(&output_dir, &data)?;
@@ -558,6 +550,18 @@ impl DirectPaymentApp {
 
         Ok(generated)
     }
+}
+
+fn current_payroll_year() -> String {
+    let today = chrono::Local::now().date_naive();
+
+    let start_year = if today.month() >= 4 {
+        today.year()
+    } else {
+        today.year() - 1
+    };
+
+    format!("{}/{}", start_year, (start_year + 1) % 100)
 }
 
 fn format_pdf_hours(value: f64) -> String {
@@ -572,14 +576,6 @@ fn format_pdf_hours(value: f64) -> String {
     let text = format!("{:.2}", value);
 
     text.trim_end_matches('0').trim_end_matches('.').to_string()
-}
-
-fn signature_filename(first_name: &str, surname: &str) -> String {
-    format!(
-        "{}-{}-rgb.png",
-        first_name.trim().to_lowercase(),
-        surname.trim().to_lowercase()
-    )
 }
 
 fn parse_date_checked(value: &str) -> Option<chrono::NaiveDate> {
