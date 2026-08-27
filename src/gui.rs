@@ -2,6 +2,7 @@ use chrono::Datelike;
 use eframe::egui;
 
 use crate::app::Application;
+use crate::application_settings_screen::ApplicationSettingsScreen;
 use crate::import_service::ImportSummary;
 use crate::models::TimesheetEntry;
 use crate::payroll_schedule_repository::PayrollSchedule;
@@ -16,6 +17,7 @@ enum ActiveScreen {
     PersonalAssistant,
     PayrollSettings,
     PayrollTimesheet,
+    ApplicationSettings,
 }
 
 pub struct DirectPaymentApp {
@@ -29,6 +31,7 @@ pub struct DirectPaymentApp {
     personal_assistant_screen: PersonalAssistantScreen,
     payroll_settings_screen: PayrollSettingsScreen,
     payroll_timesheet_screen: PayrollTimesheetScreen,
+    application_settings_screen: ApplicationSettingsScreen,
     active_screen: ActiveScreen,
 }
 
@@ -45,6 +48,7 @@ impl DirectPaymentApp {
             personal_assistant_screen: PersonalAssistantScreen::new(),
             payroll_settings_screen: PayrollSettingsScreen::new(),
             payroll_timesheet_screen: PayrollTimesheetScreen::new(),
+            application_settings_screen: ApplicationSettingsScreen::new(),
             active_screen: ActiveScreen::Dashboard,
         }
     }
@@ -53,8 +57,14 @@ impl DirectPaymentApp {
 impl eframe::App for DirectPaymentApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         egui::TopBottomPanel::top("header").show(ctx, |ui| {
-            ui.heading("Direct Payments Timesheets");
-            ui.label(format!("Version {}", self.version));
+            ui.horizontal(|ui| {
+                ui.heading("Direct Payments Timesheets");
+                ui.label(format!("Version {}", self.version));
+
+                if ui.button(" Settings").clicked() {
+                    self.active_screen = ActiveScreen::ApplicationSettings;
+                }
+            });
         });
 
         egui::TopBottomPanel::bottom("navigation").show(ctx, |ui| {
@@ -104,6 +114,10 @@ impl eframe::App for DirectPaymentApp {
 
             ActiveScreen::PayrollTimesheet => {
                 self.payroll_timesheet_screen.show(ui, &self.application);
+            }
+            ActiveScreen::ApplicationSettings => {
+                self.application_settings_screen
+                    .show(ui, &mut self.application);
             }
         });
     }
@@ -543,7 +557,7 @@ impl DirectPaymentApp {
                 pa_signature_path: pa_signature_path.as_deref(),
             };
 
-            PdfGenerator::generate(&output_dir, &data)?;
+            PdfGenerator::generate(&output_dir, &data, &self.application.context.config.pdf)?;
 
             generated += 1;
         }

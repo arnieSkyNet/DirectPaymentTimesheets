@@ -9,6 +9,9 @@ pub struct AppConfig {
     pub folders: FolderConfig,
 
     #[serde(default)]
+    pub pdf: PdfConfig,
+
+    #[serde(default)]
     pub payroll: PayrollConfig,
 }
 
@@ -17,6 +20,56 @@ pub struct FolderConfig {
     pub csv_import: PathBuf,
     pub pdf_output: PathBuf,
     pub email_archive: PathBuf,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct PdfConfig {
+    #[serde(default = "default_regular_font")]
+    pub regular_font: PathBuf,
+
+    #[serde(default = "default_bold_font")]
+    pub bold_font: PathBuf,
+
+    #[serde(default = "default_week_commencing_font_size")]
+    pub week_commencing_font_size: f64,
+
+    #[serde(default = "default_hours_font_size")]
+    pub hours_font_size: f64,
+
+    #[serde(default = "default_information_font_size")]
+    pub information_font_size: f64,
+}
+
+fn default_regular_font() -> PathBuf {
+    PathBuf::from("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf")
+}
+
+fn default_bold_font() -> PathBuf {
+    PathBuf::from("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf")
+}
+
+fn default_week_commencing_font_size() -> f64 {
+    8.5
+}
+
+fn default_hours_font_size() -> f64 {
+    14.0
+}
+
+fn default_information_font_size() -> f64 {
+    5.5
+}
+
+impl Default for PdfConfig {
+    fn default() -> Self {
+        Self {
+            regular_font: default_regular_font(),
+            bold_font: default_bold_font(),
+            week_commencing_font_size: default_week_commencing_font_size(),
+            hours_font_size: default_hours_font_size(),
+            information_font_size: default_information_font_size(),
+        }
+    }
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -72,6 +125,8 @@ impl Default for AppConfig {
                 pdf_output: home.join("Documents/DirectPaymentTimesheets/pdf"),
                 email_archive: home.join("Documents/DirectPaymentTimesheets/emails"),
             },
+
+            pdf: PdfConfig::default(),
 
             payroll: PayrollConfig::default(),
         }

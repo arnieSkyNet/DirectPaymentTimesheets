@@ -1,5 +1,6 @@
 mod app;
 mod application;
+mod application_settings_screen;
 mod archive;
 mod config;
 mod context;

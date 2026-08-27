@@ -114,6 +114,37 @@ impl EmployerScreen {
 
             ui.separator();
 
+            ui.heading("Signature");
+
+            ui.horizontal(|ui| {
+                ui.label("Employer Signature");
+
+                let signature_text = employer
+                    .employer_signature
+                    .as_deref()
+                    .unwrap_or("No signature selected");
+
+                ui.label(signature_text);
+
+                if ui.button("Select Signature...").clicked() {
+                    if let Some(path) = rfd::FileDialog::new()
+                        .add_filter("Signature Image", &["png", "jpg", "jpeg"])
+                        .pick_file()
+                    {
+                        employer.employer_signature = Some(path.to_string_lossy().to_string());
+
+                        self.status_message = "Employer signature selected.".to_string();
+                    }
+                }
+
+                if employer.employer_signature.is_some() && ui.button("Clear Signature").clicked() {
+                    employer.employer_signature = None;
+                    self.status_message = "Employer signature cleared.".to_string();
+                }
+            });
+
+            ui.separator();
+
             ui.heading("Enable PA Features");
 
             ui.horizontal(|ui| {
