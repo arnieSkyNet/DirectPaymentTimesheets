@@ -266,11 +266,6 @@ impl PayrollTimesheetScreen {
                     let actual_hours =
                         calculate_actual_hours(&all_timesheets, assistant.id, &week_dates);
 
-                    // ------------------------------------------------
-                    // Calculate additional hours actually worked in
-                    // the final two weeks of the previous cycle.
-                    // ------------------------------------------------
-
                     let previous_cycle_number = schedule.cycle_number - 1;
 
                     let previous_cycle_hours = if previous_cycle_number > 0 {
@@ -316,6 +311,78 @@ impl PayrollTimesheetScreen {
             };
 
             // --------------------------------------------------------
+            // Recalculate the worked hours from the current
+            // Hours Keeper data whenever the payroll screen loads.
+            //
+            // This is important because the underlying timesheet
+            // data may have been corrected since this payroll record
+            // was originally created.
+            //
+            // Only worked hours and the previous-cycle adjustment
+            // are recalculated here. Annual leave, sick leave,
+            // public holidays and mileage are left untouched.
+            // --------------------------------------------------------
+
+            let actual_hours = calculate_actual_hours(&all_timesheets, assistant.id, &week_dates);
+
+            let previous_cycle_number = schedule.cycle_number - 1;
+
+            let previous_cycle_hours = if previous_cycle_number > 0 {
+                calculate_previous_cycle_adjustment(
+                    application,
+                    &self.payroll_year,
+                    previous_cycle_number,
+                    assistant.id,
+                    &all_timesheets,
+                    first_week,
+                )?
+            } else {
+                None
+            };
+
+            let mut current_cycle_hours = actual_hours;
+
+            if let Some(extra_hours) = previous_cycle_hours {
+                current_cycle_hours[0] += extra_hours;
+            }
+
+            application
+                .payroll_timesheet_repository
+                .update_previous_cycle_hours(
+                    record.id,
+                    previous_cycle_hours,
+                    &chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string(),
+                )?;
+
+            application
+                .payroll_timesheet_repository
+                .create_missing_weeks(record.id, &week_date_strings, &current_cycle_hours)?;
+
+            let mut weeks = application
+                .payroll_timesheet_repository
+                .get_weeks(record.id)?;
+
+            // Update only the four worked-hour values.
+            for index in 0..4 {
+                if let Some(week) = weeks.get_mut(index) {
+                    week.worked_hours = current_cycle_hours[index];
+
+                    application
+                        .payroll_timesheet_repository
+                        .update_week_worked_hours(week.id, week.worked_hours)?;
+                }
+            }
+
+            let record = application
+                .payroll_timesheet_repository
+                .get_for_cycle_and_pa(&self.payroll_year, schedule.cycle_number, assistant.id)?
+                .ok_or("Failed reloading payroll timesheet.")?;
+
+            weeks = application
+                .payroll_timesheet_repository
+                .get_weeks(record.id)?;
+
+            // --------------------------------------------------------
             // Ensure all government bank-holiday dates for this
             // payroll cycle exist for this PA.
             //
@@ -326,10 +393,6 @@ impl PayrollTimesheetScreen {
             application
                 .payroll_timesheet_repository
                 .create_missing_public_holidays(record.id, &holiday_definitions)?;
-
-            let weeks = application
-                .payroll_timesheet_repository
-                .get_weeks(record.id)?;
 
             let holidays = application
                 .payroll_timesheet_repository
@@ -555,7 +618,6 @@ fn bank_holidays_for_year(year: i32) -> Vec<chrono::NaiveDate> {
 
     match (christmas.weekday(), boxing_day.weekday()) {
         (Weekday::Sat, Weekday::Sun) => {
-            // Christmas Saturday, Boxing Day Sunday.
             holidays.push(
                 chrono::NaiveDate::from_ymd_opt(year, 12, 27)
                     .expect("Invalid Christmas substitute day"),
@@ -568,7 +630,6 @@ fn bank_holidays_for_year(year: i32) -> Vec<chrono::NaiveDate> {
         }
 
         (Weekday::Sun, Weekday::Mon) => {
-            // Christmas Sunday, Boxing Day Monday.
             holidays.push(boxing_day);
 
             holidays.push(
@@ -578,7 +639,6 @@ fn bank_holidays_for_year(year: i32) -> Vec<chrono::NaiveDate> {
         }
 
         (_, Weekday::Sat) => {
-            // Boxing Day Saturday; substitute Monday.
             holidays.push(christmas);
 
             holidays.push(boxing_day + chrono::Duration::days(2));
@@ -621,7 +681,6 @@ fn last_monday_of_month(year: i32, month: u32) -> chrono::NaiveDate {
 }
 
 fn calculate_easter_sunday(year: i32) -> chrono::NaiveDate {
-    // Anonymous Gregorian algorithm.
     let a = year % 19;
     let b = year / 100;
     let c = year % 100;
