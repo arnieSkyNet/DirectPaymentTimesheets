@@ -8,6 +8,7 @@ use crate::pay_rate_repository::PayRateRepository;
 use crate::payroll_prep_sheet_import_service::PayrollPrepSheetImportService;
 use crate::payroll_provider_repository::PayrollProviderRepository;
 use crate::payroll_schedule_repository::PayrollScheduleRepository;
+use crate::payroll_timesheet_repository::PayrollTimesheetRepository;
 use crate::pdf_generator::{PdfGenerator, TimesheetPdfData};
 use crate::personal_assistant_repository::PersonalAssistantRepository;
 use crate::repository::TimesheetRepository;
@@ -21,42 +22,35 @@ pub struct Application {
     pub contracted_hours_repository: ContractedHoursRepository,
     pub payroll_provider_repository: PayrollProviderRepository,
     pub payroll_schedule_repository: PayrollScheduleRepository,
+    pub payroll_timesheet_repository: PayrollTimesheetRepository,
 }
 
 impl Application {
     pub fn initialise() -> Result<Self, Box<dyn std::error::Error>> {
         let context = AppContext::initialise()?;
 
-        let timesheet_connection = Connection::open(&context.environment.database_path)?;
+        let database_path = &context.environment.database_path;
 
-        let employer_connection = Connection::open(&context.environment.database_path)?;
+        let repository = TimesheetRepository::new(Connection::open(database_path)?);
 
-        let personal_assistant_connection = Connection::open(&context.environment.database_path)?;
-
-        let pay_rate_connection = Connection::open(&context.environment.database_path)?;
-        let contracted_hours_connection = Connection::open(&context.environment.database_path)?;
-
-        let repository = TimesheetRepository::new(timesheet_connection);
-
-        let employer_repository = EmployerRepository::new(employer_connection);
+        let employer_repository = EmployerRepository::new(Connection::open(database_path)?);
 
         let personal_assistant_repository =
-            PersonalAssistantRepository::new(personal_assistant_connection);
+            PersonalAssistantRepository::new(Connection::open(database_path)?);
 
-        let pay_rate_repository = PayRateRepository::new(pay_rate_connection);
+        let pay_rate_repository = PayRateRepository::new(Connection::open(database_path)?);
 
         let contracted_hours_repository =
-            ContractedHoursRepository::new(contracted_hours_connection);
-
-        let payroll_provider_connection = Connection::open(&context.environment.database_path)?;
+            ContractedHoursRepository::new(Connection::open(database_path)?);
 
         let payroll_provider_repository =
-            PayrollProviderRepository::new(payroll_provider_connection);
-
-        let payroll_schedule_connection = Connection::open(&context.environment.database_path)?;
+            PayrollProviderRepository::new(Connection::open(database_path)?);
 
         let payroll_schedule_repository =
-            PayrollScheduleRepository::new(payroll_schedule_connection);
+            PayrollScheduleRepository::new(Connection::open(database_path)?);
+
+        let payroll_timesheet_repository =
+            PayrollTimesheetRepository::new(Connection::open(database_path)?);
 
         Ok(Self {
             context,
@@ -67,6 +61,7 @@ impl Application {
             contracted_hours_repository,
             payroll_provider_repository,
             payroll_schedule_repository,
+            payroll_timesheet_repository,
         })
     }
 
@@ -91,9 +86,28 @@ impl Application {
     pub fn get_timesheets(
         &self,
     ) -> Result<Vec<crate::models::TimesheetEntry>, Box<dyn std::error::Error>> {
-        let timesheets = self.repository.get_all()?;
+        Ok(self.repository.get_all()?)
+    }
 
-        Ok(timesheets)
+    pub fn get_timesheets_for_personal_assistant(
+        &self,
+        personal_assistant_id: i64,
+    ) -> Result<Vec<crate::models::TimesheetEntry>, Box<dyn std::error::Error>> {
+        Ok(self
+            .repository
+            .get_for_personal_assistant(personal_assistant_id)?)
+    }
+
+    pub fn get_current_pay_rate_for_personal_assistant(
+        &self,
+        personal_assistant_id: i64,
+    ) -> Result<
+        Option<crate::pay_rate_repository::PersonalAssistantPayRate>,
+        Box<dyn std::error::Error>,
+    > {
+        Ok(self
+            .pay_rate_repository
+            .get_current_for_personal_assistant(personal_assistant_id)?)
     }
 
     pub fn get_payroll_schedule(
@@ -101,21 +115,15 @@ impl Application {
         payroll_year: &str,
     ) -> Result<Vec<crate::payroll_schedule_repository::PayrollSchedule>, Box<dyn std::error::Error>>
     {
-        let schedules = self
+        Ok(self
             .payroll_schedule_repository
-            .get_all_for_year(payroll_year)?;
-
-        Ok(schedules)
+            .get_all_for_year(payroll_year)?)
     }
 
     pub fn import_csv(
         &self,
     ) -> Result<crate::import_service::ImportSummary, Box<dyn std::error::Error>> {
-        let service = self.create_import_service();
-
-        let summary = service.run()?;
-
-        Ok(summary)
+        Ok(self.create_import_service().run()?)
     }
 
     pub fn import_payroll_prep_sheet(
@@ -124,7 +132,7 @@ impl Application {
     ) -> Result<usize, Box<dyn std::error::Error>> {
         let service = PayrollPrepSheetImportService::new(&self.payroll_schedule_repository);
 
-        service.import(path)
+        Ok(service.import(path)?)
     }
 
     pub fn generate_timesheet_pdf(
@@ -133,8 +141,6 @@ impl Application {
     ) -> Result<std::path::PathBuf, Box<dyn std::error::Error>> {
         let output_dir = crate::paths::expand_path(&self.context.config.folders.pdf_output);
 
-        let output_path = PdfGenerator::generate(&output_dir, data)?;
-
-        Ok(output_path)
+        Ok(PdfGenerator::generate(&output_dir, data)?)
     }
 }

@@ -19,6 +19,8 @@ mod payroll_prep_sheet_import_service;
 mod payroll_provider_repository;
 mod payroll_schedule_repository;
 mod payroll_settings_screen;
+mod payroll_timesheet_repository;
+mod payroll_timesheet_screen;
 mod pdf_generator;
 mod personal_assistant_repository;
 mod personal_assistant_screen;

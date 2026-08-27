@@ -24,24 +24,24 @@ impl PayRateRepository {
         let effective_date = normalise_date(&rate.effective_date);
 
         self.connection.execute(
-                                                                            "
-                                                                                        INSERT INTO personal_assistant_pay_rates (
-                                                                                                        personal_assistant_id,
-                                                                                                                        effective_date,
-                                                                                                                                        base_hourly_rate,
-                                                                                                                                                        employer_top_up_rate,
-                                                                                                                                                                        created_at
-                                                                                                                                                                                    )
-                                                                                                                                                                                                VALUES (?1, ?2, ?3, ?4, ?5)
-                                                                                                                                                                                                            ",
-                                                                                                                                                                                                                        params![
-                                                                                                                                                                                                                                        &rate.personal_assistant_id,
-                                                                                                                                                                                                                                                        &effective_date,
-                                                                                                                                                                                                                                                                        &rate.base_hourly_rate,
-                                                                                                                                                                                                                                                                                        &rate.employer_top_up_rate,
-                                                                                                                                                                                                                                                                                                        &rate.created_at,
-                                                                                                                                                                                                                                                                                                                    ],
-                                                                                                                                                                                                                                                                                                                            )?;
+            "
+            INSERT INTO personal_assistant_pay_rates (
+                personal_assistant_id,
+                effective_date,
+                base_hourly_rate,
+                employer_top_up_rate,
+                created_at
+            )
+            VALUES (?1, ?2, ?3, ?4, ?5)
+            ",
+            params![
+                &rate.personal_assistant_id,
+                &effective_date,
+                &rate.base_hourly_rate,
+                &rate.employer_top_up_rate,
+                &rate.created_at,
+            ],
+        )?;
 
         Ok(())
     }
@@ -50,33 +50,33 @@ impl PayRateRepository {
         let effective_date = normalise_date(&rate.effective_date);
 
         self.connection.execute(
-                                                                                                                                                                                                                                                                                                                                                                        "
-                                                                                                                                                                                                                                                                                                                                                                                    UPDATE personal_assistant_pay_rates
-                                                                                                                                                                                                                                                                                                                                                                                                SET
-                                                                                                                                                                                                                                                                                                                                                                                                                effective_date = ?1,
-                                                                                                                                                                                                                                                                                                                                                                                                                                base_hourly_rate = ?2,
-                                                                                                                                                                                                                                                                                                                                                                                                                                                employer_top_up_rate = ?3
-                                                                                                                                                                                                                                                                                                                                                                                                                                                            WHERE id = ?4
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                        ",
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    params![
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    &effective_date,
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    &rate.base_hourly_rate,
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    &rate.employer_top_up_rate,
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    &rate.id,
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                ],
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        )?;
+            "
+            UPDATE personal_assistant_pay_rates
+            SET
+                effective_date = ?1,
+                base_hourly_rate = ?2,
+                employer_top_up_rate = ?3
+            WHERE id = ?4
+            ",
+            params![
+                &effective_date,
+                &rate.base_hourly_rate,
+                &rate.employer_top_up_rate,
+                &rate.id,
+            ],
+        )?;
 
         Ok(())
     }
 
     pub fn delete(&self, id: i64) -> Result<()> {
         self.connection.execute(
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            "
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        DELETE FROM personal_assistant_pay_rates
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    WHERE id = ?1
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                ",
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            params![id],
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    )?;
+            "
+            DELETE FROM personal_assistant_pay_rates
+            WHERE id = ?1
+            ",
+            params![id],
+        )?;
 
         Ok(())
     }
@@ -86,21 +86,22 @@ impl PayRateRepository {
         personal_assistant_id: i64,
     ) -> Result<Vec<PersonalAssistantPayRate>> {
         let mut statement = self.connection.prepare(
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            "
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        SELECT
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        id,
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        personal_assistant_id,
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        effective_date,
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        base_hourly_rate,
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        employer_top_up_rate,
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        created_at
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    FROM personal_assistant_pay_rates
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                WHERE personal_assistant_id = ?1
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            ORDER BY substr(effective_date, 7, 4) DESC,
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 substr(effective_date, 4, 2) DESC,
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      substr(effective_date, 1, 2) DESC
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  ",
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          )?;
+            "
+            SELECT
+                id,
+                personal_assistant_id,
+                effective_date,
+                base_hourly_rate,
+                employer_top_up_rate,
+                created_at
+            FROM personal_assistant_pay_rates
+            WHERE personal_assistant_id = ?1
+            ORDER BY
+                substr(effective_date, 7, 4) DESC,
+                substr(effective_date, 4, 2) DESC,
+                substr(effective_date, 1, 2) DESC
+            ",
+        )?;
 
         let rates = statement.query_map(params![personal_assistant_id], |row| {
             Ok(PersonalAssistantPayRate {
@@ -120,6 +121,19 @@ impl PayRateRepository {
         }
 
         Ok(results)
+    }
+
+    pub fn get_current_for_personal_assistant(
+        &self,
+        personal_assistant_id: i64,
+    ) -> Result<Option<PersonalAssistantPayRate>> {
+        let mut rates = self.get_all_for_personal_assistant(personal_assistant_id)?;
+
+        if rates.is_empty() {
+            Ok(None)
+        } else {
+            Ok(Some(rates.remove(0)))
+        }
     }
 }
 
