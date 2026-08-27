@@ -203,6 +203,19 @@ impl PayrollTimesheetRepository {
         Ok(self.connection.last_insert_rowid())
     }
 
+    pub fn update_week_worked_hours(&self, id: i64, worked_hours: f64) -> Result<()> {
+        self.connection.execute(
+            "
+            UPDATE payroll_timesheet_weeks
+            SET worked_hours = ?1
+            WHERE id = ?2
+            ",
+            params![worked_hours, id],
+        )?;
+
+        Ok(())
+    }
+
     pub fn update_week(&self, week: &PayrollTimesheetWeek) -> Result<()> {
         self.connection.execute(
             "
