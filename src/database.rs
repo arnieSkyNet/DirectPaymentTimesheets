@@ -128,6 +128,14 @@ fn apply_migrations(connection: &Connection) -> Result<()> {
         current_version = 12;
     }
 
+    if current_version < 13 {
+        migrate_to_version_13(connection)?;
+    }
+
+    if current_version < 14 {
+        migrate_to_version_14(connection)?;
+    }
+
     Ok(())
 }
 
@@ -371,6 +379,77 @@ fn migrate_to_version_12(connection: &Connection) -> Result<()> {
     )?;
 
     connection.execute("UPDATE schema_version SET version = 12", [])?;
+
+    Ok(())
+}
+
+fn migrate_to_version_13(connection: &Connection) -> Result<()> {
+    connection.execute(
+        "
+        CREATE TABLE IF NOT EXISTS payroll_timesheets (
+            id INTEGER PRIMARY KEY,
+            personal_assistant_id INTEGER NOT NULL,
+            payroll_year TEXT NOT NULL,
+            cycle_number INTEGER NOT NULL,
+            previous_cycle_hours REAL,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            UNIQUE (
+                personal_assistant_id,
+                payroll_year,
+                cycle_number
+            )
+        )
+        ",
+        [],
+    )?;
+
+    connection.execute(
+        "
+        CREATE TABLE IF NOT EXISTS payroll_timesheet_weeks (
+            id INTEGER PRIMARY KEY,
+            payroll_timesheet_id INTEGER NOT NULL,
+            week_number INTEGER NOT NULL,
+            week_commencing TEXT NOT NULL,
+            worked_hours REAL NOT NULL DEFAULT 0,
+            annual_leave_hours REAL NOT NULL DEFAULT 0,
+            sick_leave_hours REAL NOT NULL DEFAULT 0,
+            public_holiday_hours REAL NOT NULL DEFAULT 0,
+            travel_miles REAL NOT NULL DEFAULT 0,
+            UNIQUE (
+                payroll_timesheet_id,
+                week_number
+            )
+        )
+        ",
+        [],
+    )?;
+
+    connection.execute("UPDATE schema_version SET version = 13", [])?;
+
+    Ok(())
+}
+
+fn migrate_to_version_14(connection: &Connection) -> Result<()> {
+    connection.execute(
+        "
+        CREATE TABLE IF NOT EXISTS payroll_timesheet_public_holidays (
+            id INTEGER PRIMARY KEY,
+            payroll_timesheet_id INTEGER NOT NULL,
+            week_number INTEGER NOT NULL,
+            holiday_date TEXT NOT NULL,
+            hours REAL NOT NULL DEFAULT 0,
+            UNIQUE (
+                payroll_timesheet_id,
+                week_number,
+                holiday_date
+            )
+        )
+        ",
+        [],
+    )?;
+
+    connection.execute("UPDATE schema_version SET version = 14", [])?;
 
     Ok(())
 }
