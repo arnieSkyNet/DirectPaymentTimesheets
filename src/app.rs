@@ -141,6 +141,10 @@ impl Application {
     ) -> Result<std::path::PathBuf, Box<dyn std::error::Error>> {
         let output_dir = crate::paths::expand_path(&self.context.config.folders.pdf_output);
 
-        Ok(PdfGenerator::generate(&output_dir, data)?)
+        Ok(PdfGenerator::generate(
+            &output_dir,
+            data,
+            &self.context.config.pdf,
+        )?)
     }
 }

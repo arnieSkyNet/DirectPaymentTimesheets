@@ -35,6 +35,7 @@ impl PersonalAssistantScreen {
             new_rate_base: String::new(),
             new_rate_top_up: String::new(),
             editing_pay_rate_id: None,
+
             contracted_hours: Vec::new(),
             new_hours_effective_date: String::new(),
             new_contracted_hours: String::new(),
@@ -141,6 +142,37 @@ impl PersonalAssistantScreen {
 
                         columns[1].label("Telephone Number");
                         edit_optional_text(&mut columns[1], &mut assistant.telephone);
+                    });
+
+                    ui.separator();
+
+                    ui.heading("Signature");
+
+                    ui.horizontal(|ui| {
+                        ui.label("PA Signature");
+
+                        let signature_text = assistant
+                            .signature
+                            .as_deref()
+                            .unwrap_or("No signature selected");
+
+                        ui.label(signature_text);
+
+                        if ui.button("Select Signature...").clicked() {
+                            if let Some(path) = rfd::FileDialog::new()
+                                .add_filter("Signature Image", &["png", "jpg", "jpeg"])
+                                .pick_file()
+                            {
+                                assistant.signature = Some(path.to_string_lossy().to_string());
+
+                                self.status_message = "PA signature selected.".to_string();
+                            }
+                        }
+
+                        if assistant.signature.is_some() && ui.button("Clear Signature").clicked() {
+                            assistant.signature = None;
+                            self.status_message = "PA signature cleared.".to_string();
+                        }
                     });
 
                     ui.separator();
@@ -410,6 +442,7 @@ impl PersonalAssistantScreen {
         }
     }
 }
+
 fn edit_optional_text(ui: &mut egui::Ui, value: &mut Option<String>) {
     if value.is_none() {
         *value = Some(String::new());

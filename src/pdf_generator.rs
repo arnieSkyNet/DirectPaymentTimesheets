@@ -37,6 +37,7 @@ impl PdfGenerator {
     pub fn generate(
         output_dir: &Path,
         data: &TimesheetPdfData<'_>,
+        pdf_config: &crate::config::PdfConfig,
     ) -> Result<PathBuf, Box<dyn std::error::Error>> {
         fs::create_dir_all(output_dir)?;
 
@@ -50,16 +51,16 @@ impl PdfGenerator {
 
         let mut document = PdfDocument::new("Direct Payment Timesheet");
 
-        let regular_bytes = fs::read("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf")?;
-        let bold_bytes = fs::read("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf")?;
+        let regular_bytes = fs::read(&pdf_config.regular_font)?;
+        let bold_bytes = fs::read(&pdf_config.bold_font)?;
 
         let mut font_warnings = Vec::new();
 
         let regular_font = ParsedFont::from_bytes(&regular_bytes, 0, &mut font_warnings)
-            .ok_or("Could not parse DejaVu Sans regular font")?;
+            .ok_or("Could not parse configured regular PDF font")?;
 
         let bold_font = ParsedFont::from_bytes(&bold_bytes, 0, &mut font_warnings)
-            .ok_or("Could not parse DejaVu Sans bold font")?;
+            .ok_or("Could not parse configured bold PDF font")?;
 
         let regular_id = document.add_font(&regular_font);
         let bold_id = document.add_font(&bold_font);
@@ -174,6 +175,7 @@ impl PdfGenerator {
             &data.public_holiday_dates,
             &data.travel_miles,
             data.previous_cycle_hours,
+            pdf_config,
             &bold_id,
             &regular_id,
         );
@@ -418,6 +420,7 @@ fn draw_table(
     public_holiday_dates: &[&str; 4],
     travel_miles: &[&str; 4],
     previous_cycle_hours: Option<&str>,
+    pdf_config: &crate::config::PdfConfig,
     bold_font: &printpdf::FontId,
     regular_font: &printpdf::FontId,
 ) {
@@ -497,7 +500,7 @@ fn draw_table(
             week_dates[index],
             x + 1.5,
             row_top - 10.0,
-            8.5,
+            pdf_config.week_commencing_font_size as f32,
             false,
             TextAlignment::Left,
             bold_font,
@@ -513,7 +516,7 @@ fn draw_table(
             hours_worked[index],
             x + 28.0 + 1.5,
             row_top - 10.0,
-            14.0,
+            pdf_config.hours_font_size as f32,
             true,
             TextAlignment::Left,
             bold_font,
@@ -532,7 +535,7 @@ fn draw_table(
                         &format!("(info.only +{} prev)", previous),
                         x + 28.0 + 1.5,
                         row_top - 14.5,
-                        5.5,
+                        pdf_config.information_font_size as f32,
                         false,
                         TextAlignment::Left,
                         bold_font,
@@ -589,11 +592,9 @@ fn draw_table(
         let public_holiday = display_table_value(public_holiday_hours[index]);
 
         if !public_holiday.is_empty() {
-            // Public Holiday values are left-aligned, matching the
-            // other numeric columns.
             let public_holiday_x = x + 28.0 + 75.0 + 1.5;
 
-            // Large, bold number.
+            // Public Holiday hours.
             write_text(
                 ops,
                 public_holiday,
@@ -606,7 +607,8 @@ fn draw_table(
                 regular_font,
             );
 
-            // Date immediately following the number on the same line.
+            // Public Holiday date uses the configurable
+            // Information / Secondary Text size.
             let public_holiday_date = public_holiday_dates[index].trim();
 
             if !public_holiday_date.is_empty() {
@@ -623,7 +625,7 @@ fn draw_table(
                     &date_text,
                     public_holiday_x + hours_width,
                     row_top - 10.0,
-                    5.5,
+                    pdf_config.information_font_size as f32,
                     false,
                     TextAlignment::Left,
                     bold_font,
@@ -679,31 +681,41 @@ fn add_signature(
     let image_width_px = image.width as f32;
     let image_height_px = image.height as f32;
 
-    let image_width_mm = image_width_px / 300.0 * 25.4;
-    let image_height_mm = image_height_px / 300.0 * 25.4;
-
-    if image_width_mm <= 0.0 || image_height_mm <= 0.0 {
+    if image_width_px <= 0.0 || image_height_px <= 0.0 {
         return Err(format!("Signature image has invalid dimensions: {}", path.display()).into());
     }
 
-    let scale = (width / image_width_mm).min(height / image_height_mm);
+    let image_aspect = image_width_px / image_height_px;
+    let box_aspect = width / height;
 
-    let rendered_width = image_width_mm * scale;
-    let rendered_height = image_height_mm * scale;
+    let (rendered_width, rendered_height) = if image_aspect > box_aspect {
+        let rendered_width = width;
+        let rendered_height = width / image_aspect;
+
+        (rendered_width, rendered_height)
+    } else {
+        let rendered_height = height;
+        let rendered_width = height * image_aspect;
+
+        (rendered_width, rendered_height)
+    };
 
     let placed_x = x + ((width - rendered_width) / 2.0);
     let placed_y = y + ((height - rendered_height) / 2.0);
 
     let image_id = document.add_image(&image);
 
+    let scale_x = rendered_width / (image_width_px / 96.0 * 25.4);
+    let scale_y = rendered_height / (image_height_px / 96.0 * 25.4);
+
     ops.push(Op::UseXobject {
         id: image_id,
         transform: XObjectTransform {
             translate_x: Some(Mm(placed_x).into()),
             translate_y: Some(Mm(placed_y).into()),
-            scale_x: Some(scale),
-            scale_y: Some(scale),
-            dpi: Some(300.0),
+            scale_x: Some(scale_x),
+            scale_y: Some(scale_y),
+            dpi: Some(96.0),
             ..Default::default()
         },
     });
@@ -823,7 +835,9 @@ mod tests {
             pa_signature_path: None,
         };
 
-        let result = PdfGenerator::generate(&output_dir, &data);
+        let pdf_config = crate::config::PdfConfig::default();
+
+        let result = PdfGenerator::generate(&output_dir, &data, &pdf_config);
 
         assert!(result.is_ok());
 
