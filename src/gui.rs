@@ -115,6 +115,7 @@ impl eframe::App for DirectPaymentApp {
             ActiveScreen::PayrollTimesheet => {
                 self.payroll_timesheet_screen.show(ui, &self.application);
             }
+
             ActiveScreen::ApplicationSettings => {
                 self.application_settings_screen
                     .show(ui, &mut self.application);
@@ -194,6 +195,85 @@ impl DirectPaymentApp {
             }
         }
 
+        if ui.button("Import Payroll Return").clicked() {
+            if let Some(path) = rfd::FileDialog::new()
+                .add_filter("ZIP files", &["zip"])
+                .pick_file()
+            {
+                let payroll_year = current_payroll_year();
+
+                match self.application.get_payroll_schedule(&payroll_year) {
+                    Ok(schedules) => {
+                        let today = chrono::Local::now().date_naive();
+
+                        let current_schedule = schedules
+                            .into_iter()
+                            .filter_map(|schedule| {
+                                let first_week = chrono::NaiveDate::parse_from_str(
+                                    &schedule.first_week_commencing,
+                                    "%d/%m/%Y",
+                                )
+                                .ok()?;
+
+                                let cycle_end = first_week + chrono::Duration::days(27);
+
+                                if first_week <= today && today <= cycle_end {
+                                    Some((first_week, schedule))
+                                } else {
+                                    None
+                                }
+                            })
+                            .max_by_key(|(date, _)| *date)
+                            .map(|(_, schedule)| schedule);
+
+                        match current_schedule {
+                            Some(schedule) => {
+                                match self.application.import_payroll_return(
+                                    &path,
+                                    &payroll_year,
+                                    schedule.cycle_number,
+                                ) {
+                                    Ok(result) => {
+                                        self.status_message = format!(
+                                            "Payroll return imported: {} payslip(s), {} information file(s).",
+                                            result.payslips_imported,
+                                            result.information_files_imported
+                                        );
+                                    }
+
+                                    Err(error) => {
+                                        self.status_message =
+                                            format!("Payroll return import failed: {}", error);
+                                    }
+                                }
+                            }
+
+                            None => {
+                                self.status_message = "No current payroll cycle found.".to_string();
+                            }
+                        }
+                    }
+
+                    Err(error) => {
+                        self.status_message = format!("Failed loading payroll schedule: {}", error);
+                    }
+                }
+            }
+        }
+
+        if ui.button("Email Payslips").clicked() {
+            match self.email_payslips() {
+                Ok(count) => {
+                    self.status_message =
+                        format!("Payslips emailed successfully: {}.", count);
+                }
+
+                Err(error) => {
+                    self.status_message = format!("Payslip email failed: {}", error);
+                }
+            }
+        }
+
         if ui.button("View Timesheets").clicked() {
             match self.application.get_timesheets() {
                 Ok(entries) => {
@@ -233,6 +313,125 @@ impl DirectPaymentApp {
         draw_timesheets(ui, &self.timesheets);
     }
 
+    fn email_payslips(&self) -> Result<usize, Box<dyn std::error::Error>> {
+        let employers = self.application.employer_repository.get_all()?;
+
+        let employer = employers
+            .into_iter()
+            .next()
+            .ok_or("No employer has been configured.")?;
+
+        let employer_email = employer
+            .email
+            .as_deref()
+            .map(str::trim)
+            .filter(|email| !email.is_empty())
+            .ok_or("Employer has no email address.")?;
+
+        let payroll_year = current_payroll_year();
+
+        let schedules = self.application.get_payroll_schedule(&payroll_year)?;
+
+        let today = chrono::Local::now().date_naive();
+
+        let current_schedule = schedules
+            .into_iter()
+            .filter_map(|schedule| {
+                let first_week = parse_date_checked(&schedule.first_week_commencing)?;
+
+                let cycle_end = first_week + chrono::Duration::days(27);
+
+                if first_week <= today && today <= cycle_end {
+                    Some((first_week, schedule))
+                } else {
+                    None
+                }
+            })
+            .max_by_key(|(first_week, _)| *first_week)
+            .map(|(_, schedule)| schedule)
+            .ok_or_else(|| {
+                format!(
+                    "No current payroll cycle was found for {}.",
+                    today.format("%d/%m/%Y")
+                )
+            })?;
+
+        if current_schedule.payslips_sent {
+            return Err(format!(
+                "Payslips for payroll cycle {} have already been marked as sent.",
+                current_schedule.cycle_number
+            )
+            .into());
+        }
+
+        let assistants = self.application.personal_assistant_repository.get_all()?;
+
+        let payslip_folder =
+            crate::paths::expand_path(&self.application.context.config.folders.payslip_folder);
+
+        let mut sent = 0usize;
+
+        for assistant in &assistants {
+            let is_active = match &assistant.employment_status {
+                Some(status) => status.trim().eq_ignore_ascii_case("active"),
+                None => true,
+            };
+
+            if !is_active {
+                continue;
+            }
+
+            let personal_assistant_name =
+                format!("{} {}", assistant.first_name, assistant.surname);
+
+            let recipient_email = assistant
+                .email
+                .as_deref()
+                .map(str::trim)
+                .filter(|email| !email.is_empty())
+                .ok_or_else(|| {
+                    format!(
+                        "Personal Assistant {} has no email address.",
+                        personal_assistant_name
+                    )
+                })?;
+
+            let filename = format!(
+                "Payslip for Week {} for {}.pdf",
+                current_schedule.cycle_number,
+                personal_assistant_name
+            );
+
+            let payslip_path = payslip_folder.join(filename);
+
+            if !payslip_path.exists() {
+                return Err(format!(
+                    "Payslip not found for {}: {}",
+                    personal_assistant_name,
+                    payslip_path.display()
+                )
+                .into());
+            }
+
+            self.application.send_payslip_email(
+                employer_email,
+                recipient_email,
+                &personal_assistant_name,
+                current_schedule.cycle_number,
+                &payslip_path,
+                employer.email_signature.as_deref(),
+            )?;
+
+            sent += 1;
+        }
+
+        self.application
+            .payroll_schedule_repository
+            .mark_payslips_sent(current_schedule.id)?;
+
+        Ok(sent)
+    }
+
     fn generate_payroll_timesheets(&self) -> Result<usize, Box<dyn std::error::Error>> {
         let employers = self.application.employer_repository.get_all()?;
 
@@ -253,7 +452,6 @@ impl DirectPaymentApp {
 
         let today = chrono::Local::now().date_naive();
 
-        // Find the payroll cycle containing today.
         let current_schedule = schedules
             .into_iter()
             .filter_map(|schedule| {
@@ -312,10 +510,6 @@ impl DirectPaymentApp {
 
             let personal_assistant_name = format!("{} {}", assistant.first_name, assistant.surname);
 
-            // --------------------------------------------------------
-            // Get the saved Payroll Timesheet Preparation record.
-            // --------------------------------------------------------
-
             let payroll_timesheet = self
                 .application
                 .payroll_timesheet_repository
@@ -341,10 +535,6 @@ impl DirectPaymentApp {
                 .into());
             }
 
-            // --------------------------------------------------------
-            // Pay rate
-            // --------------------------------------------------------
-
             let pay_rate = self
                 .application
                 .get_current_pay_rate_for_personal_assistant(assistant.id)?;
@@ -354,10 +544,6 @@ impl DirectPaymentApp {
                 None => 0.0,
             };
 
-            // --------------------------------------------------------
-            // Contracted hours
-            // --------------------------------------------------------
-
             let contracted_hours = self
                 .application
                 .contracted_hours_repository
@@ -366,10 +552,6 @@ impl DirectPaymentApp {
             let contracted_weekly_hours = contracted_hours
                 .map(|hours| hours.contracted_hours)
                 .unwrap_or_else(|| "0".to_string());
-
-            // --------------------------------------------------------
-            // Convert prepared values to PDF strings.
-            // --------------------------------------------------------
 
             let hours_worked = [
                 format_pdf_hours(payroll_weeks[0].worked_hours),
@@ -462,14 +644,8 @@ impl DirectPaymentApp {
                 format_pdf_hours(payroll_weeks[3].travel_miles),
             ];
 
-            let previous_cycle_hours = payroll_timesheet.previous_cycle_hours.map(format_pdf_hours);
-
-            // --------------------------------------------------------
-            // Signatures
-            //
-            // These paths come directly from the Employer and
-            // Personal Assistant database records.
-            // --------------------------------------------------------
+            let previous_cycle_hours =
+                payroll_timesheet.previous_cycle_hours.map(format_pdf_hours);
 
             let employer_signature_path = employer
                 .employer_signature
@@ -482,10 +658,6 @@ impl DirectPaymentApp {
                 .as_deref()
                 .map(|path| crate::paths::expand_path(&std::path::PathBuf::from(path)))
                 .filter(|path| path.exists());
-
-            // --------------------------------------------------------
-            // Build PDF data from the SAVED preparation record.
-            // --------------------------------------------------------
 
             let data = TimesheetPdfData {
                 employer_name: &employer.name,
@@ -589,7 +761,9 @@ fn format_pdf_hours(value: f64) -> String {
 
     let text = format!("{:.2}", value);
 
-    text.trim_end_matches('0').trim_end_matches('.').to_string()
+    text.trim_end_matches('0')
+        .trim_end_matches('.')
+        .to_string()
 }
 
 fn parse_date_checked(value: &str) -> Option<chrono::NaiveDate> {
@@ -628,13 +802,9 @@ fn draw_timesheets(ui: &mut egui::Ui, timesheets: &[TimesheetEntry]) {
                 ui.label(&entry.pa_name);
                 ui.label(&entry.start_time);
                 ui.label(&entry.end_time);
-
                 ui.label(format_worked_time(entry.worked_minutes));
-
                 ui.label(format!("£{:.2}", entry.hourly_rate));
-
                 ui.label(format!("£{:.2}", entry.amount));
-
                 ui.end_row();
             }
         });
@@ -664,18 +834,23 @@ fn draw_payroll_schedule(ui: &mut egui::Ui, schedules: &[PayrollSchedule]) {
             ui.label("First Week Commencing");
             ui.label("Latest Posting Date");
             ui.label("Pay Date");
+            ui.label("Payslips");
             ui.end_row();
 
             for schedule in schedules {
                 ui.label(schedule.cycle_number.to_string());
-
                 ui.label(&schedule.first_week_commencing);
-
                 ui.label(&schedule.latest_posting_date);
-
                 ui.label(&schedule.pay_date);
+
+                if schedule.payslips_sent {
+                    ui.label("Sent");
+                } else {
+                    ui.label("Not sent");
+                }
 
                 ui.end_row();
             }
         });
 }
+

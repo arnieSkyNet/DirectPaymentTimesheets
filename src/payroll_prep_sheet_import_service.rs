@@ -75,6 +75,7 @@ impl<'a> PayrollPrepSheetImportService<'a> {
                     latest_posting_date: dates[1].to_string(),
                     pay_date: dates[2].to_string(),
                     created_at: chrono::Utc::now().to_rfc3339(),
+                    payslips_sent: false,
                 });
             }
         }

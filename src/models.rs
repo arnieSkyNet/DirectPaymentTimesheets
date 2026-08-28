@@ -26,6 +26,7 @@ pub struct Employer {
     pub email: Option<String>,
 
     pub employer_signature: Option<String>,
+    pub email_signature: Option<String>,
     pub default_pdf_template: Option<String>,
     pub sick_pay_enabled: bool,
     pub mileage_enabled: bool,

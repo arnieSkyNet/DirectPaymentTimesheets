@@ -39,6 +39,7 @@ impl EmployerScreen {
                         telephone: None,
                         email: None,
                         employer_signature: None,
+                        email_signature: None,
                         default_pdf_template: None,
                         sick_pay_enabled: false,
                         mileage_enabled: false,
@@ -111,6 +112,16 @@ impl EmployerScreen {
 
                 columns[2].add_sized([250.0, 140.0], egui::TextEdit::multiline(address));
             });
+
+            ui.separator();
+
+            ui.heading("Email Signature");
+
+            ui.label("This signature is added to outgoing email messages.");
+
+            let email_signature = employer.email_signature.get_or_insert(String::new());
+
+            ui.add_sized([600.0, 120.0], egui::TextEdit::multiline(email_signature));
 
             ui.separator();
 

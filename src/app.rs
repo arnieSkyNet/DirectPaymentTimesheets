@@ -135,6 +135,32 @@ impl Application {
         Ok(service.import(path)?)
     }
 
+    pub fn import_payroll_return(
+        &self,
+        path: &std::path::Path,
+        payroll_year: &str,
+        cycle_number: i64,
+    ) -> Result<
+        crate::archive::PayrollReturnImportResult,
+        Box<dyn std::error::Error>,
+    > {
+        let assistants = self.personal_assistant_repository.get_all()?;
+
+        let payslip_folder =
+            crate::paths::expand_path(&self.context.config.folders.payslip_folder);
+
+        let information_folder =
+            crate::paths::expand_path(&self.context.config.folders.email_archive);
+
+        Ok(crate::archive::import_payroll_return(
+            path,
+            &payslip_folder,
+            &information_folder,
+            &assistants,
+            cycle_number,
+        )?)
+    }
+
     pub fn generate_timesheet_pdf(
         &self,
         data: &TimesheetPdfData<'_>,
@@ -147,4 +173,25 @@ impl Application {
             &self.context.config.pdf,
         )?)
     }
+
+    pub fn send_payslip_email(
+        &self,
+        employer_email: &str,
+        recipient_email: &str,
+        personal_assistant_name: &str,
+        payroll_week: i64,
+        payslip_path: &std::path::Path,
+        email_signature: Option<&str>,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        crate::email_service::send_payslip_email(
+            employer_email,
+            recipient_email,
+            personal_assistant_name,
+            payroll_week,
+            payslip_path,
+            email_signature,
+        )
+    }
+
 }
+
