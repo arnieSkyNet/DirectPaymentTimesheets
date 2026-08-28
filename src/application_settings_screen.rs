@@ -8,6 +8,8 @@ pub struct ApplicationSettingsScreen {
     csv_import: String,
     pdf_output: String,
     email_archive: String,
+    payslip_folder: String,
+    payroll_information_folder: String,
 
     regular_font: String,
     bold_font: String,
@@ -27,6 +29,8 @@ impl ApplicationSettingsScreen {
             csv_import: String::new(),
             pdf_output: String::new(),
             email_archive: String::new(),
+            payslip_folder: String::new(),
+            payroll_information_folder: String::new(),
 
             regular_font: String::new(),
             bold_font: String::new(),
@@ -95,6 +99,36 @@ impl ApplicationSettingsScreen {
                 if ui.button("Browse...").clicked() {
                     if let Some(path) = rfd::FileDialog::new().pick_folder() {
                         self.email_archive = path.to_string_lossy().to_string();
+                    }
+                }
+
+                ui.end_row();
+
+                ui.label("Payslip Folder");
+
+                ui.add_sized(
+                    [400.0, 20.0],
+                    egui::TextEdit::singleline(&mut self.payslip_folder),
+                );
+
+                if ui.button("Browse...").clicked() {
+                    if let Some(path) = rfd::FileDialog::new().pick_folder() {
+                        self.payslip_folder = path.to_string_lossy().to_string();
+                    }
+                }
+
+                ui.end_row();
+
+                ui.label("Payroll Information / Bulletin Folder");
+
+                ui.add_sized(
+                    [400.0, 20.0],
+                    egui::TextEdit::singleline(&mut self.payroll_information_folder),
+                );
+
+                if ui.button("Browse...").clicked() {
+                    if let Some(path) = rfd::FileDialog::new().pick_folder() {
+                        self.payroll_information_folder = path.to_string_lossy().to_string();
                     }
                 }
 
@@ -207,14 +241,18 @@ impl ApplicationSettingsScreen {
         self.csv_import = config.folders.csv_import.to_string_lossy().to_string();
         self.pdf_output = config.folders.pdf_output.to_string_lossy().to_string();
         self.email_archive = config.folders.email_archive.to_string_lossy().to_string();
+        self.payslip_folder = config.folders.payslip_folder.to_string_lossy().to_string();
+        self.payroll_information_folder = config
+            .folders
+            .payroll_information_folder
+            .to_string_lossy()
+            .to_string();
 
         self.regular_font = config.pdf.regular_font.to_string_lossy().to_string();
         self.bold_font = config.pdf.bold_font.to_string_lossy().to_string();
 
         self.week_commencing_font_size = config.pdf.week_commencing_font_size.to_string();
-
         self.hours_font_size = config.pdf.hours_font_size.to_string();
-
         self.information_font_size = config.pdf.information_font_size.to_string();
 
         self.status_message = "Application settings loaded.".to_string();
@@ -254,6 +292,16 @@ impl ApplicationSettingsScreen {
 
         application.context.config.folders.email_archive =
             std::path::PathBuf::from(self.email_archive.trim());
+
+        application.context.config.folders.payslip_folder =
+            std::path::PathBuf::from(self.payslip_folder.trim());
+
+        application
+            .context
+            .config
+            .folders
+            .payroll_information_folder =
+            std::path::PathBuf::from(self.payroll_information_folder.trim());
 
         application.context.config.pdf.regular_font =
             std::path::PathBuf::from(self.regular_font.trim());

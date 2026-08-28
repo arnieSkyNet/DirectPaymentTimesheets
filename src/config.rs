@@ -20,6 +20,20 @@ pub struct FolderConfig {
     pub csv_import: PathBuf,
     pub pdf_output: PathBuf,
     pub email_archive: PathBuf,
+
+    #[serde(default = "default_payslip_folder")]
+    pub payslip_folder: PathBuf,
+
+    #[serde(default = "default_payroll_information_folder")]
+    pub payroll_information_folder: PathBuf,
+}
+
+fn default_payslip_folder() -> PathBuf {
+    PathBuf::from("/home/example/Desktop/launchers/Example Timesheets Payslips/2026 to 2027/")
+}
+
+fn default_payroll_information_folder() -> PathBuf {
+    PathBuf::from("/home/example/Desktop/launchers/Example Personal Budgets/")
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -101,14 +115,10 @@ impl Default for PayrollConfig {
     fn default() -> Self {
         Self {
             frequency: "Every Four Weeks".to_string(),
-
             rounding_minutes: 15,
             rounding_direction: "Up".to_string(),
-
             start_of_workweek: "Monday".to_string(),
-
             email_subject_format: "YYYYMMwWW".to_string(),
-
             overtime_enabled: false,
             public_holiday_enabled: false,
         }
@@ -124,10 +134,11 @@ impl Default for AppConfig {
                 csv_import: home.join("Documents/DirectPaymentTimesheets/import"),
                 pdf_output: home.join("Documents/DirectPaymentTimesheets/pdf"),
                 email_archive: home.join("Documents/DirectPaymentTimesheets/emails"),
+                payslip_folder: default_payslip_folder(),
+                payroll_information_folder: default_payroll_information_folder(),
             },
 
             pdf: PdfConfig::default(),
-
             payroll: PayrollConfig::default(),
         }
     }

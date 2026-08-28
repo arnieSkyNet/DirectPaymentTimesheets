@@ -1,7 +1,11 @@
 use chrono::Local;
 use std::error::Error;
 use std::fs;
+use std::io;
 use std::path::{Path, PathBuf};
+use zip::ZipArchive;
+
+use crate::models::PersonalAssistant;
 
 pub fn archive_csv(source: &Path, archive_dir: &Path) -> Result<PathBuf, Box<dyn Error>> {
     let now = Local::now();
@@ -27,6 +31,107 @@ pub fn archive_csv(source: &Path, archive_dir: &Path) -> Result<PathBuf, Box<dyn
     fs::copy(source, &destination)?;
 
     Ok(destination)
+}
+
+pub struct PayrollReturnImportResult {
+    pub payslips_imported: usize,
+    pub information_files_imported: usize,
+    pub files_skipped: usize,
+}
+
+pub fn import_payroll_return(
+    zip_path: &Path,
+    payslip_folder: &Path,
+    information_folder: &Path,
+    assistants: &[PersonalAssistant],
+    week_number: i64,
+) -> Result<PayrollReturnImportResult, Box<dyn Error>> {
+    fs::create_dir_all(payslip_folder)?;
+    fs::create_dir_all(information_folder)?;
+
+    let file = fs::File::open(zip_path)?;
+    let mut archive = ZipArchive::new(file)?;
+
+    let mut result = PayrollReturnImportResult {
+        payslips_imported: 0,
+        information_files_imported: 0,
+        files_skipped: 0,
+    };
+
+    for index in 0..archive.len() {
+        let mut entry = archive.by_index(index)?;
+
+        if entry.is_dir() {
+            continue;
+        }
+
+        let entry_name = entry.name().to_string();
+
+        let source_filename = Path::new(&entry_name)
+            .file_name()
+            .ok_or_else(|| format!("Invalid ZIP entry filename: {}", entry_name))?
+            .to_string_lossy()
+            .to_string();
+
+        let destination;
+
+        if let Some(assistant) = find_personal_assistant(&source_filename, assistants) {
+            if !source_filename.to_ascii_lowercase().ends_with(".pdf") {
+                result.files_skipped += 1;
+                continue;
+            }
+
+            let full_name = format!("{} {}", assistant.first_name, assistant.surname);
+
+            let filename = format!("Payslip for Week {} for {}.pdf", week_number, full_name);
+
+            destination = payslip_folder.join(filename);
+
+            extract_entry(&mut entry, &destination)?;
+
+            result.payslips_imported += 1;
+        } else {
+            destination = information_folder.join(&source_filename);
+
+            extract_entry(&mut entry, &destination)?;
+
+            result.information_files_imported += 1;
+        }
+    }
+
+    Ok(result)
+}
+
+fn find_personal_assistant<'a>(
+    filename: &str,
+    assistants: &'a [PersonalAssistant],
+) -> Option<&'a PersonalAssistant> {
+    let filename_lower = filename.to_lowercase();
+
+    assistants.iter().find(|assistant| {
+        let full_name = format!(
+            "{} {}",
+            assistant.first_name.trim(),
+            assistant.surname.trim()
+        );
+
+        filename_lower.contains(&full_name.to_lowercase())
+    })
+}
+
+fn extract_entry(
+    entry: &mut zip::read::ZipFile<'_>,
+    destination: &Path,
+) -> Result<(), Box<dyn Error>> {
+    if let Some(parent) = destination.parent() {
+        fs::create_dir_all(parent)?;
+    }
+
+    let mut output = fs::File::create(destination)?;
+
+    io::copy(entry, &mut output)?;
+
+    Ok(())
 }
 
 #[cfg(test)]

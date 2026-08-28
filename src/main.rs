@@ -1,3 +1,4 @@
+mod email_service;
 mod app;
 mod application;
 mod application_settings_screen;

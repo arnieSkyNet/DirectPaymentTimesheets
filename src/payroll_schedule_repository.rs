@@ -9,6 +9,7 @@ pub struct PayrollSchedule {
     pub latest_posting_date: String,
     pub pay_date: String,
     pub created_at: String,
+    pub payslips_sent: bool,
 }
 
 pub struct PayrollScheduleRepository {
@@ -30,7 +31,8 @@ impl PayrollScheduleRepository {
                 first_week_commencing,
                 latest_posting_date,
                 pay_date,
-                created_at
+                created_at,
+                payslips_sent
             FROM payroll_schedules
             WHERE payroll_year = ?1
             ORDER BY cycle_number
@@ -46,6 +48,7 @@ impl PayrollScheduleRepository {
                 latest_posting_date: row.get(4)?,
                 pay_date: row.get(5)?,
                 created_at: row.get(6)?,
+                payslips_sent: row.get::<_, i64>(7)? != 0,
             })
         })?;
 
@@ -73,9 +76,10 @@ impl PayrollScheduleRepository {
                 first_week_commencing,
                 latest_posting_date,
                 pay_date,
-                created_at
+                created_at,
+                payslips_sent
             )
-            VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
             ",
             params![
                 schedule.payroll_year,
@@ -84,7 +88,21 @@ impl PayrollScheduleRepository {
                 schedule.latest_posting_date,
                 schedule.pay_date,
                 schedule.created_at,
+                schedule.payslips_sent,
             ],
+        )?;
+
+        Ok(())
+    }
+
+    pub fn mark_payslips_sent(&self, id: i64) -> Result<()> {
+        self.connection.execute(
+            "
+            UPDATE payroll_schedules
+            SET payslips_sent = 1
+            WHERE id = ?1
+            ",
+            params![id],
         )?;
 
         Ok(())
