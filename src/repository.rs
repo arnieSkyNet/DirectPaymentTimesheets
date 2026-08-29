@@ -95,50 +95,7 @@ impl TimesheetRepository {
         Ok(entries)
     }
 
-    pub fn get_for_personal_assistant(
-        &self,
-        personal_assistant_id: i64,
-    ) -> Result<Vec<TimesheetEntry>> {
-        let mut statement = self.connection.prepare(
-            "SELECT
-                id,
-                pa_name,
-                personal_assistant_id,
-                start_time,
-                end_time,
-                break_minutes,
-                worked_minutes,
-                hourly_rate,
-                amount,
-                notes
-            FROM timesheets
-            WHERE personal_assistant_id = ?1
-            ORDER BY start_time",
-        )?;
 
-        let timesheets = statement.query_map(params![personal_assistant_id], |row| {
-            Ok(TimesheetEntry {
-                id: row.get(0)?,
-                pa_name: row.get(1)?,
-                personal_assistant_id: row.get(2)?,
-                start_time: row.get(3)?,
-                end_time: row.get(4)?,
-                break_minutes: row.get(5)?,
-                worked_minutes: row.get(6)?,
-                hourly_rate: row.get(7)?,
-                amount: row.get(8)?,
-                notes: row.get(9)?,
-            })
-        })?;
-
-        let mut entries = Vec::new();
-
-        for timesheet in timesheets {
-            entries.push(timesheet?);
-        }
-
-        Ok(entries)
-    }
 
     pub fn exists(&self, entry: &TimesheetEntry) -> Result<bool> {
         let mut statement = self.connection.prepare(

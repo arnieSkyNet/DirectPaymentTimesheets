@@ -1,6 +1,7 @@
 use rusqlite::{params, Connection, Result};
 
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub struct PayrollTimesheet {
     pub id: i64,
     pub personal_assistant_id: i64,
@@ -12,6 +13,7 @@ pub struct PayrollTimesheet {
 }
 
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub struct PayrollTimesheetWeek {
     pub id: i64,
     pub payroll_timesheet_id: i64,
@@ -25,6 +27,7 @@ pub struct PayrollTimesheetWeek {
 }
 
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub struct PayrollTimesheetPublicHoliday {
     pub id: i64,
     pub payroll_timesheet_id: i64,

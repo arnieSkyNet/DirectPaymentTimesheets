@@ -89,15 +89,6 @@ impl Application {
         Ok(self.repository.get_all()?)
     }
 
-    pub fn get_timesheets_for_personal_assistant(
-        &self,
-        personal_assistant_id: i64,
-    ) -> Result<Vec<crate::models::TimesheetEntry>, Box<dyn std::error::Error>> {
-        Ok(self
-            .repository
-            .get_for_personal_assistant(personal_assistant_id)?)
-    }
-
     pub fn get_current_pay_rate_for_personal_assistant(
         &self,
         personal_assistant_id: i64,
@@ -138,7 +129,7 @@ impl Application {
     pub fn import_payroll_return(
         &self,
         path: &std::path::Path,
-        payroll_year: &str,
+        _payroll_year: &str,
         cycle_number: i64,
     ) -> Result<
         crate::archive::PayrollReturnImportResult,
@@ -161,6 +152,7 @@ impl Application {
         )?)
     }
 
+    #[allow(dead_code)]
     pub fn generate_timesheet_pdf(
         &self,
         data: &TimesheetPdfData<'_>,

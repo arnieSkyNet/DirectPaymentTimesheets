@@ -3,6 +3,7 @@ use std::path::PathBuf;
 
 use crate::error::AppError;
 
+#[allow(dead_code)]
 pub struct AppEnvironment {
     pub data_dir: PathBuf,
     pub database_path: PathBuf,
