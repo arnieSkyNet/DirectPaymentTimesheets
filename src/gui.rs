@@ -8,7 +8,7 @@ use crate::models::TimesheetEntry;
 use crate::payroll_schedule_repository::PayrollSchedule;
 use crate::payroll_settings_screen::PayrollSettingsScreen;
 use crate::payroll_timesheet_screen::PayrollTimesheetScreen;
-use crate::pdf_generator::{PdfGenerator, TimesheetPdfData};
+use crate::pdf_generator::{payroll_week_filename, PdfGenerator, TimesheetPdfData};
 use crate::personal_assistant_screen::PersonalAssistantScreen;
 
 enum ActiveScreen {
@@ -144,40 +144,18 @@ impl DirectPaymentApp {
             }
         }
 
-        if ui.button("Import Payroll Prep Sheet").clicked() {
-            if let Some(path) = rfd::FileDialog::new()
-                .add_filter("Payroll Prep Sheet", &["pdf", "docx"])
-                .pick_file()
-            {
-                match self.application.import_payroll_prep_sheet(&path) {
-                    Ok(count) => {
-                        self.status_message =
-                            format!("Payroll Prep Sheet imported: {} schedule entries.", count);
-                    }
+        if ui.button("View Imported CSV").clicked() {
+            match self.application.get_timesheets() {
+                Ok(entries) => {
+                    self.timesheets = entries;
 
-                    Err(error) => {
-                        self.status_message =
-                            format!("Payroll Prep Sheet import failed: {}", error);
-                    }
-                }
-            }
-        }
-
-        if ui.button("View Payroll Schedule").clicked() {
-            let payroll_year = current_payroll_year();
-
-            match self.application.get_payroll_schedule(&payroll_year) {
-                Ok(schedules) => {
-                    self.payroll_schedules = schedules;
-
-                    self.status_message = format!(
-                        "Loaded {} payroll schedule entries.",
-                        self.payroll_schedules.len()
-                    );
+                    self.status_message =
+                        format!("Loaded {} timesheets.", self.timesheets.len());
                 }
 
                 Err(error) => {
-                    self.status_message = format!("Failed loading payroll schedule: {}", error);
+                    self.status_message =
+                        format!("Failed loading timesheets: {}", error);
                 }
             }
         }
@@ -190,7 +168,22 @@ impl DirectPaymentApp {
                 }
 
                 Err(error) => {
-                    self.status_message = format!("Payroll timesheet generation failed: {}", error);
+                    self.status_message =
+                        format!("Payroll timesheet generation failed: {}", error);
+                }
+            }
+        }
+
+        if ui.button("Email Timesheets").clicked() {
+            match self.email_timesheets() {
+                Ok(count) => {
+                    self.status_message =
+                        format!("Timesheets emailed successfully: {}.", count);
+                }
+
+                Err(error) => {
+                    self.status_message =
+                        format!("Timesheet email failed: {}", error);
                 }
             }
         }
@@ -249,13 +242,15 @@ impl DirectPaymentApp {
                             }
 
                             None => {
-                                self.status_message = "No current payroll cycle found.".to_string();
+                                self.status_message =
+                                    "No current payroll cycle found.".to_string();
                             }
                         }
                     }
 
                     Err(error) => {
-                        self.status_message = format!("Failed loading payroll schedule: {}", error);
+                        self.status_message =
+                            format!("Failed loading payroll schedule: {}", error);
                     }
                 }
             }
@@ -269,21 +264,47 @@ impl DirectPaymentApp {
                 }
 
                 Err(error) => {
-                    self.status_message = format!("Payslip email failed: {}", error);
+                    self.status_message =
+                        format!("Payslip email failed: {}", error);
                 }
             }
         }
 
-        if ui.button("View Timesheets").clicked() {
-            match self.application.get_timesheets() {
-                Ok(entries) => {
-                    self.timesheets = entries;
+        if ui.button("Import Payroll Prep Sheet").clicked() {
+            if let Some(path) = rfd::FileDialog::new()
+                .add_filter("Payroll Prep Sheet", &["pdf", "docx"])
+                .pick_file()
+            {
+                match self.application.import_payroll_prep_sheet(&path) {
+                    Ok(count) => {
+                        self.status_message =
+                            format!("Payroll Prep Sheet imported: {} schedule entries.", count);
+                    }
 
-                    self.status_message = format!("Loaded {} timesheets.", self.timesheets.len());
+                    Err(error) => {
+                        self.status_message =
+                            format!("Payroll Prep Sheet import failed: {}", error);
+                    }
+                }
+            }
+        }
+
+        if ui.button("View Payroll Schedule").clicked() {
+            let payroll_year = current_payroll_year();
+
+            match self.application.get_payroll_schedule(&payroll_year) {
+                Ok(schedules) => {
+                    self.payroll_schedules = schedules;
+
+                    self.status_message = format!(
+                        "Loaded {} payroll schedule entries.",
+                        self.payroll_schedules.len()
+                    );
                 }
 
                 Err(error) => {
-                    self.status_message = format!("Failed loading timesheets: {}", error);
+                    self.status_message =
+                        format!("Failed loading payroll schedule: {}", error);
                 }
             }
         }
@@ -311,6 +332,7 @@ impl DirectPaymentApp {
 
         draw_payroll_schedule(ui, &self.payroll_schedules);
         draw_timesheets(ui, &self.timesheets);
+        self.draw_timesheet_email_status(ui);
     }
 
     fn email_payslips(&self) -> Result<usize, Box<dyn std::error::Error>> {
@@ -327,6 +349,19 @@ impl DirectPaymentApp {
             .map(str::trim)
             .filter(|email| !email.is_empty())
             .ok_or("Employer has no email address.")?;
+
+        let payroll_provider = self
+            .application
+            .payroll_provider_repository
+            .get()?
+            .ok_or("No Payroll Provider has been configured.")?;
+
+        let payroll_department_email = payroll_provider
+            .payroll_department_email
+            .as_deref()
+            .map(str::trim)
+            .filter(|email| !email.is_empty())
+            .ok_or("Payroll Department has no email address.")?;
 
         let payroll_year = current_payroll_year();
 
@@ -356,18 +391,11 @@ impl DirectPaymentApp {
                 )
             })?;
 
-        if current_schedule.payslips_sent {
-            return Err(format!(
-                "Payslips for payroll cycle {} have already been marked as sent.",
-                current_schedule.cycle_number
-            )
-            .into());
-        }
-
         let assistants = self.application.personal_assistant_repository.get_all()?;
 
-        let payslip_folder =
-            crate::paths::expand_path(&self.application.context.config.folders.payslip_folder);
+        let pdf_output_folder =
+            crate::paths::expand_path(&self.application.context.config.folders.pdf_output);
+
 
         let mut sent = 0usize;
 
@@ -384,6 +412,23 @@ impl DirectPaymentApp {
             let personal_assistant_name =
                 format!("{} {}", assistant.first_name, assistant.surname);
 
+            let existing_status = self
+                .application
+                .payroll_timesheet_email_repository
+                .get_for_pa_and_cycle(
+                    assistant.id,
+                    &payroll_year,
+                    current_schedule.cycle_number,
+                )?;
+
+            if existing_status
+                .as_ref()
+                .and_then(|status| status.sent_at.as_ref())
+                .is_some()
+            {
+                continue;
+            }
+
             let recipient_email = assistant
                 .email
                 .as_deref()
@@ -397,39 +442,342 @@ impl DirectPaymentApp {
                 })?;
 
             let filename = format!(
-                "Payslip for Week {} for {}.pdf",
-                current_schedule.cycle_number,
-                personal_assistant_name
+                "Timesheet - {} - {}.pdf",
+                personal_assistant_name,
+                payroll_week_filename(&current_schedule.first_week_commencing)
             );
 
-            let payslip_path = payslip_folder.join(filename);
+            let timesheet_path = pdf_output_folder.join(filename);
 
-            if !payslip_path.exists() {
+            if !timesheet_path.exists() {
                 return Err(format!(
-                    "Payslip not found for {}: {}",
+                    "Timesheet PDF not found for {}: {}",
                     personal_assistant_name,
-                    payslip_path.display()
+                    timesheet_path.display()
                 )
                 .into());
             }
 
-            self.application.send_payslip_email(
+            self.application.send_timesheet_email(
+                payroll_department_email,
                 employer_email,
                 recipient_email,
                 &personal_assistant_name,
-                current_schedule.cycle_number,
-                &payslip_path,
+                assistant.date_of_birth.as_deref(),
+                assistant.national_insurance_number.as_deref(),
+                &current_schedule.first_week_commencing,
+                &timesheet_path,
+                &self.application.context.config.payroll.timesheet_email_body,
                 employer.email_signature.as_deref(),
             )?;
+
+            let sent_at = chrono::Local::now().to_rfc3339();
+
+            self.application
+                .payroll_timesheet_email_repository
+                .mark_sent(
+                    assistant.id,
+                    &payroll_year,
+                    current_schedule.cycle_number,
+                    &sent_at,
+                )?;
 
             sent += 1;
         }
 
-        self.application
-            .payroll_schedule_repository
-            .mark_payslips_sent(current_schedule.id)?;
+        let all_active_sent = assistants.iter().filter(|assistant| {
+            match &assistant.employment_status {
+                Some(status) => status.trim().eq_ignore_ascii_case("active"),
+                None => true,
+            }
+        }).all(|assistant| {
+            self.application
+                .payroll_timesheet_email_repository
+                .get_for_pa_and_cycle(
+                    assistant.id,
+                    &payroll_year,
+                    current_schedule.cycle_number,
+                )
+                .ok()
+                .flatten()
+                .and_then(|status| status.sent_at)
+                .is_some()
+        });
+
+        if all_active_sent {
+            self.application
+                .payroll_schedule_repository
+                .mark_payslips_sent(current_schedule.id)?;
+        }
 
         Ok(sent)
+    }
+
+    fn email_timesheets(&self) -> Result<usize, Box<dyn std::error::Error>> {
+        let employers = self.application.employer_repository.get_all()?;
+
+        let employer = employers
+            .into_iter()
+            .next()
+            .ok_or("No employer has been configured.")?;
+
+        let employer_email = employer
+            .email
+            .as_deref()
+            .map(str::trim)
+            .filter(|email| !email.is_empty())
+            .ok_or("Employer has no email address.")?;
+
+        let payroll_provider = self
+            .application
+            .payroll_provider_repository
+            .get()?
+            .ok_or("No Payroll Provider has been configured.")?;
+
+        let payroll_department_email = payroll_provider
+            .payroll_department_email
+            .as_deref()
+            .map(str::trim)
+            .filter(|email| !email.is_empty())
+            .ok_or("Payroll Department has no email address.")?;
+
+        let payroll_year = current_payroll_year();
+
+        let schedules = self.application.get_payroll_schedule(&payroll_year)?;
+
+        let today = chrono::Local::now().date_naive();
+
+        let current_schedule = schedules
+            .into_iter()
+            .filter_map(|schedule| {
+                let first_week = parse_date_checked(&schedule.first_week_commencing)?;
+
+                let cycle_end = first_week + chrono::Duration::days(27);
+
+                if first_week <= today && today <= cycle_end {
+                    Some((first_week, schedule))
+                } else {
+                    None
+                }
+            })
+            .max_by_key(|(first_week, _)| *first_week)
+            .map(|(_, schedule)| schedule)
+            .ok_or_else(|| {
+                format!(
+                    "No current payroll cycle was found for {}.",
+                    today.format("%d/%m/%Y")
+                )
+            })?;
+
+        let assistants = self.application.personal_assistant_repository.get_all()?;
+
+        let pdf_output_folder =
+            crate::paths::expand_path(&self.application.context.config.folders.pdf_output);
+
+        let mut sent = 0usize;
+
+        for assistant in &assistants {
+            let is_active = match &assistant.employment_status {
+                Some(status) => status.trim().eq_ignore_ascii_case("active"),
+                None => true,
+            };
+
+            if !is_active {
+                continue;
+            }
+
+            let personal_assistant_name =
+                format!("{} {}", assistant.first_name, assistant.surname);
+
+            let existing_status = self
+                .application
+                .payroll_timesheet_email_repository
+                .get_for_pa_and_cycle(
+                    assistant.id,
+                    &payroll_year,
+                    current_schedule.cycle_number,
+                )?;
+
+            if existing_status
+                .as_ref()
+                .and_then(|status| status.sent_at.as_ref())
+                .is_some()
+            {
+                continue;
+            }
+
+            let personal_assistant_email = assistant
+                .email
+                .as_deref()
+                .map(str::trim)
+                .filter(|email| !email.is_empty())
+                .ok_or_else(|| {
+                    format!(
+                        "Personal Assistant {} has no email address.",
+                        personal_assistant_name
+                    )
+                })?;
+
+            let filename = format!(
+                "Timesheet - {} - {}.pdf",
+                personal_assistant_name,
+                payroll_week_filename(&current_schedule.first_week_commencing)
+            );
+
+            let timesheet_path = pdf_output_folder.join(filename);
+
+            if !timesheet_path.exists() {
+                return Err(format!(
+                    "Timesheet PDF not found for {}: {}",
+                    personal_assistant_name,
+                    timesheet_path.display()
+                )
+                .into());
+            }
+
+            self.application.send_timesheet_email(
+                payroll_department_email,
+                employer_email,
+                personal_assistant_email,
+                &personal_assistant_name,
+                assistant.date_of_birth.as_deref(),
+                assistant.national_insurance_number.as_deref(),
+                &current_schedule.first_week_commencing,
+                &timesheet_path,
+                &self.application.context.config.payroll.timesheet_email_body,
+                employer.email_signature.as_deref(),
+            )?;
+
+            let sent_at = chrono::Local::now().to_rfc3339();
+
+            self.application
+                .payroll_timesheet_email_repository
+                .mark_sent(
+                    assistant.id,
+                    &payroll_year,
+                    current_schedule.cycle_number,
+                    &sent_at,
+                )?;
+
+            sent += 1;
+        }
+
+        Ok(sent)
+    }
+
+    fn draw_timesheet_email_status(&self, ui: &mut egui::Ui) {
+        ui.separator();
+        ui.heading("Timesheet Email Status");
+
+        let payroll_year = current_payroll_year();
+
+        let schedules = match self.application.get_payroll_schedule(&payroll_year) {
+            Ok(schedules) => schedules,
+            Err(error) => {
+                ui.label(format!("Unable to load payroll schedule: {}", error));
+                return;
+            }
+        };
+
+        let today = chrono::Local::now().date_naive();
+
+        let current_schedule = schedules
+            .into_iter()
+            .filter_map(|schedule| {
+                let first_week = parse_date_checked(&schedule.first_week_commencing)?;
+
+                let cycle_end = first_week + chrono::Duration::days(27);
+
+                if first_week <= today && today <= cycle_end {
+                    Some((first_week, schedule))
+                } else {
+                    None
+                }
+            })
+            .max_by_key(|(first_week, _)| *first_week)
+            .map(|(_, schedule)| schedule);
+
+        let current_schedule = match current_schedule {
+            Some(schedule) => schedule,
+            None => {
+                ui.label("No current payroll cycle found.");
+                return;
+            }
+        };
+
+        let assistants = match self.application.personal_assistant_repository.get_all() {
+            Ok(assistants) => assistants,
+            Err(error) => {
+                ui.label(format!("Unable to load Personal Assistants: {}", error));
+                return;
+            }
+        };
+
+        egui::Grid::new("timesheet_email_status")
+            .num_columns(3)
+            .striped(true)
+            .show(ui, |ui| {
+                ui.label("Personal Assistant");
+                ui.label("Status");
+                ui.label("Sent");
+                ui.end_row();
+
+                for assistant in assistants {
+                    let is_active = match &assistant.employment_status {
+                        Some(status) => status.trim().eq_ignore_ascii_case("active"),
+                        None => true,
+                    };
+
+                    if !is_active {
+                        continue;
+                    }
+
+                    let name = format!("{} {}", assistant.first_name, assistant.surname);
+
+                    let status = self
+                        .application
+                        .payroll_timesheet_email_repository
+                        .get_for_pa_and_cycle(
+                            assistant.id,
+                            &payroll_year,
+                            current_schedule.cycle_number,
+                        );
+
+                    match status {
+                        Ok(Some(status)) if status.sent_at.is_some() => {
+                            let sent_at = status.sent_at.unwrap();
+
+                            let display_time =
+                                chrono::DateTime::parse_from_rfc3339(&sent_at)
+                                    .map(|date_time| {
+                                        date_time
+                                            .with_timezone(&chrono::Local)
+                                            .format("%d %b %Y %H:%M")
+                                            .to_string()
+                                    })
+                                    .unwrap_or(sent_at);
+
+                            ui.label(name);
+                            ui.label("Sent");
+                            ui.label(display_time);
+                        }
+
+                        Ok(_) => {
+                            ui.label(name);
+                            ui.label("Not sent");
+                            ui.label("");
+                        }
+
+                        Err(error) => {
+                            ui.label(name);
+                            ui.label("Error");
+                            ui.label(format!("{}", error));
+                        }
+                    }
+
+                    ui.end_row();
+                }
+            });
     }
 
     fn generate_payroll_timesheets(&self) -> Result<usize, Box<dyn std::error::Error>> {

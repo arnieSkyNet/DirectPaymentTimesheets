@@ -7,54 +7,77 @@ use std::error::Error;
 use std::fs;
 use std::path::Path;
 
-pub fn send_payslip_email(
+pub fn send_timesheet_email(
+    payroll_department_email: &str,
     employer_email: &str,
-    recipient_email: &str,
+    personal_assistant_email: &str,
     personal_assistant_name: &str,
-    payroll_week: i64,
-    payslip_path: &Path,
+    personal_assistant_dob: Option<&str>,
+    personal_assistant_ni: Option<&str>,
+    first_week_commencing: &str,
+    timesheet_path: &Path,
+    email_body: &str,
     email_signature: Option<&str>,
+    subject_template: &str,
 ) -> Result<(), Box<dyn Error>> {
+    let payroll_department_email = payroll_department_email.trim();
+
+    if payroll_department_email.is_empty() {
+        return Err("Payroll Department has no email address.".into());
+    }
+
     let employer_email = employer_email.trim();
 
     if employer_email.is_empty() {
         return Err("Employer has no email address.".into());
     }
 
-    let recipient_email = recipient_email.trim();
+    let personal_assistant_email = personal_assistant_email.trim();
 
-    if recipient_email.is_empty() {
-        return Err("Personal Assistant has no email address.".into());
-    }
-
-    if !payslip_path.exists() {
+    if personal_assistant_email.is_empty() {
         return Err(format!(
-            "Payslip file does not exist: {}",
-            payslip_path.display()
+            "Personal Assistant {} has no email address.",
+            personal_assistant_name
         )
         .into());
     }
 
-    let subject = format!("Payslip for Week {}", payroll_week);
+    if !timesheet_path.exists() {
+        return Err(format!(
+            "Timesheet PDF does not exist: {}",
+            timesheet_path.display()
+        )
+        .into());
+    }
 
-    let mut body = format!(
-        "Dear {},\n\nPlease find attached your payslip for Week {}.\n\nKind regards,\n",
-        personal_assistant_name, payroll_week
-    );
+
+    let payroll_period = crate::pdf_generator::payroll_week_filename(first_week_commencing);
+
+    let subject = subject_template
+        .replace("{Personal Assistant Name}", personal_assistant_name)
+        .replace("{Personal Assistant DOB}", personal_assistant_dob.unwrap_or(""))
+        .replace("{Personal Assistant NI}", personal_assistant_ni.unwrap_or(""))
+        .replace("{YYYYMMwWW}", &payroll_period);
+
+    let mut body = email_body.trim_end().to_string();
 
     if let Some(signature) = email_signature {
-        if !signature.trim().is_empty() {
-            body.push('\n');
-            body.push_str(signature.trim());
-            body.push('\n');
+        let signature = signature.trim();
+
+        if !signature.is_empty() {
+            if !body.is_empty() {
+                body.push_str("\n\n");
+            }
+
+            body.push_str(signature);
         }
     }
 
-    let attachment_data = fs::read(payslip_path)?;
+    let attachment_data = fs::read(timesheet_path)?;
 
-    let filename = payslip_path
+    let filename = timesheet_path
         .file_name()
-        .ok_or("Invalid payslip filename.")?
+        .ok_or("Invalid timesheet filename.")?
         .to_string_lossy()
         .to_string();
 
@@ -65,7 +88,9 @@ pub fn send_payslip_email(
 
     let email = Message::builder()
         .from(employer_email.parse::<Mailbox>()?)
-        .to(recipient_email.parse::<Mailbox>()?)
+        .to(payroll_department_email.parse::<Mailbox>()?)
+        .cc(employer_email.parse::<Mailbox>()?)
+        .bcc(personal_assistant_email.parse::<Mailbox>()?)
         .subject(subject)
         .multipart(
             MultiPart::mixed()
@@ -81,4 +106,3 @@ pub fn send_payslip_email(
 
     Ok(())
 }
-

@@ -146,6 +146,11 @@ fn apply_migrations(connection: &Connection) -> Result<()> {
 
     if current_version < 16 {
         migrate_to_version_16(connection)?;
+        current_version = 16;
+    }
+
+    if current_version < 17 {
+        migrate_to_version_17(connection)?;
     }
 
     Ok(())
@@ -496,3 +501,28 @@ fn migrate_to_version_16(connection: &Connection) -> Result<()> {
     Ok(())
 }
 
+
+
+fn migrate_to_version_17(connection: &Connection) -> Result<()> {
+    connection.execute(
+        "
+        CREATE TABLE IF NOT EXISTS payroll_timesheet_email_status (
+            id INTEGER PRIMARY KEY,
+            personal_assistant_id INTEGER NOT NULL,
+            payroll_year TEXT NOT NULL,
+            cycle_number INTEGER NOT NULL,
+            sent_at TEXT,
+            UNIQUE (
+                personal_assistant_id,
+                payroll_year,
+                cycle_number
+            )
+        )
+        ",
+        [],
+    )?;
+
+    connection.execute("UPDATE schema_version SET version = 17", [])?;
+
+    Ok(())
+}

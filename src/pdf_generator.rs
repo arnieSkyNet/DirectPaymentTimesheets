@@ -771,7 +771,7 @@ fn draw_horizontal_line(ops: &mut Vec<Op>, left: f32, right: f32, y: f32) {
     });
 }
 
-fn payroll_week_filename(date: &str) -> String {
+pub(crate) fn payroll_week_filename(date: &str) -> String {
     if let Ok(parsed) = chrono::NaiveDate::parse_from_str(date, "%d/%m/%Y") {
         let payroll_start = chrono::NaiveDate::from_ymd_opt(2026, 3, 23)
             .expect("Invalid payroll schedule start date");

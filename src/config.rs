@@ -13,6 +13,9 @@ pub struct AppConfig {
 
     #[serde(default)]
     pub payroll: PayrollConfig,
+
+    #[serde(default)]
+    pub email: EmailConfig,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -99,6 +102,9 @@ pub struct PayrollConfig {
 
     pub email_subject_format: String,
 
+    #[serde(default = "default_timesheet_email_body")]
+    pub timesheet_email_body: String,
+
     pub overtime_enabled: bool,
     pub public_holiday_enabled: bool,
 }
@@ -111,6 +117,10 @@ fn default_workweek() -> String {
     "Monday".to_string()
 }
 
+fn default_timesheet_email_body() -> String {
+    "Please find attached the timesheet for the payroll period.".to_string()
+}
+
 impl Default for PayrollConfig {
     fn default() -> Self {
         Self {
@@ -119,8 +129,27 @@ impl Default for PayrollConfig {
             rounding_direction: "Up".to_string(),
             start_of_workweek: "Monday".to_string(),
             email_subject_format: "YYYYMMwWW".to_string(),
+            timesheet_email_body: default_timesheet_email_body(),
             overtime_enabled: false,
             public_holiday_enabled: false,
+        }
+    }
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct EmailConfig {
+    #[serde(default = "default_email_body")]
+    pub timesheet_body: String,
+}
+
+fn default_email_body() -> String {
+    "Hi all,\n\nand thank you :-)\n\nM.".to_string()
+}
+
+impl Default for EmailConfig {
+    fn default() -> Self {
+        Self {
+            timesheet_body: default_email_body(),
         }
     }
 }
@@ -140,6 +169,7 @@ impl Default for AppConfig {
 
             pdf: PdfConfig::default(),
             payroll: PayrollConfig::default(),
+            email: EmailConfig::default(),
         }
     }
 }
@@ -147,7 +177,8 @@ impl Default for AppConfig {
 impl AppConfig {
     pub fn load(path: &Path) -> Result<Self, AppError> {
         if path.exists() {
-            let contents = fs::read_to_string(path).map_err(|e| AppError::Config(e.to_string()))?;
+            let contents =
+                fs::read_to_string(path).map_err(|e| AppError::Config(e.to_string()))?;
 
             toml::from_str(&contents).map_err(|e| AppError::Config(e.to_string()))
         } else {
@@ -163,7 +194,8 @@ impl AppConfig {
     }
 
     pub fn save(&self, path: &Path) -> Result<(), AppError> {
-        let contents = toml::to_string_pretty(self).map_err(|e| AppError::Config(e.to_string()))?;
+        let contents =
+            toml::to_string_pretty(self).map_err(|e| AppError::Config(e.to_string()))?;
 
         fs::write(path, contents).map_err(|e| AppError::Config(e.to_string()))?;
 

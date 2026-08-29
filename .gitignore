@@ -6,3 +6,6 @@
 /data/signatures/
 /data/generated/
 
+
+# Local pre-change backup
+src.before-email-timesheets/
