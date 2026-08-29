@@ -1,4 +1,5 @@
 #[derive(Debug)]
+#[allow(dead_code)]
 pub struct TimesheetEntry {
     pub id: i64,
     pub pa_name: String,
