@@ -126,7 +126,8 @@ impl eframe::App for DirectPaymentApp {
 
 impl DirectPaymentApp {
     fn draw_dashboard(&mut self, ui: &mut egui::Ui) {
-        ui.heading("Dashboard");
+        egui::ScrollArea::vertical().show(ui, |ui| {
+            ui.heading("Dashboard");
 
         ui.separator();
 
@@ -333,6 +334,7 @@ impl DirectPaymentApp {
         draw_payroll_schedule(ui, &self.payroll_schedules);
         draw_timesheets(ui, &self.timesheets);
         self.draw_timesheet_email_status(ui);
+        });
     }
 
     fn email_payslips(&self) -> Result<usize, Box<dyn std::error::Error>> {
