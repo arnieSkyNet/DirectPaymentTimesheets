@@ -18,6 +18,8 @@ pub struct ApplicationSettingsScreen {
     hours_font_size: String,
     information_font_size: String,
 
+    timesheet_email_body: String,
+
     status_message: String,
 }
 
@@ -38,6 +40,8 @@ impl ApplicationSettingsScreen {
             week_commencing_font_size: String::new(),
             hours_font_size: String::new(),
             information_font_size: String::new(),
+
+            timesheet_email_body: String::new(),
 
             status_message: "Application settings not loaded.".to_string(),
         }
@@ -218,6 +222,18 @@ impl ApplicationSettingsScreen {
 
         ui.separator();
 
+        ui.heading("Email Settings");
+
+        ui.label("Timesheet Email Body");
+        ui.label("This message is placed before the Employer Email Signature.");
+
+        ui.add_sized(
+            [600.0, 160.0],
+            egui::TextEdit::multiline(&mut self.timesheet_email_body),
+        );
+
+        ui.separator();
+
         if ui.button("Save Application Settings").clicked() {
             match self.save(application) {
                 Ok(()) => {
@@ -254,6 +270,8 @@ impl ApplicationSettingsScreen {
         self.week_commencing_font_size = config.pdf.week_commencing_font_size.to_string();
         self.hours_font_size = config.pdf.hours_font_size.to_string();
         self.information_font_size = config.pdf.information_font_size.to_string();
+
+        self.timesheet_email_body = config.email.timesheet_body.clone();
 
         self.status_message = "Application settings loaded.".to_string();
     }
@@ -313,6 +331,9 @@ impl ApplicationSettingsScreen {
         application.context.config.pdf.hours_font_size = hours_font_size;
 
         application.context.config.pdf.information_font_size = information_font_size;
+
+        application.context.config.email.timesheet_body =
+            self.timesheet_email_body.clone();
 
         application.save_config()?;
 

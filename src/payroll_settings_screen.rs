@@ -21,6 +21,7 @@ pub struct PayrollSettingsScreen {
     provider_telephone: String,
 
     email_subject_format: String,
+    timesheet_email_body: String,
     standard_rate_effective_date: String,
     standard_rate_base: String,
     standard_rate_top_up: String,
@@ -49,6 +50,7 @@ impl PayrollSettingsScreen {
             provider_telephone: String::new(),
 
             email_subject_format: String::new(),
+            timesheet_email_body: String::new(),
             standard_rate_effective_date: String::new(),
             standard_rate_base: String::new(),
             standard_rate_top_up: String::new(),
@@ -95,10 +97,51 @@ impl PayrollSettingsScreen {
             columns[0].text_edit_singleline(&mut self.payroll_email);
 
             columns[1].label("PDF Email Subject Format");
-            columns[1].text_edit_singleline(&mut self.email_subject_format);
 
-            columns[1].label("Example: YYYYMMwWW becomes 202604w02");
+            columns[1].horizontal(|ui| {
+                ui.text_edit_singleline(&mut self.email_subject_format);
+
+                egui::ComboBox::from_id_salt("email_subject_insert_field")
+                    .selected_text("Insert Field")
+                    .show_ui(ui, |ui| {
+                        if ui.button("Personal Assistant Name").clicked() {
+                            self.email_subject_format
+                                .push_str("{Personal Assistant Name}");
+                            ui.close();
+                        }
+
+                        if ui.button("Personal Assistant DOB").clicked() {
+                            self.email_subject_format
+                                .push_str("{Personal Assistant DOB}");
+                            ui.close();
+                        }
+
+                        if ui.button("Personal Assistant NI").clicked() {
+                            self.email_subject_format
+                                .push_str("{Personal Assistant NI}");
+                            ui.close();
+                        }
+
+                        if ui.button("Payroll Period (YYYYMMwWW)").clicked() {
+                            self.email_subject_format.push_str("{YYYYMMwWW}");
+                            ui.close();
+                        }
+                    });
+            });
+
+            columns[1].label(
+                "Available fields: {Personal Assistant Name}, {Personal Assistant DOB},                  {Personal Assistant NI}, {YYYYMMwWW}",
+            );
         });
+
+        ui.label("Timesheet Email Body");
+
+        ui.add_sized(
+            [600.0, 120.0],
+            egui::TextEdit::multiline(&mut self.timesheet_email_body),
+        );
+
+        ui.label("The Employer Email Signature is automatically appended to this body.");
 
         ui.separator();
         ui.heading("National / Standard Pay Rate Update");
@@ -284,6 +327,7 @@ impl PayrollSettingsScreen {
         }
 
         self.email_subject_format = payroll.email_subject_format.clone();
+        self.timesheet_email_body = payroll.timesheet_email_body.clone();
 
         self.overtime_enabled = payroll.overtime_enabled;
         self.public_holiday_enabled = payroll.public_holiday_enabled;
@@ -309,6 +353,7 @@ impl PayrollSettingsScreen {
         payroll.start_of_workweek = self.start_of_workweek.clone();
 
         payroll.email_subject_format = self.email_subject_format.clone();
+        payroll.timesheet_email_body = self.timesheet_email_body.clone();
 
         payroll.overtime_enabled = self.overtime_enabled;
 

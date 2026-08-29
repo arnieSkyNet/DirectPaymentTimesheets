@@ -9,6 +9,7 @@ use crate::payroll_prep_sheet_import_service::PayrollPrepSheetImportService;
 use crate::payroll_provider_repository::PayrollProviderRepository;
 use crate::payroll_schedule_repository::PayrollScheduleRepository;
 use crate::payroll_timesheet_repository::PayrollTimesheetRepository;
+use crate::payroll_timesheet_email_repository::PayrollTimesheetEmailRepository;
 use crate::pdf_generator::{PdfGenerator, TimesheetPdfData};
 use crate::personal_assistant_repository::PersonalAssistantRepository;
 use crate::repository::TimesheetRepository;
@@ -23,6 +24,7 @@ pub struct Application {
     pub payroll_provider_repository: PayrollProviderRepository,
     pub payroll_schedule_repository: PayrollScheduleRepository,
     pub payroll_timesheet_repository: PayrollTimesheetRepository,
+    pub payroll_timesheet_email_repository: PayrollTimesheetEmailRepository,
 }
 
 impl Application {
@@ -52,6 +54,9 @@ impl Application {
         let payroll_timesheet_repository =
             PayrollTimesheetRepository::new(Connection::open(database_path)?);
 
+        let payroll_timesheet_email_repository =
+            PayrollTimesheetEmailRepository::new(Connection::open(database_path)?);
+
         Ok(Self {
             context,
             repository,
@@ -62,6 +67,7 @@ impl Application {
             payroll_provider_repository,
             payroll_schedule_repository,
             payroll_timesheet_repository,
+            payroll_timesheet_email_repository,
         })
     }
 
@@ -166,22 +172,31 @@ impl Application {
         )?)
     }
 
-    pub fn send_payslip_email(
+    pub fn send_timesheet_email(
         &self,
+        payroll_department_email: &str,
         employer_email: &str,
-        recipient_email: &str,
+        personal_assistant_email: &str,
         personal_assistant_name: &str,
-        payroll_week: i64,
-        payslip_path: &std::path::Path,
+        personal_assistant_dob: Option<&str>,
+        personal_assistant_ni: Option<&str>,
+        first_week_commencing: &str,
+        timesheet_path: &std::path::Path,
+        email_body: &str,
         email_signature: Option<&str>,
     ) -> Result<(), Box<dyn std::error::Error>> {
-        crate::email_service::send_payslip_email(
+        crate::email_service::send_timesheet_email(
+            payroll_department_email,
             employer_email,
-            recipient_email,
+            personal_assistant_email,
             personal_assistant_name,
-            payroll_week,
-            payslip_path,
+            personal_assistant_dob,
+            personal_assistant_ni,
+            first_week_commencing,
+            timesheet_path,
+            email_body,
             email_signature,
+            &self.context.config.payroll.email_subject_format,
         )
     }
 
