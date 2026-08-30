@@ -410,7 +410,61 @@ impl DirectPaymentApp {
 
         ui.separator();
         ui.label("Email Subject Format");
-        ui.text_edit_singleline(&mut self.application.context.config.payroll.email_subject_format);
+        ui.horizontal(|ui| {
+            use egui::TextBuffer as _;
+
+            let subject = &mut self.application.context.config.payroll.email_subject_format;
+            let mut text_edit_output = egui::TextEdit::singleline(subject).show(ui);
+            let cursor_index = text_edit_output
+                .state
+                .cursor
+                .char_range()
+                .map(|cursor_range| cursor_range.primary.index)
+                .unwrap_or_else(|| subject.chars().count());
+            let mut placeholder_to_insert = None;
+
+            egui::ComboBox::from_id_salt("email_subject_insert_field")
+                .selected_text("Insert Field")
+                .show_ui(ui, |ui| {
+                    if ui.button("Personal Assistant Name").clicked() {
+                        placeholder_to_insert = Some("{Personal Assistant Name}");
+                        ui.close();
+                    }
+
+                    if ui.button("Personal Assistant DOB").clicked() {
+                        placeholder_to_insert = Some("{Personal Assistant DOB}");
+                        ui.close();
+                    }
+
+                    if ui.button("Personal Assistant NI").clicked() {
+                        placeholder_to_insert = Some("{Personal Assistant NI}");
+                        ui.close();
+                    }
+
+                    if ui.button("Payroll Period (YYYYMMwWW)").clicked() {
+                        placeholder_to_insert = Some("{YYYYMMwWW}");
+                        ui.close();
+                    }
+                });
+
+            if let Some(placeholder) = placeholder_to_insert {
+                let inserted_characters = subject.insert_text(placeholder, cursor_index);
+                let new_cursor_index = cursor_index + inserted_characters;
+                text_edit_output
+                    .state
+                    .cursor
+                    .set_char_range(Some(egui::text::CCursorRange::one(
+                        egui::text::CCursor::new(new_cursor_index),
+                    )));
+                text_edit_output
+                    .state
+                    .store(ui.ctx(), text_edit_output.response.id);
+                text_edit_output.response.request_focus();
+            }
+        });
+        ui.label(
+            "Available fields: {Personal Assistant Name}, {Personal Assistant DOB}, {Personal Assistant NI}, {YYYYMMwWW}",
+        );
         ui.label("Timesheet Email Body");
         ui.add_sized(
             [600.0, 120.0],
