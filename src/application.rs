@@ -35,7 +35,7 @@ fn launch_gui(app: Application) -> Result<(), Box<dyn Error>> {
         "Direct Payments Timesheets",
         options,
         Box::new(|cc| {
-            crate::application_settings_screen::apply_theme(&cc.egui_ctx, app.context.config.theme);
+            crate::theme::apply_theme(&cc.egui_ctx, app.context.config.theme);
             Ok(Box::new(crate::gui::DirectPaymentApp::new(app)))
         }),
     )

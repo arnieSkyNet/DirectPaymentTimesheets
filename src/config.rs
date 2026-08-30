@@ -22,12 +22,16 @@ pub struct AppConfig {
 }
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
+#[serde(rename_all = "snake_case")]
 pub enum ApplicationTheme {
     #[default]
     Dark,
     Light,
     System,
+    SoftLight,
+    SoftDark,
+    Blue,
+    AccessibleHighContrast,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -313,7 +317,7 @@ mod tests {
     }
 
     #[test]
-    fn theme_round_trips_through_existing_config_persistence() {
+    fn all_themes_round_trip_through_existing_config_persistence() {
         let unique = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
@@ -322,14 +326,27 @@ mod tests {
             "direct-payment-timesheets-config-{}-{unique}.toml",
             std::process::id()
         ));
-        let mut config = AppConfig::default();
-        config.theme = ApplicationTheme::System;
+        let themes = [
+            ApplicationTheme::System,
+            ApplicationTheme::Light,
+            ApplicationTheme::SoftLight,
+            ApplicationTheme::Dark,
+            ApplicationTheme::SoftDark,
+            ApplicationTheme::Blue,
+            ApplicationTheme::AccessibleHighContrast,
+        ];
 
-        config.save(&path).unwrap();
-        let loaded = AppConfig::load(&path).unwrap();
+        for theme in themes {
+            let mut config = AppConfig::default();
+            config.theme = theme;
+
+            config.save(&path).unwrap();
+            let loaded = AppConfig::load(&path).unwrap();
+
+            assert_eq!(loaded.theme, theme);
+        }
+
         std::fs::remove_file(path).unwrap();
-
-        assert_eq!(loaded.theme, ApplicationTheme::System);
     }
 
     #[test]
