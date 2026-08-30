@@ -1,9 +1,12 @@
 use eframe::egui;
 
 use crate::app::Application;
+use crate::config::ApplicationTheme;
 
 pub struct ApplicationSettingsScreen {
     loaded: bool,
+
+    theme: ApplicationTheme,
 
     csv_import: String,
     pdf_output: String,
@@ -25,6 +28,8 @@ impl ApplicationSettingsScreen {
     pub fn new() -> Self {
         Self {
             loaded: false,
+
+            theme: ApplicationTheme::default(),
 
             csv_import: String::new(),
             pdf_output: String::new(),
@@ -51,6 +56,27 @@ impl ApplicationSettingsScreen {
         }
 
         ui.heading("Application Settings");
+
+        ui.separator();
+
+        ui.heading("Appearance");
+
+        ui.horizontal(|ui| {
+            ui.label("Application Theme");
+
+            let previous_theme = self.theme;
+            egui::ComboBox::from_id_salt("application_theme")
+                .selected_text(theme_label(self.theme))
+                .show_ui(ui, |ui| {
+                    ui.selectable_value(&mut self.theme, ApplicationTheme::Dark, "Dark");
+                    ui.selectable_value(&mut self.theme, ApplicationTheme::Light, "Light");
+                    ui.selectable_value(&mut self.theme, ApplicationTheme::System, "System");
+                });
+
+            if self.theme != previous_theme {
+                apply_theme(ui.ctx(), self.theme);
+            }
+        });
 
         ui.separator();
 
@@ -247,6 +273,8 @@ impl ApplicationSettingsScreen {
     fn load(&mut self, application: &Application) {
         let config = &application.context.config;
 
+        self.theme = config.theme;
+
         self.csv_import = config.folders.csv_import.to_string_lossy().to_string();
         self.pdf_output = config.folders.pdf_output.to_string_lossy().to_string();
         self.email_archive = config.folders.email_archive.to_string_lossy().to_string();
@@ -293,6 +321,8 @@ impl ApplicationSettingsScreen {
             return Err("PDF font sizes must be greater than zero.".into());
         }
 
+        application.context.config.theme = self.theme;
+
         application.context.config.folders.csv_import =
             std::path::PathBuf::from(self.csv_import.trim());
 
@@ -327,4 +357,22 @@ impl ApplicationSettingsScreen {
 
         Ok(())
     }
+}
+
+fn theme_label(theme: ApplicationTheme) -> &'static str {
+    match theme {
+        ApplicationTheme::Dark => "Dark",
+        ApplicationTheme::Light => "Light",
+        ApplicationTheme::System => "System",
+    }
+}
+
+pub fn apply_theme(ctx: &egui::Context, theme: ApplicationTheme) {
+    let preference = match theme {
+        ApplicationTheme::Dark => egui::ThemePreference::Dark,
+        ApplicationTheme::Light => egui::ThemePreference::Light,
+        ApplicationTheme::System => egui::ThemePreference::System,
+    };
+
+    ctx.set_theme(preference);
 }

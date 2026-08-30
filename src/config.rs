@@ -6,6 +6,9 @@ use crate::error::AppError;
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct AppConfig {
+    #[serde(default)]
+    pub theme: ApplicationTheme,
+
     pub folders: FolderConfig,
 
     #[serde(default)]
@@ -16,6 +19,15 @@ pub struct AppConfig {
 
     #[serde(default)]
     pub email: EmailConfig,
+}
+
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ApplicationTheme {
+    #[default]
+    Dark,
+    Light,
+    System,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -214,6 +226,7 @@ impl Default for AppConfig {
         let home = dirs::home_dir().expect("Could not determine home directory");
 
         Self {
+            theme: ApplicationTheme::default(),
             folders: FolderConfig {
                 csv_import: home.join("Documents/DirectPaymentTimesheets/import"),
                 pdf_output: home.join("Documents/DirectPaymentTimesheets/pdf"),
@@ -287,6 +300,37 @@ fn reconcile_legacy_timesheet_email_body(config: &mut AppConfig, source: &toml::
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[test]
+    fn config_without_theme_defaults_to_dark() {
+        let mut value = toml::Value::try_from(AppConfig::default()).unwrap();
+        value.as_table_mut().unwrap().remove("theme");
+
+        let config: AppConfig = value.try_into().unwrap();
+
+        assert_eq!(config.theme, ApplicationTheme::Dark);
+    }
+
+    #[test]
+    fn theme_round_trips_through_existing_config_persistence() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!(
+            "direct-payment-timesheets-config-{}-{unique}.toml",
+            std::process::id()
+        ));
+        let mut config = AppConfig::default();
+        config.theme = ApplicationTheme::System;
+
+        config.save(&path).unwrap();
+        let loaded = AppConfig::load(&path).unwrap();
+        std::fs::remove_file(path).unwrap();
+
+        assert_eq!(loaded.theme, ApplicationTheme::System);
+    }
 
     #[test]
     fn legacy_timesheet_body_fills_missing_authoritative_body_only() {

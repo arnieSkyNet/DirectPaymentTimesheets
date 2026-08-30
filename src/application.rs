@@ -34,7 +34,10 @@ fn launch_gui(app: Application) -> Result<(), Box<dyn Error>> {
     eframe::run_native(
         "Direct Payments Timesheets",
         options,
-        Box::new(|_cc| Ok(Box::new(crate::gui::DirectPaymentApp::new(app)))),
+        Box::new(|cc| {
+            crate::application_settings_screen::apply_theme(&cc.egui_ctx, app.context.config.theme);
+            Ok(Box::new(crate::gui::DirectPaymentApp::new(app)))
+        }),
     )
     .map_err(|error| -> Box<dyn Error> { Box::new(error) })?;
 
