@@ -13,15 +13,11 @@ pub struct PayrollSettingsScreen {
     rounding_direction: String,
     start_of_workweek: String,
 
-    payroll_email: String,
-
     provider_name: String,
     provider_email: String,
     provider_address: String,
     provider_telephone: String,
 
-    email_subject_format: String,
-    timesheet_email_body: String,
     standard_rate_effective_date: String,
     standard_rate_base: String,
     standard_rate_top_up: String,
@@ -42,15 +38,11 @@ impl PayrollSettingsScreen {
             rounding_direction: "Up".to_string(),
             start_of_workweek: "Monday".to_string(),
 
-            payroll_email: String::new(),
-
             provider_name: String::new(),
             provider_email: String::new(),
             provider_address: String::new(),
             provider_telephone: String::new(),
 
-            email_subject_format: String::new(),
-            timesheet_email_body: String::new(),
             standard_rate_effective_date: String::new(),
             standard_rate_base: String::new(),
             standard_rate_top_up: String::new(),
@@ -62,7 +54,8 @@ impl PayrollSettingsScreen {
         }
     }
 
-    pub fn show(&mut self, ui: &mut egui::Ui, application: &mut Application) {
+    pub fn show(&mut self, ui: &mut egui::Ui, application: &mut Application) -> bool {
+        let mut open_email_settings = false;
         if !self.loaded {
             self.load(application);
             self.loaded = true;
@@ -87,61 +80,6 @@ impl PayrollSettingsScreen {
             columns[1].label("Provider Address");
             columns[1].add(egui::TextEdit::multiline(&mut self.provider_address).desired_rows(5));
         });
-
-        ui.separator();
-
-        ui.heading("Payroll Department");
-
-        ui.columns(2, |columns| {
-            columns[0].label("Send Timesheet PDF To");
-            columns[0].text_edit_singleline(&mut self.payroll_email);
-
-            columns[1].label("PDF Email Subject Format");
-
-            columns[1].horizontal(|ui| {
-                ui.text_edit_singleline(&mut self.email_subject_format);
-
-                egui::ComboBox::from_id_salt("email_subject_insert_field")
-                    .selected_text("Insert Field")
-                    .show_ui(ui, |ui| {
-                        if ui.button("Personal Assistant Name").clicked() {
-                            self.email_subject_format
-                                .push_str("{Personal Assistant Name}");
-                            ui.close();
-                        }
-
-                        if ui.button("Personal Assistant DOB").clicked() {
-                            self.email_subject_format
-                                .push_str("{Personal Assistant DOB}");
-                            ui.close();
-                        }
-
-                        if ui.button("Personal Assistant NI").clicked() {
-                            self.email_subject_format
-                                .push_str("{Personal Assistant NI}");
-                            ui.close();
-                        }
-
-                        if ui.button("Payroll Period (YYYYMMwWW)").clicked() {
-                            self.email_subject_format.push_str("{YYYYMMwWW}");
-                            ui.close();
-                        }
-                    });
-            });
-
-            columns[1].label(
-                "Available fields: {Personal Assistant Name}, {Personal Assistant DOB},                  {Personal Assistant NI}, {YYYYMMwWW}",
-            );
-        });
-
-        ui.label("Timesheet Email Body");
-
-        ui.add_sized(
-            [600.0, 120.0],
-            egui::TextEdit::multiline(&mut self.timesheet_email_body),
-        );
-
-        ui.label("The Employer Email Signature is automatically appended to this body.");
 
         ui.separator();
         ui.heading("National / Standard Pay Rate Update");
@@ -305,13 +243,20 @@ impl PayrollSettingsScreen {
 
         ui.separator();
 
-        if ui.button("Save Payroll Settings").clicked() {
-            self.save(application);
-        }
+        ui.horizontal(|ui| {
+            if ui.button("Save Payroll Settings").clicked() {
+                self.save(application);
+            }
+
+            if ui.button("Email Settings").clicked() {
+                open_email_settings = true;
+            }
+        });
 
         ui.separator();
 
         ui.label(&self.status_message);
+        open_email_settings
     }
 
     fn load(&mut self, application: &Application) {
@@ -321,13 +266,6 @@ impl PayrollSettingsScreen {
         self.rounding_minutes = payroll.rounding_minutes;
         self.rounding_direction = payroll.rounding_direction.clone();
         self.start_of_workweek = payroll.start_of_workweek.clone();
-
-        if let Ok(Some(provider)) = application.payroll_provider_repository.get() {
-            self.payroll_email = provider.payroll_department_email.unwrap_or_default();
-        }
-
-        self.email_subject_format = payroll.email_subject_format.clone();
-        self.timesheet_email_body = payroll.timesheet_email_body.clone();
 
         self.overtime_enabled = payroll.overtime_enabled;
         self.public_holiday_enabled = payroll.public_holiday_enabled;
@@ -352,12 +290,17 @@ impl PayrollSettingsScreen {
 
         payroll.start_of_workweek = self.start_of_workweek.clone();
 
-        payroll.email_subject_format = self.email_subject_format.clone();
-        payroll.timesheet_email_body = self.timesheet_email_body.clone();
-
         payroll.overtime_enabled = self.overtime_enabled;
 
         payroll.public_holiday_enabled = self.public_holiday_enabled;
+
+        let payroll_department_email = match application.payroll_provider_repository.get() {
+            Ok(provider) => provider.and_then(|provider| provider.payroll_department_email),
+            Err(error) => {
+                self.status_message = format!("Failed loading payroll provider: {}", error);
+                return;
+            }
+        };
 
         let provider = PayrollProvider {
             id: 1,
@@ -365,7 +308,7 @@ impl PayrollSettingsScreen {
             email: optional_value(&self.provider_email),
             address: optional_value(&self.provider_address),
             telephone: optional_value(&self.provider_telephone),
-            payroll_department_email: optional_value(&self.payroll_email),
+            payroll_department_email,
         };
 
         if let Err(error) = application.payroll_provider_repository.save(&provider) {

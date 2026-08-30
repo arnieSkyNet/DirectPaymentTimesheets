@@ -148,6 +148,4 @@ impl PersonalAssistantRepository {
             .filter(|assistant| assistant.employment_status.as_deref() == Some("Active"))
             .collect())
     }
-
-
 }

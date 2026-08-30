@@ -88,6 +88,19 @@ impl EmployerRepository {
         Ok(())
     }
 
+    pub fn update_email_signature(
+        &self,
+        employer_id: i64,
+        email_signature: Option<&str>,
+    ) -> Result<()> {
+        self.connection.execute(
+            "UPDATE employers SET email_signature = ?1 WHERE id = ?2",
+            params![email_signature, employer_id],
+        )?;
+
+        Ok(())
+    }
+
     pub fn get_all(&self) -> Result<Vec<Employer>> {
         let mut statement = self.connection.prepare(
             "
@@ -178,4 +191,3 @@ mod tests {
         assert_eq!(employers[0].name, "Morgan");
     }
 }
-

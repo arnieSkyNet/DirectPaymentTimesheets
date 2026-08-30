@@ -8,8 +8,8 @@ use crate::pay_rate_repository::PayRateRepository;
 use crate::payroll_prep_sheet_import_service::PayrollPrepSheetImportService;
 use crate::payroll_provider_repository::PayrollProviderRepository;
 use crate::payroll_schedule_repository::PayrollScheduleRepository;
-use crate::payroll_timesheet_repository::PayrollTimesheetRepository;
 use crate::payroll_timesheet_email_repository::PayrollTimesheetEmailRepository;
+use crate::payroll_timesheet_repository::PayrollTimesheetRepository;
 use crate::pdf_generator::{PdfGenerator, TimesheetPdfData};
 use crate::personal_assistant_repository::PersonalAssistantRepository;
 use crate::repository::TimesheetRepository;
@@ -137,14 +137,10 @@ impl Application {
         path: &std::path::Path,
         _payroll_year: &str,
         cycle_number: i64,
-    ) -> Result<
-        crate::archive::PayrollReturnImportResult,
-        Box<dyn std::error::Error>,
-    > {
+    ) -> Result<crate::archive::PayrollReturnImportResult, Box<dyn std::error::Error>> {
         let assistants = self.personal_assistant_repository.get_all()?;
 
-        let payslip_folder =
-            crate::paths::expand_path(&self.context.config.folders.payslip_folder);
+        let payslip_folder = crate::paths::expand_path(&self.context.config.folders.payslip_folder);
 
         let information_folder =
             crate::paths::expand_path(&self.context.config.folders.email_archive);
@@ -172,20 +168,21 @@ impl Application {
         )?)
     }
 
-    pub fn send_timesheet_email(
+    pub fn preview_payroll_email(
         &self,
         payroll_department_email: &str,
         employer_email: &str,
-        personal_assistant_email: &str,
+        personal_assistant_email: Option<&str>,
         personal_assistant_name: &str,
         personal_assistant_dob: Option<&str>,
         personal_assistant_ni: Option<&str>,
         first_week_commencing: &str,
-        timesheet_path: &std::path::Path,
+        attachment_path: &std::path::Path,
         email_body: &str,
+        additional_note: Option<&str>,
         email_signature: Option<&str>,
-    ) -> Result<(), Box<dyn std::error::Error>> {
-        crate::email_service::send_timesheet_email(
+    ) -> Result<crate::email_service::PayrollEmailPreview, Box<dyn std::error::Error>> {
+        Ok(crate::email_service::preview_payroll_email(
             payroll_department_email,
             employer_email,
             personal_assistant_email,
@@ -193,12 +190,152 @@ impl Application {
             personal_assistant_dob,
             personal_assistant_ni,
             first_week_commencing,
-            timesheet_path,
+            attachment_path,
             email_body,
+            additional_note,
+            email_signature,
+            &self.context.config.payroll.email_subject_format,
+        )?)
+    }
+
+    pub fn send_payroll_email(
+        &self,
+        payroll_department_email: &str,
+        employer_email: &str,
+        personal_assistant_email: Option<&str>,
+        personal_assistant_name: &str,
+        personal_assistant_dob: Option<&str>,
+        personal_assistant_ni: Option<&str>,
+        first_week_commencing: &str,
+        attachment_path: &std::path::Path,
+        email_body: &str,
+        additional_note: Option<&str>,
+        email_signature: Option<&str>,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let email_config = &self.context.config.email;
+        let (smtp_host, smtp_port, smtp_username, smtp_password) =
+            if email_config.smtp_transport == "SMTP Server" {
+                (
+                    email_config.smtp_host.as_str(),
+                    email_config.smtp_port,
+                    email_config.smtp_username.as_str(),
+                    email_config.smtp_password.as_str(),
+                )
+            } else {
+                ("localhost", 25, "", "")
+            };
+
+        crate::email_service::send_payroll_email(
+            smtp_host,
+            smtp_port,
+            smtp_username,
+            smtp_password,
+            payroll_department_email,
+            employer_email,
+            personal_assistant_email,
+            personal_assistant_name,
+            personal_assistant_dob,
+            personal_assistant_ni,
+            first_week_commencing,
+            attachment_path,
+            email_body,
+            additional_note,
             email_signature,
             &self.context.config.payroll.email_subject_format,
         )
     }
 
-}
+    #[allow(clippy::too_many_arguments)]
+    pub fn send_test_payroll_email(
+        &self,
+        sender_email: &str,
+        payroll_test_email: &str,
+        pa_test_email: Option<&str>,
+        personal_assistant_name: &str,
+        personal_assistant_dob: Option<&str>,
+        personal_assistant_ni: Option<&str>,
+        first_week_commencing: &str,
+        attachment_path: &std::path::Path,
+        email_body: &str,
+        additional_note: Option<&str>,
+        email_signature: Option<&str>,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let email_config = &self.context.config.email;
+        let (smtp_host, smtp_port, smtp_username, smtp_password) =
+            if email_config.smtp_transport == "SMTP Server" {
+                (
+                    email_config.smtp_host.as_str(),
+                    email_config.smtp_port,
+                    email_config.smtp_username.as_str(),
+                    email_config.smtp_password.as_str(),
+                )
+            } else {
+                ("localhost", 25, "", "")
+            };
 
+        crate::email_service::send_test_payroll_email(
+            smtp_host,
+            smtp_port,
+            smtp_username,
+            smtp_password,
+            sender_email,
+            payroll_test_email,
+            pa_test_email,
+            personal_assistant_name,
+            personal_assistant_dob,
+            personal_assistant_ni,
+            first_week_commencing,
+            attachment_path,
+            email_body,
+            additional_note,
+            email_signature,
+            &self.context.config.payroll.email_subject_format,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn send_test_payslip_email(
+        &self,
+        sender_email: &str,
+        pa_test_email: &str,
+        personal_assistant_name: &str,
+        personal_assistant_dob: Option<&str>,
+        personal_assistant_ni: Option<&str>,
+        first_week_commencing: &str,
+        attachment_path: &std::path::Path,
+        email_body: &str,
+        additional_note: Option<&str>,
+        email_signature: Option<&str>,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let email_config = &self.context.config.email;
+        let (smtp_host, smtp_port, smtp_username, smtp_password) =
+            if email_config.smtp_transport == "SMTP Server" {
+                (
+                    email_config.smtp_host.as_str(),
+                    email_config.smtp_port,
+                    email_config.smtp_username.as_str(),
+                    email_config.smtp_password.as_str(),
+                )
+            } else {
+                ("localhost", 25, "", "")
+            };
+
+        crate::email_service::send_test_payslip_email(
+            smtp_host,
+            smtp_port,
+            smtp_username,
+            smtp_password,
+            sender_email,
+            pa_test_email,
+            personal_assistant_name,
+            personal_assistant_dob,
+            personal_assistant_ni,
+            first_week_commencing,
+            attachment_path,
+            email_body,
+            additional_note,
+            email_signature,
+            &self.context.config.payroll.email_subject_format,
+        )
+    }
+}

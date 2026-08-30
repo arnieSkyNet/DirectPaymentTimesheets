@@ -95,8 +95,6 @@ impl TimesheetRepository {
         Ok(entries)
     }
 
-
-
     pub fn exists(&self, entry: &TimesheetEntry) -> Result<bool> {
         let mut statement = self.connection.prepare(
             "SELECT COUNT(*)

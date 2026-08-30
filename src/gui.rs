@@ -1,8 +1,10 @@
 use chrono::Datelike;
 use eframe::egui;
+use std::collections::{HashMap, HashSet};
 
 use crate::app::Application;
 use crate::application_settings_screen::ApplicationSettingsScreen;
+use crate::email_service::PayrollEmailPreview;
 use crate::import_service::ImportSummary;
 use crate::models::TimesheetEntry;
 use crate::payroll_schedule_repository::PayrollSchedule;
@@ -18,6 +20,26 @@ enum ActiveScreen {
     PayrollSettings,
     PayrollTimesheet,
     ApplicationSettings,
+    EmailSettings,
+}
+
+#[derive(Clone, Copy)]
+enum PayrollEmailKind {
+    Timesheet,
+    Payslip,
+}
+
+#[derive(Clone, Copy)]
+enum EmailBatchNoteStage {
+    ChooseAdditionalNote,
+    EditAdditionalNotes,
+    ConfirmDispatch,
+}
+
+struct PendingEmailBatch {
+    kind: PayrollEmailKind,
+    stage: EmailBatchNoteStage,
+    selected_personal_assistant_ids: Vec<i64>,
 }
 
 pub struct DirectPaymentApp {
@@ -27,6 +49,13 @@ pub struct DirectPaymentApp {
     last_import: Option<ImportSummary>,
     timesheets: Vec<TimesheetEntry>,
     payroll_schedules: Vec<PayrollSchedule>,
+    preview_personal_assistant_id: Option<i64>,
+    email_preview: Option<PayrollEmailPreview>,
+    additional_notes_by_personal_assistant: HashMap<i64, String>,
+    note_enabled_personal_assistant_ids: HashSet<i64>,
+    pending_email_batch: Option<PendingEmailBatch>,
+    email_settings_employer: Option<crate::models::Employer>,
+    email_settings_payroll_provider: Option<crate::payroll_provider_repository::PayrollProvider>,
     employer_screen: crate::employer_screen::EmployerScreen,
     personal_assistant_screen: PersonalAssistantScreen,
     payroll_settings_screen: PayrollSettingsScreen,
@@ -44,6 +73,13 @@ impl DirectPaymentApp {
             last_import: None,
             timesheets: Vec::new(),
             payroll_schedules: Vec::new(),
+            preview_personal_assistant_id: None,
+            email_preview: None,
+            additional_notes_by_personal_assistant: HashMap::new(),
+            note_enabled_personal_assistant_ids: HashSet::new(),
+            pending_email_batch: None,
+            email_settings_employer: None,
+            email_settings_payroll_provider: None,
             employer_screen: crate::employer_screen::EmployerScreen::new(),
             personal_assistant_screen: PersonalAssistantScreen::new(),
             payroll_settings_screen: PayrollSettingsScreen::new(),
@@ -63,6 +99,10 @@ impl eframe::App for DirectPaymentApp {
 
                 if ui.button(" Settings").clicked() {
                     self.active_screen = ActiveScreen::ApplicationSettings;
+                }
+
+                if ui.button("Email Settings").clicked() {
+                    self.active_screen = ActiveScreen::EmailSettings;
                 }
             });
         });
@@ -101,7 +141,9 @@ impl eframe::App for DirectPaymentApp {
             }
 
             ActiveScreen::Employer => {
-                self.employer_screen.show(ui, &self.application);
+                if self.employer_screen.show(ui, &self.application) {
+                    self.active_screen = ActiveScreen::EmailSettings;
+                }
             }
 
             ActiveScreen::PersonalAssistant => {
@@ -109,7 +151,9 @@ impl eframe::App for DirectPaymentApp {
             }
 
             ActiveScreen::PayrollSettings => {
-                self.payroll_settings_screen.show(ui, &mut self.application);
+                if self.payroll_settings_screen.show(ui, &mut self.application) {
+                    self.active_screen = ActiveScreen::EmailSettings;
+                }
             }
 
             ActiveScreen::PayrollTimesheet => {
@@ -117,14 +161,576 @@ impl eframe::App for DirectPaymentApp {
             }
 
             ActiveScreen::ApplicationSettings => {
-                self.application_settings_screen
-                    .show(ui, &mut self.application);
+                if self
+                    .application_settings_screen
+                    .show(ui, &mut self.application)
+                {
+                    self.active_screen = ActiveScreen::EmailSettings;
+                }
+            }
+
+            ActiveScreen::EmailSettings => {
+                egui::ScrollArea::vertical().show(ui, |ui| {
+                    self.draw_email_settings(ui);
+                });
             }
         });
     }
 }
 
 impl DirectPaymentApp {
+    fn clear_pending_email_batch(&mut self) {
+        self.pending_email_batch = None;
+        self.additional_notes_by_personal_assistant.clear();
+        self.note_enabled_personal_assistant_ids.clear();
+    }
+
+    fn begin_email_batch(&mut self, kind: PayrollEmailKind) {
+        self.additional_notes_by_personal_assistant.clear();
+        self.note_enabled_personal_assistant_ids.clear();
+        let selected_personal_assistant_ids = self
+            .application
+            .personal_assistant_repository
+            .get_all()
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|assistant| {
+                assistant
+                    .employment_status
+                    .as_deref()
+                    .map(|status| status.trim().eq_ignore_ascii_case("active"))
+                    .unwrap_or(true)
+            })
+            .map(|assistant| assistant.id)
+            .collect();
+        self.pending_email_batch = Some(PendingEmailBatch {
+            kind,
+            stage: EmailBatchNoteStage::ChooseAdditionalNote,
+            selected_personal_assistant_ids,
+        });
+    }
+
+    fn draw_additional_note_prompt(&mut self, ui: &mut egui::Ui) {
+        let stage = self.pending_email_batch.as_ref().map(|batch| batch.stage);
+        if matches!(stage, Some(EmailBatchNoteStage::ChooseAdditionalNote)) {
+            ui.label("Additional note for this email batch?");
+            ui.horizontal(|ui| {
+                if ui.button("Add Additional Note").clicked() {
+                    if let Some(batch) = &mut self.pending_email_batch {
+                        batch.stage = EmailBatchNoteStage::EditAdditionalNotes;
+                    }
+                }
+                if ui.button("No Additional Note").clicked() {
+                    self.additional_notes_by_personal_assistant.clear();
+                    if let Some(batch) = &mut self.pending_email_batch {
+                        batch.stage = EmailBatchNoteStage::ConfirmDispatch;
+                    }
+                }
+                if ui.button("Cancel").clicked() {
+                    self.clear_pending_email_batch();
+                }
+            });
+        }
+
+        let ids = self.pending_email_batch.as_ref().and_then(|batch| {
+            matches!(batch.stage, EmailBatchNoteStage::EditAdditionalNotes)
+                .then(|| batch.selected_personal_assistant_ids.clone())
+        });
+        if let Some(ids) = ids {
+            ui.separator();
+            ui.label("Additional notes by Personal Assistant");
+            let assistants = self
+                .application
+                .personal_assistant_repository
+                .get_all()
+                .unwrap_or_default();
+            for assistant in assistants
+                .into_iter()
+                .filter(|assistant| ids.contains(&assistant.id))
+            {
+                let id = assistant.id;
+                let mut enabled = self.note_enabled_personal_assistant_ids.contains(&id);
+                ui.horizontal(|ui| {
+                    if ui.checkbox(&mut enabled, "Add note").changed() {
+                        if enabled {
+                            self.note_enabled_personal_assistant_ids.insert(id);
+                        } else {
+                            self.note_enabled_personal_assistant_ids.remove(&id);
+                            self.additional_notes_by_personal_assistant.remove(&id);
+                        }
+                    }
+                    ui.label(format!("{} {}", assistant.first_name, assistant.surname));
+                });
+                if enabled {
+                    let note = self
+                        .additional_notes_by_personal_assistant
+                        .entry(id)
+                        .or_default();
+                    ui.add_sized([600.0, 80.0], egui::TextEdit::multiline(note));
+                }
+            }
+            ui.horizontal(|ui| {
+                if ui.button("Continue").clicked() {
+                    if let Some(batch) = &mut self.pending_email_batch {
+                        batch.stage = EmailBatchNoteStage::ConfirmDispatch;
+                    }
+                }
+                if ui.button("Cancel").clicked() {
+                    self.clear_pending_email_batch();
+                }
+            });
+        }
+
+        let confirmation_kind = self.pending_email_batch.as_ref().and_then(|batch| {
+            matches!(batch.stage, EmailBatchNoteStage::ConfirmDispatch).then_some(batch.kind)
+        });
+        if let Some(kind) = confirmation_kind {
+            let email_type = match kind {
+                PayrollEmailKind::Timesheet => "Timesheets",
+                PayrollEmailKind::Payslip => "Payslips",
+            };
+            let mut send = false;
+            let mut cancel = false;
+            egui::Window::new("Confirm email batch")
+                .collapsible(false)
+                .resizable(false)
+                .show(ui.ctx(), |ui| {
+                    ui.label(format!("Ready to send {}.", email_type));
+                    ui.horizontal(|ui| {
+                        send = ui.button("Send").clicked();
+                        cancel = ui.button("Cancel").clicked();
+                    });
+                });
+
+            if cancel {
+                self.clear_pending_email_batch();
+            } else if send {
+                let result = match kind {
+                    PayrollEmailKind::Timesheet => self.email_timesheets(),
+                    PayrollEmailKind::Payslip => self.email_payslips(),
+                };
+                match result {
+                    Ok(count) => {
+                        self.status_message =
+                            format!("{} emailed successfully: {}.", email_type, count);
+                        self.clear_pending_email_batch();
+                    }
+                    Err(error) => {
+                        self.status_message = format!("{} email failed: {}", email_type, error);
+                    }
+                }
+            }
+        }
+    }
+
+    fn draw_email_settings(&mut self, ui: &mut egui::Ui) {
+        ui.heading("Email Settings");
+        ui.label("SMTP and test-recipient settings. Production email actions are unchanged.");
+        ui.separator();
+
+        let email = &mut self.application.context.config.email;
+        ui.horizontal(|ui| {
+            ui.label("Email transport");
+            egui::ComboBox::from_id_salt("email_transport")
+                .selected_text(&email.smtp_transport)
+                .show_ui(ui, |ui| {
+                    ui.selectable_value(
+                        &mut email.smtp_transport,
+                        "Local SMTP Server".to_string(),
+                        "Local SMTP Server",
+                    );
+                    ui.selectable_value(
+                        &mut email.smtp_transport,
+                        "SMTP Server".to_string(),
+                        "SMTP Server",
+                    );
+                });
+        });
+
+        if email.smtp_transport == "SMTP Server" {
+            ui.label("SMTP Host");
+            ui.text_edit_singleline(&mut email.smtp_host);
+            ui.label("SMTP Port");
+            ui.add(egui::DragValue::new(&mut email.smtp_port).range(1..=65535));
+            ui.label("SMTP Username");
+            ui.text_edit_singleline(&mut email.smtp_username);
+            ui.label("SMTP Password");
+            ui.add(egui::TextEdit::singleline(&mut email.smtp_password).password(true));
+        } else {
+            ui.label("Uses localhost:25 with no configurable credentials.");
+        }
+        ui.label("Payroll test email address");
+        ui.text_edit_singleline(&mut email.payroll_test_email_address);
+        ui.label("PA test email address");
+        ui.text_edit_singleline(&mut email.pa_test_email_address);
+
+        self.draw_test_timesheet_email_action(ui);
+
+        ui.separator();
+        self.draw_email_preview_controls(ui);
+
+        ui.separator();
+        if self.email_settings_payroll_provider.is_none() {
+            self.email_settings_payroll_provider = self
+                .application
+                .payroll_provider_repository
+                .get()
+                .ok()
+                .flatten();
+        }
+
+        ui.heading("Payroll Department");
+        if let Some(provider) = &mut self.email_settings_payroll_provider {
+            ui.label("Payroll Department email address");
+            ui.text_edit_singleline(
+                provider
+                    .payroll_department_email
+                    .get_or_insert(String::new()),
+            );
+            if ui.button("Save Payroll Department Email").clicked() {
+                match self
+                    .application
+                    .payroll_provider_repository
+                    .update_payroll_department_email(
+                        provider.id,
+                        provider.payroll_department_email.as_deref(),
+                    ) {
+                    Ok(()) => {
+                        self.status_message = "Payroll Department email address saved.".to_string()
+                    }
+                    Err(error) => {
+                        self.status_message =
+                            format!("Failed saving Payroll Department email address: {}", error)
+                    }
+                }
+            }
+        } else {
+            ui.label("No Payroll Provider has been configured.");
+        }
+
+        ui.separator();
+        ui.label("Email Subject Format");
+        ui.text_edit_singleline(&mut self.application.context.config.payroll.email_subject_format);
+        ui.label("Timesheet Email Body");
+        ui.add_sized(
+            [600.0, 120.0],
+            egui::TextEdit::multiline(
+                &mut self.application.context.config.payroll.timesheet_email_body,
+            ),
+        );
+        ui.label("Payslip Email Body");
+        ui.add_sized(
+            [600.0, 120.0],
+            egui::TextEdit::multiline(
+                &mut self.application.context.config.payroll.payslip_email_body,
+            ),
+        );
+
+        if self.email_settings_employer.is_none() {
+            self.email_settings_employer = self
+                .application
+                .employer_repository
+                .get_all()
+                .ok()
+                .and_then(|employers| employers.into_iter().next());
+        }
+
+        ui.separator();
+        ui.heading("Employer Email Signature");
+        let mut saved_employer = None;
+        if let Some(employer) = &mut self.email_settings_employer {
+            ui.add_sized(
+                [600.0, 120.0],
+                egui::TextEdit::multiline(employer.email_signature.get_or_insert(String::new())),
+            );
+            if ui.button("Save Employer Email Signature").clicked() {
+                match self
+                    .application
+                    .employer_repository
+                    .update_email_signature(employer.id, employer.email_signature.as_deref())
+                {
+                    Ok(()) => {
+                        saved_employer = Some(employer.clone());
+                        self.status_message = "Employer email signature saved.".to_string();
+                    }
+                    Err(error) => {
+                        self.status_message =
+                            format!("Failed saving employer email signature: {}", error)
+                    }
+                }
+            }
+        } else {
+            ui.label("No employer has been configured.");
+        }
+
+        if let Some(saved_employer) = saved_employer {
+            self.employer_screen
+                .synchronize_email_signature(&saved_employer);
+        }
+
+        if ui.button("Save Email Settings").clicked() {
+            match self.application.save_config() {
+                Ok(()) => self.status_message = "Email settings saved.".to_string(),
+                Err(error) => {
+                    self.status_message = format!("Failed saving email settings: {}", error)
+                }
+            }
+        }
+        ui.label(&self.status_message);
+    }
+
+    fn draw_test_timesheet_email_action(&mut self, ui: &mut egui::Ui) {
+        ui.separator();
+        ui.heading("Test Timesheet Email");
+        ui.label("Test delivery uses only the configured test recipients.");
+
+        let assistants = match self.application.personal_assistant_repository.get_all() {
+            Ok(assistants) => assistants
+                .into_iter()
+                .filter(|assistant| {
+                    assistant
+                        .employment_status
+                        .as_deref()
+                        .map(|status| status.trim().eq_ignore_ascii_case("active"))
+                        .unwrap_or(true)
+                })
+                .collect::<Vec<_>>(),
+            Err(error) => {
+                ui.label(format!("Unable to load Personal Assistants: {}", error));
+                return;
+            }
+        };
+
+        if assistants.is_empty() {
+            ui.label("No active Personal Assistants are available for a test email.");
+            return;
+        }
+
+        if !assistants
+            .iter()
+            .any(|assistant| Some(assistant.id) == self.preview_personal_assistant_id)
+        {
+            self.preview_personal_assistant_id = Some(assistants[0].id);
+        }
+
+        let selected_name = assistants
+            .iter()
+            .find(|assistant| Some(assistant.id) == self.preview_personal_assistant_id)
+            .map(|assistant| format!("{} {}", assistant.first_name, assistant.surname))
+            .unwrap_or_default();
+
+        ui.horizontal(|ui| {
+            egui::ComboBox::from_id_salt("test_timesheet_personal_assistant")
+                .selected_text(selected_name)
+                .show_ui(ui, |ui| {
+                    for assistant in &assistants {
+                        ui.selectable_value(
+                            &mut self.preview_personal_assistant_id,
+                            Some(assistant.id),
+                            format!("{} {}", assistant.first_name, assistant.surname),
+                        );
+                    }
+                });
+
+            if ui.button("Test Timesheet Email").clicked() {
+                self.send_test_timesheet_email();
+            }
+
+            if ui.button("Test Payslip Email").clicked() {
+                self.send_test_payslip_email();
+            }
+        });
+    }
+
+    fn send_test_timesheet_email(&mut self) {
+        let result = (|| -> Result<(), Box<dyn std::error::Error>> {
+            let payroll_test_email = self
+                .application
+                .context
+                .config
+                .email
+                .payroll_test_email_address
+                .trim();
+            if payroll_test_email.is_empty() {
+                return Err(
+                    "Payroll test email address is required before sending a test email.".into(),
+                );
+            }
+
+            let personal_assistant_id = self
+                .preview_personal_assistant_id
+                .ok_or("Select a Personal Assistant to test an email.")?;
+            let assistant = self
+                .application
+                .personal_assistant_repository
+                .get_all()?
+                .into_iter()
+                .find(|assistant| assistant.id == personal_assistant_id)
+                .ok_or("Selected Personal Assistant was not found.")?;
+
+            let employer = self
+                .email_settings_employer
+                .clone()
+                .or_else(|| {
+                    self.application
+                        .employer_repository
+                        .get_all()
+                        .ok()
+                        .and_then(|employers| employers.into_iter().next())
+                })
+                .ok_or("No employer has been configured.")?;
+            let sender_email = employer
+                .email
+                .as_deref()
+                .map(str::trim)
+                .filter(|email| !email.is_empty())
+                .ok_or("Employer has no email address.")?;
+
+            let payroll_year = current_payroll_year();
+            let today = chrono::Local::now().date_naive();
+            let current_schedule = self
+                .application
+                .get_payroll_schedule(&payroll_year)?
+                .into_iter()
+                .filter_map(|schedule| {
+                    let first_week = parse_date_checked(&schedule.first_week_commencing)?;
+                    let cycle_end = first_week + chrono::Duration::days(27);
+                    (first_week <= today && today <= cycle_end).then_some(schedule)
+                })
+                .max_by_key(|schedule| schedule.first_week_commencing.clone())
+                .ok_or("No current payroll cycle was found.")?;
+
+            let personal_assistant_name = format!("{} {}", assistant.first_name, assistant.surname);
+            let attachment_path =
+                crate::paths::expand_path(&self.application.context.config.folders.pdf_output)
+                    .join(format!(
+                        "Timesheet - {} - {}.pdf",
+                        personal_assistant_name,
+                        payroll_week_filename(&current_schedule.first_week_commencing)
+                    ));
+            let pa_test_email = self
+                .application
+                .context
+                .config
+                .email
+                .pa_test_email_address
+                .as_str();
+
+            self.application.send_test_payroll_email(
+                sender_email,
+                payroll_test_email,
+                Some(pa_test_email),
+                &personal_assistant_name,
+                assistant.date_of_birth.as_deref(),
+                assistant.national_insurance_number.as_deref(),
+                &current_schedule.first_week_commencing,
+                &attachment_path,
+                &self.application.context.config.payroll.timesheet_email_body,
+                self.additional_notes_by_personal_assistant
+                    .get(&assistant.id)
+                    .map(String::as_str),
+                employer.email_signature.as_deref(),
+            )
+        })();
+
+        match result {
+            Ok(()) => self.status_message = "Test timesheet email sent.".to_string(),
+            Err(error) => self.status_message = format!("Test timesheet email failed: {}", error),
+        }
+    }
+
+    fn send_test_payslip_email(&mut self) {
+        let result = (|| -> Result<(), Box<dyn std::error::Error>> {
+            let pa_test_email = self
+                .application
+                .context
+                .config
+                .email
+                .pa_test_email_address
+                .trim();
+            if pa_test_email.is_empty() {
+                return Err(
+                    "PA test email address is required before sending a test email.".into(),
+                );
+            }
+
+            let personal_assistant_id = self
+                .preview_personal_assistant_id
+                .ok_or("Select a Personal Assistant to test an email.")?;
+            let assistant = self
+                .application
+                .personal_assistant_repository
+                .get_all()?
+                .into_iter()
+                .find(|assistant| assistant.id == personal_assistant_id)
+                .ok_or("Selected Personal Assistant was not found.")?;
+
+            let employer = self
+                .email_settings_employer
+                .clone()
+                .or_else(|| {
+                    self.application
+                        .employer_repository
+                        .get_all()
+                        .ok()
+                        .and_then(|employers| employers.into_iter().next())
+                })
+                .ok_or("No employer has been configured.")?;
+            let sender_email = employer
+                .email
+                .as_deref()
+                .map(str::trim)
+                .filter(|email| !email.is_empty())
+                .ok_or("Employer has no email address.")?;
+
+            let payroll_year = current_payroll_year();
+            let today = chrono::Local::now().date_naive();
+            let current_schedule = self
+                .application
+                .get_payroll_schedule(&payroll_year)?
+                .into_iter()
+                .filter_map(|schedule| {
+                    let first_week = parse_date_checked(&schedule.first_week_commencing)?;
+                    let cycle_end = first_week + chrono::Duration::days(27);
+                    (first_week <= today && today <= cycle_end).then_some(schedule)
+                })
+                .max_by_key(|schedule| schedule.first_week_commencing.clone())
+                .ok_or("No current payroll cycle was found.")?;
+
+            let personal_assistant_name = format!("{} {}", assistant.first_name, assistant.surname);
+            let attachment_path =
+                crate::paths::expand_path(&self.application.context.config.folders.payslip_folder)
+                    .join(format!(
+                        "Payslip for Week {} for {}.pdf",
+                        payroll_week_filename(&current_schedule.first_week_commencing)
+                            .rsplit_once('w')
+                            .map(|(_, week)| week.to_string())
+                            .unwrap_or_else(|| current_schedule.cycle_number.to_string()),
+                        personal_assistant_name
+                    ));
+
+            self.application.send_test_payslip_email(
+                sender_email,
+                pa_test_email,
+                &personal_assistant_name,
+                assistant.date_of_birth.as_deref(),
+                assistant.national_insurance_number.as_deref(),
+                &current_schedule.first_week_commencing,
+                &attachment_path,
+                &self.application.context.config.payroll.payslip_email_body,
+                self.additional_notes_by_personal_assistant
+                    .get(&assistant.id)
+                    .map(String::as_str),
+                employer.email_signature.as_deref(),
+            )
+        })();
+
+        match result {
+            Ok(()) => self.status_message = "Test payslip email sent.".to_string(),
+            Err(error) => self.status_message = format!("Test payslip email failed: {}", error),
+        }
+    }
+
     fn draw_dashboard(&mut self, ui: &mut egui::Ui) {
         egui::ScrollArea::vertical().show(ui, |ui| {
             ui.heading("Dashboard");
@@ -175,19 +781,7 @@ impl DirectPaymentApp {
             }
         }
 
-        if ui.button("Email Timesheets").clicked() {
-            match self.email_timesheets() {
-                Ok(count) => {
-                    self.status_message =
-                        format!("Timesheets emailed successfully: {}.", count);
-                }
-
-                Err(error) => {
-                    self.status_message =
-                        format!("Timesheet email failed: {}", error);
-                }
-            }
-        }
+        if ui.button("Email Timesheets").clicked() { self.begin_email_batch(PayrollEmailKind::Timesheet); }
 
         if ui.button("Import Payroll Return").clicked() {
             if let Some(path) = rfd::FileDialog::new()
@@ -257,19 +851,7 @@ impl DirectPaymentApp {
             }
         }
 
-        if ui.button("Email Payslips").clicked() {
-            match self.email_payslips() {
-                Ok(count) => {
-                    self.status_message =
-                        format!("Payslips emailed successfully: {}.", count);
-                }
-
-                Err(error) => {
-                    self.status_message =
-                        format!("Payslip email failed: {}", error);
-                }
-            }
-        }
+        if ui.button("Email Payslips").clicked() { self.begin_email_batch(PayrollEmailKind::Payslip); }
 
         if ui.button("Import Payroll Prep Sheet").clicked() {
             if let Some(path) = rfd::FileDialog::new()
@@ -310,6 +892,8 @@ impl DirectPaymentApp {
             }
         }
 
+        self.draw_additional_note_prompt(ui);
+
         ui.separator();
 
         ui.heading("Import Summary");
@@ -335,6 +919,199 @@ impl DirectPaymentApp {
         draw_timesheets(ui, &self.timesheets);
         self.draw_timesheet_email_status(ui);
         });
+    }
+
+    fn draw_email_preview_controls(&mut self, ui: &mut egui::Ui) {
+        ui.heading("Email Preview");
+        ui.label("Previews never send an email or update the sent status.");
+
+        let assistants = match self.application.personal_assistant_repository.get_all() {
+            Ok(assistants) => assistants
+                .into_iter()
+                .filter(|assistant| {
+                    assistant
+                        .employment_status
+                        .as_deref()
+                        .map(|status| status.trim().eq_ignore_ascii_case("active"))
+                        .unwrap_or(true)
+                })
+                .collect::<Vec<_>>(),
+            Err(error) => {
+                ui.label(format!("Unable to load Personal Assistants: {}", error));
+                return;
+            }
+        };
+
+        if assistants.is_empty() {
+            ui.label("No active Personal Assistants are available for preview.");
+            return;
+        }
+
+        if !assistants
+            .iter()
+            .any(|assistant| Some(assistant.id) == self.preview_personal_assistant_id)
+        {
+            self.preview_personal_assistant_id = Some(assistants[0].id);
+        }
+
+        let selected_name = assistants
+            .iter()
+            .find(|assistant| Some(assistant.id) == self.preview_personal_assistant_id)
+            .map(|assistant| format!("{} {}", assistant.first_name, assistant.surname))
+            .unwrap_or_default();
+
+        ui.horizontal(|ui| {
+            egui::ComboBox::from_id_salt("email_preview_personal_assistant")
+                .selected_text(selected_name)
+                .show_ui(ui, |ui| {
+                    for assistant in &assistants {
+                        ui.selectable_value(
+                            &mut self.preview_personal_assistant_id,
+                            Some(assistant.id),
+                            format!("{} {}", assistant.first_name, assistant.surname),
+                        );
+                    }
+                });
+
+            if ui.button("Preview Timesheet Email").clicked() {
+                self.load_email_preview(PayrollEmailKind::Timesheet);
+            }
+
+            if ui.button("Preview Payslip Email").clicked() {
+                self.load_email_preview(PayrollEmailKind::Payslip);
+            }
+        });
+
+        if let Some(preview) = &self.email_preview {
+            ui.separator();
+            ui.label(format!("From: {}", preview.from));
+            ui.label(format!("To: {}", preview.to));
+            ui.label(format!("CC: {}", preview.cc.as_deref().unwrap_or("None")));
+            ui.label(format!("BCC: {}", preview.bcc.as_deref().unwrap_or("None")));
+            ui.label(format!("Subject: {}", preview.subject));
+            ui.label(format!("Attachment: {}", preview.attachment_path));
+            ui.label("Body:");
+            ui.add_sized(
+                [600.0, 140.0],
+                egui::TextEdit::multiline(&mut preview.body.clone()).interactive(false),
+            );
+        }
+    }
+
+    fn load_email_preview(&mut self, kind: PayrollEmailKind) {
+        let result = (|| -> Result<PayrollEmailPreview, Box<dyn std::error::Error>> {
+            let personal_assistant_id = self
+                .preview_personal_assistant_id
+                .ok_or("Select a Personal Assistant to preview an email.")?;
+
+            let assistant = self
+                .application
+                .personal_assistant_repository
+                .get_all()?
+                .into_iter()
+                .find(|assistant| assistant.id == personal_assistant_id)
+                .ok_or("Selected Personal Assistant was not found.")?;
+
+            let employer = self
+                .application
+                .employer_repository
+                .get_all()?
+                .into_iter()
+                .next()
+                .ok_or("No employer has been configured.")?;
+
+            let employer_email = employer
+                .email
+                .as_deref()
+                .map(str::trim)
+                .filter(|email| !email.is_empty())
+                .ok_or("Employer has no email address.")?;
+
+            let payroll_department_email = self
+                .application
+                .payroll_provider_repository
+                .get()?
+                .and_then(|provider| provider.payroll_department_email)
+                .map(|email| email.trim().to_string())
+                .filter(|email| !email.is_empty())
+                .ok_or("Payroll Department has no email address.")?;
+
+            let payroll_year = current_payroll_year();
+            let today = chrono::Local::now().date_naive();
+            let current_schedule = self
+                .application
+                .get_payroll_schedule(&payroll_year)?
+                .into_iter()
+                .filter_map(|schedule| {
+                    let first_week = parse_date_checked(&schedule.first_week_commencing)?;
+                    let cycle_end = first_week + chrono::Duration::days(27);
+                    (first_week <= today && today <= cycle_end).then_some(schedule)
+                })
+                .max_by_key(|schedule| schedule.first_week_commencing.clone())
+                .ok_or("No current payroll cycle was found.")?;
+
+            let personal_assistant_name = format!("{} {}", assistant.first_name, assistant.surname);
+            let (attachment_path, body) = match kind {
+                PayrollEmailKind::Timesheet => {
+                    let filename = format!(
+                        "Timesheet - {} - {}.pdf",
+                        personal_assistant_name,
+                        payroll_week_filename(&current_schedule.first_week_commencing)
+                    );
+                    (
+                        crate::paths::expand_path(
+                            &self.application.context.config.folders.pdf_output,
+                        )
+                        .join(filename),
+                        &self.application.context.config.payroll.timesheet_email_body,
+                    )
+                }
+                PayrollEmailKind::Payslip => {
+                    let filename = format!(
+                        "Payslip for Week {} for {}.pdf",
+                        payroll_week_filename(&current_schedule.first_week_commencing)
+                            .rsplit_once('w')
+                            .map(|(_, week)| week.to_string())
+                            .unwrap_or_else(|| current_schedule.cycle_number.to_string()),
+                        personal_assistant_name
+                    );
+                    (
+                        crate::paths::expand_path(
+                            &self.application.context.config.folders.payslip_folder,
+                        )
+                        .join(filename),
+                        &self.application.context.config.payroll.payslip_email_body,
+                    )
+                }
+            };
+
+            self.application.preview_payroll_email(
+                &payroll_department_email,
+                employer_email,
+                assistant.email.as_deref(),
+                &personal_assistant_name,
+                assistant.date_of_birth.as_deref(),
+                assistant.national_insurance_number.as_deref(),
+                &current_schedule.first_week_commencing,
+                &attachment_path,
+                body,
+                self.additional_notes_by_personal_assistant
+                    .get(&assistant.id)
+                    .map(String::as_str),
+                employer.email_signature.as_deref(),
+            )
+        })();
+
+        match result {
+            Ok(preview) => {
+                self.email_preview = Some(preview);
+                self.status_message = "Email preview generated. No email was sent.".to_string();
+            }
+            Err(error) => {
+                self.email_preview = None;
+                self.status_message = format!("Email preview failed: {}", error);
+            }
+        }
     }
 
     fn email_payslips(&self) -> Result<usize, Box<dyn std::error::Error>> {
@@ -395,9 +1172,8 @@ impl DirectPaymentApp {
 
         let assistants = self.application.personal_assistant_repository.get_all()?;
 
-        let pdf_output_folder =
-            crate::paths::expand_path(&self.application.context.config.folders.pdf_output);
-
+        let payslip_folder =
+            crate::paths::expand_path(&self.application.context.config.folders.payslip_folder);
 
         let mut sent = 0usize;
 
@@ -411,8 +1187,7 @@ impl DirectPaymentApp {
                 continue;
             }
 
-            let personal_assistant_name =
-                format!("{} {}", assistant.first_name, assistant.surname);
+            let personal_assistant_name = format!("{} {}", assistant.first_name, assistant.surname);
 
             let existing_status = self
                 .application
@@ -421,6 +1196,7 @@ impl DirectPaymentApp {
                     assistant.id,
                     &payroll_year,
                     current_schedule.cycle_number,
+                    "payslip",
                 )?;
 
             if existing_status
@@ -431,45 +1207,41 @@ impl DirectPaymentApp {
                 continue;
             }
 
-            let recipient_email = assistant
-                .email
-                .as_deref()
-                .map(str::trim)
-                .filter(|email| !email.is_empty())
-                .ok_or_else(|| {
-                    format!(
-                        "Personal Assistant {} has no email address.",
-                        personal_assistant_name
-                    )
-                })?;
+            let personal_assistant_email = assistant.email.as_deref();
 
             let filename = format!(
-                "Timesheet - {} - {}.pdf",
-                personal_assistant_name,
+                "Payslip for Week {} for {}.pdf",
                 payroll_week_filename(&current_schedule.first_week_commencing)
+                    .rsplit_once('w')
+                    .map(|(_, week)| week.to_string())
+                    .unwrap_or_else(|| current_schedule.cycle_number.to_string()),
+                personal_assistant_name
             );
 
-            let timesheet_path = pdf_output_folder.join(filename);
+            let payslip_path = payslip_folder.join(filename);
 
-            if !timesheet_path.exists() {
+            if !payslip_path.exists() {
                 return Err(format!(
-                    "Timesheet PDF not found for {}: {}",
+                    "Payslip PDF not found for {}: {}",
                     personal_assistant_name,
-                    timesheet_path.display()
+                    payslip_path.display()
                 )
                 .into());
             }
 
-            self.application.send_timesheet_email(
+            self.application.send_payroll_email(
                 payroll_department_email,
                 employer_email,
-                recipient_email,
+                personal_assistant_email,
                 &personal_assistant_name,
                 assistant.date_of_birth.as_deref(),
                 assistant.national_insurance_number.as_deref(),
                 &current_schedule.first_week_commencing,
-                &timesheet_path,
-                &self.application.context.config.payroll.timesheet_email_body,
+                &payslip_path,
+                &self.application.context.config.payroll.payslip_email_body,
+                self.additional_notes_by_personal_assistant
+                    .get(&assistant.id)
+                    .map(String::as_str),
                 employer.email_signature.as_deref(),
             )?;
 
@@ -481,30 +1253,33 @@ impl DirectPaymentApp {
                     assistant.id,
                     &payroll_year,
                     current_schedule.cycle_number,
+                    "payslip",
                     &sent_at,
                 )?;
 
             sent += 1;
         }
 
-        let all_active_sent = assistants.iter().filter(|assistant| {
-            match &assistant.employment_status {
+        let all_active_sent = assistants
+            .iter()
+            .filter(|assistant| match &assistant.employment_status {
                 Some(status) => status.trim().eq_ignore_ascii_case("active"),
                 None => true,
-            }
-        }).all(|assistant| {
-            self.application
-                .payroll_timesheet_email_repository
-                .get_for_pa_and_cycle(
-                    assistant.id,
-                    &payroll_year,
-                    current_schedule.cycle_number,
-                )
-                .ok()
-                .flatten()
-                .and_then(|status| status.sent_at)
-                .is_some()
-        });
+            })
+            .all(|assistant| {
+                self.application
+                    .payroll_timesheet_email_repository
+                    .get_for_pa_and_cycle(
+                        assistant.id,
+                        &payroll_year,
+                        current_schedule.cycle_number,
+                        "payslip",
+                    )
+                    .ok()
+                    .flatten()
+                    .and_then(|status| status.sent_at)
+                    .is_some()
+            });
 
         if all_active_sent {
             self.application
@@ -588,8 +1363,7 @@ impl DirectPaymentApp {
                 continue;
             }
 
-            let personal_assistant_name =
-                format!("{} {}", assistant.first_name, assistant.surname);
+            let personal_assistant_name = format!("{} {}", assistant.first_name, assistant.surname);
 
             let existing_status = self
                 .application
@@ -598,6 +1372,7 @@ impl DirectPaymentApp {
                     assistant.id,
                     &payroll_year,
                     current_schedule.cycle_number,
+                    "timesheet",
                 )?;
 
             if existing_status
@@ -608,17 +1383,7 @@ impl DirectPaymentApp {
                 continue;
             }
 
-            let personal_assistant_email = assistant
-                .email
-                .as_deref()
-                .map(str::trim)
-                .filter(|email| !email.is_empty())
-                .ok_or_else(|| {
-                    format!(
-                        "Personal Assistant {} has no email address.",
-                        personal_assistant_name
-                    )
-                })?;
+            let personal_assistant_email = assistant.email.as_deref();
 
             let filename = format!(
                 "Timesheet - {} - {}.pdf",
@@ -637,7 +1402,7 @@ impl DirectPaymentApp {
                 .into());
             }
 
-            self.application.send_timesheet_email(
+            self.application.send_payroll_email(
                 payroll_department_email,
                 employer_email,
                 personal_assistant_email,
@@ -647,6 +1412,9 @@ impl DirectPaymentApp {
                 &current_schedule.first_week_commencing,
                 &timesheet_path,
                 &self.application.context.config.payroll.timesheet_email_body,
+                self.additional_notes_by_personal_assistant
+                    .get(&assistant.id)
+                    .map(String::as_str),
                 employer.email_signature.as_deref(),
             )?;
 
@@ -658,6 +1426,7 @@ impl DirectPaymentApp {
                     assistant.id,
                     &payroll_year,
                     current_schedule.cycle_number,
+                    "timesheet",
                     &sent_at,
                 )?;
 
@@ -743,21 +1512,21 @@ impl DirectPaymentApp {
                             assistant.id,
                             &payroll_year,
                             current_schedule.cycle_number,
+                            "timesheet",
                         );
 
                     match status {
                         Ok(Some(status)) if status.sent_at.is_some() => {
                             let sent_at = status.sent_at.unwrap();
 
-                            let display_time =
-                                chrono::DateTime::parse_from_rfc3339(&sent_at)
-                                    .map(|date_time| {
-                                        date_time
-                                            .with_timezone(&chrono::Local)
-                                            .format("%d %b %Y %H:%M")
-                                            .to_string()
-                                    })
-                                    .unwrap_or(sent_at);
+                            let display_time = chrono::DateTime::parse_from_rfc3339(&sent_at)
+                                .map(|date_time| {
+                                    date_time
+                                        .with_timezone(&chrono::Local)
+                                        .format("%d %b %Y %H:%M")
+                                        .to_string()
+                                })
+                                .unwrap_or(sent_at);
 
                             ui.label(name);
                             ui.label("Sent");
@@ -994,8 +1763,7 @@ impl DirectPaymentApp {
                 format_pdf_hours(payroll_weeks[3].travel_miles),
             ];
 
-            let previous_cycle_hours =
-                payroll_timesheet.previous_cycle_hours.map(format_pdf_hours);
+            let previous_cycle_hours = payroll_timesheet.previous_cycle_hours.map(format_pdf_hours);
 
             let employer_signature_path = employer
                 .employer_signature
@@ -1111,9 +1879,7 @@ fn format_pdf_hours(value: f64) -> String {
 
     let text = format!("{:.2}", value);
 
-    text.trim_end_matches('0')
-        .trim_end_matches('.')
-        .to_string()
+    text.trim_end_matches('0').trim_end_matches('.').to_string()
 }
 
 fn parse_date_checked(value: &str) -> Option<chrono::NaiveDate> {
@@ -1203,4 +1969,3 @@ fn draw_payroll_schedule(ui: &mut egui::Ui, schedules: &[PayrollSchedule]) {
             }
         });
 }
-
