@@ -151,6 +151,11 @@ fn apply_migrations(connection: &Connection) -> Result<()> {
 
     if current_version < 17 {
         migrate_to_version_17(connection)?;
+        current_version = 17;
+    }
+
+    if current_version < 18 {
+        migrate_to_version_18(connection)?;
     }
 
     Ok(())
@@ -501,8 +506,6 @@ fn migrate_to_version_16(connection: &Connection) -> Result<()> {
     Ok(())
 }
 
-
-
 fn migrate_to_version_17(connection: &Connection) -> Result<()> {
     connection.execute(
         "
@@ -525,4 +528,105 @@ fn migrate_to_version_17(connection: &Connection) -> Result<()> {
     connection.execute("UPDATE schema_version SET version = 17", [])?;
 
     Ok(())
+}
+
+fn migrate_to_version_18(connection: &Connection) -> Result<()> {
+    let transaction = connection.unchecked_transaction()?;
+
+    transaction.execute_batch(
+        "
+        CREATE TABLE payroll_timesheet_email_status_new (
+            id INTEGER PRIMARY KEY,
+            personal_assistant_id INTEGER NOT NULL,
+            payroll_year TEXT NOT NULL,
+            cycle_number INTEGER NOT NULL,
+            email_type TEXT NOT NULL,
+            sent_at TEXT,
+            UNIQUE (
+                personal_assistant_id,
+                payroll_year,
+                cycle_number,
+                email_type
+            )
+        );
+
+        INSERT INTO payroll_timesheet_email_status_new (
+            id,
+            personal_assistant_id,
+            payroll_year,
+            cycle_number,
+            email_type,
+            sent_at
+        )
+        SELECT
+            id,
+            personal_assistant_id,
+            payroll_year,
+            cycle_number,
+            'timesheet',
+            sent_at
+        FROM payroll_timesheet_email_status;
+
+        DROP TABLE payroll_timesheet_email_status;
+        ALTER TABLE payroll_timesheet_email_status_new
+        RENAME TO payroll_timesheet_email_status;
+        ",
+    )?;
+
+    transaction.execute("UPDATE schema_version SET version = 18", [])?;
+    transaction.commit()?;
+
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn migration_to_version_18_preserves_legacy_statuses_as_timesheets() {
+        let connection = Connection::open_in_memory().unwrap();
+        create_schema(&connection).unwrap();
+
+        connection
+            .execute("DROP TABLE payroll_timesheet_email_status", [])
+            .unwrap();
+        connection
+            .execute_batch(
+                "
+                CREATE TABLE payroll_timesheet_email_status (
+                    id INTEGER PRIMARY KEY,
+                    personal_assistant_id INTEGER NOT NULL,
+                    payroll_year TEXT NOT NULL,
+                    cycle_number INTEGER NOT NULL,
+                    sent_at TEXT,
+                    UNIQUE (personal_assistant_id, payroll_year, cycle_number)
+                );
+                INSERT INTO payroll_timesheet_email_status (
+                    personal_assistant_id,
+                    payroll_year,
+                    cycle_number,
+                    sent_at
+                ) VALUES (1, '2026/27', 1, '2026-04-01T10:00:00Z');
+                UPDATE schema_version SET version = 17;
+                ",
+            )
+            .unwrap();
+
+        create_schema(&connection).unwrap();
+
+        let email_type: String = connection
+            .query_row(
+                "SELECT email_type FROM payroll_timesheet_email_status WHERE personal_assistant_id = 1",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let version: i64 = connection
+            .query_row("SELECT version FROM schema_version", [], |row| row.get(0))
+            .unwrap();
+
+        assert_eq!(email_type, "timesheet");
+        assert_eq!(version, 18);
+    }
 }

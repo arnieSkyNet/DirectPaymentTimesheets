@@ -81,4 +81,17 @@ impl PayrollProviderRepository {
 
         Ok(())
     }
+
+    pub fn update_payroll_department_email(
+        &self,
+        provider_id: i64,
+        payroll_department_email: Option<&str>,
+    ) -> Result<()> {
+        self.connection.execute(
+            "UPDATE payroll_provider SET payroll_department_email = ?1 WHERE id = ?2",
+            params![payroll_department_email, provider_id],
+        )?;
+
+        Ok(())
+    }
 }

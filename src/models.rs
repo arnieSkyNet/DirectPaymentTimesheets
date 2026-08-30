@@ -13,7 +13,7 @@ pub struct TimesheetEntry {
     pub notes: Option<String>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Employer {
     pub id: i64,
     pub name: String,

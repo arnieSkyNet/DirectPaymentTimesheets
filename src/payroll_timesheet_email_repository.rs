@@ -2,10 +2,6 @@ use rusqlite::{params, Connection, Result};
 
 #[derive(Debug, Clone)]
 pub struct PayrollTimesheetEmailStatus {
-    pub id: i64,
-    pub personal_assistant_id: i64,
-    pub payroll_year: String,
-    pub cycle_number: i64,
     pub sent_at: Option<String>,
 }
 
@@ -23,19 +19,17 @@ impl PayrollTimesheetEmailRepository {
         personal_assistant_id: i64,
         payroll_year: &str,
         cycle_number: i64,
+        email_type: &str,
     ) -> Result<Option<PayrollTimesheetEmailStatus>> {
         let mut statement = self.connection.prepare(
             "
             SELECT
-                id,
-                personal_assistant_id,
-                payroll_year,
-                cycle_number,
                 sent_at
             FROM payroll_timesheet_email_status
             WHERE personal_assistant_id = ?1
               AND payroll_year = ?2
               AND cycle_number = ?3
+              AND email_type = ?4
             LIMIT 1
             ",
         )?;
@@ -43,16 +37,13 @@ impl PayrollTimesheetEmailRepository {
         let mut rows = statement.query(params![
             personal_assistant_id,
             payroll_year,
-            cycle_number
+            cycle_number,
+            email_type
         ])?;
 
         if let Some(row) = rows.next()? {
             Ok(Some(PayrollTimesheetEmailStatus {
-                id: row.get(0)?,
-                personal_assistant_id: row.get(1)?,
-                payroll_year: row.get(2)?,
-                cycle_number: row.get(3)?,
-                sent_at: row.get(4)?,
+                sent_at: row.get(0)?,
             }))
         } else {
             Ok(None)
@@ -64,6 +55,7 @@ impl PayrollTimesheetEmailRepository {
         personal_assistant_id: i64,
         payroll_year: &str,
         cycle_number: i64,
+        email_type: &str,
     ) -> Result<()> {
         self.connection.execute(
             "
@@ -71,11 +63,17 @@ impl PayrollTimesheetEmailRepository {
                 personal_assistant_id,
                 payroll_year,
                 cycle_number,
+                email_type,
                 sent_at
             )
-            VALUES (?1, ?2, ?3, NULL)
+            VALUES (?1, ?2, ?3, ?4, NULL)
             ",
-            params![personal_assistant_id, payroll_year, cycle_number],
+            params![
+                personal_assistant_id,
+                payroll_year,
+                cycle_number,
+                email_type
+            ],
         )?;
 
         Ok(())
@@ -86,9 +84,15 @@ impl PayrollTimesheetEmailRepository {
         personal_assistant_id: i64,
         payroll_year: &str,
         cycle_number: i64,
+        email_type: &str,
         sent_at: &str,
     ) -> Result<()> {
-        self.ensure_record(personal_assistant_id, payroll_year, cycle_number)?;
+        self.ensure_record(
+            personal_assistant_id,
+            payroll_year,
+            cycle_number,
+            email_type,
+        )?;
 
         self.connection.execute(
             "
@@ -97,48 +101,45 @@ impl PayrollTimesheetEmailRepository {
             WHERE personal_assistant_id = ?2
               AND payroll_year = ?3
               AND cycle_number = ?4
+              AND email_type = ?5
             ",
             params![
                 sent_at,
                 personal_assistant_id,
                 payroll_year,
-                cycle_number
+                cycle_number,
+                email_type
             ],
         )?;
 
         Ok(())
     }
+}
 
-    pub fn get_all_for_cycle(
-        &self,
-        payroll_year: &str,
-        cycle_number: i64,
-    ) -> Result<Vec<PayrollTimesheetEmailStatus>> {
-        let mut statement = self.connection.prepare(
-            "
-            SELECT
-                id,
-                personal_assistant_id,
-                payroll_year,
-                cycle_number,
-                sent_at
-            FROM payroll_timesheet_email_status
-            WHERE payroll_year = ?1
-              AND cycle_number = ?2
-            ORDER BY personal_assistant_id
-            ",
-        )?;
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::database::create_schema;
 
-        let rows = statement.query_map(params![payroll_year, cycle_number], |row| {
-            Ok(PayrollTimesheetEmailStatus {
-                id: row.get(0)?,
-                personal_assistant_id: row.get(1)?,
-                payroll_year: row.get(2)?,
-                cycle_number: row.get(3)?,
-                sent_at: row.get(4)?,
-            })
-        })?;
+    #[test]
+    fn tracks_timesheet_and_payslip_sends_independently() {
+        let connection = Connection::open_in_memory().unwrap();
+        create_schema(&connection).unwrap();
+        let repository = PayrollTimesheetEmailRepository::new(connection);
 
-        rows.collect()
+        repository
+            .mark_sent(1, "2026/27", 1, "timesheet", "2026-04-01T10:00:00Z")
+            .unwrap();
+
+        assert!(repository
+            .get_for_pa_and_cycle(1, "2026/27", 1, "timesheet")
+            .unwrap()
+            .unwrap()
+            .sent_at
+            .is_some());
+        assert!(repository
+            .get_for_pa_and_cycle(1, "2026/27", 1, "payslip")
+            .unwrap()
+            .is_none());
     }
 }
