@@ -147,7 +147,9 @@ impl eframe::App for DirectPaymentApp {
             }
 
             ActiveScreen::PersonalAssistant => {
-                self.personal_assistant_screen.show(ui, &self.application);
+                egui::ScrollArea::vertical().show(ui, |ui| {
+                    self.personal_assistant_screen.show(ui, &self.application);
+                });
             }
 
             ActiveScreen::PayrollSettings => {
