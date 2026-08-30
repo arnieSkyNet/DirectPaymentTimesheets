@@ -3,6 +3,7 @@ use eframe::egui;
 use crate::app::Application;
 use crate::models::PersonalAssistant;
 use crate::pay_rate_repository::PersonalAssistantPayRate;
+use crate::personal_assistant_repository::PersonalAssistantDeleteResult;
 
 pub struct PersonalAssistantScreen {
     assistants: Vec<PersonalAssistant>,
@@ -19,6 +20,7 @@ pub struct PersonalAssistantScreen {
     new_hours_effective_date: String,
     new_contracted_hours: String,
     editing_contracted_hours_id: Option<i64>,
+    confirm_delete: bool,
     loaded: bool,
     status_message: String,
 }
@@ -41,6 +43,8 @@ impl PersonalAssistantScreen {
             new_contracted_hours: String::new(),
             editing_contracted_hours_id: None,
 
+            confirm_delete: false,
+
             loaded: false,
             status_message: "Personal Assistants not loaded.".to_string(),
         }
@@ -54,9 +58,87 @@ impl PersonalAssistantScreen {
 
         ui.heading("Personal Assistant Maintenance");
 
+        if self.confirm_delete {
+            let existing_assistant = self
+                .editing_assistant
+                .as_ref()
+                .filter(|assistant| assistant.id != 0)
+                .map(|assistant| {
+                    (
+                        assistant.id,
+                        format!("{} {}", assistant.first_name, assistant.surname),
+                    )
+                });
+
+            if let Some((personal_assistant_id, assistant_name)) = existing_assistant {
+                let mut confirm = false;
+                let mut cancel = false;
+
+                egui::Window::new("Permanently delete Personal Assistant?")
+                    .collapsible(false)
+                    .resizable(false)
+                    .show(ui.ctx(), |ui| {
+                        ui.label(format!(
+                            "Permanently delete {}? This action cannot be undone.",
+                            assistant_name
+                        ));
+                        ui.horizontal(|ui| {
+                            confirm = ui
+                                .button(
+                                    egui::RichText::new("Confirm Permanent Deletion")
+                                        .color(egui::Color32::RED),
+                                )
+                                .clicked();
+                            cancel = ui.button("Cancel").clicked();
+                        });
+                    });
+
+                if cancel {
+                    self.confirm_delete = false;
+                } else if confirm {
+                    match application
+                        .personal_assistant_repository
+                        .delete_if_unreferenced(personal_assistant_id)
+                    {
+                        Ok(PersonalAssistantDeleteResult::Deleted) => {
+                            self.editing_assistant = None;
+                            self.selected_index = None;
+                            self.pay_rates.clear();
+                            self.contracted_hours.clear();
+                            self.confirm_delete = false;
+                            self.loaded = false;
+                            self.status_message = format!(
+                                "Personal Assistant {} permanently deleted.",
+                                assistant_name
+                            );
+                        }
+                        Ok(PersonalAssistantDeleteResult::HasDependentRecords) => {
+                            self.confirm_delete = false;
+                            self.status_message = historical_records_message(&assistant_name);
+                        }
+                        Ok(PersonalAssistantDeleteResult::NotFound) => {
+                            self.confirm_delete = false;
+                            self.loaded = false;
+                            self.status_message =
+                                "Personal Assistant was not found; the list will be refreshed."
+                                    .to_string();
+                        }
+                        Err(error) => {
+                            self.confirm_delete = false;
+                            self.status_message =
+                                format!("Failed deleting Personal Assistant: {}", error);
+                        }
+                    }
+                }
+            } else {
+                self.confirm_delete = false;
+            }
+        }
+
         ui.separator();
 
         if ui.button("New Personal Assistant").clicked() {
+            self.confirm_delete = false;
             self.selected_index = None;
 
             self.editing_assistant = Some(PersonalAssistant {
@@ -96,6 +178,7 @@ impl PersonalAssistantScreen {
                         )
                         .clicked()
                     {
+                        self.confirm_delete = false;
                         self.selected_index = Some(index);
                         self.editing_assistant = Some(assistant.clone());
 
@@ -131,6 +214,9 @@ impl PersonalAssistantScreen {
                         columns[1].label("Address");
                         edit_optional_multiline(&mut columns[1], &mut assistant.address);
 
+                        columns[1].label("Postcode");
+                        edit_optional_text(&mut columns[1], &mut assistant.postcode);
+
                         columns[0].label("National Insurance Number");
                         edit_optional_text(
                             &mut columns[0],
@@ -146,17 +232,8 @@ impl PersonalAssistantScreen {
 
                     ui.separator();
 
-                    ui.heading("Signature");
-
                     ui.horizontal(|ui| {
-                        ui.label("PA Signature");
-
-                        let signature_text = assistant
-                            .signature
-                            .as_deref()
-                            .unwrap_or("No signature selected");
-
-                        ui.label(signature_text);
+                        ui.heading("Signature");
 
                         if ui.button("Select Signature...").clicked() {
                             if let Some(path) = rfd::FileDialog::new()
@@ -174,6 +251,13 @@ impl PersonalAssistantScreen {
                             self.status_message = "PA signature cleared.".to_string();
                         }
                     });
+
+                    let signature_text = assistant
+                        .signature
+                        .as_deref()
+                        .unwrap_or("No signature selected");
+
+                    ui.label(format!("PA Signature: {}", signature_text));
 
                     ui.separator();
 
@@ -204,24 +288,54 @@ impl PersonalAssistantScreen {
 
                     ui.separator();
 
-                    if ui.button("Save Personal Assistant").clicked() {
-                        let result = if assistant.id == 0 {
-                            application.personal_assistant_repository.insert(assistant)
-                        } else {
-                            application.personal_assistant_repository.update(assistant)
-                        };
+                    ui.horizontal(|ui| {
+                        if ui.button("Save Personal Assistant").clicked() {
+                            let result = if assistant.id == 0 {
+                                application.personal_assistant_repository.insert(assistant)
+                            } else {
+                                application.personal_assistant_repository.update(assistant)
+                            };
 
-                        match result {
-                            Ok(()) => {
-                                self.status_message = "Personal Assistant saved.".to_string();
-                                self.loaded = false;
-                            }
+                            match result {
+                                Ok(()) => {
+                                    self.status_message = "Personal Assistant saved.".to_string();
+                                    self.loaded = false;
+                                }
 
-                            Err(error) => {
-                                self.status_message = format!("Save failed: {}", error);
+                                Err(error) => {
+                                    self.status_message = format!("Save failed: {}", error);
+                                }
                             }
                         }
-                    }
+
+                        if assistant.id != 0
+                            && ui
+                                .button(
+                                    egui::RichText::new("Delete Personal Assistant")
+                                        .color(egui::Color32::RED),
+                                )
+                                .clicked()
+                        {
+                            let assistant_name =
+                                format!("{} {}", assistant.first_name, assistant.surname);
+                            match application
+                                .personal_assistant_repository
+                                .has_dependent_records(assistant.id)
+                            {
+                                Ok(true) => {
+                                    self.status_message =
+                                        historical_records_message(&assistant_name);
+                                }
+                                Ok(false) => self.confirm_delete = true,
+                                Err(error) => {
+                                    self.status_message = format!(
+                                        "Unable to check whether this Personal Assistant can be deleted: {}",
+                                        error
+                                    );
+                                }
+                            }
+                        }
+                    });
 
                     ui.separator();
 
@@ -461,4 +575,11 @@ fn edit_optional_multiline(ui: &mut egui::Ui, value: &mut Option<String>) {
     if let Some(text) = value {
         ui.add(egui::TextEdit::multiline(text).desired_rows(4));
     }
+}
+
+fn historical_records_message(assistant_name: &str) -> String {
+    format!(
+        "{} cannot be permanently deleted because historical payroll or timesheet data exists. Change their employment status to inactive/no longer employed instead.",
+        assistant_name
+    )
 }
