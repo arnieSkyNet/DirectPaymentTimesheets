@@ -2,6 +2,7 @@ use eframe::egui;
 
 use crate::app::Application;
 use crate::config::ApplicationTheme;
+use crate::theme::{apply_theme, theme_label};
 
 pub struct ApplicationSettingsScreen {
     loaded: bool,
@@ -68,9 +69,17 @@ impl ApplicationSettingsScreen {
             egui::ComboBox::from_id_salt("application_theme")
                 .selected_text(theme_label(self.theme))
                 .show_ui(ui, |ui| {
-                    ui.selectable_value(&mut self.theme, ApplicationTheme::Dark, "Dark");
-                    ui.selectable_value(&mut self.theme, ApplicationTheme::Light, "Light");
                     ui.selectable_value(&mut self.theme, ApplicationTheme::System, "System");
+                    ui.selectable_value(&mut self.theme, ApplicationTheme::Light, "Light");
+                    ui.selectable_value(&mut self.theme, ApplicationTheme::SoftLight, "Soft Light");
+                    ui.selectable_value(&mut self.theme, ApplicationTheme::Dark, "Dark");
+                    ui.selectable_value(&mut self.theme, ApplicationTheme::SoftDark, "Soft Dark");
+                    ui.selectable_value(&mut self.theme, ApplicationTheme::Blue, "Blue");
+                    ui.selectable_value(
+                        &mut self.theme,
+                        ApplicationTheme::AccessibleHighContrast,
+                        "Accessible High Contrast",
+                    );
                 });
 
             if self.theme != previous_theme {
@@ -357,22 +366,4 @@ impl ApplicationSettingsScreen {
 
         Ok(())
     }
-}
-
-fn theme_label(theme: ApplicationTheme) -> &'static str {
-    match theme {
-        ApplicationTheme::Dark => "Dark",
-        ApplicationTheme::Light => "Light",
-        ApplicationTheme::System => "System",
-    }
-}
-
-pub fn apply_theme(ctx: &egui::Context, theme: ApplicationTheme) {
-    let preference = match theme {
-        ApplicationTheme::Dark => egui::ThemePreference::Dark,
-        ApplicationTheme::Light => egui::ThemePreference::Light,
-        ApplicationTheme::System => egui::ThemePreference::System,
-    };
-
-    ctx.set_theme(preference);
 }
