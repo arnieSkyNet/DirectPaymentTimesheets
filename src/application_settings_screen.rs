@@ -275,6 +275,23 @@ impl ApplicationSettingsScreen {
 
         ui.separator();
 
+        ui.heading("Backup");
+        ui.label("Create a manual backup of the database and application configuration.");
+
+        if ui.button("Create Backup").clicked() {
+            match application.create_backup() {
+                Ok(backup_path) => {
+                    self.status_message =
+                        format!("Backup created successfully at {}", backup_path.display());
+                }
+                Err(error) => {
+                    self.status_message = format!("Failed to create backup: {error}");
+                }
+            }
+        }
+
+        ui.separator();
+
         ui.label(&self.status_message);
         open_email_settings
     }

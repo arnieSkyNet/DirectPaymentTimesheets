@@ -2,6 +2,7 @@ mod app;
 mod application;
 mod application_settings_screen;
 mod archive;
+mod backup_service;
 mod config;
 mod context;
 mod contracted_hours_repository;

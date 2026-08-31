@@ -1215,6 +1215,7 @@ dependencies = [
  "rfd",
  "rusqlite",
  "serde",
+ "tempfile",
  "toml",
  "zip",
 ]

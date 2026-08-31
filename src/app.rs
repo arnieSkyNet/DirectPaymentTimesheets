@@ -79,6 +79,16 @@ impl Application {
         Ok(())
     }
 
+    pub fn create_backup(&self) -> Result<std::path::PathBuf, Box<dyn std::error::Error>> {
+        let config_path = self.context.environment.data_dir.join("config.toml");
+
+        Ok(crate::backup_service::BackupService::create(
+            &self.context.environment.database_path,
+            &config_path,
+            &self.context.environment.backups_dir,
+        )?)
+    }
+
     pub fn create_import_service(&self) -> ImportService<'_> {
         let import_dir = crate::paths::expand_path(&self.context.config.folders.csv_import);
 
