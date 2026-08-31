@@ -126,7 +126,6 @@ pub struct PayrollConfig {
     pub payslip_email_body: String,
 
     pub overtime_enabled: bool,
-    pub public_holiday_enabled: bool,
 }
 
 fn default_rounding_direction() -> String {
@@ -160,7 +159,6 @@ impl Default for PayrollConfig {
             timesheet_email_body: default_timesheet_email_body(),
             payslip_email_body: default_payslip_email_body(),
             overtime_enabled: false,
-            public_holiday_enabled: false,
         }
     }
 }
@@ -345,6 +343,33 @@ mod tests {
 
             assert_eq!(loaded.theme, theme);
         }
+
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn obsolete_public_holiday_enabled_key_is_ignored_and_not_saved() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!(
+            "direct-payment-timesheets-obsolete-holiday-setting-{}-{unique}.toml",
+            std::process::id()
+        ));
+        let mut value = toml::Value::try_from(AppConfig::default()).unwrap();
+        value
+            .get_mut("payroll")
+            .and_then(toml::Value::as_table_mut)
+            .unwrap()
+            .insert("public_holiday_enabled".to_string(), true.into());
+        std::fs::write(&path, toml::to_string_pretty(&value).unwrap()).unwrap();
+
+        let config = AppConfig::load(&path).unwrap();
+        config.save(&path).unwrap();
+        let saved = std::fs::read_to_string(&path).unwrap();
+
+        assert!(!saved.contains("public_holiday_enabled"));
 
         std::fs::remove_file(path).unwrap();
     }
