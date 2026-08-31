@@ -9,7 +9,7 @@ use crate::models::TimesheetEntry;
 use crate::payroll_schedule_repository::PayrollSchedule;
 use crate::payroll_settings_screen::PayrollSettingsScreen;
 use crate::payroll_timesheet_screen::PayrollTimesheetScreen;
-use crate::pdf_generator::{payroll_week_filename, PdfGenerator, TimesheetPdfData};
+use crate::pdf_generator::{PdfGenerator, TimesheetPdfData};
 use crate::personal_assistant_screen::PersonalAssistantScreen;
 
 enum ActiveScreen {
@@ -668,13 +668,11 @@ impl DirectPaymentApp {
             let current_schedule = self.application.resolve_payroll_schedule(today)?;
 
             let personal_assistant_name = format!("{} {}", assistant.first_name, assistant.surname);
-            let attachment_path =
-                crate::paths::expand_path(&self.application.context.config.folders.pdf_output)
-                    .join(format!(
-                        "Timesheet - {} - {}.pdf",
-                        personal_assistant_name,
-                        payroll_week_filename(&current_schedule.first_week_commencing)
-                    ));
+            let attachment_path = crate::payroll_file_naming::timesheet_path(
+                &crate::paths::expand_path(&self.application.context.config.folders.pdf_output),
+                &personal_assistant_name,
+                &current_schedule,
+            )?;
             let pa_test_email = self
                 .application
                 .context
@@ -690,7 +688,7 @@ impl DirectPaymentApp {
                 &personal_assistant_name,
                 assistant.date_of_birth.as_deref(),
                 assistant.national_insurance_number.as_deref(),
-                &current_schedule.first_week_commencing,
+                &current_schedule,
                 &attachment_path,
                 &self.application.context.config.payroll.timesheet_email_body,
                 self.additional_notes_by_personal_assistant
@@ -754,16 +752,11 @@ impl DirectPaymentApp {
             let current_schedule = self.application.resolve_payroll_schedule(today)?;
 
             let personal_assistant_name = format!("{} {}", assistant.first_name, assistant.surname);
-            let attachment_path =
-                crate::paths::expand_path(&self.application.context.config.folders.payslip_folder)
-                    .join(format!(
-                        "Payslip for Week {} for {}.pdf",
-                        payroll_week_filename(&current_schedule.first_week_commencing)
-                            .rsplit_once('w')
-                            .map(|(_, week)| week.to_string())
-                            .unwrap_or_else(|| current_schedule.cycle_number.to_string()),
-                        personal_assistant_name
-                    ));
+            let attachment_path = crate::payroll_file_naming::payslip_path(
+                &crate::paths::expand_path(&self.application.context.config.folders.payslip_folder),
+                &personal_assistant_name,
+                &current_schedule,
+            )?;
 
             self.application.send_test_payslip_email(
                 sender_email,
@@ -771,7 +764,7 @@ impl DirectPaymentApp {
                 &personal_assistant_name,
                 assistant.date_of_birth.as_deref(),
                 assistant.national_insurance_number.as_deref(),
-                &current_schedule.first_week_commencing,
+                &current_schedule,
                 &attachment_path,
                 &self.application.context.config.payroll.payslip_email_body,
                 self.additional_notes_by_personal_assistant
@@ -848,11 +841,7 @@ impl DirectPaymentApp {
 
                 match self.application.resolve_payroll_schedule(today) {
                     Ok(schedule) => {
-                        match self.application.import_payroll_return(
-                            &path,
-                            &schedule.payroll_year,
-                            schedule.cycle_number,
-                        ) {
+                        match self.application.import_payroll_return(&path, &schedule) {
                                     Ok(result) => {
                                         self.status_message = format!(
                                             "Payroll return imported: {} payslip(s), {} information file(s).",
@@ -1069,37 +1058,26 @@ impl DirectPaymentApp {
 
             let personal_assistant_name = format!("{} {}", assistant.first_name, assistant.surname);
             let (attachment_path, body) = match kind {
-                PayrollEmailKind::Timesheet => {
-                    let filename = format!(
-                        "Timesheet - {} - {}.pdf",
-                        personal_assistant_name,
-                        payroll_week_filename(&current_schedule.first_week_commencing)
-                    );
-                    (
-                        crate::paths::expand_path(
+                PayrollEmailKind::Timesheet => (
+                    crate::payroll_file_naming::timesheet_path(
+                        &crate::paths::expand_path(
                             &self.application.context.config.folders.pdf_output,
-                        )
-                        .join(filename),
-                        &self.application.context.config.payroll.timesheet_email_body,
-                    )
-                }
-                PayrollEmailKind::Payslip => {
-                    let filename = format!(
-                        "Payslip for Week {} for {}.pdf",
-                        payroll_week_filename(&current_schedule.first_week_commencing)
-                            .rsplit_once('w')
-                            .map(|(_, week)| week.to_string())
-                            .unwrap_or_else(|| current_schedule.cycle_number.to_string()),
-                        personal_assistant_name
-                    );
-                    (
-                        crate::paths::expand_path(
+                        ),
+                        &personal_assistant_name,
+                        &current_schedule,
+                    )?,
+                    &self.application.context.config.payroll.timesheet_email_body,
+                ),
+                PayrollEmailKind::Payslip => (
+                    crate::payroll_file_naming::payslip_path(
+                        &crate::paths::expand_path(
                             &self.application.context.config.folders.payslip_folder,
-                        )
-                        .join(filename),
-                        &self.application.context.config.payroll.payslip_email_body,
-                    )
-                }
+                        ),
+                        &personal_assistant_name,
+                        &current_schedule,
+                    )?,
+                    &self.application.context.config.payroll.payslip_email_body,
+                ),
             };
 
             self.application.preview_payroll_email(
@@ -1109,7 +1087,7 @@ impl DirectPaymentApp {
                 &personal_assistant_name,
                 assistant.date_of_birth.as_deref(),
                 assistant.national_insurance_number.as_deref(),
-                &current_schedule.first_week_commencing,
+                &current_schedule,
                 &attachment_path,
                 body,
                 self.additional_notes_by_personal_assistant
@@ -1202,16 +1180,11 @@ impl DirectPaymentApp {
 
             let personal_assistant_email = assistant.email.as_deref();
 
-            let filename = format!(
-                "Payslip for Week {} for {}.pdf",
-                payroll_week_filename(&current_schedule.first_week_commencing)
-                    .rsplit_once('w')
-                    .map(|(_, week)| week.to_string())
-                    .unwrap_or_else(|| current_schedule.cycle_number.to_string()),
-                personal_assistant_name
-            );
-
-            let payslip_path = payslip_folder.join(filename);
+            let payslip_path = crate::payroll_file_naming::payslip_path(
+                &payslip_folder,
+                &personal_assistant_name,
+                &current_schedule,
+            )?;
 
             if !payslip_path.exists() {
                 return Err(format!(
@@ -1229,7 +1202,7 @@ impl DirectPaymentApp {
                 &personal_assistant_name,
                 assistant.date_of_birth.as_deref(),
                 assistant.national_insurance_number.as_deref(),
-                &current_schedule.first_week_commencing,
+                &current_schedule,
                 &payslip_path,
                 &self.application.context.config.payroll.payslip_email_body,
                 self.additional_notes_by_personal_assistant
@@ -1357,8 +1330,8 @@ impl DirectPaymentApp {
             let timesheet_path = PdfGenerator::timesheet_output_path(
                 &pdf_output_folder,
                 &personal_assistant_name,
-                &current_schedule.first_week_commencing,
-            );
+                &current_schedule,
+            )?;
 
             if !timesheet_path.exists() {
                 return Err(format!(
@@ -1396,7 +1369,7 @@ impl DirectPaymentApp {
                         &personal_assistant_name,
                         assistant.date_of_birth.as_deref(),
                         assistant.national_insurance_number.as_deref(),
-                        &current_schedule.first_week_commencing,
+                        &current_schedule,
                         &timesheet_path,
                         &self.application.context.config.payroll.timesheet_email_body,
                         self.additional_notes_by_personal_assistant
@@ -1746,6 +1719,7 @@ impl DirectPaymentApp {
                 .filter(|path| path.exists());
 
             let data = TimesheetPdfData {
+                schedule: &current_schedule,
                 employer_name: &employer.name,
 
                 personal_assistant_name: &personal_assistant_name,
@@ -1814,7 +1788,7 @@ impl DirectPaymentApp {
             };
 
             let captured_at = chrono::Local::now().to_rfc3339();
-            let final_pdf_path = PdfGenerator::output_path(&output_dir, &data);
+            let final_pdf_path = PdfGenerator::output_path(&output_dir, &data)?;
             let week_ids = [
                 payroll_weeks[0].id,
                 payroll_weeks[1].id,
