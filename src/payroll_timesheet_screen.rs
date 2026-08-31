@@ -10,7 +10,6 @@ use crate::payroll_timesheet_repository::{
 
 pub struct PayrollTimesheetScreen {
     loaded: bool,
-    payroll_year: String,
     cycle_number: i64,
     schedule: Option<PayrollSchedule>,
     records: Vec<PayrollTimesheet>,
@@ -24,7 +23,6 @@ impl PayrollTimesheetScreen {
     pub fn new() -> Self {
         Self {
             loaded: false,
-            payroll_year: "2026/27".to_string(),
             cycle_number: 0,
             schedule: None,
             records: Vec::new(),
@@ -35,13 +33,23 @@ impl PayrollTimesheetScreen {
         }
     }
 
+    pub fn reload(&mut self) {
+        self.loaded = false;
+        self.schedule = None;
+        self.records.clear();
+        self.weeks.clear();
+        self.public_holidays.clear();
+        self.worked_hours_baselines.clear();
+    }
+
     pub fn show(&mut self, ui: &mut egui::Ui, application: &Application) {
         if !self.loaded {
-            if let Err(error) = self.load(application) {
-                self.status_message = format!("Failed loading Payroll Timesheets: {}", error);
+            match self.load(application) {
+                Ok(()) => self.loaded = true,
+                Err(error) => {
+                    self.status_message = format!("Failed loading Payroll Timesheets: {}", error);
+                }
             }
-
-            self.loaded = true;
         }
 
         ui.heading("Payroll Timesheet Preparation");
@@ -188,27 +196,9 @@ impl PayrollTimesheetScreen {
     }
 
     fn load(&mut self, application: &Application) -> Result<(), Box<dyn std::error::Error>> {
-        let schedules = application.get_payroll_schedule(&self.payroll_year)?;
-
         let today = chrono::Local::now().date_naive();
-
-        // Select the payroll cycle containing today.
-        let schedule = schedules
-            .into_iter()
-            .filter_map(|schedule| {
-                let first_week = parse_date(&schedule.first_week_commencing)?;
-
-                let cycle_end = first_week + chrono::Duration::days(27);
-
-                if first_week <= today && today <= cycle_end {
-                    Some((first_week, schedule))
-                } else {
-                    None
-                }
-            })
-            .max_by_key(|(date, _)| *date)
-            .map(|(_, schedule)| schedule)
-            .ok_or("No current payroll cycle found.")?;
+        let schedule = application.resolve_payroll_schedule(today)?;
+        let payroll_year = schedule.payroll_year.clone();
 
         self.cycle_number = schedule.cycle_number;
         self.schedule = Some(schedule.clone());
@@ -277,7 +267,7 @@ impl PayrollTimesheetScreen {
 
             let existing = application
                 .payroll_timesheet_repository
-                .get_for_cycle_and_pa(&self.payroll_year, schedule.cycle_number, assistant.id)?;
+                .get_for_cycle_and_pa(&payroll_year, schedule.cycle_number, assistant.id)?;
 
             let record = match existing {
                 Some(record) => record,
@@ -291,7 +281,7 @@ impl PayrollTimesheetScreen {
                     let previous_cycle_hours = if previous_cycle_number > 0 {
                         calculate_previous_cycle_adjustment(
                             application,
-                            &self.payroll_year,
+                            &payroll_year,
                             previous_cycle_number,
                             assistant.id,
                             &all_timesheets,
@@ -308,7 +298,7 @@ impl PayrollTimesheetScreen {
                     }
 
                     let id = application.payroll_timesheet_repository.insert(
-                        &self.payroll_year,
+                        &payroll_year,
                         schedule.cycle_number,
                         assistant.id,
                         previous_cycle_hours,
@@ -321,11 +311,7 @@ impl PayrollTimesheetScreen {
 
                     application
                         .payroll_timesheet_repository
-                        .get_for_cycle_and_pa(
-                            &self.payroll_year,
-                            schedule.cycle_number,
-                            assistant.id,
-                        )?
+                        .get_for_cycle_and_pa(&payroll_year, schedule.cycle_number, assistant.id)?
                         .ok_or("Failed creating payroll timesheet.")?
                 }
             };
@@ -347,7 +333,7 @@ impl PayrollTimesheetScreen {
             let previous_record = if previous_cycle_number > 0 {
                 application
                     .payroll_timesheet_repository
-                    .get_for_cycle_and_pa(&self.payroll_year, previous_cycle_number, assistant.id)?
+                    .get_for_cycle_and_pa(&payroll_year, previous_cycle_number, assistant.id)?
             } else {
                 None
             };
@@ -429,7 +415,7 @@ impl PayrollTimesheetScreen {
 
             let record = application
                 .payroll_timesheet_repository
-                .get_for_cycle_and_pa(&self.payroll_year, schedule.cycle_number, assistant.id)?
+                .get_for_cycle_and_pa(&payroll_year, schedule.cycle_number, assistant.id)?
                 .ok_or("Failed reloading payroll timesheet.")?;
 
             weeks = application
