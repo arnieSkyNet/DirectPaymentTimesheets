@@ -46,6 +46,32 @@ struct PendingPayrollReturnImport {
     selected_schedule_id: i64,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct OperationalPayrollPeriodKey {
+    payroll_year: String,
+    cycle_number: i64,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+struct OperationalPayrollPeriodState {
+    selected: Option<OperationalPayrollPeriodKey>,
+    explicitly_selected: bool,
+}
+
+impl OperationalPayrollPeriodState {
+    fn select(&mut self, schedule: &PayrollSchedule, current: Option<&PayrollSchedule>) {
+        self.selected = Some(operational_period_key(schedule));
+        self.explicitly_selected = current.is_none_or(|current| {
+            operational_period_key(current) != operational_period_key(schedule)
+        });
+    }
+
+    fn use_current(&mut self, current: &PayrollSchedule) {
+        self.selected = Some(operational_period_key(current));
+        self.explicitly_selected = false;
+    }
+}
+
 pub struct DirectPaymentApp {
     application: Application,
     version: String,
@@ -55,6 +81,9 @@ pub struct DirectPaymentApp {
     payroll_schedules: Vec<PayrollSchedule>,
     payroll_schedule_years: Vec<String>,
     selected_payroll_schedule_year: Option<String>,
+    operational_payroll_schedules: Vec<PayrollSchedule>,
+    operational_payroll_period: OperationalPayrollPeriodState,
+    operational_payroll_period_error: Option<String>,
     preview_personal_assistant_id: Option<i64>,
     email_preview: Option<PayrollEmailPreview>,
     additional_notes_by_personal_assistant: HashMap<i64, String>,
@@ -74,6 +103,8 @@ pub struct DirectPaymentApp {
 
 impl DirectPaymentApp {
     pub fn new(application: Application) -> Self {
+        let (operational_payroll_schedules, operational_payroll_period, operational_error) =
+            initial_operational_payroll_period(&application);
         Self {
             version: application.context.version.clone(),
             application,
@@ -83,6 +114,9 @@ impl DirectPaymentApp {
             payroll_schedules: Vec::new(),
             payroll_schedule_years: Vec::new(),
             selected_payroll_schedule_year: None,
+            operational_payroll_schedules,
+            operational_payroll_period,
+            operational_payroll_period_error: operational_error,
             preview_personal_assistant_id: None,
             email_preview: None,
             additional_notes_by_personal_assistant: HashMap::new(),
@@ -675,8 +709,7 @@ impl DirectPaymentApp {
                 .filter(|email| !email.is_empty())
                 .ok_or("Employer has no email address.")?;
 
-            let today = chrono::Local::now().date_naive();
-            let current_schedule = self.application.resolve_payroll_schedule(today)?;
+            let current_schedule = self.selected_operational_payroll_schedule()?;
 
             let personal_assistant_name = format!("{} {}", assistant.first_name, assistant.surname);
             let attachment_path = crate::payroll_file_naming::timesheet_path(
@@ -759,8 +792,7 @@ impl DirectPaymentApp {
                 .filter(|email| !email.is_empty())
                 .ok_or("Employer has no email address.")?;
 
-            let today = chrono::Local::now().date_naive();
-            let current_schedule = self.application.resolve_payroll_schedule(today)?;
+            let current_schedule = self.selected_operational_payroll_schedule()?;
 
             let personal_assistant_name = format!("{} {}", assistant.first_name, assistant.surname);
             let attachment_path = crate::payroll_file_naming::payslip_path(
@@ -791,6 +823,154 @@ impl DirectPaymentApp {
         }
     }
 
+    fn selected_operational_payroll_schedule(
+        &self,
+    ) -> Result<PayrollSchedule, Box<dyn std::error::Error>> {
+        let selected = self
+            .operational_payroll_period
+            .selected
+            .as_ref()
+            .ok_or("No operational payroll period is selected.")?;
+        self.application
+            .payroll_schedule_repository
+            .get_for_year_and_cycle(&selected.payroll_year, selected.cycle_number)?
+            .ok_or_else(|| {
+                format!(
+                    "The selected payroll period for {} is no longer available. Refresh the payroll periods and select another period.",
+                    selected.payroll_year
+                )
+                .into()
+            })
+    }
+
+    fn refresh_operational_payroll_schedules(&mut self) -> Result<(), Box<dyn std::error::Error>> {
+        let schedules = ordered_payroll_schedules(
+            self.application.payroll_schedule_repository.get_all()?,
+            None,
+        );
+        let current = self
+            .application
+            .payroll_schedule_repository
+            .resolve_for_date(chrono::Local::now().date_naive())
+            .ok();
+        let mut needs_default = self.operational_payroll_period.selected.is_none();
+        if let Some(selected) = &self.operational_payroll_period.selected {
+            if !schedules
+                .iter()
+                .any(|schedule| operational_period_key(schedule) == *selected)
+            {
+                needs_default = true;
+                self.email_preview = None;
+                self.operational_payroll_period_error = Some(
+                    "The previously selected payroll period is no longer available. Select another payroll period."
+                        .to_string(),
+                );
+            }
+        }
+        if needs_default {
+            self.operational_payroll_period =
+                default_operational_payroll_period(&schedules, current.as_ref());
+        }
+        self.operational_payroll_schedules = schedules;
+        Ok(())
+    }
+
+    fn draw_operational_payroll_period_selector(&mut self, ui: &mut egui::Ui) {
+        ui.group(|ui| {
+            ui.label("Payroll period for generation, preview and test email:");
+
+            if self.operational_payroll_schedules.is_empty() {
+                ui.label("No imported payroll schedules are available.");
+                if let Some(error) = &self.operational_payroll_period_error {
+                    ui.colored_label(ui.visuals().error_fg_color, error);
+                }
+                return;
+            }
+
+            let current = self
+                .application
+                .payroll_schedule_repository
+                .resolve_for_date(chrono::Local::now().date_naive())
+                .ok();
+            let selected_schedule =
+                self.operational_payroll_period
+                    .selected
+                    .as_ref()
+                    .and_then(|selected| {
+                        self.operational_payroll_schedules
+                            .iter()
+                            .find(|schedule| operational_period_key(schedule) == *selected)
+                    });
+            let selected_text = selected_schedule
+                .map(payroll_schedule_label)
+                .unwrap_or_else(|| "Select a payroll period".to_string());
+            let mut selected_key = self.operational_payroll_period.selected.clone();
+
+            egui::ComboBox::from_id_salt("operational_payroll_period")
+                .width(540.0)
+                .selected_text(selected_text)
+                .show_ui(ui, |ui| {
+                    for schedule in &self.operational_payroll_schedules {
+                        ui.selectable_value(
+                            &mut selected_key,
+                            Some(operational_period_key(schedule)),
+                            payroll_schedule_label(schedule),
+                        );
+                    }
+                });
+
+            if selected_key != self.operational_payroll_period.selected {
+                if let Some(selected_key) = selected_key {
+                    if let Some(schedule) = self
+                        .operational_payroll_schedules
+                        .iter()
+                        .find(|schedule| operational_period_key(schedule) == selected_key)
+                    {
+                        self.operational_payroll_period
+                            .select(schedule, current.as_ref());
+                        self.operational_payroll_period_error = None;
+                        self.email_preview = None;
+                    }
+                }
+            }
+
+            if let Some(schedule) =
+                self.operational_payroll_period
+                    .selected
+                    .as_ref()
+                    .and_then(|selected| {
+                        self.operational_payroll_schedules
+                            .iter()
+                            .find(|schedule| operational_period_key(schedule) == *selected)
+                    })
+            {
+                match operational_period_timing(schedule, chrono::Local::now().date_naive()) {
+                    Some(OperationalPeriodTiming::Historical) => {
+                        ui.label("Historical payroll period selected");
+                    }
+                    Some(OperationalPeriodTiming::Future) => {
+                        ui.label("Future payroll period selected");
+                    }
+                    Some(OperationalPeriodTiming::Current) | None => {}
+                }
+            }
+
+            if self.operational_payroll_period.explicitly_selected {
+                if let Some(current) = current {
+                    if ui.button("Use current payroll period").clicked() {
+                        self.operational_payroll_period.use_current(&current);
+                        self.operational_payroll_period_error = None;
+                        self.email_preview = None;
+                    }
+                }
+            }
+
+            if let Some(error) = &self.operational_payroll_period_error {
+                ui.colored_label(ui.visuals().error_fg_color, error);
+            }
+        });
+    }
+
     fn begin_payroll_return_import(&mut self) {
         let result = (|| -> Result<PendingPayrollReturnImport, Box<dyn std::error::Error>> {
             let today = chrono::Local::now().date_naive();
@@ -799,7 +979,7 @@ impl DirectPaymentApp {
                 .resolve_payroll_schedule(today)
                 .ok()
                 .map(|schedule| schedule.id);
-            let schedules = ordered_payroll_return_schedules(
+            let schedules = ordered_payroll_schedules(
                 self.application.payroll_schedule_repository.get_all()?,
                 current_schedule_id,
             );
@@ -841,7 +1021,7 @@ impl DirectPaymentApp {
                     &pending.schedules,
                     pending.selected_schedule_id,
                 )
-                .map(payroll_return_schedule_label)
+                .map(payroll_schedule_label)
                 .unwrap_or_else(|| "Select a payroll period".to_string());
 
                 egui::ComboBox::from_id_salt("payroll_return_schedule_selection")
@@ -852,7 +1032,7 @@ impl DirectPaymentApp {
                             ui.selectable_value(
                                 &mut pending.selected_schedule_id,
                                 schedule.id,
-                                payroll_return_schedule_label(schedule),
+                                payroll_schedule_label(schedule),
                             );
                         }
                     });
@@ -862,7 +1042,7 @@ impl DirectPaymentApp {
                     pending.selected_schedule_id,
                 ) {
                     ui.separator();
-                    match payroll_return_schedule_details(schedule) {
+                    match payroll_schedule_details(schedule) {
                         Ok(details) => {
                             for detail in details {
                                 ui.label(detail);
@@ -1000,6 +1180,8 @@ impl DirectPaymentApp {
         egui::ScrollArea::vertical().show(ui, |ui| {
             ui.heading("Dashboard");
 
+            self.draw_operational_payroll_period_selector(ui);
+
             ui.separator();
 
             if ui.button("Import CSV").clicked() {
@@ -1066,6 +1248,11 @@ impl DirectPaymentApp {
                         Ok(count) => {
                             self.status_message =
                                 format!("Payroll Prep Sheet imported: {} schedule entries.", count);
+                            if let Err(error) = self.refresh_operational_payroll_schedules() {
+                                self.operational_payroll_period_error = Some(format!(
+                                    "Could not refresh operational payroll periods: {error}"
+                                ));
+                            }
                         }
 
                         Err(error) => {
@@ -1232,8 +1419,7 @@ impl DirectPaymentApp {
                 .filter(|email| !email.is_empty())
                 .ok_or("Payroll Department has no email address.")?;
 
-            let today = chrono::Local::now().date_naive();
-            let current_schedule = self.application.resolve_payroll_schedule(today)?;
+            let current_schedule = self.selected_operational_payroll_schedule()?;
 
             let personal_assistant_name = format!("{} {}", assistant.first_name, assistant.surname);
             let (attachment_path, body) = match kind {
@@ -1569,12 +1755,11 @@ impl DirectPaymentApp {
         ui.separator();
         ui.heading("Timesheet Email Status");
 
-        let today = chrono::Local::now().date_naive();
-        let current_schedule = match self.application.resolve_payroll_schedule(today) {
+        let current_schedule = match self.selected_operational_payroll_schedule() {
             Ok(schedule) => schedule,
             Err(error) => {
                 ui.label(format!(
-                    "Unable to resolve current payroll cycle: {}",
+                    "Unable to load the selected payroll period: {}",
                     error
                 ));
                 return;
@@ -1665,8 +1850,7 @@ impl DirectPaymentApp {
             .next()
             .ok_or("No employer has been configured.")?;
 
-        let today = chrono::Local::now().date_naive();
-        let current_schedule = self.application.resolve_payroll_schedule(today)?;
+        let current_schedule = self.selected_operational_payroll_schedule()?;
         let payroll_year = current_schedule.payroll_year.clone();
         let previous_schedule = self
             .application
@@ -2008,7 +2192,98 @@ impl DirectPaymentApp {
     }
 }
 
-fn ordered_payroll_return_schedules(
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum OperationalPeriodTiming {
+    Historical,
+    Current,
+    Future,
+}
+
+fn operational_period_key(schedule: &PayrollSchedule) -> OperationalPayrollPeriodKey {
+    OperationalPayrollPeriodKey {
+        payroll_year: schedule.payroll_year.clone(),
+        cycle_number: schedule.cycle_number,
+    }
+}
+
+fn initial_operational_payroll_period(
+    application: &Application,
+) -> (
+    Vec<PayrollSchedule>,
+    OperationalPayrollPeriodState,
+    Option<String>,
+) {
+    let schedules = match application.payroll_schedule_repository.get_all() {
+        Ok(schedules) => ordered_payroll_schedules(schedules, None),
+        Err(error) => {
+            return (
+                Vec::new(),
+                OperationalPayrollPeriodState::default(),
+                Some(format!(
+                    "Could not load operational payroll periods: {error}"
+                )),
+            );
+        }
+    };
+    if schedules.is_empty() {
+        return (
+            schedules,
+            OperationalPayrollPeriodState::default(),
+            Some("No imported payroll schedules are available.".to_string()),
+        );
+    }
+
+    let today = chrono::Local::now().date_naive();
+    let current = match application
+        .payroll_schedule_repository
+        .resolve_for_date(today)
+    {
+        Ok(current) => Some(current),
+        Err(
+            crate::payroll_schedule_repository::PayrollScheduleResolutionError::NoCurrentCycle(_),
+        ) => None,
+        Err(error) => {
+            return (
+                schedules,
+                OperationalPayrollPeriodState::default(),
+                Some(format!(
+                    "Could not determine the default operational payroll period: {error}"
+                )),
+            );
+        }
+    };
+    let state = default_operational_payroll_period(&schedules, current.as_ref());
+
+    (schedules, state, None)
+}
+
+fn default_operational_payroll_period(
+    schedules: &[PayrollSchedule],
+    current: Option<&PayrollSchedule>,
+) -> OperationalPayrollPeriodState {
+    OperationalPayrollPeriodState {
+        selected: current
+            .or_else(|| schedules.first())
+            .map(operational_period_key),
+        explicitly_selected: false,
+    }
+}
+
+fn operational_period_timing(
+    schedule: &PayrollSchedule,
+    today: chrono::NaiveDate,
+) -> Option<OperationalPeriodTiming> {
+    let first_week = parse_date_checked(&schedule.first_week_commencing)?;
+    if today < first_week {
+        Some(OperationalPeriodTiming::Future)
+    } else if today > first_week + chrono::Duration::days(27) {
+        Some(OperationalPeriodTiming::Historical)
+    } else {
+        Some(OperationalPeriodTiming::Current)
+    }
+}
+
+fn ordered_payroll_schedules(
     mut schedules: Vec<PayrollSchedule>,
     current_schedule_id: Option<i64>,
 ) -> Vec<PayrollSchedule> {
@@ -2057,7 +2332,7 @@ fn selected_payroll_return_schedule(
         .find(|schedule| schedule.id == selected_schedule_id)
 }
 
-fn payroll_return_schedule_label(schedule: &PayrollSchedule) -> String {
+fn payroll_schedule_label(schedule: &PayrollSchedule) -> String {
     let paye_week = crate::payroll_file_naming::paye_week(schedule)
         .map(|week| week.to_string())
         .unwrap_or_else(|_| "unavailable".to_string());
@@ -2066,12 +2341,12 @@ fn payroll_return_schedule_label(schedule: &PayrollSchedule) -> String {
         "{} · Week {} · {} · Pay {}",
         schedule.payroll_year,
         paye_week,
-        payroll_return_schedule_period(schedule),
+        payroll_schedule_period(schedule),
         schedule.pay_date
     )
 }
 
-fn payroll_return_schedule_period(schedule: &PayrollSchedule) -> String {
+fn payroll_schedule_period(schedule: &PayrollSchedule) -> String {
     parse_date_checked(&schedule.first_week_commencing)
         .map(|start| {
             format!(
@@ -2083,7 +2358,7 @@ fn payroll_return_schedule_period(schedule: &PayrollSchedule) -> String {
         .unwrap_or_else(|| format!("from {}", schedule.first_week_commencing))
 }
 
-fn payroll_return_schedule_details(
+fn payroll_schedule_details(
     schedule: &PayrollSchedule,
 ) -> Result<[String; 4], Box<dyn std::error::Error>> {
     Ok([
@@ -2092,10 +2367,7 @@ fn payroll_return_schedule_details(
             "Payroll week: {}",
             crate::payroll_file_naming::paye_week(schedule)?
         ),
-        format!(
-            "Timesheet period: {}",
-            payroll_return_schedule_period(schedule)
-        ),
+        format!("Timesheet period: {}", payroll_schedule_period(schedule)),
         format!("Scheduled pay date: {}", schedule.pay_date),
     ])
 }
@@ -2166,7 +2438,7 @@ fn format_worked_time(minutes: i64) -> String {
 }
 
 fn payroll_schedule_years_newest_first(schedules: &[PayrollSchedule]) -> Vec<String> {
-    let ordered = ordered_payroll_return_schedules(schedules.to_vec(), None);
+    let ordered = ordered_payroll_schedules(schedules.to_vec(), None);
     let mut seen = HashSet::new();
     ordered
         .into_iter()
@@ -2273,7 +2545,7 @@ mod payroll_return_schedule_selection_tests {
 
     #[test]
     fn current_schedule_is_promoted_and_selected_by_default() {
-        let schedules = ordered_payroll_return_schedules(
+        let schedules = ordered_payroll_schedules(
             vec![
                 schedule(1, "2026/27", 13, "22/02/2027", "19/03/2027"),
                 schedule(2, "2027/28", 1, "22/03/2027", "16/04/2027"),
@@ -2290,7 +2562,7 @@ mod payroll_return_schedule_selection_tests {
 
     #[test]
     fn schedules_are_newest_first_across_payroll_years_without_a_current_cycle() {
-        let schedules = ordered_payroll_return_schedules(
+        let schedules = ordered_payroll_schedules(
             vec![
                 schedule(1, "2026/27", 13, "22/02/2027", "19/03/2027"),
                 schedule(3, "2027/28", 2, "19/04/2027", "14/05/2027"),
@@ -2348,7 +2620,7 @@ mod payroll_return_schedule_selection_tests {
     fn schedule_label_contains_all_disambiguating_period_information() {
         let item = schedule(6, "2026/27", 6, "10/08/2026", "04/09/2026");
 
-        let label = payroll_return_schedule_label(&item);
+        let label = payroll_schedule_label(&item);
 
         assert!(label.contains("2026/27"));
         assert!(label.contains("Week 22"));
@@ -2363,7 +2635,7 @@ mod payroll_return_schedule_selection_tests {
     fn schedule_details_use_payroll_user_terminology_only() {
         let item = schedule(6, "2026/27", 6, "10/08/2026", "04/09/2026");
 
-        let details = payroll_return_schedule_details(&item).unwrap();
+        let details = payroll_schedule_details(&item).unwrap();
 
         assert_eq!(
             details,
@@ -2472,5 +2744,177 @@ mod payroll_return_schedule_selection_tests {
 
         assert_eq!(selected, Some("2027/28".to_string()));
         assert_eq!(directory.path().read_dir().unwrap().count(), 0);
+    }
+
+    #[test]
+    fn operational_period_defaults_to_current_schedule_not_newest_future_schedule() {
+        let current = schedule(1, "2026/27", 13, "22/02/2027", "19/03/2027");
+        let future = schedule(2, "2027/28", 1, "22/03/2027", "16/04/2027");
+        let schedules = ordered_payroll_schedules(vec![current.clone(), future], None);
+
+        let state = default_operational_payroll_period(&schedules, Some(&current));
+
+        assert_eq!(state.selected, Some(operational_period_key(&current)));
+        assert!(!state.explicitly_selected);
+    }
+
+    #[test]
+    fn operational_period_defaults_to_newest_schedule_when_none_is_current() {
+        let older = schedule(1, "2026/27", 13, "22/02/2027", "19/03/2027");
+        let newer = schedule(2, "2027/28", 1, "22/03/2027", "16/04/2027");
+        let schedules = ordered_payroll_schedules(vec![older, newer.clone()], None);
+
+        let state = default_operational_payroll_period(&schedules, None);
+
+        assert_eq!(state.selected, Some(operational_period_key(&newer)));
+        assert!(!state.explicitly_selected);
+    }
+
+    #[test]
+    fn historical_and_future_operational_selections_are_explicit_and_can_reset_to_current() {
+        let historical = schedule(1, "2026/27", 12, "25/01/2027", "19/02/2027");
+        let current = schedule(2, "2026/27", 13, "22/02/2027", "19/03/2027");
+        let future = schedule(3, "2027/28", 1, "22/03/2027", "16/04/2027");
+        let mut state = default_operational_payroll_period(&[current.clone()], Some(&current));
+
+        state.select(&historical, Some(&current));
+        assert_eq!(state.selected, Some(operational_period_key(&historical)));
+        assert!(state.explicitly_selected);
+        assert_eq!(
+            operational_period_timing(
+                &historical,
+                chrono::NaiveDate::from_ymd_opt(2027, 3, 1).unwrap()
+            ),
+            Some(OperationalPeriodTiming::Historical)
+        );
+
+        state.select(&future, Some(&current));
+        assert_eq!(state.selected, Some(operational_period_key(&future)));
+        assert!(state.explicitly_selected);
+        assert_eq!(
+            operational_period_timing(
+                &future,
+                chrono::NaiveDate::from_ymd_opt(2027, 3, 1).unwrap()
+            ),
+            Some(OperationalPeriodTiming::Future)
+        );
+
+        state.use_current(&current);
+        assert_eq!(state.selected, Some(operational_period_key(&current)));
+        assert!(!state.explicitly_selected);
+    }
+
+    #[test]
+    fn operational_selection_is_independent_of_return_and_schedule_view_selections() {
+        let current = schedule(1, "2026/27", 13, "22/02/2027", "19/03/2027");
+        let future = schedule(2, "2027/28", 1, "22/03/2027", "16/04/2027");
+        let state = default_operational_payroll_period(&[current.clone()], Some(&current));
+        let return_schedules = [current.clone(), future.clone()];
+
+        let return_selection =
+            selected_payroll_return_schedule(&return_schedules, future.id).unwrap();
+        let viewed_year = default_payroll_schedule_year(
+            &["2027/28".to_string(), "2026/27".to_string()],
+            Some("2027/28"),
+        );
+
+        assert_eq!(return_selection.payroll_year, "2027/28");
+        assert_eq!(viewed_year.as_deref(), Some("2027/28"));
+        assert_eq!(state.selected, Some(operational_period_key(&current)));
+    }
+
+    #[test]
+    fn historical_operational_selection_survives_actions_and_drives_paths_and_dates() {
+        let current = schedule(2, "2027/28", 6, "09/08/2027", "03/09/2027");
+        let selected = schedule(1, "2026/27", 6, "10/08/2026", "04/09/2026");
+        let mut state = default_operational_payroll_period(&[current.clone()], Some(&current));
+        state.select(&selected, Some(&current));
+        let selected_key = state.selected.clone();
+
+        let timesheet = crate::payroll_file_naming::timesheet_path(
+            std::path::Path::new("/timesheets/2027 to 2028"),
+            "Alex Smith",
+            &selected,
+        )
+        .unwrap();
+        let payslip = crate::payroll_file_naming::payslip_path(
+            std::path::Path::new("/payslips/2027 to 2028"),
+            "Alex Smith",
+            &selected,
+        )
+        .unwrap();
+        let first_week = parse_date_checked(&selected.first_week_commencing).unwrap();
+        let week_dates = (0..4)
+            .map(|week| first_week + chrono::Duration::days(week * 7))
+            .collect::<Vec<_>>();
+
+        assert_eq!(state.selected, selected_key);
+        assert!(state.explicitly_selected);
+        assert_eq!(selected.payroll_year, "2026/27");
+        assert_eq!(week_dates[0].format("%d/%m/%Y").to_string(), "10/08/2026");
+        assert_eq!(week_dates[3].format("%d/%m/%Y").to_string(), "31/08/2026");
+        assert_eq!(
+            timesheet,
+            std::path::Path::new("/timesheets/2026 to 2027/Timesheet - Alex Smith - 202608w22.pdf")
+        );
+        assert_eq!(
+            payslip,
+            std::path::Path::new("/payslips/2026 to 2027/Payslip for Week 22 for Alex Smith.pdf")
+        );
+    }
+
+    #[test]
+    fn timesheet_status_lookup_uses_the_selected_year_and_cycle() {
+        let connection = rusqlite::Connection::open_in_memory().unwrap();
+        crate::database::create_schema(&connection).unwrap();
+        let repository =
+            crate::payroll_timesheet_email_repository::PayrollTimesheetEmailRepository::new(
+                connection,
+            );
+        let current = schedule(2, "2027/28", 6, "09/08/2027", "03/09/2027");
+        let selected = schedule(1, "2026/27", 6, "10/08/2026", "04/09/2026");
+        let mut state = default_operational_payroll_period(&[current.clone()], Some(&current));
+        state.select(&selected, Some(&current));
+
+        repository
+            .mark_sent(42, "2026/27", 6, "timesheet", "2026-09-01T10:00:00Z")
+            .unwrap();
+        let key = state.selected.unwrap();
+
+        assert!(repository
+            .get_for_pa_and_cycle(42, &key.payroll_year, key.cycle_number, "timesheet")
+            .unwrap()
+            .unwrap()
+            .sent_at
+            .is_some());
+        assert!(repository
+            .get_for_pa_and_cycle(42, "2027/28", 6, "timesheet")
+            .unwrap()
+            .is_none());
+    }
+
+    #[test]
+    fn selecting_an_operational_period_has_no_filesystem_or_database_side_effect() {
+        let directory = tempfile::TempDir::new().unwrap();
+        let connection = rusqlite::Connection::open_in_memory().unwrap();
+        crate::database::create_schema(&connection).unwrap();
+        let count_before: i64 = connection
+            .query_row("SELECT COUNT(*) FROM payroll_schedules", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        let current = schedule(1, "2026/27", 13, "22/02/2027", "19/03/2027");
+        let historical = schedule(2, "2026/27", 12, "25/01/2027", "19/02/2027");
+        let mut state = default_operational_payroll_period(&[current.clone()], Some(&current));
+
+        state.select(&historical, Some(&current));
+
+        let count_after: i64 = connection
+            .query_row("SELECT COUNT(*) FROM payroll_schedules", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(directory.path().read_dir().unwrap().count(), 0);
+        assert_eq!(count_after, count_before);
     }
 }

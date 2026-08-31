@@ -159,6 +159,36 @@ impl PayrollScheduleRepository {
         entries.collect()
     }
 
+    pub fn get_for_year_and_cycle(
+        &self,
+        payroll_year: &str,
+        cycle_number: i64,
+    ) -> Result<Option<PayrollSchedule>> {
+        use rusqlite::OptionalExtension;
+
+        self.connection
+            .query_row(
+                "SELECT id, payroll_year, cycle_number, first_week_commencing,
+                        latest_posting_date, pay_date, created_at, payslips_sent
+                 FROM payroll_schedules
+                 WHERE payroll_year = ?1 AND cycle_number = ?2",
+                params![payroll_year, cycle_number],
+                |row| {
+                    Ok(PayrollSchedule {
+                        id: row.get(0)?,
+                        payroll_year: row.get(1)?,
+                        cycle_number: row.get(2)?,
+                        first_week_commencing: row.get(3)?,
+                        latest_posting_date: row.get(4)?,
+                        pay_date: row.get(5)?,
+                        created_at: row.get(6)?,
+                        payslips_sent: row.get::<_, i64>(7)? != 0,
+                    })
+                },
+            )
+            .optional()
+    }
+
     pub fn resolve_for_date(
         &self,
         date: NaiveDate,
@@ -431,6 +461,29 @@ mod tests {
         );
         assert_eq!(new.latest_posting_date, "09/04/2027");
         assert_eq!(new.pay_date, "16/04/2027");
+    }
+
+    #[test]
+    fn gets_complete_schedule_by_stable_year_and_cycle_identity() {
+        let repository = repository_with_schedules(&[
+            ("2026/27", 6, "10/08/2026"),
+            ("2027/28", 6, "09/08/2027"),
+        ]);
+
+        let selected = repository
+            .get_for_year_and_cycle("2026/27", 6)
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(selected.payroll_year, "2026/27");
+        assert_eq!(selected.cycle_number, 6);
+        assert_eq!(selected.first_week_commencing, "10/08/2026");
+        assert_eq!(selected.latest_posting_date, "28/08/2026");
+        assert_eq!(selected.pay_date, "04/09/2026");
+        assert!(repository
+            .get_for_year_and_cycle("2025/26", 6)
+            .unwrap()
+            .is_none());
     }
 
     #[test]
