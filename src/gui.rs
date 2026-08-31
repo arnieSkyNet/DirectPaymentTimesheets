@@ -1782,14 +1782,24 @@ impl DirectPaymentApp {
                 format!("Cannot generate payroll timesheet for {personal_assistant_name}: {error}")
             })?;
 
-            let contracted_hours = self
-                .application
-                .contracted_hours_repository
-                .get_current_for_personal_assistant(assistant.id)?;
-
-            let contracted_weekly_hours = contracted_hours
-                .map(|hours| hours.contracted_hours)
-                .unwrap_or_else(|| "0".to_string());
+            let contracted_for_week = |week_date| -> rusqlite::Result<String> {
+                Ok(self
+                    .application
+                    .contracted_hours_repository
+                    .get_for_personal_assistant_as_of(assistant.id, week_date)?
+                    .map(|hours| hours.contracted_hours)
+                    .unwrap_or_else(|| "Unavailable".to_string()))
+            };
+            let contracted_hours_by_week = [
+                contracted_for_week(week_dates[0])?,
+                contracted_for_week(week_dates[1])?,
+                contracted_for_week(week_dates[2])?,
+                contracted_for_week(week_dates[3])?,
+            ];
+            let contracted_weekly_hours = crate::pdf_generator::contracted_hours_summary(
+                &contracted_hours_by_week,
+                &week_date_strings,
+            );
 
             let hours_worked: [String; 4] = std::array::from_fn(|index| {
                 crate::pay_rate_allocation::format_total_minutes(
