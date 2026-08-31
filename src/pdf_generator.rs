@@ -68,7 +68,12 @@ impl PdfGenerator {
         pdf_config: &crate::config::PdfConfig,
     ) -> Result<(), Box<dyn std::error::Error>> {
         if let Some(parent) = output_path.parent() {
-            fs::create_dir_all(parent)?;
+            fs::create_dir_all(parent).map_err(|error| {
+                format!(
+                    "Could not create payroll PDF output directory {}: {error}",
+                    parent.display()
+                )
+            })?;
         }
 
         let mut document = PdfDocument::new("Direct Payment Timesheet");

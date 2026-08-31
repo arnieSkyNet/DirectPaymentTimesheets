@@ -69,6 +69,19 @@ where
         }
     }
 
+    if let Some(parent) = publication
+        .final_pdf_path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+    {
+        fs::create_dir_all(parent).map_err(|error| {
+            SnapshotSafetyError::Operation(format!(
+                "Could not create payroll PDF output directory {}: {error}",
+                parent.display()
+            ))
+        })?;
+    }
+
     let temporary_path = temporary_pdf_path(publication.final_pdf_path);
     if let Err(error) = write_pdf(&temporary_path) {
         let _ = fs::remove_file(&temporary_path);
@@ -267,6 +280,23 @@ mod tests {
         }
     }
 
+    fn schedule(
+        payroll_year: &str,
+        first_week_commencing: &str,
+        pay_date: &str,
+    ) -> crate::payroll_schedule_repository::PayrollSchedule {
+        crate::payroll_schedule_repository::PayrollSchedule {
+            id: 1,
+            payroll_year: payroll_year.to_string(),
+            cycle_number: 1,
+            first_week_commencing: first_week_commencing.to_string(),
+            latest_posting_date: String::new(),
+            pay_date: pay_date.to_string(),
+            created_at: String::new(),
+            payslips_sent: false,
+        }
+    }
+
     fn publish(
         repository: &PayrollWorkedItemRepository,
         path: &Path,
@@ -320,6 +350,76 @@ mod tests {
             repository.get_snapshot(10).unwrap()[0].timesheet_id,
             Some(2)
         );
+    }
+
+    #[test]
+    fn year_suffixed_root_creates_future_year_sibling_only_when_publishing() {
+        let (directory, repository) = repository();
+        let configured_root = directory.path().join("Timesheets/2026 to 2027");
+        fs::create_dir_all(&configured_root).unwrap();
+        let future_schedule = schedule("2027/28", "22/03/2027", "16/04/2027");
+        let path = crate::payroll_file_naming::timesheet_path(
+            &configured_root,
+            "Alex Smith",
+            &future_schedule,
+        )
+        .unwrap();
+        let future_year_directory = directory.path().join("Timesheets/2027 to 2028");
+
+        assert_eq!(path.parent(), Some(future_year_directory.as_path()));
+        assert!(!future_year_directory.exists());
+
+        publish(&repository, &path, 1).unwrap();
+
+        assert!(future_year_directory.is_dir());
+        assert!(path.is_file());
+        assert!(configured_root.is_dir());
+    }
+
+    #[test]
+    fn generic_root_remains_flat_when_publishing() {
+        let (directory, repository) = repository();
+        let configured_root = directory.path().join("Timesheets");
+        let future_schedule = schedule("2027/28", "22/03/2027", "16/04/2027");
+        let path = crate::payroll_file_naming::timesheet_path(
+            &configured_root,
+            "Alex Smith",
+            &future_schedule,
+        )
+        .unwrap();
+
+        publish(&repository, &path, 1).unwrap();
+
+        assert_eq!(path.parent(), Some(configured_root.as_path()));
+        assert!(path.is_file());
+        assert!(!configured_root.join("2027 to 2028").exists());
+    }
+
+    #[test]
+    fn publishing_into_an_existing_destination_directory_still_works() {
+        let (directory, repository) = repository();
+        let destination = directory.path().join("existing");
+        fs::create_dir_all(&destination).unwrap();
+        let path = destination.join("timesheet.pdf");
+
+        publish(&repository, &path, 1).unwrap();
+
+        assert_eq!(fs::read_to_string(path).unwrap(), "PDF 1");
+    }
+
+    #[test]
+    fn directory_creation_failure_does_not_create_candidate_state() {
+        let (directory, repository) = repository();
+        let blocked_parent = directory.path().join("not-a-directory");
+        fs::write(&blocked_parent, "file").unwrap();
+        let path = blocked_parent.join("timesheet.pdf");
+
+        let error = publish(&repository, &path, 1).unwrap_err();
+
+        assert!(error
+            .to_string()
+            .contains("Could not create payroll PDF output directory"));
+        assert!(repository.snapshot_metadata(10).unwrap().is_none());
     }
 
     #[test]
