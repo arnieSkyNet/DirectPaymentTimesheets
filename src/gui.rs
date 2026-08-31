@@ -1961,6 +1961,14 @@ impl DirectPaymentApp {
         ];
 
         let assistants = self.application.personal_assistant_repository.get_all()?;
+        let existing_payroll_timesheets = self
+            .application
+            .payroll_timesheet_repository
+            .get_all_for_cycle(&payroll_year, current_schedule.cycle_number)?;
+        let existing_personal_assistant_ids = existing_payroll_timesheets
+            .iter()
+            .map(|record| record.personal_assistant_id)
+            .collect::<HashSet<_>>();
         let all_timesheets = self.application.get_timesheets()?;
 
         let output_dir =
@@ -1969,12 +1977,10 @@ impl DirectPaymentApp {
         let mut generated = 0usize;
 
         for assistant in &assistants {
-            let is_active = match &assistant.employment_status {
-                Some(status) => status.trim().eq_ignore_ascii_case("active"),
-                None => true,
-            };
-
-            if !is_active {
+            if !personal_assistant_is_eligible_for_generation(
+                assistant.employment_status.as_deref(),
+                existing_personal_assistant_ids.contains(&assistant.id),
+            ) {
                 continue;
             }
 
@@ -2290,6 +2296,16 @@ fn operational_period_key(schedule: &PayrollSchedule) -> OperationalPayrollPerio
         payroll_year: schedule.payroll_year.clone(),
         cycle_number: schedule.cycle_number,
     }
+}
+
+fn personal_assistant_is_eligible_for_generation(
+    employment_status: Option<&str>,
+    has_selected_period_record: bool,
+) -> bool {
+    employment_status
+        .map(|status| status.trim().eq_ignore_ascii_case("active"))
+        .unwrap_or(true)
+        || has_selected_period_record
 }
 
 fn capture_operational_payroll_period(
@@ -3201,5 +3217,75 @@ mod payroll_return_schedule_selection_tests {
             .get_for_pa_and_cycle(42, "2027/28", 6, "timesheet")
             .unwrap()
             .is_none());
+    }
+
+    #[test]
+    fn generation_eligibility_includes_active_and_none_status_personal_assistants() {
+        assert!(personal_assistant_is_eligible_for_generation(
+            Some("Active"),
+            false
+        ));
+        assert!(personal_assistant_is_eligible_for_generation(None, false));
+    }
+
+    #[test]
+    fn generation_eligibility_includes_inactive_only_with_selected_period_record() {
+        assert!(personal_assistant_is_eligible_for_generation(
+            Some("Inactive"),
+            true
+        ));
+        assert!(!personal_assistant_is_eligible_for_generation(
+            Some("Inactive"),
+            false
+        ));
+    }
+
+    #[test]
+    fn inactive_historical_generation_uses_selected_schedule_without_creating_unrelated_records() {
+        let directory = tempfile::TempDir::new().unwrap();
+        let database = directory.path().join("test.sqlite");
+        let connection = rusqlite::Connection::open(&database).unwrap();
+        crate::database::create_schema(&connection).unwrap();
+        connection
+            .execute(
+                "INSERT INTO payroll_timesheets (
+                personal_assistant_id, payroll_year, cycle_number,
+                previous_cycle_hours, created_at, updated_at
+             ) VALUES (1, '2026/27', 6, NULL, 'created', 'created')",
+                [],
+            )
+            .unwrap();
+        drop(connection);
+        let repository = crate::payroll_timesheet_repository::PayrollTimesheetRepository::new(
+            rusqlite::Connection::open(&database).unwrap(),
+        );
+        let records = repository.get_all_for_cycle("2026/27", 6).unwrap();
+        let ids = records
+            .iter()
+            .map(|record| record.personal_assistant_id)
+            .collect::<std::collections::HashSet<_>>();
+        let historical = schedule(6, "2026/27", 6, "10/08/2026", "04/09/2026");
+
+        assert!(personal_assistant_is_eligible_for_generation(
+            Some("Inactive"),
+            ids.contains(&1)
+        ));
+        assert!(!personal_assistant_is_eligible_for_generation(
+            Some("Inactive"),
+            ids.contains(&2)
+        ));
+        let path = crate::payroll_file_naming::timesheet_path(
+            std::path::Path::new("/timesheets/2027 to 2028"),
+            "Historical PA",
+            &historical,
+        )
+        .unwrap();
+        assert_eq!(
+            path,
+            std::path::Path::new(
+                "/timesheets/2026 to 2027/Timesheet - Historical PA - 202608w22.pdf"
+            )
+        );
+        assert_eq!(repository.get_all_for_cycle("2026/27", 6).unwrap().len(), 1);
     }
 }
