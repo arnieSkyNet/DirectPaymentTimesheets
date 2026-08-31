@@ -202,6 +202,9 @@ impl PayrollTimesheetScreen {
 
         self.cycle_number = schedule.cycle_number;
         self.schedule = Some(schedule.clone());
+        let previous_schedule = application
+            .payroll_schedule_repository
+            .resolve_previous(&schedule)?;
 
         let assistants = application.personal_assistant_repository.get_all()?;
 
@@ -276,13 +279,10 @@ impl PayrollTimesheetScreen {
                     let actual_hours =
                         calculate_actual_hours(&all_timesheets, assistant.id, &week_dates);
 
-                    let previous_cycle_number = schedule.cycle_number - 1;
-
-                    let previous_cycle_hours = if previous_cycle_number > 0 {
+                    let previous_cycle_hours = if let Some(previous_schedule) = &previous_schedule {
                         calculate_previous_cycle_adjustment(
                             application,
-                            &payroll_year,
-                            previous_cycle_number,
+                            previous_schedule,
                             assistant.id,
                             &all_timesheets,
                             first_week,
@@ -329,11 +329,14 @@ impl PayrollTimesheetScreen {
             // public holidays and mileage are left untouched.
             // --------------------------------------------------------
 
-            let previous_cycle_number = schedule.cycle_number - 1;
-            let previous_record = if previous_cycle_number > 0 {
+            let previous_record = if let Some(previous_schedule) = &previous_schedule {
                 application
                     .payroll_timesheet_repository
-                    .get_for_cycle_and_pa(&payroll_year, previous_cycle_number, assistant.id)?
+                    .get_for_cycle_and_pa(
+                        &previous_schedule.payroll_year,
+                        previous_schedule.cycle_number,
+                        assistant.id,
+                    )?
             } else {
                 None
             };
@@ -519,15 +522,18 @@ fn calculate_actual_hours(
 
 fn calculate_previous_cycle_adjustment(
     application: &Application,
-    payroll_year: &str,
-    previous_cycle_number: i64,
+    previous_schedule: &PayrollSchedule,
     personal_assistant_id: i64,
     timesheets: &[crate::models::TimesheetEntry],
     current_cycle_first_week: chrono::NaiveDate,
 ) -> Result<Option<f64>, Box<dyn std::error::Error>> {
     let previous_record = application
         .payroll_timesheet_repository
-        .get_for_cycle_and_pa(payroll_year, previous_cycle_number, personal_assistant_id)?;
+        .get_for_cycle_and_pa(
+            &previous_schedule.payroll_year,
+            previous_schedule.cycle_number,
+            personal_assistant_id,
+        )?;
 
     let previous_record = match previous_record {
         Some(record) => record,

@@ -22,9 +22,17 @@ pub struct PayrollScheduleRepository {
 #[derive(Debug)]
 pub enum PayrollScheduleResolutionError {
     Database(rusqlite::Error),
-    InvalidStoredDate { schedule_id: i64, value: String },
+    InvalidStoredDate {
+        schedule_id: i64,
+        value: String,
+    },
     NoCurrentCycle(NaiveDate),
     AmbiguousCurrentCycle(NaiveDate, Vec<(String, i64)>),
+    AmbiguousPreviousCycle {
+        payroll_year: String,
+        cycle_number: i64,
+        matches: Vec<(String, i64)>,
+    },
 }
 
 impl fmt::Display for PayrollScheduleResolutionError {
@@ -50,6 +58,21 @@ impl fmt::Display for PayrollScheduleResolutionError {
                     formatter,
                     "More than one imported payroll cycle contains {}: {descriptions}.",
                     date.format("%d/%m/%Y")
+                )
+            }
+            Self::AmbiguousPreviousCycle {
+                payroll_year,
+                cycle_number,
+                matches,
+            } => {
+                let descriptions = matches
+                    .iter()
+                    .map(|(year, cycle)| format!("{year} cycle {cycle}"))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                write!(
+                    formatter,
+                    "More than one imported payroll cycle immediately precedes {payroll_year} cycle {cycle_number}: {descriptions}."
                 )
             }
         }
@@ -149,6 +172,64 @@ impl PayrollScheduleRepository {
                     .map(|schedule| (schedule.payroll_year.clone(), schedule.cycle_number))
                     .collect(),
             )),
+        }
+    }
+
+    pub fn resolve_previous(
+        &self,
+        current: &PayrollSchedule,
+    ) -> std::result::Result<Option<PayrollSchedule>, PayrollScheduleResolutionError> {
+        let current_first_week =
+            NaiveDate::parse_from_str(&current.first_week_commencing, "%d/%m/%Y").map_err(
+                |_| PayrollScheduleResolutionError::InvalidStoredDate {
+                    schedule_id: current.id,
+                    value: current.first_week_commencing.clone(),
+                },
+            )?;
+
+        let mut statement = self.connection.prepare(
+            "SELECT id, payroll_year, cycle_number, first_week_commencing,
+                    latest_posting_date, pay_date, created_at, payslips_sent
+             FROM payroll_schedules
+             ORDER BY payroll_year, cycle_number",
+        )?;
+        let rows = statement.query_map([], |row| {
+            Ok(PayrollSchedule {
+                id: row.get(0)?,
+                payroll_year: row.get(1)?,
+                cycle_number: row.get(2)?,
+                first_week_commencing: row.get(3)?,
+                latest_posting_date: row.get(4)?,
+                pay_date: row.get(5)?,
+                created_at: row.get(6)?,
+                payslips_sent: row.get::<_, i64>(7)? != 0,
+            })
+        })?;
+
+        let mut matches = Vec::new();
+        for row in rows {
+            let schedule = row?;
+            let first_week = NaiveDate::parse_from_str(&schedule.first_week_commencing, "%d/%m/%Y")
+                .map_err(|_| PayrollScheduleResolutionError::InvalidStoredDate {
+                    schedule_id: schedule.id,
+                    value: schedule.first_week_commencing.clone(),
+                })?;
+            if first_week + chrono::Duration::days(28) == current_first_week {
+                matches.push(schedule);
+            }
+        }
+
+        match matches.len() {
+            0 => Ok(None),
+            1 => Ok(matches.pop()),
+            _ => Err(PayrollScheduleResolutionError::AmbiguousPreviousCycle {
+                payroll_year: current.payroll_year.clone(),
+                cycle_number: current.cycle_number,
+                matches: matches
+                    .iter()
+                    .map(|schedule| (schedule.payroll_year.clone(), schedule.cycle_number))
+                    .collect(),
+            }),
         }
     }
 
@@ -388,6 +469,128 @@ mod tests {
             repository.resolve_for_date(date("25/03/2027")),
             Err(PayrollScheduleResolutionError::AmbiguousCurrentCycle(_, matches))
                 if matches == vec![("2026/27".to_string(), 13), ("2027/28".to_string(), 1)]
+        ));
+    }
+
+    #[test]
+    fn resolves_same_year_predecessor_by_first_week_chronology() {
+        let repository = repository_with_schedules(&[
+            ("2026/27", 5, "13/07/2026"),
+            ("2026/27", 6, "10/08/2026"),
+        ]);
+        let current = repository.get_all_for_year("2026/27").unwrap().remove(1);
+
+        let previous = repository.resolve_previous(&current).unwrap().unwrap();
+
+        assert_eq!(
+            (previous.payroll_year.as_str(), previous.cycle_number),
+            ("2026/27", 5)
+        );
+    }
+
+    #[test]
+    fn resolves_cycle_thirteen_across_payroll_year_boundary() {
+        let repository = repository_with_schedules(&[
+            ("2026/27", 13, "22/02/2027"),
+            ("2027/28", 1, "22/03/2027"),
+        ]);
+        let current = repository.get_all_for_year("2027/28").unwrap().remove(0);
+
+        let previous = repository.resolve_previous(&current).unwrap().unwrap();
+
+        assert_eq!(
+            (previous.payroll_year.as_str(), previous.cycle_number),
+            ("2026/27", 13)
+        );
+    }
+
+    #[test]
+    fn first_known_schedule_has_no_predecessor() {
+        let repository = repository_with_schedules(&[("2027/28", 1, "22/03/2027")]);
+        let current = repository.get_all_for_year("2027/28").unwrap().remove(0);
+
+        assert!(repository.resolve_previous(&current).unwrap().is_none());
+    }
+
+    #[test]
+    fn gap_does_not_falsely_resolve_a_predecessor() {
+        let repository = repository_with_schedules(&[
+            ("2026/27", 13, "15/02/2027"),
+            ("2027/28", 1, "22/03/2027"),
+        ]);
+        let current = repository.get_all_for_year("2027/28").unwrap().remove(0);
+
+        assert!(repository.resolve_previous(&current).unwrap().is_none());
+    }
+
+    #[test]
+    fn ambiguous_predecessors_are_rejected() {
+        let repository = repository_with_schedules(&[
+            ("2026/27", 13, "22/02/2027"),
+            ("legacy", 99, "22/02/2027"),
+            ("2027/28", 1, "22/03/2027"),
+        ]);
+        let current = repository.get_all_for_year("2027/28").unwrap().remove(0);
+
+        assert!(matches!(
+            repository.resolve_previous(&current),
+            Err(PayrollScheduleResolutionError::AmbiguousPreviousCycle { matches, .. })
+                if matches == vec![("2026/27".to_string(), 13), ("legacy".to_string(), 99)]
+        ));
+    }
+
+    #[test]
+    fn cross_year_predecessor_identity_finds_existing_payroll_record_not_cycle_zero() {
+        let repository = repository_with_schedules(&[
+            ("2026/27", 13, "22/02/2027"),
+            ("2027/28", 1, "22/03/2027"),
+        ]);
+        repository
+            .connection
+            .execute(
+                "INSERT INTO payroll_timesheets (
+                    personal_assistant_id, payroll_year, cycle_number,
+                    previous_cycle_hours, created_at, updated_at
+                 ) VALUES (1, '2026/27', 13, NULL, 'created', 'updated')",
+                [],
+            )
+            .unwrap();
+        let current = repository.get_all_for_year("2027/28").unwrap().remove(0);
+        let previous = repository.resolve_previous(&current).unwrap().unwrap();
+
+        let stored_identity: (String, i64) = repository
+            .connection
+            .query_row(
+                "SELECT payroll_year, cycle_number
+                 FROM payroll_timesheets
+                 WHERE payroll_year = ?1 AND cycle_number = ?2",
+                params![previous.payroll_year, previous.cycle_number],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+
+        assert_eq!(stored_identity, ("2026/27".to_string(), 13));
+    }
+
+    #[test]
+    fn invalid_stored_predecessor_date_is_rejected() {
+        let repository = repository_with_schedules(&[("2027/28", 1, "22/03/2027")]);
+        repository
+            .connection
+            .execute(
+                "INSERT INTO payroll_schedules (
+                    payroll_year, cycle_number, first_week_commencing,
+                    latest_posting_date, pay_date, created_at, payslips_sent
+                 ) VALUES ('broken', 1, 'not-a-date', '', '', 'created', 0)",
+                [],
+            )
+            .unwrap();
+        let current = repository.get_all_for_year("2027/28").unwrap().remove(0);
+
+        assert!(matches!(
+            repository.resolve_previous(&current),
+            Err(PayrollScheduleResolutionError::InvalidStoredDate { value, .. })
+                if value == "not-a-date"
         ));
     }
 }
