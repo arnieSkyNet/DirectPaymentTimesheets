@@ -53,6 +53,8 @@ pub struct DirectPaymentApp {
     last_import: Option<ImportSummary>,
     timesheets: Vec<TimesheetEntry>,
     payroll_schedules: Vec<PayrollSchedule>,
+    payroll_schedule_years: Vec<String>,
+    selected_payroll_schedule_year: Option<String>,
     preview_personal_assistant_id: Option<i64>,
     email_preview: Option<PayrollEmailPreview>,
     additional_notes_by_personal_assistant: HashMap<i64, String>,
@@ -79,6 +81,8 @@ impl DirectPaymentApp {
             last_import: None,
             timesheets: Vec::new(),
             payroll_schedules: Vec::new(),
+            payroll_schedule_years: Vec::new(),
+            selected_payroll_schedule_year: None,
             preview_personal_assistant_id: None,
             email_preview: None,
             additional_notes_by_personal_assistant: HashMap::new(),
@@ -926,6 +930,72 @@ impl DirectPaymentApp {
         }
     }
 
+    fn begin_view_payroll_schedule(&mut self) {
+        let result = (|| -> Result<(Vec<String>, String), Box<dyn std::error::Error>> {
+            let schedules = self.application.payroll_schedule_repository.get_all()?;
+            let years = payroll_schedule_years_newest_first(&schedules);
+            if years.is_empty() {
+                return Err("No imported payroll schedules are available.".into());
+            }
+
+            let today = chrono::Local::now().date_naive();
+            let current_year = match self
+                .application
+                .payroll_schedule_repository
+                .resolve_for_date(today)
+            {
+                Ok(schedule) => Some(schedule.payroll_year),
+                Err(
+                    crate::payroll_schedule_repository::PayrollScheduleResolutionError::NoCurrentCycle(
+                        _,
+                    ),
+                ) => None,
+                Err(error) => {
+                    return Err(format!(
+                        "Could not determine the current payroll year: {error}"
+                    )
+                    .into());
+                }
+            };
+            let selected_year = default_payroll_schedule_year(&years, current_year.as_deref())
+                .ok_or("No imported payroll schedules are available.")?;
+
+            Ok((years, selected_year))
+        })();
+
+        match result {
+            Ok((years, selected_year)) => {
+                self.payroll_schedule_years = years;
+                self.load_payroll_schedule_year(&selected_year);
+            }
+            Err(error) => {
+                self.payroll_schedule_years.clear();
+                self.selected_payroll_schedule_year = None;
+                self.payroll_schedules.clear();
+                self.status_message = format!("Failed loading payroll schedule: {error}");
+            }
+        }
+    }
+
+    fn load_payroll_schedule_year(&mut self, payroll_year: &str) {
+        match self.application.get_payroll_schedule(payroll_year) {
+            Ok(schedules) => {
+                self.payroll_schedules = schedules;
+                self.selected_payroll_schedule_year = Some(payroll_year.to_string());
+                self.status_message = format!(
+                    "Loaded {} payroll schedule entries for {}.",
+                    self.payroll_schedules.len(),
+                    payroll_year
+                );
+            }
+            Err(error) => {
+                self.payroll_schedules.clear();
+                self.status_message =
+                    format!("Failed loading payroll schedule for {payroll_year}: {error}");
+            }
+        }
+    }
+
     fn draw_dashboard(&mut self, ui: &mut egui::Ui) {
         egui::ScrollArea::vertical().show(ui, |ui| {
             ui.heading("Dashboard");
@@ -1007,28 +1077,7 @@ impl DirectPaymentApp {
             }
 
             if ui.button("View Payroll Schedule").clicked() {
-                let today = chrono::Local::now().date_naive();
-                match self.application.resolve_payroll_schedule(today) {
-                    Ok(current) => {
-                        match self.application.get_payroll_schedule(&current.payroll_year) {
-                            Ok(schedules) => {
-                                self.payroll_schedules = schedules;
-                                self.status_message = format!(
-                                    "Loaded {} payroll schedule entries for {}.",
-                                    self.payroll_schedules.len(),
-                                    current.payroll_year
-                                );
-                            }
-                            Err(error) => {
-                                self.status_message =
-                                    format!("Failed loading payroll schedule: {}", error);
-                            }
-                        }
-                    }
-                    Err(error) => {
-                        self.status_message = format!("Failed loading payroll schedule: {}", error);
-                    }
-                }
+                self.begin_view_payroll_schedule();
             }
 
             self.draw_additional_note_prompt(ui);
@@ -1054,6 +1103,13 @@ impl DirectPaymentApp {
 
             ui.label(format!("Status: {}", self.status_message));
 
+            if let Some(selected_year) = draw_payroll_schedule_year_selector(
+                ui,
+                &self.payroll_schedule_years,
+                self.selected_payroll_schedule_year.as_deref(),
+            ) {
+                self.load_payroll_schedule_year(&selected_year);
+            }
             draw_payroll_schedule(ui, &self.payroll_schedules);
             draw_timesheets(ui, &self.timesheets);
             self.draw_timesheet_email_status(ui);
@@ -2109,6 +2165,52 @@ fn format_worked_time(minutes: i64) -> String {
     format!("{}h {}m", hours, remaining_minutes)
 }
 
+fn payroll_schedule_years_newest_first(schedules: &[PayrollSchedule]) -> Vec<String> {
+    let ordered = ordered_payroll_return_schedules(schedules.to_vec(), None);
+    let mut seen = HashSet::new();
+    ordered
+        .into_iter()
+        .filter_map(|schedule| {
+            seen.insert(schedule.payroll_year.clone())
+                .then_some(schedule.payroll_year)
+        })
+        .collect()
+}
+
+fn default_payroll_schedule_year(
+    payroll_years: &[String],
+    current_payroll_year: Option<&str>,
+) -> Option<String> {
+    current_payroll_year
+        .filter(|current| payroll_years.iter().any(|year| year == current))
+        .map(str::to_string)
+        .or_else(|| payroll_years.first().cloned())
+}
+
+fn draw_payroll_schedule_year_selector(
+    ui: &mut egui::Ui,
+    payroll_years: &[String],
+    selected_payroll_year: Option<&str>,
+) -> Option<String> {
+    let mut selected = selected_payroll_year
+        .map(str::to_string)
+        .or_else(|| payroll_years.first().cloned())?;
+    let original = selected.clone();
+
+    ui.horizontal(|ui| {
+        ui.label("Payroll year:");
+        egui::ComboBox::from_id_salt("view_payroll_schedule_year")
+            .selected_text(&selected)
+            .show_ui(ui, |ui| {
+                for payroll_year in payroll_years {
+                    ui.selectable_value(&mut selected, payroll_year.clone(), payroll_year);
+                }
+            });
+    });
+
+    (selected != original).then_some(selected)
+}
+
 fn draw_payroll_schedule(ui: &mut egui::Ui, schedules: &[PayrollSchedule]) {
     ui.separator();
 
@@ -2274,5 +2376,101 @@ mod payroll_return_schedule_selection_tests {
         );
         assert!(!details.iter().any(|detail| detail.contains("cycle")));
         assert!(!details.iter().any(|detail| detail.contains("PAYE")));
+    }
+
+    #[test]
+    fn payroll_schedule_view_defaults_to_the_current_year() {
+        let years = vec!["2027/28".to_string(), "2026/27".to_string()];
+
+        assert_eq!(
+            default_payroll_schedule_year(&years, Some("2026/27")),
+            Some("2026/27".to_string())
+        );
+    }
+
+    #[test]
+    fn future_year_is_available_without_replacing_the_current_default() {
+        let schedules = vec![
+            schedule(1, "2026/27", 13, "22/02/2027", "19/03/2027"),
+            schedule(2, "2027/28", 1, "22/03/2027", "16/04/2027"),
+        ];
+
+        let years = payroll_schedule_years_newest_first(&schedules);
+
+        assert_eq!(years, vec!["2027/28", "2026/27"]);
+        assert_eq!(
+            default_payroll_schedule_year(&years, Some("2026/27")),
+            Some("2026/27".to_string())
+        );
+    }
+
+    #[test]
+    fn explicit_future_year_selection_identifies_only_its_schedule_rows() {
+        let schedules = vec![
+            schedule(1, "2026/27", 13, "22/02/2027", "19/03/2027"),
+            schedule(2, "2027/28", 1, "22/03/2027", "16/04/2027"),
+            schedule(3, "2027/28", 2, "19/04/2027", "14/05/2027"),
+        ];
+
+        let displayed = schedules
+            .iter()
+            .filter(|schedule| schedule.payroll_year == "2027/28")
+            .collect::<Vec<_>>();
+
+        assert_eq!(displayed.len(), 2);
+        assert!(displayed
+            .iter()
+            .all(|schedule| schedule.payroll_year == "2027/28"));
+        assert_eq!(
+            displayed
+                .iter()
+                .map(|schedule| schedule.cycle_number)
+                .collect::<Vec<_>>(),
+            vec![1, 2]
+        );
+    }
+
+    #[test]
+    fn payroll_schedule_view_falls_back_to_most_recent_imported_year() {
+        let schedules = vec![
+            schedule(1, "2026/27", 13, "22/02/2027", "19/03/2027"),
+            schedule(2, "2027/28", 1, "22/03/2027", "16/04/2027"),
+        ];
+        let years = payroll_schedule_years_newest_first(&schedules);
+
+        assert_eq!(
+            default_payroll_schedule_year(&years, None),
+            Some("2027/28".to_string())
+        );
+    }
+
+    #[test]
+    fn payroll_schedule_years_are_ordered_newest_first_and_deduplicated() {
+        let schedules = vec![
+            schedule(3, "2027/28", 2, "19/04/2027", "14/05/2027"),
+            schedule(1, "2026/27", 13, "22/02/2027", "19/03/2027"),
+            schedule(4, "2028/29", 1, "20/03/2028", "14/04/2028"),
+            schedule(2, "2027/28", 1, "22/03/2027", "16/04/2027"),
+        ];
+
+        assert_eq!(
+            payroll_schedule_years_newest_first(&schedules),
+            vec!["2028/29", "2027/28", "2026/27"]
+        );
+    }
+
+    #[test]
+    fn viewing_and_selecting_payroll_years_creates_no_directories() {
+        let directory = tempfile::TempDir::new().unwrap();
+        let schedules = vec![
+            schedule(1, "2026/27", 13, "22/02/2027", "19/03/2027"),
+            schedule(2, "2027/28", 1, "22/03/2027", "16/04/2027"),
+        ];
+
+        let years = payroll_schedule_years_newest_first(&schedules);
+        let selected = default_payroll_schedule_year(&years, Some("2027/28"));
+
+        assert_eq!(selected, Some("2027/28".to_string()));
+        assert_eq!(directory.path().read_dir().unwrap().count(), 0);
     }
 }
