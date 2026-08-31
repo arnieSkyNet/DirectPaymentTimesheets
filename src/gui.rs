@@ -62,6 +62,7 @@ pub struct DirectPaymentApp {
     payroll_timesheet_screen: PayrollTimesheetScreen,
     application_settings_screen: ApplicationSettingsScreen,
     active_screen: ActiveScreen,
+    restart_required_message: Option<String>,
 }
 
 impl DirectPaymentApp {
@@ -86,12 +87,25 @@ impl DirectPaymentApp {
             payroll_timesheet_screen: PayrollTimesheetScreen::new(),
             application_settings_screen: ApplicationSettingsScreen::new(),
             active_screen: ActiveScreen::Dashboard,
+            restart_required_message: None,
         }
     }
 }
 
 impl eframe::App for DirectPaymentApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        if let Some(message) = &self.restart_required_message {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                ui.heading("Restart Required");
+                ui.label(message);
+                ui.separator();
+                if ui.button("Close DirectPaymentTimesheets").clicked() {
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                }
+            });
+            return;
+        }
+
         egui::TopBottomPanel::top("header").show(ctx, |ui| {
             ui.horizontal(|ui| {
                 ui.heading("Direct Payments Timesheets");
@@ -168,6 +182,9 @@ impl eframe::App for DirectPaymentApp {
                     .show(ui, &mut self.application)
                 {
                     self.active_screen = ActiveScreen::EmailSettings;
+                }
+                if let Some(message) = self.application_settings_screen.restart_message() {
+                    self.restart_required_message = Some(message.to_string());
                 }
             }
 

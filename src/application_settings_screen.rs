@@ -1,6 +1,7 @@
 use eframe::egui;
 
 use crate::app::Application;
+use crate::backup_service::BackupInfo;
 use crate::config::ApplicationTheme;
 use crate::theme::{apply_theme, theme_label};
 
@@ -23,6 +24,10 @@ pub struct ApplicationSettingsScreen {
     information_font_size: String,
 
     status_message: String,
+    backups: Vec<BackupInfo>,
+    selected_backup: Option<std::path::PathBuf>,
+    confirm_restore: bool,
+    restart_message: Option<String>,
 }
 
 impl ApplicationSettingsScreen {
@@ -46,6 +51,10 @@ impl ApplicationSettingsScreen {
             information_font_size: String::new(),
 
             status_message: "Application settings not loaded.".to_string(),
+            backups: Vec::new(),
+            selected_backup: None,
+            confirm_restore: false,
+            restart_message: None,
         }
     }
 
@@ -283,9 +292,134 @@ impl ApplicationSettingsScreen {
                 Ok(backup_path) => {
                     self.status_message =
                         format!("Backup created successfully at {}", backup_path.display());
+                    self.refresh_backups(application);
                 }
                 Err(error) => {
                     self.status_message = format!("Failed to create backup: {error}");
+                }
+            }
+        }
+
+        ui.separator();
+        ui.heading("Restore Backup");
+        ui.label("Select a DirectPaymentTimesheets backup directory to restore.");
+
+        if ui.button("Refresh Backup List").clicked() {
+            self.refresh_backups(application);
+        }
+
+        egui::ScrollArea::vertical()
+            .id_salt("restore_backup_list")
+            .max_height(180.0)
+            .show(ui, |ui| {
+                if self.backups.is_empty() {
+                    ui.label("No DirectPaymentTimesheets backups found.");
+                }
+                for backup in &self.backups {
+                    let selected = self.selected_backup.as_ref() == Some(&backup.path);
+                    let config_note = if backup.has_config {
+                        "includes config.toml"
+                    } else {
+                        "database only"
+                    };
+                    if ui
+                        .selectable_label(
+                            selected,
+                            format!(
+                                "{} — {} — {}\n{}",
+                                backup.directory_name,
+                                backup.created_at,
+                                config_note,
+                                backup.path.display()
+                            ),
+                        )
+                        .clicked()
+                    {
+                        self.selected_backup = Some(backup.path.clone());
+                    }
+                }
+            });
+
+        let restore_enabled = self.selected_backup.is_some() && self.restart_message.is_none();
+        if ui
+            .add_enabled(
+                restore_enabled,
+                egui::Button::new("Restore Selected Backup..."),
+            )
+            .clicked()
+        {
+            let selected = self.selected_backup.as_ref().unwrap();
+            match application.validate_backup(selected) {
+                Ok(validation) => {
+                    self.status_message = format!(
+                        "Backup validated successfully (schema version {}). Confirmation required.",
+                        validation.schema_version
+                    );
+                    self.confirm_restore = true;
+                }
+                Err(error) => {
+                    self.status_message = format!("Restore refused: {error}");
+                }
+            }
+        }
+
+        if self.confirm_restore {
+            let selected = self.selected_backup.clone().unwrap();
+            let mut confirm = false;
+            let mut cancel = false;
+            egui::Window::new("Confirm Backup Restoration")
+                .collapsible(false)
+                .resizable(false)
+                .show(ui.ctx(), |ui| {
+                    ui.heading("Current application data and settings will be replaced");
+                    ui.label(format!("Restore from: {}", selected.display()));
+                    ui.label(
+                        "A safety backup of the current database and configuration will be created first.",
+                    );
+                    ui.label(
+                        "After restoration, you must close and restart DirectPaymentTimesheets before doing any further work.",
+                    );
+                    ui.horizontal(|ui| {
+                        if ui
+                            .button("Restore Backup and Replace Current Data")
+                            .clicked()
+                        {
+                            confirm = true;
+                        }
+                        if ui.button("Cancel").clicked() {
+                            cancel = true;
+                        }
+                    });
+                });
+
+            if cancel {
+                self.confirm_restore = false;
+                self.status_message = "Backup restoration cancelled; no data was changed.".into();
+            } else if confirm {
+                self.confirm_restore = false;
+                match application.restore_backup(&selected) {
+                    Ok(result) => {
+                        let config_note = if result.config_restored {
+                            "config.toml was restored."
+                        } else {
+                            "The selected backup had no config.toml; the current configuration was preserved."
+                        };
+                        let message = format!(
+                            "Restore succeeded from {}. Safety backup created at {}. {} Close and restart DirectPaymentTimesheets before further work.",
+                            result.restored_backup.display(),
+                            result.safety_backup.display(),
+                            config_note
+                        );
+                        self.status_message = message.clone();
+                        self.restart_message = Some(message);
+                    }
+                    Err(error) => {
+                        let message = format!("Restore failed: {error}");
+                        self.status_message = message.clone();
+                        if error.restart_required() {
+                            self.restart_message = Some(message);
+                        }
+                    }
                 }
             }
         }
@@ -319,6 +453,31 @@ impl ApplicationSettingsScreen {
         self.information_font_size = config.pdf.information_font_size.to_string();
 
         self.status_message = "Application settings loaded.".to_string();
+        self.refresh_backups(application);
+    }
+
+    pub fn restart_message(&self) -> Option<&str> {
+        self.restart_message.as_deref()
+    }
+
+    fn refresh_backups(&mut self, application: &Application) {
+        match application.discover_backups() {
+            Ok(backups) => {
+                if self
+                    .selected_backup
+                    .as_ref()
+                    .is_some_and(|selected| !backups.iter().any(|backup| &backup.path == selected))
+                {
+                    self.selected_backup = None;
+                }
+                self.backups = backups;
+            }
+            Err(error) => {
+                self.backups.clear();
+                self.selected_backup = None;
+                self.status_message = format!("Failed to list backups: {error}");
+            }
+        }
     }
 
     fn save(&self, application: &mut Application) -> Result<(), Box<dyn std::error::Error>> {

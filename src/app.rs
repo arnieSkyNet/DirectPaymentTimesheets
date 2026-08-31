@@ -89,6 +89,36 @@ impl Application {
         )?)
     }
 
+    pub fn discover_backups(
+        &self,
+    ) -> Result<Vec<crate::backup_service::BackupInfo>, crate::backup_service::BackupError> {
+        crate::backup_service::BackupService::discover(&self.context.environment.backups_dir)
+    }
+
+    pub fn validate_backup(
+        &self,
+        backup_path: &std::path::Path,
+    ) -> Result<crate::backup_service::BackupValidation, crate::backup_service::BackupError> {
+        crate::backup_service::BackupService::validate(
+            backup_path,
+            &self.context.environment.backups_dir,
+        )
+    }
+
+    pub fn restore_backup(
+        &self,
+        backup_path: &std::path::Path,
+    ) -> Result<crate::backup_service::RestoreResult, crate::backup_service::RestoreError> {
+        let config_path = self.context.environment.data_dir.join("config.toml");
+
+        crate::backup_service::BackupService::restore(
+            backup_path,
+            &self.context.environment.database_path,
+            &config_path,
+            &self.context.environment.backups_dir,
+        )
+    }
+
     pub fn create_import_service(&self) -> ImportService<'_> {
         let import_dir = crate::paths::expand_path(&self.context.config.folders.csv_import);
 

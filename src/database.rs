@@ -2,6 +2,8 @@ use std::path::Path;
 
 use rusqlite::{Connection, Result};
 
+pub const CURRENT_SCHEMA_VERSION: i64 = 18;
+
 pub fn initialise_database(database_path: &Path) -> Result<()> {
     let connection = Connection::open(database_path)?;
 
