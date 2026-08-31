@@ -1,368 +1,130 @@
-# DirectPaymentTimesheets Domain Guide
+# DirectPaymentTimesheets domain guide
 
-## Purpose
+## Purpose and terminology
 
-This document describes the real-world concepts that DirectPaymentTimesheets is designed to represent.
+DirectPaymentTimesheets supports an employer who uses a UK direct payment to employ Personal Assistants (PAs) and submit information to an external payroll provider.
 
-The purpose is to keep the software aligned with the needs of UK Direct Payment administration and the actual workflow used by Direct Payment holders.
+Use **timesheet** as one word. In user-facing payroll text, identify a period by payroll year, PAYE Payroll Week, four-week date range and scheduled pay date. `cycle_number` is an internal 1–13 database identity and is not the PAYE week printed in filenames.
 
----
+## People and maintenance records
 
-# Direct Payments
+The employer record supplies identity/contact details, email routing and the declaration/signature information used on generated documents. The payroll-provider record supplies provider contact details. A PA has identity/contact details, an active state and effective-dated pay-rate and contracted-hours histories.
 
-A Direct Payment allows a person who receives care and support funding to manage their own support arrangements.
+An active state of `NULL` is treated as active for compatibility. Inactive PAs remain historically meaningful:
 
-The Direct Payment holder can use the funding to employ or arrange support from Personal Assistants (PAs).
+- Payroll Timesheet Preparation includes them when they already have a record for the selected period.
+- PDF generation includes them under the same rule.
+- An inactive PA with no selected-period record is not added merely because a historical/future period was selected.
 
-The application is designed to support the administration required around these arrangements.
+This historical inclusion applies to preparation and PDF generation. Production timesheet and payslip batches currently remain limited to active and legacy-`NULL`-status PAs.
 
----
+## Imported work
 
-# Direct Payment Holder (Employer)
+A TimesheetEntry is an imported work interval associated with a PA. Its stable database ID is evidence used by submitted payroll snapshots and late-entry detection. Import preserves the source start/end values and parses worked minutes directly from the CSV worked-duration field; it does not recalculate them from start/end values or apply the persisted rounding setting. Duplicate detection prevents re-importing the same work as another ordinary row.
 
-The Direct Payment holder is the person responsible for managing their care funding and employment arrangements.
+After a successful import, the source CSV is copied unchanged to the internal `archive/YYYY/MM/` hierarchy with a timestamped filename. `import_audit` records successful and failed imports and their source/archive details.
 
-They may:
+The external file's hourly-rate and amount values are not authoritative for payroll. The application resolves employer-maintained rate history instead.
 
-- Employ Personal Assistants.
-- Approve timesheets.
-- Maintain employment records.
-- Prepare payroll information.
-- Keep financial and audit records.
+The established duration rule assigns an entire shift to its start calendar date; real project shifts do not cross midnight. Imported clock values are not rewritten by preparation corrections.
 
-The employer record contains information required for:
+## Payroll years, periods and Payroll Week
 
-- Timesheet documents.
-- Payroll submissions.
-- Generated PDFs.
+A provider Payroll Prep Sheet defines a payroll year and its 13 consecutive four-week cycles. Importing this sheet—not a manual “new year” command—creates or refreshes the year. PDF import is implemented; DOCX is recognised but not implemented. Several years may coexist, including a future year imported months early.
 
----
+Each cycle also retains a schedule-level `payslips_sent` flag. Re-import with unchanged material dates preserves it; a materially changed cycle receives reset sent state when replacement is permitted, and changed dates are refused once prepared payroll history makes replacement unsafe.
 
-# Personal Assistant (PA)
+A cycle is operationally active for dates from its first week commencing through 27 days later, inclusive. The current schedule is resolved from these imported date windows, not from a hard-coded year or 1 April assumption. A future sheet remains storage-only until its dates apply or the user deliberately selects one of its periods.
 
-A Personal Assistant provides support to the Direct Payment holder.
+The PAYE Payroll Week used for files is derived from the schedule pay date and the tax year beginning 6 April:
 
-A PA may have:
-
-- Working hours.
-- Agreed pay rates.
-- Employment information.
-- Holiday entitlement.
-- Optional system access.
-
-A Personal Assistant does not automatically require a login account.
-
-The system should allow:
-
-- PAs who only have hours recorded.
-- PAs who can submit their own hours in future versions.
-
-Authentication and employment records should remain separate.
-
----
-
-# Timesheets
-
-A timesheet records work completed by a Personal Assistant.
-
-A timesheet entry may contain:
-
-- Personal Assistant.
-- Date worked.
-- Start time.
-- End time.
-- Break duration.
-- Worked duration.
-- Hourly rate.
-- Calculated amount.
-- Notes.
-
-Timesheet records should be:
-
-- Accurate.
-- Traceable.
-- Auditable.
-- Preserved historically.
-
-Imported records should not be changed after payroll processing without an audit record.
-
----
-
-# Working Time
-
-Working time represents hours a Personal Assistant has provided support.
-
-The application records:
-
-- Start of work period.
-- End of work period.
-- Breaks taken.
-- Total worked minutes.
-
-Working time calculations should be consistent and transparent.
-
----
-
-# Pay Rates
-
-A Personal Assistant may have different hourly rates over time.
-
-The system must support:
-
-- Current hourly rate.
-- Historical rates.
-- Effective dates.
-- Employer-funded top-up rates.
-
-Historical timesheets must retain the rate that applied when the work was completed.
-
-A future payroll calculation must not recalculate old records using a new rate.
-
----
-
-# Payroll Periods
-
-Payroll periods group completed records into payment cycles.
-
-Examples:
-
-- Four-weekly payroll.
-- Monthly payroll.
-- Special payroll runs.
-
-The application should support the Direct Payment workflow where timesheets are prepared and submitted to payroll departments.
-
----
-
-# Annual Leave
-
-Annual leave is separate from worked hours.
-
-Annual leave records should store:
-
-- Personal Assistant.
-- Date commencing.
-- Date ending.
-- Hours taken.
-
-The dates are a record of when the leave occurred.
-
-The hours are used when producing payroll documentation.
-
-Annual leave should not appear as normal worked hours in the source timesheet data.
-
-When generating payroll PDFs, annual leave hours may need to be placed into the correct week of a four-week payroll period.
-
----
-
-# Sick Leave and SSP
-
-The system may support sick leave and Statutory Sick Pay (SSP) in future versions.
-
-Some Direct Payment employment arrangements may require these records.
-
-The feature should remain optional because individual employers may not use sick leave payments.
-
----
-
-# Public Holidays
-
-Public holidays require special handling.
-
-The system should maintain a list of public holiday dates.
-
-During CSV import:
-
-- Imported work dates should be checked against public holiday dates.
-- Hours worked on public holidays should be identified automatically.
-- Multiple shifts on the same public holiday should be combined.
-
-Example:
-
-Three imported shifts:
-
-```
-1.25 hours
-2.00 hours
-2.25 hours
+```text
+PAYE week = floor((pay date - applicable 6 April) / 7) + 1
 ```
 
-On:
+This may differ from internal cycle 1–13. For example, the 2026/27 schedule beginning 10/08/2026 with pay date 04/09/2026 uses Payroll Week 22 and period code `202608w22`.
 
-```
-25/12/2026
-```
+## Operational versus viewing/import selections
 
-Should become:
+The operational payroll-period selection drives preparation, generation, preview/test email and displayed statuses. Today is the convenient default, but a historical or future selection is deliberate and visible.
 
-```
-5.50 hours (25/12/2026)
-```
+Payroll Return import has an independent period selection because a returned ZIP may arrive late. View Payroll Schedule independently selects a payroll year because viewing a future schedule must not alter operational work. Production email batches freeze the operational period that was selected when confirmation began.
 
-Public holiday hours are recorded separately for payroll reporting.
+## Worked hours and manual corrections
 
-They should not simply replace normal worked hours.
+Ordinary worked hours come from imported shifts, grouped into the four schedule weeks. Payroll Timesheet Preparation permits the employer to set the final Hours Worked value when an external record is missing or wrong.
 
----
+The application persists the correction as integer minutes separate from imported rows:
 
-# Travel and Mileage
-
-Some employment arrangements may include travel claims.
-
-The system should support future mileage recording.
-
-Possible information:
-
-- Miles claimed.
-- Mileage rate.
-- Total mileage payment.
-
-Example:
-
-```
-Miles claimed @ £0.40 per mile
+```text
+manual adjustment = final prepared worked minutes - reconciled imported baseline minutes
 ```
 
-Travel should remain separate from worked hours.
+An optional reason can accompany it. Positive and negative adjustments are preserved when the preparation is reloaded and in the submitted snapshot.
 
----
+Annual leave, sick/SSP, public-holiday hours and mileage are preparation values. Contracted weekly hours are informational and never alter worked hours or pay.
 
-# PDF Timesheet Layout
+## Effective-dated pay rates
 
-Generated payroll documents should support the existing four-week timesheet format.
+The rate for an imported shift is the newest PA pay-rate record whose effective date is on or before the shift start date. Base rate and employer top-up are added. Future rows remain visible in maintenance but never apply early. Equal effective dates resolve deterministically by the newest database ID.
 
-Expected columns:
+A payroll week may cross a rate boundary, including part-way through the week. Imported minutes retain their actual shift date and are allocated to the appropriate rates internally. Positive manual hours use the higher/newer rate applicable somewhere within that week, favouring the PA; negative manual hours use the lower/older applicable rate. Rates outside that week, including future rates, are not used. A positive worked item with no effective rate prevents generation rather than silently using zero or a future rate.
 
-## Column 1
+Rate portions are internal accounting/snapshot evidence. The payroll-provider PDF prints only the reconciled Hours Worked total.
 
-```
-W/C date
-(Week commencing date)
-```
+## Effective-dated contracted hours
 
-## Column 2
+Each of the four payroll weeks independently uses the newest contracted-hours record effective on or before that week's commencing date. Equal dates use the newest ID, future rows are excluded, and a week before the first record is unavailable.
 
-```
-Hours worked
+When all weeks share a value, the PDF retains `Contracted Weekly Hours: VALUE`. When values differ, a compact header summary associates values (or unavailable state) with week-commencing dates. No midweek contracted-hours rule is applied.
 
-Pay Rate
-```
+## Previous-cycle work
 
-## Column 3
+The existing positive previous-cycle adjustment detects late imported shifts from weeks three and four of the immediately preceding schedule. “Previous” is chronological, so cycle 1 of a new payroll year can follow cycle 13 of the prior year.
 
-```
-Annual leave hours
-```
+Exact detection compares current TimesheetEntry IDs with the immutable submitted snapshot. Late rows keep their historical start dates and rates, and rows on opposite sides of a rate boundary remain distinct. A generated-but-unsent candidate is not evidence that work was submitted.
 
-## Column 4
+Old schema-18 `previous_cycle_hours` can contain only an aggregate. Such an amount remains in totals as an opaque legacy adjustment with no invented shift ID, date or rate. The PDF presents the existing compact informational form such as `[Info.only +1 prev]`.
 
-```
-Sick leave
+## Preparation and submission states
 
-SSP
-```
+A selected-period payroll record can be:
 
-## Column 5
+- **Unsent/no snapshot**: editable preparation with no generated candidate.
+- **Candidate**: editable preparation paired with a generated PDF, worked-item snapshot and SHA-256 digest.
+- **Submitted**: immutable baseline representing the production PDF successfully sent.
+- **Indeterminate**: protected state where SMTP may have succeeded but recording submission failed.
 
-```
-Public Hols. Hours worked
-```
+Submitted and indeterminate records are read-only in preparation. Changing represented data for a candidate invalidates it before the change is persisted, requiring regeneration. Opening unchanged data does not invalidate it. Stale-bound screens cannot save after the operational selection or material schedule dates change.
 
-## Column 6
+## Public holidays
 
-```
-Travel
+Public-holiday handling is always active. Payroll preparation calculates the implemented England/Wales bank-holiday dates for the four-week period and stores individual holiday rows that can be edited. Weekly payroll rows also contain the established public-holiday-hours aggregate used in the PDF, while individual rows supply holiday-date information. These are existing distinct representations; they have not been redesigned into a single model.
 
-Miles claimed @ £0.40 per mile
-```
+There is no `public_holiday_enabled` business rule. An obsolete config key is ignored for compatibility.
 
-Unused columns should remain available because other employers may require them.
+## Payroll PDF
 
----
+The provider PDF retains its established table and configured typography. Each Hours Worked cell shows the final reconciled weekly total as the primary bold value. It does not reveal pay rates, effective dates or allocation detail. Public-holiday dates remain in their intended field, and positive previous-cycle information remains a compact subordinate line.
 
-# Import Records
+The same integer-minute structure supplies displayed totals and persisted worked-item evidence, with residual rounding reconciliation so independently represented portions do not contradict the weekly total.
 
-External timesheet information may be imported from sources such as Hours Keeper CSV files.
+## Email
 
-The import process should:
+Both timesheet and payslip production email are sent from the employer address to the payroll department, CC the employer and BCC the PA when available. Preview composes without sending. Test sends use only configured test addresses and are visibly marked `TEST`; payslip test email goes directly to the configured PA test address.
 
-- Validate incoming data.
-- Prevent duplicate records.
-- Preserve original files.
-- Record audit information.
-- Detect public holiday dates.
+Production confirmation is period-bound. Dispatch refuses if the global operational selection changed, the captured schedule disappeared/changed, the required attachment is missing, or a timesheet candidate digest no longer matches. Successful timesheet transport freezes submitted membership; an SMTP failure does not.
 
----
+## Payroll Return files
 
-# Audit Trail
+The user explicitly selects the schedule to which a returned ZIP belongs. The selected schedule supplies year and PAYE week; today's cycle is not substituted.
 
-An audit trail records important system events.
+Payslips use `Payslip for Week <week> for <PA>.pdf` inside the configured payslip base and a `YYYY to YYYY` folder. Unmatched payroll information uses the configured payroll-information base and the same year grouping, preserving safe original names and adding deterministic collision suffixes rather than overwriting. It deliberately does not use the configured `email_archive` path, which currently has no production consumer. P60-specific interpretation is not implemented.
 
-The application records:
+## Backup and restore
 
-- Import activity.
-- Changes to important records.
-- Payroll preparation events.
-- Generated documents.
+A backup is an application-owned timestamp directory containing a consistent SQLite snapshot, optional config and identity README. Restore is limited to recognised backups, validates integrity/schema, creates a mandatory safety backup, restores config only if present and requires restart. Backups are never automatically removed.
 
-Audit information helps maintain trust and accountability.
+## Boundaries
 
----
-
-# Future User Accounts
-
-Future versions may support optional user access.
-
-Possible users:
-
-- Employer / Administrator.
-- Personal Assistant.
-- Payroll administrator.
-
-A user account should only exist when access is required.
-
----
-
-# Future Payroll Engine
-
-The Payroll Engine will transform approved records into payroll information.
-
-Responsibilities may include:
-
-- Grouping work into payroll periods.
-- Applying pay rates.
-- Handling annual leave.
-- Handling public holiday reporting.
-- Preparing payroll outputs.
-- Generating PDF documents.
-- Preparing payroll emails.
-
-The Payroll Engine should use validated records rather than raw imported files.
-
----
-
-# Privacy Principles
-
-Direct Payment administration contains sensitive personal information.
-
-The application should:
-
-- Store only necessary information.
-- Keep data local where possible.
-- Protect personal records.
-- Avoid unnecessary personal details in filenames.
-- Maintain clear audit history.
-
----
-
-# Domain Development Principle
-
-The software should reflect the real-world Direct Payment process.
-
-Business rules should be:
-
-- Clearly documented.
-- Separated from technical implementation.
-- Tested where possible.
-- Changed carefully when requirements or regulations change.
-
+The application prepares payroll evidence and provider documents; it is not a general payroll/pay calculation engine. Overtime calculation, configurable workweek semantics, scheduled backups, retention policy, cloud storage, P60-specific processing and multi-user access are not currently implemented.

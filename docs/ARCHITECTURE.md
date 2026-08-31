@@ -1,524 +1,128 @@
-# DirectPaymentTimesheets Architecture
+# DirectPaymentTimesheets architecture
 
-## Purpose
+## Shape of the application
 
-This document describes the technical architecture and design decisions of DirectPaymentTimesheets.
+DirectPaymentTimesheets is a local Rust desktop application. `main.rs` initialises the environment, configuration, SQLite database and application object, then starts the `eframe`/`egui` GUI. There is no server process or web API.
 
-The application is designed as a cross-platform Rust application for managing UK Direct Payment timesheets, employment records and future payroll administration.
+The main layers are:
 
-The architecture is designed to support a gradual move from simple timesheet recording into a complete payroll preparation system.
-
----
-
-# Design Goals
-
-The application should be:
-
-- Reliable.
-- Easy to maintain.
-- Cross-platform.
-- Suitable for individual Direct Payment holders.
-- Suitable for future organisational use.
-- Auditable.
-- Privacy conscious.
-- Expandable without major redesign.
-
----
-
-# Technology Choices
-
-## Rust
-
-Rust was selected because it provides:
-
-- Memory safety.
-- Good performance.
-- Cross-platform support.
-- Long-term maintainability.
-
----
-
-## SQLite
-
-SQLite is used as the local database because:
-
-- It requires no server.
-- It is portable.
-- It is suitable for desktop applications.
-- It allows complete backups by copying the database file.
-- It keeps user data local.
-
----
-
-# Application Data
-
-The application stores user data outside the source repository.
-
-Default location:
-
-```
-~/.directpaymenttimesheets/
-```
-
-Example:
-
-```
-~/.directpaymenttimesheets/
-
-config.toml
-
-database.sqlite
-
-archive/
-backups/
-cache/
-import/
-logs/
-templates/
-```
-
-The source repository contains:
-
-- Application code.
-- Documentation.
-- Tests.
-
-User information remains outside Git.
-
----
-
-# Configuration
-
-The application must not contain hard-coded user paths.
-
-Configuration controls locations such as:
-
-- CSV import folders.
-- Archive locations.
-- Generated documents.
-- Templates.
-- Future email settings.
-
-Application modules should obtain paths through the application context rather than creating their own locations.
-
----
-
-# Application Structure
-
-The application is separated into layers.
-
-Current structure:
-
-```
-main.rs
-
-    |
-
-    v
-
-application.rs
-
-    |
-
-    +-- Application startup
-    +-- Environment initialisation
-    +-- Database setup
-    +-- Repository creation
-    +-- Service startup
-
-    |
-
-    v
-
-Services
-
-    |
-
-    +-- Import Service
-
-    |
-
-    v
-
-Repositories
-
-    |
-
-    +-- Timesheet Repository
-    +-- Import Audit Repository
-    +-- Employer Repository
-    +-- Personal Assistant Repository
-    +-- Pay Rate Repository
-```
-
----
-
-# Application Context
-
-The application uses an application context layer.
-
-The purpose is to provide:
-
-- Configuration.
-- Paths.
-- Environment information.
-- Shared application resources.
-
-Individual modules should request resources from the application context rather than managing their own configuration.
-
----
-
-# Database Architecture
-
-The database uses SQLite with schema version tracking.
-
-Database creation is handled through:
-
-```
-database.rs
-```
-
-Responsibilities:
-
-- Create required tables.
-- Check schema version.
-- Apply migrations.
-- Maintain database upgrades.
-
-Current migration approach:
-
-```
-schema_version
-
+```text
+egui screens and dialogs
         |
-
-        v
-
-migration functions
-
+GUI/application orchestration
         |
-
-        v
-
-updated database structure
-```
-
-This allows future changes without destroying existing data.
-
----
-
-# Current Database Areas
-
-## Timesheets
-
-Stores imported working records.
-
-Responsibilities:
-
-- Store PA hours.
-- Preserve historical pay information.
-- Support payroll calculations.
-
----
-
-## Employer Records
-
-Stores Direct Payment employer information.
-
-Responsibilities:
-
-- Employer details.
-- Payroll provider information.
-- Document generation details.
-
----
-
-## Personal Assistant Records
-
-Stores PA employment information.
-
-Responsibilities:
-
-- Employee details.
-- Employment status.
-- Future payroll relationships.
-
----
-
-## Pay Rate History
-
-Stores PA pay rate changes.
-
-Responsibilities:
-
-- Preserve historical rates.
-- Apply correct rate based on work date.
-- Support future payroll calculations.
-
----
-
-## Import Audit
-
-Stores import history.
-
-Responsibilities:
-
-- Record imported files.
-- Track processing results.
-- Provide audit trail.
-
----
-
-# Repository Architecture
-
-Database access is separated into repository modules.
-
-Current repositories:
-
-```
-TimesheetRepository
-
-EmployerRepository
-
-PersonalAssistantRepository
-
-PayRateRepository
-```
-
-Repositories are responsible for:
-
-- Database queries.
-- Inserts.
-- Retrieval.
-- Data persistence.
-
-Business rules should remain outside repositories.
-
----
-
-# Import Pipeline
-
-The current import workflow is:
-
-```
-Configured Import Folder
-
+domain services and file/PDF/email adapters
         |
-
-        v
-
-Find CSV Files
-
+repositories
         |
-
-        v
-
-Validate CSV Structure
-
-        |
-
-        v
-
-Check Duplicate Imports
-
-        |
-
-        v
-
-Import Timesheet Records
-
-        |
-
-        v
-
-Store In SQLite Database
-
-        |
-
-        v
-
-Archive Original CSV
-
-        |
-
-        v
-
-Write Import Audit Record
+SQLite + configured filesystem locations
 ```
 
-Each import records:
+The GUI owns navigation and stable selection state. `Application` exposes repositories and service operations without putting SQL, SMTP, PDF internals or backup implementation directly in widgets.
 
-- Source filename.
-- Archive filename.
-- Rows processed.
-- Rows imported.
-- Rows skipped.
-- Success or failure status.
-- Error information if required.
+## Runtime environment
 
----
+`AppEnvironment` uses `DIRECTPAYMENTTIMESHEETS_HOME` when set, otherwise `~/.directpaymenttimesheets`. It creates the internal data, import, archive, backup, log, template and cache directories and locates `database.sqlite`. `config.toml` is stored in the data root.
 
-# Service Architecture
+`AppConfig` is TOML/Serde data split into theme, folder, PDF, payroll and email sections. Serde's normal unknown-field handling permits obsolete keys in old files. Missing newer fields use defaults. A compatibility reconciliation preserves the legacy timesheet email body when the newer payroll template is absent.
 
-The application is moving towards service-based architecture.
+Configured business paths may point outside the data root. `email_archive` is currently persisted without a production consumer, and Payroll Return information deliberately uses the separate payroll-information path. Path creation is deliberately late: for example, a future payroll-year directory is created only when a PDF or Payroll Return file is actually written.
 
-Current service:
+## SQLite and repositories
 
-```
-Import Service
-```
+`database.rs` creates the original schema and applies ordered migrations through `CURRENT_SCHEMA_VERSION` 19. Each repository opens/uses its own `rusqlite::Connection` to the same database path. Schema-changing work belongs in a migration; tests should exercise a newly initialised database and upgrade behaviour where relevant.
 
-Responsibilities:
+Principal persisted areas are:
 
-- Discover files.
-- Validate data.
-- Import records.
-- Archive files.
-- Create audit records.
+- imported `timesheets` with stable row identity and import audit data;
+- employer, PA and payroll-provider maintenance;
+- effective-dated PA pay rates and contracted hours;
+- multi-year payroll schedules;
+- payroll timesheets, four weekly preparation rows and individual public-holiday rows;
+- per-timesheet email status; and
+- schema-19 manual adjustments, worked-item snapshots and snapshot state/digest metadata.
 
-Future services:
+Repositories isolate queries and identity rules. Important compound identities use payroll year plus internal cycle number, not row ID alone. Dates are currently stored as text in existing formats, so repository methods parse and compare calendar dates explicitly where ordering must be chronological.
 
-```
-Payroll Service
+## Schedule architecture
 
-Leave Service
+`PayrollScheduleRepository` owns schedule import/replacement and resolution:
 
-Document Service
+- validated 13-cycle imports replace only one payroll year in a transaction;
+- all imported years coexist;
+- `resolve_for_date` searches inclusive 28-day windows across every year and rejects gaps/ambiguity;
+- lookup by `(payroll_year, cycle_number)` re-fetches a complete schedule before operations; and
+- predecessor resolution uses dates and an exact 28-day boundary, allowing cross-year cycle 13 to cycle 1 rollover.
 
-Email Service
+Payroll Prep Sheet PDF extraction is implemented; DOCX is recognised but explicitly not implemented. A schedule's `payslips_sent` state is retained when the same cycle is re-imported with unchanged material dates. A changed cycle receives reset sent state when replacement is safe, while changed dates are refused if prepared payroll history already exists for that year.
 
-Authentication Service
-```
+The Dashboard operational selector stores the stable `(payroll_year, cycle_number)` key. A complete schedule is re-fetched before generation, preview/test email, status and other operational actions. Production batches additionally capture the first-week and pay dates to detect a materially changed re-import.
 
----
+Payroll Return and View Payroll Schedule intentionally have independent selector state. Viewing/importing a future year cannot change the operational period.
 
-# Authentication Design
+## Payroll preparation architecture
 
-Authentication should remain separate from employment records.
+`PayrollTimesheetScreen` receives a complete operational schedule and stores a private bound identity with its key and material dates. It does not independently choose today's schedule. Its display set combines active/legacy-NULL-active PAs with PAs already represented by a payroll-timesheet row in the selected period.
 
-Future user accounts should support:
+Existing submitted or indeterminate records follow a persisted-only, read-only load path. Editable records follow reconciliation against imported rows, previous submitted membership and manual adjustments. Preparation baselines are compared before writes so that:
 
-- Employer access.
-- Personal Assistant access.
-- Payroll access.
+- opening unchanged data does not invalidate a candidate or update timestamps;
+- a material reconciliation change invalidates the candidate before persistence;
+- save changes to weeks, manual hours, leave, sick/SSP, holiday rows or mileage invalidate a stale PDF candidate first; and
+- selection/schedule/state validation happens before any save mutation.
 
-A Personal Assistant does not automatically require a login account.
+The screen retains `Local::now()` only for persisted timestamps, not payroll-period selection.
 
-Employment records and login permissions are separate concepts.
+## Worked-item and effective-date model
 
----
+`pay_rate_allocation` builds a reconciled integer-minute representation used by PDF preparation and schema-19 snapshots. Imported shifts retain TimesheetEntry ID, work/start date and minutes, and resolve the newest pay-rate row effective at that date. Manual adjustments are separate persisted items; imported source rows are never rewritten.
 
-# Leave and Public Holiday Design
+CSV `worked_minutes` comes directly from the imported worked-duration field; import does not recalculate it from start/end values or apply the persisted rounding setting. Successful source files are copied to `archive/YYYY/MM/` with timestamped names and recorded in `import_audit`.
 
-Future services will handle:
+Snapshot items distinguish imported work, late previous-cycle work, manual adjustments and opaque legacy aggregates. Ordinary allocated items require rate evidence. Legacy pre-schema-19 aggregates allow nullable work/rate fields precisely because the original details cannot be reconstructed.
 
-## Annual Leave
+Late-shift detection uses only a successfully submitted snapshot as membership evidence. Generated candidates never establish that baseline. Contracted hours use a separate effective-dated lookup per week commencing date and do not participate in pay or worked-minute reconciliation.
 
-Responsibilities:
+## PDF candidate lifecycle
 
-- Record leave periods.
-- Record leave hours.
-- Allocate leave into payroll periods.
+`PdfGenerator` renders the provider form from reconciled preparation data and configured fonts. Weekly Hours Worked contains only the final hours value; rate portions stay internal.
 
----
+`payroll_snapshot_service::publish_candidate` coordinates output safely:
 
-## Public Holidays
+1. create the resolved parent directory if necessary;
+2. generate to a temporary path;
+3. persist the candidate snapshot/state and SHA-256 digest association;
+4. reconcile required database aggregates; and
+5. publish/rename the final file.
 
-Responsibilities:
+Failures clean up or invalidate candidate state so a new PDF is not silently paired with old evidence. Production send verifies the file path/digest, sends it, then freezes the submitted baseline. Transport failure keeps the candidate mutable. Failure to persist state after possible successful transport creates protected `indeterminate` state.
 
-- Maintain public holiday dates.
-- Detect public holiday work during imports.
-- Support payroll reporting.
+## File naming and storage
 
----
+`payroll_file_naming` is shared by producers and consumers. PAYE week derives from `pay_date` and the 6 April tax-year boundary. Period code uses the first-week month plus PAYE week. Timesheet and payslip generation, attachment lookup and subject substitution therefore agree.
 
-# Payroll Architecture
+Payroll-year directory normalisation recognises a final `YYYY to YYYY` component. Such a component is replaced for another schedule year rather than nested. Generic PDF output roots intentionally remain flat; payslip and payroll-information storage is year-aware. Unknown Payroll Return information files go to the payroll-information folder with collision-safe names, not the email archive.
 
-The future Payroll Engine will transform validated records into payroll outputs.
+## Email architecture
 
-Responsibilities:
+`email_service` composes previews and performs SMTP transport. Both production timesheets and payslips are sent from the employer to the payroll department, CC the employer and BCC the PA when available. Test functions use only configured test addresses and add test markers; payslip test email goes to the configured PA test address.
 
-- Group timesheets into payroll periods.
-- Apply historical pay rates.
-- Include leave records.
-- Include public holiday information.
-- Generate payroll documents.
+The GUI's `PendingEmailBatch` captures its kind/stage, selected PA IDs, selected schedule key, material schedule dates and operational-selection revision; it does not capture already resolved email addresses. The existing confirmation window is the production safety boundary. Final dispatch re-fetches and validates the captured schedule and rejects a changed global selection. It never substitutes today's schedule. Timesheet dispatch also preserves candidate digest/state verification; payslip dispatch requires the exact shared path-derived file. Production batches currently select active and legacy-`NULL`-status PAs only, even though preparation and generation can include an inactive PA with an existing selected-period record.
 
-The Payroll Engine should not operate directly on raw imported files.
+## Backup and restore architecture
 
----
+`BackupService` owns discovery, creation, validation and restore. The GUI supplies configured paths and displays confirmation/status only.
 
-# Testing Strategy
+Creation uses `rusqlite::backup::Backup`, copies config when present and writes a human-readable identity manifest. Validation confines selection to recognised timestamp directories under the backup root, rejects unsafe links, opens the database read-only, requires one `integrity_check` result equal to `ok` case-insensitively, and checks the DirectPaymentTimesheets schema/version. Restore first creates a safety backup, then uses SQLite's backup API into the live database. Restored config is optional and restart is required.
 
-The project uses automated Rust tests.
+## UI structure
 
-Current coverage includes:
+The Dashboard coordinates imports, operational period selection, generation, email and navigation. Dedicated screens cover employer, PA, payroll provider/settings, Payroll Timesheet Preparation, Application Settings and Email Settings. Long preparation/settings content uses vertical scroll areas. View Payroll Schedule selects an imported year without changing application state beyond the view.
 
-```
-CSV Import
+## Testing boundaries
 
-    - Duration parsing
-    - Money parsing
-    - Invalid input handling
+Unit and integration-style module tests use temporary directories and SQLite databases. Safety-critical tests cover migration 19, schedule transactions/resolution, period-bound operations, candidate state transitions/digests, preparation read-only/stale-save behaviour, effective dates, return paths, backup/restore and historical PA eligibility. Tests must not use the real data root.
 
+## Deliberate boundaries
 
-Archive
-
-    - Timestamped archive filenames
-
-
-Repositories
-
-    - Database inserts
-    - Record retrieval
-    - Duplicate detection
-    - Import audit checking
-    - Employer records
-    - Personal Assistant records
-    - Pay rate history
-```
-
-Tests use isolated databases where appropriate.
-
----
-
-# Data Protection
-
-The application should minimise exposure of sensitive information.
-
-The system should:
-
-- Store only necessary information.
-- Keep data local where possible.
-- Avoid personal information in filenames.
-- Maintain audit history.
-- Separate user access from employment data.
-
----
-
-# Repository Separation
-
-The Git repository contains:
-
-- Source code.
-- Documentation.
-- Tests.
-
-User data remains outside the repository.
-
-This prevents accidental commits of private payroll information.
-
----
-
-# Development Principle
-
-The architecture should evolve incrementally.
-
-Changes should:
-
-- Preserve existing data.
-- Use migrations for database changes.
-- Keep business logic separated from technical code.
-- Maintain clear documentation.
-- Be tested before major changes are committed.
-
+The current architecture does not provide authentication/multi-user coordination, an overtime engine, P60-specific import, scheduled/cloud backups, retention cleanup or arbitrary SQLite restore. These are limitations, not partially implemented promises.
