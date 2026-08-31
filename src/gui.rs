@@ -35,10 +35,13 @@ enum EmailBatchNoteStage {
     ConfirmDispatch,
 }
 
+#[derive(Clone)]
 struct PendingEmailBatch {
     kind: PayrollEmailKind,
     stage: EmailBatchNoteStage,
     selected_personal_assistant_ids: Vec<i64>,
+    payroll_period: CapturedOperationalPayrollPeriod,
+    operational_selection_revision: u64,
 }
 
 struct PendingPayrollReturnImport {
@@ -52,22 +55,39 @@ struct OperationalPayrollPeriodKey {
     cycle_number: i64,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct CapturedOperationalPayrollPeriod {
+    key: OperationalPayrollPeriodKey,
+    first_week_commencing: String,
+    pay_date: String,
+    display_label: String,
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 struct OperationalPayrollPeriodState {
     selected: Option<OperationalPayrollPeriodKey>,
     explicitly_selected: bool,
+    revision: u64,
 }
 
 impl OperationalPayrollPeriodState {
     fn select(&mut self, schedule: &PayrollSchedule, current: Option<&PayrollSchedule>) {
-        self.selected = Some(operational_period_key(schedule));
+        let selected = operational_period_key(schedule);
+        if self.selected.as_ref() != Some(&selected) {
+            self.revision = self.revision.saturating_add(1);
+        }
+        self.selected = Some(selected);
         self.explicitly_selected = current.is_none_or(|current| {
             operational_period_key(current) != operational_period_key(schedule)
         });
     }
 
     fn use_current(&mut self, current: &PayrollSchedule) {
-        self.selected = Some(operational_period_key(current));
+        let selected = operational_period_key(current);
+        if self.selected.as_ref() != Some(&selected) {
+            self.revision = self.revision.saturating_add(1);
+        }
+        self.selected = Some(selected);
         self.explicitly_selected = false;
     }
 }
@@ -255,6 +275,13 @@ impl DirectPaymentApp {
     }
 
     fn begin_email_batch(&mut self, kind: PayrollEmailKind) {
+        let schedule = match self.selected_operational_payroll_schedule() {
+            Ok(schedule) => schedule,
+            Err(error) => {
+                self.status_message = format!("Could not begin production email batch: {error}");
+                return;
+            }
+        };
         self.additional_notes_by_personal_assistant.clear();
         self.note_enabled_personal_assistant_ids.clear();
         let selected_personal_assistant_ids = self
@@ -276,6 +303,8 @@ impl DirectPaymentApp {
             kind,
             stage: EmailBatchNoteStage::ChooseAdditionalNote,
             selected_personal_assistant_ids,
+            payroll_period: capture_operational_payroll_period(&schedule),
+            operational_selection_revision: self.operational_payroll_period.revision,
         });
     }
 
@@ -350,11 +379,11 @@ impl DirectPaymentApp {
             });
         }
 
-        let confirmation_kind = self.pending_email_batch.as_ref().and_then(|batch| {
-            matches!(batch.stage, EmailBatchNoteStage::ConfirmDispatch).then_some(batch.kind)
+        let confirmation_batch = self.pending_email_batch.as_ref().and_then(|batch| {
+            matches!(batch.stage, EmailBatchNoteStage::ConfirmDispatch).then_some(batch.clone())
         });
-        if let Some(kind) = confirmation_kind {
-            let email_type = match kind {
+        if let Some(batch) = confirmation_batch {
+            let email_type = match batch.kind {
                 PayrollEmailKind::Timesheet => "Timesheets",
                 PayrollEmailKind::Payslip => "Payslips",
             };
@@ -365,6 +394,25 @@ impl DirectPaymentApp {
                 .resizable(false)
                 .show(ui.ctx(), |ui| {
                     ui.label(format!("Ready to send {}.", email_type));
+                    ui.label(format!(
+                        "Payroll period: {}",
+                        batch.payroll_period.display_label
+                    ));
+                    match captured_operational_period_timing(
+                        &batch.payroll_period,
+                        chrono::Local::now().date_naive(),
+                    ) {
+                        Some(OperationalPeriodTiming::Historical) => {
+                            ui.colored_label(
+                                ui.visuals().warn_fg_color,
+                                "Historical payroll period",
+                            );
+                        }
+                        Some(OperationalPeriodTiming::Future) => {
+                            ui.colored_label(ui.visuals().warn_fg_color, "Future payroll period");
+                        }
+                        Some(OperationalPeriodTiming::Current) | None => {}
+                    }
                     ui.horizontal(|ui| {
                         send = ui.button("Send").clicked();
                         cancel = ui.button("Cancel").clicked();
@@ -374,10 +422,12 @@ impl DirectPaymentApp {
             if cancel {
                 self.clear_pending_email_batch();
             } else if send {
-                let result = match kind {
-                    PayrollEmailKind::Timesheet => self.email_timesheets(),
-                    PayrollEmailKind::Payslip => self.email_payslips(),
-                };
+                let result = self
+                    .validated_schedule_for_email_batch(&batch)
+                    .and_then(|schedule| match batch.kind {
+                        PayrollEmailKind::Timesheet => self.email_timesheets(&schedule),
+                        PayrollEmailKind::Payslip => self.email_payslips(&schedule),
+                    });
                 match result {
                     Ok(count) => {
                         self.status_message =
@@ -843,6 +893,26 @@ impl DirectPaymentApp {
             })
     }
 
+    fn validated_schedule_for_email_batch(
+        &self,
+        batch: &PendingEmailBatch,
+    ) -> Result<PayrollSchedule, Box<dyn std::error::Error>> {
+        let schedule = self
+            .application
+            .payroll_schedule_repository
+            .get_for_year_and_cycle(
+                &batch.payroll_period.key.payroll_year,
+                batch.payroll_period.key.cycle_number,
+            )?;
+        validate_captured_email_batch_period(
+            &batch.payroll_period,
+            batch.operational_selection_revision,
+            &self.operational_payroll_period,
+            schedule.as_ref(),
+        )?;
+        schedule.ok_or_else(|| "The captured payroll period is unavailable.".into())
+    }
+
     fn refresh_operational_payroll_schedules(&mut self) -> Result<(), Box<dyn std::error::Error>> {
         let schedules = ordered_payroll_schedules(
             self.application.payroll_schedule_repository.get_all()?,
@@ -877,7 +947,7 @@ impl DirectPaymentApp {
 
     fn draw_operational_payroll_period_selector(&mut self, ui: &mut egui::Ui) {
         ui.group(|ui| {
-            ui.label("Payroll period for generation, preview and test email:");
+            ui.label("Payroll period for generation and email operations:");
 
             if self.operational_payroll_schedules.is_empty() {
                 ui.label("No imported payroll schedules are available.");
@@ -1474,7 +1544,10 @@ impl DirectPaymentApp {
         }
     }
 
-    fn email_payslips(&self) -> Result<usize, Box<dyn std::error::Error>> {
+    fn email_payslips(
+        &self,
+        schedule: &PayrollSchedule,
+    ) -> Result<usize, Box<dyn std::error::Error>> {
         let employers = self.application.employer_repository.get_all()?;
 
         let employer = employers
@@ -1502,9 +1575,7 @@ impl DirectPaymentApp {
             .filter(|email| !email.is_empty())
             .ok_or("Payroll Department has no email address.")?;
 
-        let today = chrono::Local::now().date_naive();
-        let current_schedule = self.application.resolve_payroll_schedule(today)?;
-        let payroll_year = current_schedule.payroll_year.clone();
+        let payroll_year = schedule.payroll_year.clone();
 
         let assistants = self.application.personal_assistant_repository.get_all()?;
 
@@ -1531,7 +1602,7 @@ impl DirectPaymentApp {
                 .get_for_pa_and_cycle(
                     assistant.id,
                     &payroll_year,
-                    current_schedule.cycle_number,
+                    schedule.cycle_number,
                     "payslip",
                 )?;
 
@@ -1548,7 +1619,7 @@ impl DirectPaymentApp {
             let payslip_path = crate::payroll_file_naming::payslip_path(
                 &payslip_folder,
                 &personal_assistant_name,
-                &current_schedule,
+                schedule,
             )?;
 
             if !payslip_path.exists() {
@@ -1567,7 +1638,7 @@ impl DirectPaymentApp {
                 &personal_assistant_name,
                 assistant.date_of_birth.as_deref(),
                 assistant.national_insurance_number.as_deref(),
-                &current_schedule,
+                schedule,
                 &payslip_path,
                 &self.application.context.config.payroll.payslip_email_body,
                 self.additional_notes_by_personal_assistant
@@ -1583,7 +1654,7 @@ impl DirectPaymentApp {
                 .mark_sent(
                     assistant.id,
                     &payroll_year,
-                    current_schedule.cycle_number,
+                    schedule.cycle_number,
                     "payslip",
                     &sent_at,
                 )?;
@@ -1603,7 +1674,7 @@ impl DirectPaymentApp {
                     .get_for_pa_and_cycle(
                         assistant.id,
                         &payroll_year,
-                        current_schedule.cycle_number,
+                        schedule.cycle_number,
                         "payslip",
                     )
                     .ok()
@@ -1615,13 +1686,16 @@ impl DirectPaymentApp {
         if all_active_sent {
             self.application
                 .payroll_schedule_repository
-                .mark_payslips_sent(current_schedule.id)?;
+                .mark_payslips_sent(schedule.id)?;
         }
 
         Ok(sent)
     }
 
-    fn email_timesheets(&self) -> Result<usize, Box<dyn std::error::Error>> {
+    fn email_timesheets(
+        &self,
+        schedule: &PayrollSchedule,
+    ) -> Result<usize, Box<dyn std::error::Error>> {
         let employers = self.application.employer_repository.get_all()?;
 
         let employer = employers
@@ -1649,9 +1723,7 @@ impl DirectPaymentApp {
             .filter(|email| !email.is_empty())
             .ok_or("Payroll Department has no email address.")?;
 
-        let today = chrono::Local::now().date_naive();
-        let current_schedule = self.application.resolve_payroll_schedule(today)?;
-        let payroll_year = current_schedule.payroll_year.clone();
+        let payroll_year = schedule.payroll_year.clone();
 
         let assistants = self.application.personal_assistant_repository.get_all()?;
 
@@ -1678,7 +1750,7 @@ impl DirectPaymentApp {
                 .get_for_pa_and_cycle(
                     assistant.id,
                     &payroll_year,
-                    current_schedule.cycle_number,
+                    schedule.cycle_number,
                     "timesheet",
                 )?;
 
@@ -1695,7 +1767,7 @@ impl DirectPaymentApp {
             let timesheet_path = PdfGenerator::timesheet_output_path(
                 &pdf_output_folder,
                 &personal_assistant_name,
-                &current_schedule,
+                schedule,
             )?;
 
             if !timesheet_path.exists() {
@@ -1710,7 +1782,7 @@ impl DirectPaymentApp {
             let payroll_timesheet = self
                 .application
                 .payroll_timesheet_repository
-                .get_for_cycle_and_pa(&payroll_year, current_schedule.cycle_number, assistant.id)?
+                .get_for_cycle_and_pa(&payroll_year, schedule.cycle_number, assistant.id)?
                 .ok_or_else(|| {
                     format!(
                         "No Payroll Timesheet Preparation record exists for {}.",
@@ -1723,7 +1795,7 @@ impl DirectPaymentApp {
                 payroll_timesheet.id,
                 assistant.id,
                 &payroll_year,
-                current_schedule.cycle_number,
+                schedule.cycle_number,
                 &timesheet_path,
                 &attempted_at,
                 || {
@@ -1734,7 +1806,7 @@ impl DirectPaymentApp {
                         &personal_assistant_name,
                         assistant.date_of_birth.as_deref(),
                         assistant.national_insurance_number.as_deref(),
-                        &current_schedule,
+                        schedule,
                         &timesheet_path,
                         &self.application.context.config.payroll.timesheet_email_body,
                         self.additional_notes_by_personal_assistant
@@ -2206,6 +2278,55 @@ fn operational_period_key(schedule: &PayrollSchedule) -> OperationalPayrollPerio
     }
 }
 
+fn capture_operational_payroll_period(
+    schedule: &PayrollSchedule,
+) -> CapturedOperationalPayrollPeriod {
+    CapturedOperationalPayrollPeriod {
+        key: operational_period_key(schedule),
+        first_week_commencing: schedule.first_week_commencing.clone(),
+        pay_date: schedule.pay_date.clone(),
+        display_label: payroll_schedule_label(schedule),
+    }
+}
+
+fn captured_operational_period_timing(
+    captured: &CapturedOperationalPayrollPeriod,
+    today: chrono::NaiveDate,
+) -> Option<OperationalPeriodTiming> {
+    let first_week = parse_date_checked(&captured.first_week_commencing)?;
+    if today < first_week {
+        Some(OperationalPeriodTiming::Future)
+    } else if today > first_week + chrono::Duration::days(27) {
+        Some(OperationalPeriodTiming::Historical)
+    } else {
+        Some(OperationalPeriodTiming::Current)
+    }
+}
+
+fn validate_captured_email_batch_period(
+    captured: &CapturedOperationalPayrollPeriod,
+    captured_revision: u64,
+    operational_state: &OperationalPayrollPeriodState,
+    stored_schedule: Option<&PayrollSchedule>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    if operational_state.revision != captured_revision
+        || operational_state.selected.as_ref() != Some(&captured.key)
+    {
+        return Err("The operational payroll period selection changed after this email batch began. Cancel this batch and start it again for the intended payroll period.".into());
+    }
+
+    let stored_schedule = stored_schedule.ok_or_else(|| {
+        "The payroll period captured for this email batch no longer exists. Cancel this batch and select an available payroll period."
+    })?;
+    if stored_schedule.first_week_commencing != captured.first_week_commencing
+        || stored_schedule.pay_date != captured.pay_date
+    {
+        return Err("The payroll schedule dates changed after this email batch began. Nothing was sent; cancel this batch and start it again using the updated payroll period.".into());
+    }
+
+    Ok(())
+}
+
 fn initial_operational_payroll_period(
     application: &Application,
 ) -> (
@@ -2266,6 +2387,7 @@ fn default_operational_payroll_period(
             .or_else(|| schedules.first())
             .map(operational_period_key),
         explicitly_selected: false,
+        revision: 0,
     }
 }
 
@@ -2916,5 +3038,154 @@ mod payroll_return_schedule_selection_tests {
             .unwrap();
         assert_eq!(directory.path().read_dir().unwrap().count(), 0);
         assert_eq!(count_after, count_before);
+    }
+
+    #[test]
+    fn production_batch_capture_preserves_current_historical_and_future_period_facts() {
+        let historical = schedule(1, "2026/27", 5, "13/07/2026", "07/08/2026");
+        let current = schedule(2, "2026/27", 6, "10/08/2026", "04/09/2026");
+        let future = schedule(3, "2026/27", 7, "07/09/2026", "02/10/2026");
+        let today = chrono::NaiveDate::from_ymd_opt(2026, 8, 31).unwrap();
+
+        let captures = [
+            (
+                capture_operational_payroll_period(&historical),
+                OperationalPeriodTiming::Historical,
+            ),
+            (
+                capture_operational_payroll_period(&current),
+                OperationalPeriodTiming::Current,
+            ),
+            (
+                capture_operational_payroll_period(&future),
+                OperationalPeriodTiming::Future,
+            ),
+        ];
+
+        for (captured, expected_timing) in captures {
+            assert_eq!(
+                captured_operational_period_timing(&captured, today),
+                Some(expected_timing)
+            );
+            assert!(!captured.key.payroll_year.is_empty());
+            assert!(!captured.first_week_commencing.is_empty());
+            assert!(!captured.pay_date.is_empty());
+        }
+    }
+
+    #[test]
+    fn production_confirmation_period_text_uses_week_terminology_without_internal_cycle() {
+        let captured = capture_operational_payroll_period(&schedule(
+            6,
+            "2026/27",
+            6,
+            "10/08/2026",
+            "04/09/2026",
+        ));
+        let confirmation = format!("Payroll period: {}", captured.display_label);
+
+        assert_eq!(
+            confirmation,
+            "Payroll period: 2026/27 · Week 22 · 10/08/2026 to 06/09/2026 · Pay 04/09/2026"
+        );
+        assert!(!confirmation.contains("cycle"));
+        assert!(!confirmation.contains("C6"));
+    }
+
+    #[test]
+    fn production_batch_refuses_any_selection_change_even_if_changed_back() {
+        let current = schedule(1, "2026/27", 6, "10/08/2026", "04/09/2026");
+        let other = schedule(2, "2026/27", 7, "07/09/2026", "02/10/2026");
+        let captured = capture_operational_payroll_period(&current);
+        let mut state = default_operational_payroll_period(&[current.clone()], Some(&current));
+        let captured_revision = state.revision;
+
+        state.select(&other, Some(&current));
+        state.use_current(&current);
+
+        let error = validate_captured_email_batch_period(
+            &captured,
+            captured_revision,
+            &state,
+            Some(&current),
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("selection changed"));
+    }
+
+    #[test]
+    fn production_batch_accepts_unchanged_selection_and_schedule() {
+        let selected = schedule(1, "2026/27", 6, "10/08/2026", "04/09/2026");
+        let captured = capture_operational_payroll_period(&selected);
+        let state = default_operational_payroll_period(&[selected.clone()], Some(&selected));
+
+        validate_captured_email_batch_period(&captured, state.revision, &state, Some(&selected))
+            .unwrap();
+    }
+
+    #[test]
+    fn production_batch_refuses_missing_or_materially_changed_schedule() {
+        let selected = schedule(1, "2026/27", 6, "10/08/2026", "04/09/2026");
+        let captured = capture_operational_payroll_period(&selected);
+        let state = default_operational_payroll_period(&[selected.clone()], Some(&selected));
+
+        let missing = validate_captured_email_batch_period(&captured, state.revision, &state, None)
+            .unwrap_err();
+        assert!(missing.to_string().contains("no longer exists"));
+
+        let mut changed = selected;
+        changed.pay_date = "05/09/2026".to_string();
+        let changed_error =
+            validate_captured_email_batch_period(&captured, state.revision, &state, Some(&changed))
+                .unwrap_err();
+        assert!(changed_error.to_string().contains("schedule dates changed"));
+    }
+
+    #[test]
+    fn production_uses_captured_period_for_attachment_and_status_identity() {
+        let selected = schedule(1, "2026/27", 6, "10/08/2026", "04/09/2026");
+        let captured = capture_operational_payroll_period(&selected);
+        let state = default_operational_payroll_period(&[selected.clone()], Some(&selected));
+        validate_captured_email_batch_period(&captured, state.revision, &state, Some(&selected))
+            .unwrap();
+
+        let timesheet = crate::payroll_file_naming::timesheet_path(
+            std::path::Path::new("/timesheets/2027 to 2028"),
+            "Alex Smith",
+            &selected,
+        )
+        .unwrap();
+        let payslip = crate::payroll_file_naming::payslip_path(
+            std::path::Path::new("/payslips/2027 to 2028"),
+            "Alex Smith",
+            &selected,
+        )
+        .unwrap();
+        assert!(timesheet.ends_with("2026 to 2027/Timesheet - Alex Smith - 202608w22.pdf"));
+        assert!(payslip.ends_with("2026 to 2027/Payslip for Week 22 for Alex Smith.pdf"));
+
+        let connection = rusqlite::Connection::open_in_memory().unwrap();
+        crate::database::create_schema(&connection).unwrap();
+        let repository =
+            crate::payroll_timesheet_email_repository::PayrollTimesheetEmailRepository::new(
+                connection,
+            );
+        repository
+            .mark_sent(
+                42,
+                &captured.key.payroll_year,
+                captured.key.cycle_number,
+                "timesheet",
+                "2026-09-01T10:00:00Z",
+            )
+            .unwrap();
+        assert!(repository
+            .get_for_pa_and_cycle(42, "2026/27", 6, "timesheet")
+            .unwrap()
+            .is_some());
+        assert!(repository
+            .get_for_pa_and_cycle(42, "2027/28", 6, "timesheet")
+            .unwrap()
+            .is_none());
     }
 }
