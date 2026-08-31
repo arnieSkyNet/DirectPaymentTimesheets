@@ -1,443 +1,164 @@
-# DirectPaymentTimesheets Data Model
+# DirectPaymentTimesheets conceptual data model
 
-## Document Purpose
+## Purpose
 
-This document describes the data model used by DirectPaymentTimesheets.
+This document describes the implemented business entities and their relationships. It is intentionally conceptual; [DATABASE-SCHEMA.md](DATABASE-SCHEMA.md) is the exact schema-19 table/column reference and the Rust source remains authoritative.
 
-The purpose is to define the information the application stores and the relationships between the main business records.
+The model preserves imported facts, effective-dated employment terms, prepared payroll values and the exact worked-item evidence represented by a generated or submitted timesheet.
 
-The system is designed to support UK Direct Payment administration, including:
+## Employer
 
-- Personal Assistant records.
-- Timesheet records.
-- Payroll preparation.
-- Pay rate history.
-- Leave management.
-- Future self-service features.
+The employer is the Direct Payment holder. The record contains identity/contact information, payroll reference details, employer and email signatures, PDF-template path and sick-pay/mileage capability defaults.
 
----
+Employer information supplies the generated form declaration and the sender/copy route for payroll email. Older provider-related columns remain in the table for compatibility; current provider maintenance uses the separate payroll-provider entity.
 
-# 1. Core Design Principles
+## Payroll provider and payroll configuration
 
-The database must:
+The payroll-provider record contains provider identity/contact information and the payroll-department email address.
 
-- Preserve historical information.
-- Avoid overwriting previous payroll information.
-- Keep employment records separate from login/security records.
-- Support future expansion.
-- Maintain an audit trail.
-- Keep user data separate from application source code.
+Payroll/application settings are TOML configuration rather than payroll database entities. They include folder paths, PDF fonts/sizes, payroll frequency/rounding/workweek/overtime choices, email templates, SMTP/test addresses and theme. Persisted frequency, rounding, workweek and overtime choices are not currently applied as downstream configurable calculation rules.
 
----
+## Personal Assistant
 
-# 2. Main Entities
+A Personal Assistant (PA) record contains identity/contact data, employment status, start date, signature path and sick-pay/mileage capabilities.
 
-Current entities:
+`NULL` employment status is treated as active for compatibility. Inactive PAs remain valid historical identities. Preparation and generation include an inactive PA only when a payroll-timesheet record already exists for the selected period; production email batches remain active/legacy-`NULL` only.
 
-```
-Employer
+Deletion is refused when dependent imported work, rate/contracted-hours history, payroll records, holiday details or email statuses exist.
 
-PersonalAssistant
+## Effective-dated pay rate
 
-PersonalAssistantPayRate
+Each PA can have many pay-rate records containing:
 
-TimesheetEntry
+- effective date (`DD/MM/YYYY`);
+- base hourly rate;
+- employer top-up rate; and
+- creation timestamp.
 
-ImportAudit
-```
+For an imported shift, the authoritative rate is the newest record effective on or before the shift start calendar date. Equal effective dates resolve by highest row ID. Future rates remain stored and visible but never apply early. The allocated total is base plus top-up. Positive work with no effective rate prevents PDF generation.
 
-Future entities:
+## Effective-dated contracted hours
 
-```
-UserAccount
+Each PA can have many contracted-hours records containing an effective date, a textual contracted-hours value and creation timestamp.
 
-AnnualLeaveRecord
+Each payroll week independently selects the newest record effective on or before that week's commencing date, with highest ID as the equal-date tie-break. Contracted hours are informational PDF data; they do not alter worked hours, allocation or pay.
 
-PublicHoliday
+## Imported TimesheetEntry
 
-PayrollPeriod
-```
+An imported timesheet row preserves:
 
----
+- stable ID;
+- source PA name and optional resolved PA ID;
+- source start/end values;
+- break and worked minutes;
+- imported hourly rate and amount; and
+- optional notes.
 
-# 3. Employer
+`worked_minutes` is parsed directly from the CSV Worked Hours field, not recalculated from start/end or altered by the configured rounding setting. Imported rate and amount are retained but are not authoritative for generated payroll.
 
-An employer represents the Direct Payment holder responsible for managing Personal Assistants.
+Duplicate detection currently uses PA name plus start/end values. The stable row ID is later used as submitted-snapshot membership evidence.
 
-Current fields:
+## Import audit and archive
 
-```
-id
+An import-audit record captures import time, original/archive filenames, row counts, status and optional error. A successfully processed source CSV is copied to the internal `archive/YYYY/MM/` directory using a timestamped name. Failed attempts are also audited where the workflow can record the error.
 
-name
-address
-postcode
-telephone
-email
+## Payroll schedule
 
-payroll_provider
-payroll_provider_address
-payroll_provider_phone
+A Payroll Prep Sheet creates 13 four-week schedule records for one payroll year. Each record contains:
 
-employer_signature
+- payroll year and internal cycle number;
+- first week commencing;
+- latest posting date;
+- pay date;
+- creation timestamp; and
+- schedule-level `payslips_sent` state.
 
-default_pdf_template
-sick_pay_enabled
+Several payroll years coexist. The operational resolver finds a unique schedule whose inclusive active window is its first-week date through day 27. The chronological predecessor must end exactly where the current period starts, allowing cycle 1 to follow cycle 13 in another payroll year.
 
-mileage_enabled
+The internal cycle number is not the PAYE Payroll Week. PAYE week and file period code are derived from schedule dates.
 
-```
+## Payroll timesheet and weekly preparation
 
-Purpose:
+One payroll-timesheet record represents one PA in one payroll year/internal cycle. It holds creation/update timestamps and the compatible aggregate positive previous-cycle hours.
 
-Stores employer details used for:
+Each payroll timesheet has up to four weekly rows. A weekly row contains its week number/date and prepared values for:
 
-- Timesheet generation.
-- Payroll preparation.
-- PDF documents.
+- worked hours;
+- annual leave;
+- sick leave/SSP;
+- public-holiday hours; and
+- travel miles.
 
----
+The final Hours Worked value can be edited. Imported work remains unchanged; the difference between the imported/reconciled baseline and the employer's final value is persisted as a manual adjustment.
 
-# 4. Personal Assistant
+## Public-holiday detail
 
-A Personal Assistant represents an employee providing support.
+Public-holiday detail rows belong to a payroll timesheet and identify a week, holiday date and editable hours. Preparation creates the implemented England/Wales bank-holiday dates for editable records.
 
-Current fields:
+The individual holiday rows and the weekly aggregate `public_holiday_hours` remain distinct existing representations. The aggregate supplies the PDF hours value; positive detail rows supply displayed holiday-date information.
 
-```
-id
+## Manual worked-hours adjustment
 
-first_name
-surname
+A payroll timesheet can have at most one manual adjustment per week. It stores signed integer minutes, an optional human-readable reason and update timestamp.
 
-date_of_birth
+Positive manual minutes use the higher/newer rate genuinely applicable during the week; negative minutes use the lower/older applicable rate. A one-rate week uses that rate for either sign. Imported TimesheetEntry rows are never modified.
 
-national_insurance_number
+## Email status
 
-address
-postcode
-telephone
-email
+Email status identifies one PA, payroll year, internal cycle and email type (`timesheet` or `payslip`) with an optional sent timestamp. Timesheet and payslip status are independent.
 
-employment_status
-sick_pay_enabled
+The schedule-level `payslips_sent` flag is separate compatibility/summary state and is marked after all currently active/legacy-active PA payslips are recorded as sent.
 
-mileage_enabled
-```
+## Worked-item snapshot
 
-Purpose:
+A worked-item snapshot row belongs to one payroll timesheet/week and records the evidence represented by a generated PDF. Depending on source type it contains:
 
-Stores employment information required for:
+- source TimesheetEntry ID;
+- copied work date and integer worked minutes;
+- selected pay-rate ID, effective date and total rate;
+- optional reason; and
+- capture timestamp.
 
-- Timesheets.
-- Payroll administration.
-- Future leave calculations.
+Source types distinguish current imported shifts, late previous-cycle shifts, manual adjustments and opaque legacy previous-cycle adjustments. Ordinary items require rate evidence. The explicit legacy source type retains only aggregate minutes because its historical date/rate cannot be reconstructed.
 
----
+Submitted raw-shift IDs form the membership baseline for detecting genuinely late shifts in the preceding cycle. An unsubmitted candidate is not membership evidence.
 
-# 5. Personal Assistant Pay Rates
+## Snapshot state
 
-Pay rates are stored separately from the Personal Assistant record.
+Each snapshotted payroll timesheet has one state row containing:
 
-This allows historical rates to be preserved.
+- `candidate`, `submitted` or `indeterminate` state;
+- final PDF path and SHA-256 digest;
+- generation timestamp; and
+- optional submitted/indeterminate timestamps.
 
-Current fields:
+A candidate is replaceable until production send. Successful timesheet transport freezes it as submitted. If transport may have succeeded but final database persistence fails, indeterminate state protects against unsafe resend/regeneration.
 
-```
-id
+## Main relationships
 
-personal_assistant_id
-
-effective_date
-
-base_hourly_rate
-
-employer_top_up_rate
-
-created_at
-```
-
-Date storage format:
-
-```
-YYYY-MM-DD
-```
-
-Example:
-
-```
-2026-04-01
-```
-
-Display format:
-
-```
-DD/MM/YYYY
-```
-
-Example:
-
-```
-01/04/2026
-```
-
-Purpose:
-
-Allows the system to determine:
-
-- What rate applied on a particular date.
-- When a rate changed.
-- The employer-funded top-up amount.
-
-The payable hourly rate is:
-
-```
-base_hourly_rate + employer_top_up_rate
-```
-
----
-
-# 6. Timesheet Entry
-
-A timesheet entry represents work completed by a Personal Assistant.
-
-Current fields:
-
-```
-id
-
-pa_name
-
-start_time
-end_time
-
-break_minutes
-
-worked_minutes
-
-hourly_rate
-
-amount
-
-notes
-```
-
-Current implementation stores:
-
-```
-pa_name
-```
-
-Future improvement:
-
-Replace this with:
-
-```
-personal_assistant_id
-```
-
-The transition will be gradual because imported Hours Keeper CSV files currently contain names rather than database IDs.
-
-The system should preserve historical imported information during this change.
-
----
-
-# 7. Import Audit
-
-Import audit records track CSV imports.
-
-Fields:
-
-```
-id
-
-import_time
-
-original_filename
-
-archive_filename
-
-rows_processed
-
-rows_imported
-
-rows_skipped
-
-status
-
-error_message
-```
-
-Purpose:
-
-Provides traceability for imported Hours Keeper records.
-
-The system records:
-
-- What file was imported.
-- When it was imported.
-- How many records were processed.
-- Whether the import succeeded.
-
----
-
-# 8. Future User Accounts
-
-Authentication should be separate from employment records.
-
-The system should eventually support optional user accounts.
-
-Possible roles:
-
-```
-Employer / Administrator
-
+```text
 Personal Assistant
+  |-- Pay Rate history
+  |-- Contracted Hours history
+  |-- imported TimesheetEntry rows
+  |-- Payroll Timesheet (payroll year + internal cycle)
+        |-- four Payroll Timesheet Week rows
+        |-- Public Holiday detail rows
+        |-- Manual Adjustment rows
+        |-- Worked Item Snapshot rows
+        |-- one optional Snapshot State
+  |-- Email Status (period + type)
 
-Payroll User
+Payroll Schedule (payroll year + internal cycle)
+  |-- supplies the dates/identity used by Payroll Timesheet and Email Status
 ```
 
-User accounts should store:
+These relationships are implemented through stored IDs/business keys and repository logic. Schema 19 does not declare SQLite foreign-key constraints; see the schema reference for the actual constraints.
 
-```
-username
+## Historical-data principles
 
-password_hash
-
-role
-
-linked_person_id
-
-active_status
-```
-
-A Personal Assistant may exist without having login access.
-
----
-
-# 9. Future Leave Records
-
-Future versions may include:
-
-## Annual Leave
-
-Stores:
-
-- Personal Assistant.
-- Start date.
-- End date.
-- Hours taken.
-
-Annual leave records are separate from worked hours.
-
----
-
-## Public Holidays
-
-The system should support:
-
-- Public holiday dates.
-- Automatic detection during imports.
-- Correct allocation of hours.
-
----
-
-# 10. Future Payroll Periods
-
-Payroll periods will represent the payment cycle.
-
-They may contain:
-
-- Period start date.
-- Period end date.
-- Submission date.
-- Payroll payment date.
-
-Special periods may be required for Christmas payroll arrangements.
-
----
-
-# 11. Data Protection
-
-The application handles sensitive personal information.
-
-The system should:
-
-- Store only required information.
-- Keep data local where possible.
-- Avoid unnecessary personal information in filenames.
-- Maintain audit records.
-- Protect access through future user authentication.
-
----
-
-# 12. Payroll Adjustments (Future)
-
-Some payroll items are not part of the hours worked but still appear on payroll and timesheets.
-
-Examples include:
-
-- Statutory Sick Pay (SSP)
-- Sick hours
-- Mileage claims
-
-These should not be stored directly within the Timesheet Entry.
-
-Instead, future versions of DirectPaymentTimesheets should store them as payroll adjustments linked to an individual payroll period.
-
-Employer Settings
-
-Each employer should define default capabilities:
-
-- Sick Pay / SSP Enabled
-- Mileage Claims Enabled
-
-These defaults represent the normal policy for the employer.
-
-Personal Assistant Settings
-
-Each Personal Assistant should also store:
-
-- Sick Pay / SSP Enabled
-- Mileage Claims Enabled
-
-When a new Personal Assistant is created, these values should default from the Employer settings but may be changed for that individual if required.
-
-Timesheet Generation
-
-When generating a payroll timesheet, the application should:
-
-1. Load the Personal Assistant record.
-2. Check whether Sick Pay / SSP is enabled.
-3. Check whether Mileage Claims are enabled.
-4. If disabled, leave the corresponding sections blank on the generated PDF.
-5. If enabled, allow payroll adjustment values to be entered before PDF generation.
-6. Store those values so regenerated PDFs remain consistent.
-
-Future Entity
-
-A future PayrollAdjustment entity may contain fields such as:
-
-- payroll_period_id
-- personal_assistant_id
-- sick_hours
-- ssp_amount
-- mileage_miles
-- mileage_rate
-- mileage_amount
-- notes
-
-This approach keeps worked hours separate from payroll adjustments while allowing future expansion for additional payroll items.
-
-# 13. Development Principle
-
-The data model should evolve carefully.
-
-Changes should:
-
-- Preserve existing data.
-- Use database migrations.
-- Maintain historical accuracy.
-- Be documented before major implementation changes.
-
-The database should represent the real-world Direct Payment employment process.
+- Imported rows are retained rather than rewritten by preparation corrections.
+- Effective-dated rate and contracted-hours histories are preserved, including future entries.
+- Schedule replacement is per payroll year and transactional.
+- Submitted snapshot membership is immutable.
+- Opaque pre-schema-19 aggregates remain explicitly unallocated rather than receiving invented dates or rates.
