@@ -41,6 +41,11 @@ struct PendingEmailBatch {
     selected_personal_assistant_ids: Vec<i64>,
 }
 
+struct PendingPayrollReturnImport {
+    schedules: Vec<PayrollSchedule>,
+    selected_schedule_id: i64,
+}
+
 pub struct DirectPaymentApp {
     application: Application,
     version: String,
@@ -53,6 +58,7 @@ pub struct DirectPaymentApp {
     additional_notes_by_personal_assistant: HashMap<i64, String>,
     note_enabled_personal_assistant_ids: HashSet<i64>,
     pending_email_batch: Option<PendingEmailBatch>,
+    pending_payroll_return_import: Option<PendingPayrollReturnImport>,
     email_settings_employer: Option<crate::models::Employer>,
     email_settings_payroll_provider: Option<crate::payroll_provider_repository::PayrollProvider>,
     employer_screen: crate::employer_screen::EmployerScreen,
@@ -78,6 +84,7 @@ impl DirectPaymentApp {
             additional_notes_by_personal_assistant: HashMap::new(),
             note_enabled_personal_assistant_ids: HashSet::new(),
             pending_email_batch: None,
+            pending_payroll_return_import: None,
             email_settings_employer: None,
             email_settings_payroll_provider: None,
             employer_screen: crate::employer_screen::EmployerScreen::new(),
@@ -780,161 +787,277 @@ impl DirectPaymentApp {
         }
     }
 
-    fn draw_dashboard(&mut self, ui: &mut egui::Ui) {
-        egui::ScrollArea::vertical().show(ui, |ui| {
-            ui.heading("Dashboard");
+    fn begin_payroll_return_import(&mut self) {
+        let result = (|| -> Result<PendingPayrollReturnImport, Box<dyn std::error::Error>> {
+            let today = chrono::Local::now().date_naive();
+            let current_schedule_id = self
+                .application
+                .resolve_payroll_schedule(today)
+                .ok()
+                .map(|schedule| schedule.id);
+            let schedules = ordered_payroll_return_schedules(
+                self.application.payroll_schedule_repository.get_all()?,
+                current_schedule_id,
+            );
+            let selected_schedule_id =
+                default_payroll_return_schedule_id(&schedules, current_schedule_id)
+                    .ok_or("No imported Payroll Prep Sheet schedules are available.")?;
 
-        ui.separator();
+            Ok(PendingPayrollReturnImport {
+                schedules,
+                selected_schedule_id,
+            })
+        })();
 
-        if ui.button("Import CSV").clicked() {
-            match self.application.import_csv() {
-                Ok(summary) => {
-                    self.status_message = "Import completed successfully.".to_string();
-                    self.last_import = Some(summary);
-                }
-
-                Err(error) => {
-                    self.status_message = format!("Import failed: {}", error);
-                    self.last_import = None;
-                }
+        match result {
+            Ok(pending) => self.pending_payroll_return_import = Some(pending),
+            Err(error) => {
+                self.pending_payroll_return_import = None;
+                self.status_message = format!("Payroll return import failed: {error}");
             }
         }
+    }
 
-        if ui.button("View Imported CSV").clicked() {
-            match self.application.get_timesheets() {
-                Ok(entries) => {
-                    self.timesheets = entries;
+    fn draw_payroll_return_schedule_dialog(&mut self, ctx: &egui::Context) {
+        let Some(pending) = &mut self.pending_payroll_return_import else {
+            return;
+        };
 
-                    self.status_message =
-                        format!("Loaded {} timesheets.", self.timesheets.len());
+        let mut import = false;
+        let mut cancel = false;
+        egui::Window::new("Choose Payroll Return period")
+            .collapsible(false)
+            .resizable(false)
+            .show(ctx, |ui| {
+                ui.label(
+                    "Choose the payroll period this return belongs to, then select the Payroll Return ZIP file.",
+                );
+
+                let selected_text = selected_payroll_return_schedule(
+                    &pending.schedules,
+                    pending.selected_schedule_id,
+                )
+                .map(payroll_return_schedule_label)
+                .unwrap_or_else(|| "Select a payroll period".to_string());
+
+                egui::ComboBox::from_id_salt("payroll_return_schedule_selection")
+                    .width(540.0)
+                    .selected_text(selected_text)
+                    .show_ui(ui, |ui| {
+                        for schedule in &pending.schedules {
+                            ui.selectable_value(
+                                &mut pending.selected_schedule_id,
+                                schedule.id,
+                                payroll_return_schedule_label(schedule),
+                            );
+                        }
+                    });
+
+                if let Some(schedule) = selected_payroll_return_schedule(
+                    &pending.schedules,
+                    pending.selected_schedule_id,
+                ) {
+                    ui.separator();
+                    match payroll_return_schedule_details(schedule) {
+                        Ok(details) => {
+                            for detail in details {
+                                ui.label(detail);
+                            }
+                        }
+                        Err(error) => {
+                            ui.colored_label(
+                                ui.visuals().error_fg_color,
+                                format!("Cannot use this schedule: {error}"),
+                            );
+                        }
+                    }
                 }
 
-                Err(error) => {
-                    self.status_message =
-                        format!("Failed loading timesheets: {}", error);
-                }
+                ui.horizontal(|ui| {
+                    import = ui.button("Choose Payroll Return ZIP").clicked();
+                    cancel = ui.button("Cancel").clicked();
+                });
+            });
+
+        if cancel {
+            self.pending_payroll_return_import = None;
+            self.status_message = "Payroll return import cancelled; no files were changed.".into();
+        } else if import {
+            let schedule = self
+                .pending_payroll_return_import
+                .as_ref()
+                .and_then(|pending| {
+                    selected_payroll_return_schedule(
+                        &pending.schedules,
+                        pending.selected_schedule_id,
+                    )
+                })
+                .cloned();
+            self.pending_payroll_return_import = None;
+
+            let Some(schedule) = schedule else {
+                self.status_message =
+                    "Payroll return import failed: no payroll period was selected.".to_string();
+                return;
+            };
+            if crate::payroll_file_naming::paye_week(&schedule).is_err() {
+                self.status_message =
+                    "Payroll return import failed: the selected schedule has an invalid pay date."
+                        .to_string();
+                return;
             }
-        }
 
-        if ui.button("Generate Payroll Timesheets").clicked() {
-            match self.generate_payroll_timesheets() {
-                Ok(count) => {
-                    self.status_message =
-                        format!("Payroll timesheets generated: {} PDF(s).", count);
-                }
-
-                Err(error) => {
-                    self.status_message =
-                        format!("Payroll timesheet generation failed: {}", error);
-                }
-            }
-        }
-
-        if ui.button("Email Timesheets").clicked() { self.begin_email_batch(PayrollEmailKind::Timesheet); }
-
-        if ui.button("Import Payroll Return").clicked() {
             if let Some(path) = rfd::FileDialog::new()
                 .add_filter("ZIP files", &["zip"])
                 .pick_file()
             {
-                let today = chrono::Local::now().date_naive();
-
-                match self.application.resolve_payroll_schedule(today) {
-                    Ok(schedule) => {
-                        match self.application.import_payroll_return(&path, &schedule) {
-                                    Ok(result) => {
-                                        self.status_message = format!(
-                                            "Payroll return imported: {} payslip(s), {} information file(s).",
-                                            result.payslips_imported,
-                                            result.information_files_imported
-                                        );
-                                    }
-
-                                    Err(error) => {
-                                        self.status_message =
-                                            format!("Payroll return import failed: {}", error);
-                                    }
-                        }
-                    }
-
-                    Err(error) => {
-                        self.status_message =
-                            format!("Payroll return import failed: {}", error);
-                    }
-                }
-            }
-        }
-
-        if ui.button("Email Payslips").clicked() { self.begin_email_batch(PayrollEmailKind::Payslip); }
-
-        if ui.button("Import Payroll Prep Sheet").clicked() {
-            if let Some(path) = rfd::FileDialog::new()
-                .add_filter("Payroll Prep Sheet", &["pdf", "docx"])
-                .pick_file()
-            {
-                match self.application.import_payroll_prep_sheet(&path) {
-                    Ok(count) => {
-                        self.status_message =
-                            format!("Payroll Prep Sheet imported: {} schedule entries.", count);
-                    }
-
-                    Err(error) => {
-                        self.status_message =
-                            format!("Payroll Prep Sheet import failed: {}", error);
-                    }
-                }
-            }
-        }
-
-        if ui.button("View Payroll Schedule").clicked() {
-            let today = chrono::Local::now().date_naive();
-            match self.application.resolve_payroll_schedule(today) {
-                Ok(current) => match self.application.get_payroll_schedule(&current.payroll_year) {
-                    Ok(schedules) => {
-                        self.payroll_schedules = schedules;
+                match self.application.import_payroll_return(&path, &schedule) {
+                    Ok(result) => {
                         self.status_message = format!(
-                            "Loaded {} payroll schedule entries for {}.",
-                            self.payroll_schedules.len(),
-                            current.payroll_year
+                            "Payroll return imported: {} payslip(s), {} information file(s).",
+                            result.payslips_imported, result.information_files_imported
                         );
                     }
                     Err(error) => {
-                        self.status_message =
-                            format!("Failed loading payroll schedule: {}", error);
+                        self.status_message = format!("Payroll return import failed: {error}");
                     }
-                },
-                Err(error) => {
-                    self.status_message = format!("Failed loading payroll schedule: {}", error);
                 }
             }
         }
+    }
 
-        self.draw_additional_note_prompt(ui);
+    fn draw_dashboard(&mut self, ui: &mut egui::Ui) {
+        egui::ScrollArea::vertical().show(ui, |ui| {
+            ui.heading("Dashboard");
 
-        ui.separator();
+            ui.separator();
 
-        ui.heading("Import Summary");
+            if ui.button("Import CSV").clicked() {
+                match self.application.import_csv() {
+                    Ok(summary) => {
+                        self.status_message = "Import completed successfully.".to_string();
+                        self.last_import = Some(summary);
+                    }
 
-        match &self.last_import {
-            Some(summary) => {
-                ui.label(format!("Files discovered: {}", summary.files_discovered));
-                ui.label(format!("Files processed: {}", summary.files_processed));
-                ui.label(format!("Rows imported: {}", summary.rows_imported));
-                ui.label(format!("Rows skipped: {}", summary.rows_skipped));
+                    Err(error) => {
+                        self.status_message = format!("Import failed: {}", error);
+                        self.last_import = None;
+                    }
+                }
             }
 
-            None => {
-                ui.label("No import performed yet.");
+            if ui.button("View Imported CSV").clicked() {
+                match self.application.get_timesheets() {
+                    Ok(entries) => {
+                        self.timesheets = entries;
+
+                        self.status_message =
+                            format!("Loaded {} timesheets.", self.timesheets.len());
+                    }
+
+                    Err(error) => {
+                        self.status_message = format!("Failed loading timesheets: {}", error);
+                    }
+                }
             }
-        }
 
-        ui.separator();
+            if ui.button("Generate Payroll Timesheets").clicked() {
+                match self.generate_payroll_timesheets() {
+                    Ok(count) => {
+                        self.status_message =
+                            format!("Payroll timesheets generated: {} PDF(s).", count);
+                    }
 
-        ui.label(format!("Status: {}", self.status_message));
+                    Err(error) => {
+                        self.status_message =
+                            format!("Payroll timesheet generation failed: {}", error);
+                    }
+                }
+            }
 
-        draw_payroll_schedule(ui, &self.payroll_schedules);
-        draw_timesheets(ui, &self.timesheets);
-        self.draw_timesheet_email_status(ui);
+            if ui.button("Email Timesheets").clicked() {
+                self.begin_email_batch(PayrollEmailKind::Timesheet);
+            }
+
+            if ui.button("Import Payroll Return").clicked() {
+                self.begin_payroll_return_import();
+            }
+
+            if ui.button("Email Payslips").clicked() {
+                self.begin_email_batch(PayrollEmailKind::Payslip);
+            }
+
+            if ui.button("Import Payroll Prep Sheet").clicked() {
+                if let Some(path) = rfd::FileDialog::new()
+                    .add_filter("Payroll Prep Sheet", &["pdf", "docx"])
+                    .pick_file()
+                {
+                    match self.application.import_payroll_prep_sheet(&path) {
+                        Ok(count) => {
+                            self.status_message =
+                                format!("Payroll Prep Sheet imported: {} schedule entries.", count);
+                        }
+
+                        Err(error) => {
+                            self.status_message =
+                                format!("Payroll Prep Sheet import failed: {}", error);
+                        }
+                    }
+                }
+            }
+
+            if ui.button("View Payroll Schedule").clicked() {
+                let today = chrono::Local::now().date_naive();
+                match self.application.resolve_payroll_schedule(today) {
+                    Ok(current) => {
+                        match self.application.get_payroll_schedule(&current.payroll_year) {
+                            Ok(schedules) => {
+                                self.payroll_schedules = schedules;
+                                self.status_message = format!(
+                                    "Loaded {} payroll schedule entries for {}.",
+                                    self.payroll_schedules.len(),
+                                    current.payroll_year
+                                );
+                            }
+                            Err(error) => {
+                                self.status_message =
+                                    format!("Failed loading payroll schedule: {}", error);
+                            }
+                        }
+                    }
+                    Err(error) => {
+                        self.status_message = format!("Failed loading payroll schedule: {}", error);
+                    }
+                }
+            }
+
+            self.draw_additional_note_prompt(ui);
+
+            ui.separator();
+
+            ui.heading("Import Summary");
+
+            match &self.last_import {
+                Some(summary) => {
+                    ui.label(format!("Files discovered: {}", summary.files_discovered));
+                    ui.label(format!("Files processed: {}", summary.files_processed));
+                    ui.label(format!("Rows imported: {}", summary.rows_imported));
+                    ui.label(format!("Rows skipped: {}", summary.rows_skipped));
+                }
+
+                None => {
+                    ui.label("No import performed yet.");
+                }
+            }
+
+            ui.separator();
+
+            ui.label(format!("Status: {}", self.status_message));
+
+            draw_payroll_schedule(ui, &self.payroll_schedules);
+            draw_timesheets(ui, &self.timesheets);
+            self.draw_timesheet_email_status(ui);
+            self.draw_payroll_return_schedule_dialog(ui.ctx());
         });
     }
 
@@ -1829,6 +1952,98 @@ impl DirectPaymentApp {
     }
 }
 
+fn ordered_payroll_return_schedules(
+    mut schedules: Vec<PayrollSchedule>,
+    current_schedule_id: Option<i64>,
+) -> Vec<PayrollSchedule> {
+    schedules.sort_by(|left, right| {
+        let left_date = parse_date_checked(&left.first_week_commencing);
+        let right_date = parse_date_checked(&right.first_week_commencing);
+        match (left_date, right_date) {
+            (Some(left_date), Some(right_date)) => right_date.cmp(&left_date),
+            (Some(_), None) => std::cmp::Ordering::Less,
+            (None, Some(_)) => std::cmp::Ordering::Greater,
+            (None, None) => std::cmp::Ordering::Equal,
+        }
+        .then_with(|| right.payroll_year.cmp(&left.payroll_year))
+        .then_with(|| right.cycle_number.cmp(&left.cycle_number))
+        .then_with(|| right.id.cmp(&left.id))
+    });
+
+    if let Some(current_schedule_id) = current_schedule_id {
+        if let Some(index) = schedules
+            .iter()
+            .position(|schedule| schedule.id == current_schedule_id)
+        {
+            let current = schedules.remove(index);
+            schedules.insert(0, current);
+        }
+    }
+
+    schedules
+}
+
+fn default_payroll_return_schedule_id(
+    schedules: &[PayrollSchedule],
+    current_schedule_id: Option<i64>,
+) -> Option<i64> {
+    current_schedule_id
+        .filter(|id| schedules.iter().any(|schedule| schedule.id == *id))
+        .or_else(|| schedules.first().map(|schedule| schedule.id))
+}
+
+fn selected_payroll_return_schedule(
+    schedules: &[PayrollSchedule],
+    selected_schedule_id: i64,
+) -> Option<&PayrollSchedule> {
+    schedules
+        .iter()
+        .find(|schedule| schedule.id == selected_schedule_id)
+}
+
+fn payroll_return_schedule_label(schedule: &PayrollSchedule) -> String {
+    let paye_week = crate::payroll_file_naming::paye_week(schedule)
+        .map(|week| week.to_string())
+        .unwrap_or_else(|_| "unavailable".to_string());
+
+    format!(
+        "{} · Week {} · {} · Pay {}",
+        schedule.payroll_year,
+        paye_week,
+        payroll_return_schedule_period(schedule),
+        schedule.pay_date
+    )
+}
+
+fn payroll_return_schedule_period(schedule: &PayrollSchedule) -> String {
+    parse_date_checked(&schedule.first_week_commencing)
+        .map(|start| {
+            format!(
+                "{} to {}",
+                start.format("%d/%m/%Y"),
+                (start + chrono::Duration::days(27)).format("%d/%m/%Y")
+            )
+        })
+        .unwrap_or_else(|| format!("from {}", schedule.first_week_commencing))
+}
+
+fn payroll_return_schedule_details(
+    schedule: &PayrollSchedule,
+) -> Result<[String; 4], Box<dyn std::error::Error>> {
+    Ok([
+        format!("Payroll year: {}", schedule.payroll_year),
+        format!(
+            "Payroll week: {}",
+            crate::payroll_file_naming::paye_week(schedule)?
+        ),
+        format!(
+            "Timesheet period: {}",
+            payroll_return_schedule_period(schedule)
+        ),
+        format!("Scheduled pay date: {}", schedule.pay_date),
+    ])
+}
+
 fn format_pdf_hours(value: f64) -> String {
     if value == 0.0 {
         return "0".to_string();
@@ -1929,4 +2144,135 @@ fn draw_payroll_schedule(ui: &mut egui::Ui, schedules: &[PayrollSchedule]) {
                 ui.end_row();
             }
         });
+}
+
+#[cfg(test)]
+mod payroll_return_schedule_selection_tests {
+    use super::*;
+
+    fn schedule(
+        id: i64,
+        payroll_year: &str,
+        cycle_number: i64,
+        first_week: &str,
+        pay_date: &str,
+    ) -> PayrollSchedule {
+        PayrollSchedule {
+            id,
+            payroll_year: payroll_year.to_string(),
+            cycle_number,
+            first_week_commencing: first_week.to_string(),
+            latest_posting_date: String::new(),
+            pay_date: pay_date.to_string(),
+            created_at: String::new(),
+            payslips_sent: false,
+        }
+    }
+
+    #[test]
+    fn current_schedule_is_promoted_and_selected_by_default() {
+        let schedules = ordered_payroll_return_schedules(
+            vec![
+                schedule(1, "2026/27", 13, "22/02/2027", "19/03/2027"),
+                schedule(2, "2027/28", 1, "22/03/2027", "16/04/2027"),
+            ],
+            Some(1),
+        );
+
+        assert_eq!(schedules[0].id, 1);
+        assert_eq!(
+            default_payroll_return_schedule_id(&schedules, Some(1)),
+            Some(1)
+        );
+    }
+
+    #[test]
+    fn schedules_are_newest_first_across_payroll_years_without_a_current_cycle() {
+        let schedules = ordered_payroll_return_schedules(
+            vec![
+                schedule(1, "2026/27", 13, "22/02/2027", "19/03/2027"),
+                schedule(3, "2027/28", 2, "19/04/2027", "14/05/2027"),
+                schedule(2, "2027/28", 1, "22/03/2027", "16/04/2027"),
+            ],
+            None,
+        );
+
+        assert_eq!(
+            schedules
+                .iter()
+                .map(|schedule| schedule.id)
+                .collect::<Vec<_>>(),
+            vec![3, 2, 1]
+        );
+        assert_eq!(
+            default_payroll_return_schedule_id(&schedules, None),
+            Some(3)
+        );
+    }
+
+    #[test]
+    fn a_historical_schedule_can_be_selected_explicitly() {
+        let schedules = vec![
+            schedule(2, "2027/28", 1, "22/03/2027", "16/04/2027"),
+            schedule(1, "2026/27", 13, "22/02/2027", "19/03/2027"),
+        ];
+
+        let selected = selected_payroll_return_schedule(&schedules, 1).unwrap();
+
+        assert_eq!(selected.payroll_year, "2026/27");
+        assert_eq!(selected.cycle_number, 13);
+    }
+
+    #[test]
+    fn selected_historical_schedule_drives_the_import_destination_not_today_schedule() {
+        let schedules = vec![
+            schedule(2, "2027/28", 1, "22/03/2027", "16/04/2027"),
+            schedule(1, "2026/27", 13, "22/02/2027", "19/03/2027"),
+        ];
+        let selected = selected_payroll_return_schedule(&schedules, 1).unwrap();
+
+        let destination = crate::payroll_file_naming::payslip_path(
+            std::path::Path::new("/payslips"),
+            "Alex Smith",
+            selected,
+        )
+        .unwrap();
+
+        assert!(destination.starts_with("/payslips/2026 to 2027"));
+        assert!(!destination.starts_with("/payslips/2027 to 2028"));
+    }
+
+    #[test]
+    fn schedule_label_contains_all_disambiguating_period_information() {
+        let item = schedule(6, "2026/27", 6, "10/08/2026", "04/09/2026");
+
+        let label = payroll_return_schedule_label(&item);
+
+        assert!(label.contains("2026/27"));
+        assert!(label.contains("Week 22"));
+        assert!(label.contains("10/08/2026 to 06/09/2026"));
+        assert!(label.contains("Pay 04/09/2026"));
+        assert!(!label.contains("C6"));
+        assert!(!label.contains("cycle"));
+        assert!(!label.contains("PAYE"));
+    }
+
+    #[test]
+    fn schedule_details_use_payroll_user_terminology_only() {
+        let item = schedule(6, "2026/27", 6, "10/08/2026", "04/09/2026");
+
+        let details = payroll_return_schedule_details(&item).unwrap();
+
+        assert_eq!(
+            details,
+            [
+                "Payroll year: 2026/27",
+                "Payroll week: 22",
+                "Timesheet period: 10/08/2026 to 06/09/2026",
+                "Scheduled pay date: 04/09/2026",
+            ]
+        );
+        assert!(!details.iter().any(|detail| detail.contains("cycle")));
+        assert!(!details.iter().any(|detail| detail.contains("PAYE")));
+    }
 }
