@@ -237,11 +237,25 @@ impl eframe::App for DirectPaymentApp {
                 }
             }
 
-            ActiveScreen::PayrollTimesheet => {
-                egui::ScrollArea::vertical().show(ui, |ui| {
-                    self.payroll_timesheet_screen.show(ui, &self.application);
-                });
-            }
+            ActiveScreen::PayrollTimesheet => match self.selected_operational_payroll_schedule() {
+                Ok(schedule) => {
+                    let period_label = payroll_schedule_label(&schedule);
+                    egui::ScrollArea::vertical().show(ui, |ui| {
+                        self.payroll_timesheet_screen.show(
+                            ui,
+                            &self.application,
+                            &schedule,
+                            &period_label,
+                        );
+                    });
+                }
+                Err(error) => {
+                    ui.heading("Payroll Timesheet Preparation");
+                    ui.label(format!(
+                        "Unable to load the selected payroll period: {error}"
+                    ));
+                }
+            },
 
             ActiveScreen::ApplicationSettings => {
                 let mut open_email_settings = false;

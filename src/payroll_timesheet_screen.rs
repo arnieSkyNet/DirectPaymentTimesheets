@@ -7,15 +7,52 @@ use crate::payroll_schedule_repository::PayrollSchedule;
 use crate::payroll_timesheet_repository::{
     PayrollTimesheet, PayrollTimesheetPublicHoliday, PayrollTimesheetWeek,
 };
+use crate::payroll_worked_item_repository::{ManualHoursAdjustment, SnapshotState};
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct BoundPayrollPeriod {
+    payroll_year: String,
+    cycle_number: i64,
+    first_week_commencing: String,
+    pay_date: String,
+}
+
+impl From<&PayrollSchedule> for BoundPayrollPeriod {
+    fn from(schedule: &PayrollSchedule) -> Self {
+        Self {
+            payroll_year: schedule.payroll_year.clone(),
+            cycle_number: schedule.cycle_number,
+            first_week_commencing: schedule.first_week_commencing.clone(),
+            pay_date: schedule.pay_date.clone(),
+        }
+    }
+}
+
+#[derive(Clone)]
+struct PreparationBaseline {
+    previous_cycle_hours: Option<f64>,
+    weeks: Vec<PayrollTimesheetWeek>,
+    public_holidays: Vec<PayrollTimesheetPublicHoliday>,
+    manual_adjustments: Vec<ManualHoursAdjustment>,
+}
+
+struct SaveResult {
+    changed: bool,
+    candidate_invalidated: bool,
+}
 
 pub struct PayrollTimesheetScreen {
     loaded: bool,
     cycle_number: i64,
     schedule: Option<PayrollSchedule>,
+    bound_period: Option<BoundPayrollPeriod>,
+    period_label: String,
     records: Vec<PayrollTimesheet>,
     weeks: Vec<(PayrollTimesheet, Vec<PayrollTimesheetWeek>, String)>,
     public_holidays: Vec<Vec<PayrollTimesheetPublicHoliday>>,
     worked_hours_baselines: HashMap<(i64, i64), i64>,
+    snapshot_states: HashMap<i64, SnapshotState>,
+    preparation_baselines: HashMap<i64, PreparationBaseline>,
     status_message: String,
 }
 
@@ -25,10 +62,14 @@ impl PayrollTimesheetScreen {
             loaded: false,
             cycle_number: 0,
             schedule: None,
+            bound_period: None,
+            period_label: String::new(),
             records: Vec::new(),
             weeks: Vec::new(),
             public_holidays: Vec::new(),
             worked_hours_baselines: HashMap::new(),
+            snapshot_states: HashMap::new(),
+            preparation_baselines: HashMap::new(),
             status_message: "Payroll Timesheets not loaded.".to_string(),
         }
     }
@@ -36,15 +77,25 @@ impl PayrollTimesheetScreen {
     pub fn reload(&mut self) {
         self.loaded = false;
         self.schedule = None;
+        self.bound_period = None;
+        self.period_label.clear();
         self.records.clear();
         self.weeks.clear();
         self.public_holidays.clear();
         self.worked_hours_baselines.clear();
+        self.snapshot_states.clear();
+        self.preparation_baselines.clear();
     }
 
-    pub fn show(&mut self, ui: &mut egui::Ui, application: &Application) {
+    pub fn show(
+        &mut self,
+        ui: &mut egui::Ui,
+        application: &Application,
+        operational_schedule: &PayrollSchedule,
+        period_label: &str,
+    ) {
         if !self.loaded {
-            match self.load(application) {
+            match self.load(application, operational_schedule, period_label) {
                 Ok(()) => self.loaded = true,
                 Err(error) => {
                     self.status_message = format!("Failed loading Payroll Timesheets: {}", error);
@@ -57,10 +108,8 @@ impl PayrollTimesheetScreen {
         ui.separator();
 
         if let Some(schedule) = &self.schedule {
-            ui.label(format!(
-                "Payroll year: {}    Cycle: {}",
-                schedule.payroll_year, schedule.cycle_number
-            ));
+            let _ = schedule;
+            ui.label(format!("Payroll period: {}", self.period_label));
 
             ui.label(format!(
                 "Four-week period: {} to {}",
@@ -84,8 +133,26 @@ impl PayrollTimesheetScreen {
 
             let (record, weeks, assistant_name) = &mut records[record_index];
             let holidays = &mut public_holidays[record_index];
+            let snapshot_state = self.snapshot_states.get(&record.id).copied();
+            let read_only = matches!(
+                snapshot_state,
+                Some(SnapshotState::Submitted | SnapshotState::Indeterminate)
+            );
 
             ui.heading(&*assistant_name);
+
+            match snapshot_state {
+                Some(SnapshotState::Submitted) => {
+                    ui.label("Submitted payroll timesheet — read-only");
+                }
+                Some(SnapshotState::Indeterminate) => {
+                    ui.label("Delivery status is indeterminate — read-only");
+                }
+                Some(SnapshotState::Candidate) => {
+                    ui.label("Generated candidate — changes require regeneration before sending");
+                }
+                None => {}
+            }
 
             ui.horizontal(|ui| {
                 ui.label("Previous cycle hours");
@@ -97,90 +164,84 @@ impl PayrollTimesheetScreen {
                 ui.label(previous);
             });
 
-            egui::Grid::new(format!("payroll_week_grid_{}", record_index))
-                .striped(true)
-                .show(ui, |ui| {
-                    ui.label("W/c");
-                    ui.label("Worked");
-                    ui.label("Annual Leave");
-                    ui.label("Sick / SSP");
-                    ui.label("Public Holiday");
-                    ui.label("Travel Miles");
-                    ui.end_row();
-
-                    for week in weeks.iter_mut() {
-                        ui.label(&week.week_commencing);
-
-                        edit_number(ui, &mut week.worked_hours);
-                        edit_number(ui, &mut week.annual_leave_hours);
-                        edit_number(ui, &mut week.sick_leave_hours);
-
-                        ui.vertical(|ui| {
-                            for holiday in holidays
-                                .iter_mut()
-                                .filter(|holiday| holiday.week_number == week.week_number)
-                            {
-                                ui.horizontal(|ui| {
-                                    ui.label(egui::RichText::new(&holiday.holiday_date).size(8.0));
-
-                                    edit_optional_number(ui, &mut holiday.hours);
-                                });
-                            }
-                        });
-
-                        edit_number(ui, &mut week.travel_miles);
-
+            ui.add_enabled_ui(!read_only, |ui| {
+                egui::Grid::new(format!("payroll_week_grid_{}", record_index))
+                    .striped(true)
+                    .show(ui, |ui| {
+                        ui.label("W/c");
+                        ui.label("Worked");
+                        ui.label("Annual Leave");
+                        ui.label("Sick / SSP");
+                        ui.label("Public Holiday");
+                        ui.label("Travel Miles");
                         ui.end_row();
-                    }
-                });
 
-            if ui.button(format!("Save {}", assistant_name)).clicked() {
-                let now = chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
+                        for week in weeks.iter_mut() {
+                            ui.label(&week.week_commencing);
 
-                let result = application
-                    .payroll_timesheet_repository
-                    .update_previous_cycle_hours(record.id, record.previous_cycle_hours, &now)
-                    .and_then(|_| {
-                        for week in weeks.iter() {
-                            let final_minutes = (week.worked_hours * 60.0).round() as i64;
-                            let baseline_minutes = self
-                                .worked_hours_baselines
-                                .get(&(record.id, week.week_number))
-                                .copied()
-                                .unwrap_or(final_minutes);
-                            let existing_reason = application
-                                .payroll_worked_item_repository
-                                .get_manual_adjustments(record.id)?
-                                .into_iter()
-                                .find(|adjustment| adjustment.week_number == week.week_number)
-                                .and_then(|adjustment| adjustment.reason);
-                            application
-                                .payroll_worked_item_repository
-                                .set_manual_adjustment(
-                                    record.id,
-                                    &crate::payroll_worked_item_repository::ManualHoursAdjustment {
-                                        week_number: week.week_number,
-                                        adjustment_minutes: final_minutes - baseline_minutes,
-                                        reason: existing_reason,
-                                    },
-                                    &now,
-                                )?;
-                            application.payroll_timesheet_repository.update_week(week)?;
+                            edit_number(ui, &mut week.worked_hours);
+                            edit_number(ui, &mut week.annual_leave_hours);
+                            edit_number(ui, &mut week.sick_leave_hours);
+
+                            ui.vertical(|ui| {
+                                for holiday in holidays
+                                    .iter_mut()
+                                    .filter(|holiday| holiday.week_number == week.week_number)
+                                {
+                                    ui.horizontal(|ui| {
+                                        ui.label(
+                                            egui::RichText::new(&holiday.holiday_date).size(8.0),
+                                        );
+
+                                        edit_optional_number(ui, &mut holiday.hours);
+                                    });
+                                }
+                            });
+
+                            edit_number(ui, &mut week.travel_miles);
+
+                            ui.end_row();
                         }
-
-                        for holiday in holidays.iter() {
-                            application
-                                .payroll_timesheet_repository
-                                .update_public_holiday(holiday)?;
-                        }
-
-                        Ok(())
                     });
+            });
+
+            if !read_only && ui.button(format!("Save {}", assistant_name)).clicked() {
+                let result = save_preparation_record(
+                    application,
+                    self.bound_period.as_ref(),
+                    operational_schedule,
+                    record,
+                    weeks,
+                    holidays,
+                    &self.worked_hours_baselines,
+                    self.preparation_baselines.get(&record.id),
+                );
 
                 match result {
-                    Ok(()) => {
-                        self.status_message =
-                            format!("Payroll Timesheet saved for {}.", assistant_name);
+                    Ok(result) => {
+                        if result.candidate_invalidated {
+                            self.snapshot_states.remove(&record.id);
+                        }
+                        self.preparation_baselines.insert(
+                            record.id,
+                            preparation_baseline(application, record, weeks, holidays)
+                                .unwrap_or_else(|_| PreparationBaseline {
+                                    previous_cycle_hours: record.previous_cycle_hours,
+                                    weeks: weeks.clone(),
+                                    public_holidays: holidays.clone(),
+                                    manual_adjustments: Vec::new(),
+                                }),
+                        );
+                        self.status_message = if result.candidate_invalidated {
+                            format!(
+                                "Payroll Timesheet saved for {}. Regenerate the PDF before production sending.",
+                                assistant_name
+                            )
+                        } else if result.changed {
+                            format!("Payroll Timesheet saved for {}.", assistant_name)
+                        } else {
+                            format!("No changes to save for {}.", assistant_name)
+                        };
                     }
 
                     Err(error) => {
@@ -195,18 +256,30 @@ impl PayrollTimesheetScreen {
         ui.label(&self.status_message);
     }
 
-    fn load(&mut self, application: &Application) -> Result<(), Box<dyn std::error::Error>> {
-        let today = chrono::Local::now().date_naive();
-        let schedule = application.resolve_payroll_schedule(today)?;
+    fn load(
+        &mut self,
+        application: &Application,
+        schedule: &PayrollSchedule,
+        period_label: &str,
+    ) -> Result<(), Box<dyn std::error::Error>> {
         let payroll_year = schedule.payroll_year.clone();
 
         self.cycle_number = schedule.cycle_number;
         self.schedule = Some(schedule.clone());
+        self.bound_period = Some(BoundPayrollPeriod::from(schedule));
+        self.period_label = period_label.to_string();
         let previous_schedule = application
             .payroll_schedule_repository
             .resolve_previous(&schedule)?;
 
         let assistants = application.personal_assistant_repository.get_all()?;
+        let existing_records = application
+            .payroll_timesheet_repository
+            .get_all_for_cycle(&payroll_year, schedule.cycle_number)?;
+        let existing_personal_assistant_ids = existing_records
+            .iter()
+            .map(|record| record.personal_assistant_id)
+            .collect::<std::collections::HashSet<_>>();
 
         let all_timesheets = application.get_timesheets()?;
 
@@ -255,6 +328,8 @@ impl PayrollTimesheetScreen {
         self.weeks.clear();
         self.public_holidays.clear();
         self.worked_hours_baselines.clear();
+        self.snapshot_states.clear();
+        self.preparation_baselines.clear();
 
         for assistant in assistants {
             let is_active = match &assistant.employment_status {
@@ -262,7 +337,7 @@ impl PayrollTimesheetScreen {
                 None => true,
             };
 
-            if !is_active {
+            if !is_active && !existing_personal_assistant_ids.contains(&assistant.id) {
                 continue;
             }
 
@@ -315,6 +390,34 @@ impl PayrollTimesheetScreen {
                         .ok_or("Failed creating payroll timesheet.")?
                 }
             };
+
+            let snapshot_state = application
+                .payroll_worked_item_repository
+                .snapshot_metadata(record.id)?
+                .map(|metadata| metadata.state);
+            if let Some(state) = snapshot_state {
+                self.snapshot_states.insert(record.id, state);
+            }
+
+            if matches!(
+                snapshot_state,
+                Some(SnapshotState::Submitted | SnapshotState::Indeterminate)
+            ) {
+                let weeks = application
+                    .payroll_timesheet_repository
+                    .get_weeks(record.id)?;
+                let holidays = application
+                    .payroll_timesheet_repository
+                    .get_public_holidays(record.id)?;
+                self.preparation_baselines.insert(
+                    record.id,
+                    preparation_baseline(application, &record, &weeks, &holidays)?,
+                );
+                self.records.push(record.clone());
+                self.weeks.push((record, weeks, assistant_name));
+                self.public_holidays.push(holidays);
+                continue;
+            }
 
             // --------------------------------------------------------
             // Recalculate the worked hours from the current
@@ -374,6 +477,37 @@ impl PayrollTimesheetScreen {
             let current_cycle_hours =
                 std::array::from_fn(|index| reconciled.week_totals_minutes[index] as f64 / 60.0);
 
+            let stored_weeks = application
+                .payroll_timesheet_repository
+                .get_weeks(record.id)?;
+            let reconciled_changes_persisted = record
+                .previous_cycle_hours
+                .map(|hours| (hours * 60.0).round() as i64)
+                .unwrap_or(0)
+                != reconciled.previous_cycle_minutes
+                || stored_weeks.len() != 4
+                || stored_weeks.iter().any(|week| {
+                    !(1..=4).contains(&week.week_number)
+                        || (week.worked_hours * 60.0).round() as i64
+                            != reconciled.week_totals_minutes[(week.week_number - 1) as usize]
+                });
+            let candidate_items_changed = if snapshot_state == Some(SnapshotState::Candidate) {
+                application
+                    .payroll_worked_item_repository
+                    .get_snapshot_items(record.id)?
+                    != reconciled.snapshot_items
+            } else {
+                false
+            };
+            if snapshot_state == Some(SnapshotState::Candidate)
+                && (reconciled_changes_persisted || candidate_items_changed)
+            {
+                application
+                    .payroll_worked_item_repository
+                    .discard_candidate(record.id)?;
+                self.snapshot_states.remove(&record.id);
+            }
+
             let manual_adjustments = application
                 .payroll_worked_item_repository
                 .get_manual_adjustments(record.id)?;
@@ -389,13 +523,15 @@ impl PayrollTimesheetScreen {
                 );
             }
 
-            application
-                .payroll_timesheet_repository
-                .update_previous_cycle_hours(
-                    record.id,
-                    previous_cycle_hours,
-                    &chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string(),
-                )?;
+            if reconciled_changes_persisted {
+                application
+                    .payroll_timesheet_repository
+                    .update_previous_cycle_hours(
+                        record.id,
+                        previous_cycle_hours,
+                        &chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string(),
+                    )?;
+            }
 
             application
                 .payroll_timesheet_repository
@@ -410,9 +546,17 @@ impl PayrollTimesheetScreen {
                 if let Some(week) = weeks.get_mut(index) {
                     week.worked_hours = current_cycle_hours[index];
 
-                    application
-                        .payroll_timesheet_repository
-                        .update_week_worked_hours(week.id, week.worked_hours)?;
+                    let stored_worked_hours = stored_weeks
+                        .iter()
+                        .find(|stored| stored.week_number == week.week_number)
+                        .map(|stored| stored.worked_hours);
+                    if stored_worked_hours
+                        .is_none_or(|stored| (stored - week.worked_hours).abs() > f64::EPSILON)
+                    {
+                        application
+                            .payroll_timesheet_repository
+                            .update_week_worked_hours(week.id, week.worked_hours)?;
+                    }
                 }
             }
 
@@ -441,6 +585,11 @@ impl PayrollTimesheetScreen {
                 .payroll_timesheet_repository
                 .get_public_holidays(record.id)?;
 
+            self.preparation_baselines.insert(
+                record.id,
+                preparation_baseline(application, &record, &weeks, &holidays)?,
+            );
+
             self.records.push(record.clone());
 
             self.weeks.push((record, weeks, assistant_name));
@@ -452,6 +601,169 @@ impl PayrollTimesheetScreen {
 
         Ok(())
     }
+}
+
+fn preparation_baseline(
+    application: &Application,
+    record: &PayrollTimesheet,
+    weeks: &[PayrollTimesheetWeek],
+    public_holidays: &[PayrollTimesheetPublicHoliday],
+) -> Result<PreparationBaseline, rusqlite::Error> {
+    Ok(PreparationBaseline {
+        previous_cycle_hours: record.previous_cycle_hours,
+        weeks: weeks.to_vec(),
+        public_holidays: public_holidays.to_vec(),
+        manual_adjustments: application
+            .payroll_worked_item_repository
+            .get_manual_adjustments(record.id)?,
+    })
+}
+
+fn save_preparation_record(
+    application: &Application,
+    bound_period: Option<&BoundPayrollPeriod>,
+    operational_schedule: &PayrollSchedule,
+    record: &PayrollTimesheet,
+    weeks: &[PayrollTimesheetWeek],
+    public_holidays: &[PayrollTimesheetPublicHoliday],
+    worked_hours_baselines: &HashMap<(i64, i64), i64>,
+    baseline: Option<&PreparationBaseline>,
+) -> Result<SaveResult, Box<dyn std::error::Error>> {
+    let bound = bound_period.ok_or(
+        "Payroll Timesheet Preparation is not bound to a payroll period. Reload the screen.",
+    )?;
+    let operational_identity = BoundPayrollPeriod::from(operational_schedule);
+    if operational_identity.payroll_year != bound.payroll_year
+        || operational_identity.cycle_number != bound.cycle_number
+    {
+        return Err("The operational payroll period changed while this screen was open. Reload Payroll Timesheet Preparation before saving.".into());
+    }
+    let stored_schedule = application
+        .payroll_schedule_repository
+        .get_for_year_and_cycle(&bound.payroll_year, bound.cycle_number)?
+        .ok_or("The payroll schedule bound to this screen no longer exists. Reload Payroll Timesheet Preparation before saving.")?;
+    if stored_schedule.first_week_commencing != bound.first_week_commencing
+        || stored_schedule.pay_date != bound.pay_date
+        || operational_schedule.first_week_commencing != bound.first_week_commencing
+        || operational_schedule.pay_date != bound.pay_date
+    {
+        return Err("The payroll schedule changed while this screen was open. Reload Payroll Timesheet Preparation before saving.".into());
+    }
+
+    let snapshot_state = application
+        .payroll_worked_item_repository
+        .snapshot_metadata(record.id)?
+        .map(|metadata| metadata.state);
+    if matches!(
+        snapshot_state,
+        Some(SnapshotState::Submitted | SnapshotState::Indeterminate)
+    ) {
+        return Err("This payroll timesheet is submitted or has an indeterminate delivery state and is read-only.".into());
+    }
+
+    let existing_adjustments = application
+        .payroll_worked_item_repository
+        .get_manual_adjustments(record.id)?;
+    let desired_adjustments = weeks
+        .iter()
+        .map(|week| {
+            let final_minutes = (week.worked_hours * 60.0).round() as i64;
+            let baseline_minutes = worked_hours_baselines
+                .get(&(record.id, week.week_number))
+                .copied()
+                .unwrap_or(final_minutes);
+            let reason = existing_adjustments
+                .iter()
+                .find(|adjustment| adjustment.week_number == week.week_number)
+                .and_then(|adjustment| adjustment.reason.clone());
+            ManualHoursAdjustment {
+                week_number: week.week_number,
+                adjustment_minutes: final_minutes - baseline_minutes,
+                reason,
+            }
+        })
+        .collect::<Vec<_>>();
+    let desired_persisted_adjustments = desired_adjustments
+        .iter()
+        .filter(|adjustment| adjustment.adjustment_minutes != 0 || adjustment.reason.is_some())
+        .cloned()
+        .collect::<Vec<_>>();
+
+    let changed = baseline.is_none_or(|baseline| {
+        !optional_hours_equal(baseline.previous_cycle_hours, record.previous_cycle_hours)
+            || !weeks_equal(&baseline.weeks, weeks)
+            || !public_holidays_equal(&baseline.public_holidays, public_holidays)
+            || baseline.manual_adjustments != desired_persisted_adjustments
+    });
+    if !changed {
+        return Ok(SaveResult {
+            changed: false,
+            candidate_invalidated: false,
+        });
+    }
+
+    let candidate_invalidated = snapshot_state == Some(SnapshotState::Candidate);
+    if candidate_invalidated {
+        application
+            .payroll_worked_item_repository
+            .discard_candidate(record.id)?;
+    }
+
+    let now = chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
+    application
+        .payroll_timesheet_repository
+        .update_previous_cycle_hours(record.id, record.previous_cycle_hours, &now)?;
+    for (week, adjustment) in weeks.iter().zip(desired_adjustments.iter()) {
+        application
+            .payroll_worked_item_repository
+            .set_manual_adjustment(record.id, adjustment, &now)?;
+        application.payroll_timesheet_repository.update_week(week)?;
+    }
+    for holiday in public_holidays {
+        application
+            .payroll_timesheet_repository
+            .update_public_holiday(holiday)?;
+    }
+
+    Ok(SaveResult {
+        changed: true,
+        candidate_invalidated,
+    })
+}
+
+fn optional_hours_equal(left: Option<f64>, right: Option<f64>) -> bool {
+    match (left, right) {
+        (Some(left), Some(right)) => (left - right).abs() <= f64::EPSILON,
+        (None, None) => true,
+        _ => false,
+    }
+}
+
+fn weeks_equal(left: &[PayrollTimesheetWeek], right: &[PayrollTimesheetWeek]) -> bool {
+    left.len() == right.len()
+        && left.iter().zip(right).all(|(left, right)| {
+            left.id == right.id
+                && left.week_number == right.week_number
+                && left.week_commencing == right.week_commencing
+                && (left.worked_hours - right.worked_hours).abs() <= f64::EPSILON
+                && (left.annual_leave_hours - right.annual_leave_hours).abs() <= f64::EPSILON
+                && (left.sick_leave_hours - right.sick_leave_hours).abs() <= f64::EPSILON
+                && (left.public_holiday_hours - right.public_holiday_hours).abs() <= f64::EPSILON
+                && (left.travel_miles - right.travel_miles).abs() <= f64::EPSILON
+        })
+}
+
+fn public_holidays_equal(
+    left: &[PayrollTimesheetPublicHoliday],
+    right: &[PayrollTimesheetPublicHoliday],
+) -> bool {
+    left.len() == right.len()
+        && left.iter().zip(right).all(|(left, right)| {
+            left.id == right.id
+                && left.week_number == right.week_number
+                && left.holiday_date == right.holiday_date
+                && (left.hours - right.hours).abs() <= f64::EPSILON
+        })
 }
 
 fn edit_number(ui: &mut egui::Ui, value: &mut f64) {
@@ -769,6 +1081,521 @@ fn extract_timesheet_date(value: &str) -> Option<chrono::NaiveDate> {
     }
 
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::app::Application;
+    use crate::config::AppConfig;
+    use crate::context::AppContext;
+    use crate::environment::AppEnvironment;
+    use rusqlite::{params, Connection};
+    use tempfile::TempDir;
+
+    fn test_application() -> (TempDir, Application) {
+        let directory = TempDir::new().unwrap();
+        let database_path = directory.path().join("test.sqlite");
+        let connection = Connection::open(&database_path).unwrap();
+        crate::database::create_schema(&connection).unwrap();
+        drop(connection);
+        let open = || Connection::open(&database_path).unwrap();
+        let environment = AppEnvironment {
+            data_dir: directory.path().to_path_buf(),
+            database_path: database_path.clone(),
+            import_dir: directory.path().join("import"),
+            archive_dir: directory.path().join("archive"),
+            backups_dir: directory.path().join("backups"),
+            logs_dir: directory.path().join("logs"),
+            templates_dir: directory.path().join("templates"),
+            cache_dir: directory.path().join("cache"),
+        };
+        let application = Application {
+            context: AppContext {
+                environment,
+                config: AppConfig::default(),
+                version: "test".to_string(),
+            },
+            repository: crate::repository::TimesheetRepository::new(open()),
+            employer_repository: crate::employer_repository::EmployerRepository::new(open()),
+            personal_assistant_repository:
+                crate::personal_assistant_repository::PersonalAssistantRepository::new(open()),
+            pay_rate_repository: crate::pay_rate_repository::PayRateRepository::new(open()),
+            contracted_hours_repository:
+                crate::contracted_hours_repository::ContractedHoursRepository::new(open()),
+            payroll_provider_repository:
+                crate::payroll_provider_repository::PayrollProviderRepository::new(open()),
+            payroll_schedule_repository:
+                crate::payroll_schedule_repository::PayrollScheduleRepository::new(open()),
+            payroll_timesheet_repository:
+                crate::payroll_timesheet_repository::PayrollTimesheetRepository::new(open()),
+            payroll_worked_item_repository:
+                crate::payroll_worked_item_repository::PayrollWorkedItemRepository::new(open()),
+            payroll_timesheet_email_repository:
+                crate::payroll_timesheet_email_repository::PayrollTimesheetEmailRepository::new(
+                    open(),
+                ),
+        };
+        (directory, application)
+    }
+
+    fn setup_connection(application: &Application) -> Connection {
+        Connection::open(&application.context.environment.database_path).unwrap()
+    }
+
+    fn insert_schedule(
+        application: &Application,
+        year: &str,
+        cycle: i64,
+        first_week: &str,
+        pay_date: &str,
+    ) -> PayrollSchedule {
+        let connection = setup_connection(application);
+        connection
+            .execute(
+                "INSERT INTO payroll_schedules (
+                    payroll_year, cycle_number, first_week_commencing,
+                    latest_posting_date, pay_date, created_at, payslips_sent
+                 ) VALUES (?1, ?2, ?3, ?3, ?4, 'created', 0)",
+                params![year, cycle, first_week, pay_date],
+            )
+            .unwrap();
+        application
+            .payroll_schedule_repository
+            .get_for_year_and_cycle(year, cycle)
+            .unwrap()
+            .unwrap()
+    }
+
+    fn insert_pa(application: &Application, id: i64, name: &str, status: Option<&str>) {
+        let connection = setup_connection(application);
+        connection
+            .execute(
+                "INSERT INTO personal_assistants (id, first_name, surname, employment_status)
+                 VALUES (?1, ?2, 'Test', ?3)",
+                params![id, name, status],
+            )
+            .unwrap();
+    }
+
+    fn load_active_record() -> (
+        TempDir,
+        Application,
+        PayrollSchedule,
+        PayrollTimesheetScreen,
+    ) {
+        let (directory, application) = test_application();
+        let schedule = insert_schedule(&application, "2026/27", 6, "10/08/2026", "04/09/2026");
+        insert_pa(&application, 1, "Active", Some("Active"));
+        let mut screen = PayrollTimesheetScreen::new();
+        screen
+            .load(
+                &application,
+                &schedule,
+                "2026/27 · Week 22 · 10/08/2026 to 06/09/2026 · Pay 04/09/2026",
+            )
+            .unwrap();
+        (directory, application, schedule, screen)
+    }
+
+    fn create_candidate(application: &Application, screen: &PayrollTimesheetScreen) {
+        let record = &screen.weeks[0].0;
+        let weeks = &screen.weeks[0].1;
+        let week_ids = [weeks[0].id, weeks[1].id, weeks[2].id, weeks[3].id];
+        application
+            .payroll_worked_item_repository
+            .replace_candidate(
+                record.id,
+                &[],
+                "/tmp/stale-candidate.pdf",
+                "digest",
+                "generated",
+                0,
+                &week_ids,
+                &[0, 0, 0, 0],
+            )
+            .unwrap();
+    }
+
+    fn save_current_row(
+        application: &Application,
+        schedule: &PayrollSchedule,
+        screen: &PayrollTimesheetScreen,
+    ) -> Result<SaveResult, Box<dyn std::error::Error>> {
+        let (record, weeks, _) = &screen.weeks[0];
+        save_preparation_record(
+            application,
+            screen.bound_period.as_ref(),
+            schedule,
+            record,
+            weeks,
+            &screen.public_holidays[0],
+            &screen.worked_hours_baselines,
+            screen.preparation_baselines.get(&record.id),
+        )
+    }
+
+    #[test]
+    fn supplied_historical_current_and_future_schedules_are_bound_exactly() {
+        let (_directory, application) = test_application();
+        insert_pa(&application, 1, "Active", Some("Active"));
+        let schedules = [
+            insert_schedule(&application, "2025/26", 1, "24/03/2025", "18/04/2025"),
+            insert_schedule(&application, "2026/27", 6, "10/08/2026", "04/09/2026"),
+            insert_schedule(&application, "2027/28", 1, "22/03/2027", "16/04/2027"),
+        ];
+
+        for schedule in schedules {
+            let mut screen = PayrollTimesheetScreen::new();
+            screen
+                .load(&application, &schedule, "Week-labelled period")
+                .unwrap();
+            assert_eq!(
+                screen.bound_period,
+                Some(BoundPayrollPeriod::from(&schedule))
+            );
+            assert_eq!(
+                screen.schedule.as_ref().unwrap().payroll_year,
+                schedule.payroll_year
+            );
+        }
+    }
+
+    #[test]
+    fn visible_period_label_uses_week_wording_without_internal_cycle() {
+        let (_directory, application, schedule, mut screen) = load_active_record();
+        let label = "2026/27 · Week 22 · 10/08/2026 to 06/09/2026 · Pay 04/09/2026";
+        screen.reload();
+        screen.load(&application, &schedule, label).unwrap();
+        assert_eq!(screen.period_label, label);
+        assert!(!screen.period_label.contains("Cycle"));
+        assert!(!screen.period_label.contains("C6"));
+    }
+
+    #[test]
+    fn pa_union_includes_active_and_inactive_with_record_but_not_unreferenced_inactive() {
+        let (_directory, application) = test_application();
+        let schedule = insert_schedule(&application, "2026/27", 6, "10/08/2026", "04/09/2026");
+        insert_pa(&application, 1, "Active", Some("Active"));
+        insert_pa(&application, 2, "Historical", Some("Inactive"));
+        insert_pa(&application, 3, "Excluded", Some("Inactive"));
+        insert_pa(&application, 4, "LegacyActive", None);
+        application
+            .payroll_timesheet_repository
+            .insert("2026/27", 6, 2, None, "created")
+            .unwrap();
+        let mut screen = PayrollTimesheetScreen::new();
+        screen.load(&application, &schedule, "period").unwrap();
+        let names = screen
+            .weeks
+            .iter()
+            .map(|(_, _, name)| name.as_str())
+            .collect::<Vec<_>>();
+        assert!(names.contains(&"Active Test"));
+        assert!(names.contains(&"Historical Test"));
+        assert!(names.contains(&"LegacyActive Test"));
+        assert!(!names.contains(&"Excluded Test"));
+    }
+
+    fn assert_protected_load_is_read_only(state: SnapshotState) {
+        let (_directory, application, schedule, screen) = load_active_record();
+        create_candidate(&application, &screen);
+        let record_id = screen.weeks[0].0.id;
+        let connection = setup_connection(&application);
+        connection
+            .execute(
+                "UPDATE payroll_timesheet_snapshot_states SET state = ?1 WHERE payroll_timesheet_id = ?2",
+                params![match state { SnapshotState::Submitted => "submitted", SnapshotState::Indeterminate => "indeterminate", SnapshotState::Candidate => "candidate" }, record_id],
+            )
+            .unwrap();
+        let before_record = application
+            .payroll_timesheet_repository
+            .get_for_cycle_and_pa("2026/27", 6, 1)
+            .unwrap()
+            .unwrap();
+        let before_weeks = application
+            .payroll_timesheet_repository
+            .get_weeks(record_id)
+            .unwrap();
+        let before_holidays = application
+            .payroll_timesheet_repository
+            .get_public_holidays(record_id)
+            .unwrap();
+
+        let mut reloaded = PayrollTimesheetScreen::new();
+        reloaded.load(&application, &schedule, "period").unwrap();
+
+        let after_record = application
+            .payroll_timesheet_repository
+            .get_for_cycle_and_pa("2026/27", 6, 1)
+            .unwrap()
+            .unwrap();
+        let after_weeks = application
+            .payroll_timesheet_repository
+            .get_weeks(record_id)
+            .unwrap();
+        let after_holidays = application
+            .payroll_timesheet_repository
+            .get_public_holidays(record_id)
+            .unwrap();
+        assert_eq!(before_record.updated_at, after_record.updated_at);
+        assert!(weeks_equal(&before_weeks, &after_weeks));
+        assert!(public_holidays_equal(&before_holidays, &after_holidays));
+        assert_eq!(reloaded.snapshot_states.get(&record_id), Some(&state));
+        assert!(save_current_row(&application, &schedule, &reloaded).is_err());
+    }
+
+    #[test]
+    fn submitted_load_is_non_mutating_and_save_is_refused() {
+        assert_protected_load_is_read_only(SnapshotState::Submitted);
+    }
+
+    #[test]
+    fn indeterminate_load_is_non_mutating_and_save_is_refused() {
+        assert_protected_load_is_read_only(SnapshotState::Indeterminate);
+    }
+
+    #[test]
+    fn unchanged_candidate_survives_opening_and_remains_editable() {
+        let (_directory, application, schedule, screen) = load_active_record();
+        create_candidate(&application, &screen);
+        let record_id = screen.weeks[0].0.id;
+        let mut reloaded = PayrollTimesheetScreen::new();
+        reloaded.load(&application, &schedule, "period").unwrap();
+        assert_eq!(
+            application
+                .payroll_worked_item_repository
+                .snapshot_metadata(record_id)
+                .unwrap()
+                .unwrap()
+                .state,
+            SnapshotState::Candidate
+        );
+        assert_eq!(
+            reloaded.snapshot_states.get(&record_id),
+            Some(&SnapshotState::Candidate)
+        );
+        assert!(
+            !save_current_row(&application, &schedule, &reloaded)
+                .unwrap()
+                .changed
+        );
+    }
+
+    #[test]
+    fn unsent_record_remains_editable() {
+        let (_directory, application, schedule, mut screen) = load_active_record();
+        screen.weeks[0].1[0].annual_leave_hours = 2.0;
+        assert!(
+            save_current_row(&application, &schedule, &screen)
+                .unwrap()
+                .changed
+        );
+    }
+
+    #[test]
+    fn materially_changed_reconciliation_invalidates_candidate_before_persistence() {
+        let (_directory, application, schedule, screen) = load_active_record();
+        create_candidate(&application, &screen);
+        let record_id = screen.weeks[0].0.id;
+        let connection = setup_connection(&application);
+        connection.execute(
+            "INSERT INTO personal_assistant_pay_rates (personal_assistant_id, effective_date, base_hourly_rate, employer_top_up_rate, created_at) VALUES (1, '01/01/2026', 12, 0, 'created')",
+            [],
+        ).unwrap();
+        connection.execute(
+            "INSERT INTO timesheets (pa_name, personal_assistant_id, start_time, end_time, break_minutes, worked_minutes, hourly_rate, amount, notes) VALUES ('Active Test', 1, '10/08/2026', '10/08/2026', 0, 60, 0, 0, NULL)",
+            [],
+        ).unwrap();
+
+        let mut reloaded = PayrollTimesheetScreen::new();
+        reloaded.load(&application, &schedule, "period").unwrap();
+        assert!(application
+            .payroll_worked_item_repository
+            .snapshot_metadata(record_id)
+            .unwrap()
+            .is_none());
+        assert_eq!(
+            application
+                .payroll_timesheet_repository
+                .get_weeks(record_id)
+                .unwrap()[0]
+                .worked_hours,
+            1.0
+        );
+    }
+
+    #[test]
+    fn failed_candidate_invalidation_prevents_load_and_save_mutations() {
+        let (_directory, application, schedule, mut screen) = load_active_record();
+        create_candidate(&application, &screen);
+        let record_id = screen.weeks[0].0.id;
+        let connection = setup_connection(&application);
+        connection.execute(
+            "INSERT INTO personal_assistant_pay_rates (personal_assistant_id, effective_date, base_hourly_rate, employer_top_up_rate, created_at) VALUES (1, '01/01/2026', 12, 0, 'created')",
+            [],
+        ).unwrap();
+        connection.execute(
+            "INSERT INTO timesheets (pa_name, personal_assistant_id, start_time, end_time, break_minutes, worked_minutes, hourly_rate, amount, notes) VALUES ('Active Test', 1, '10/08/2026', '10/08/2026', 0, 60, 0, 0, NULL)",
+            [],
+        ).unwrap();
+        connection
+            .execute_batch(
+                "CREATE TRIGGER refuse_candidate_delete
+             BEFORE DELETE ON payroll_timesheet_snapshot_states
+             BEGIN SELECT RAISE(ABORT, 'candidate invalidation failed'); END;",
+            )
+            .unwrap();
+
+        let mut reloaded = PayrollTimesheetScreen::new();
+        assert!(reloaded.load(&application, &schedule, "period").is_err());
+        assert_eq!(
+            application
+                .payroll_timesheet_repository
+                .get_weeks(record_id)
+                .unwrap()[0]
+                .worked_hours,
+            0.0
+        );
+        assert_eq!(
+            application
+                .payroll_worked_item_repository
+                .snapshot_metadata(record_id)
+                .unwrap()
+                .unwrap()
+                .state,
+            SnapshotState::Candidate
+        );
+
+        screen.weeks[0].1[0].annual_leave_hours = 2.0;
+        assert!(save_current_row(&application, &schedule, &screen).is_err());
+        assert_eq!(
+            application
+                .payroll_timesheet_repository
+                .get_weeks(record_id)
+                .unwrap()[0]
+                .annual_leave_hours,
+            0.0
+        );
+    }
+
+    #[test]
+    fn stale_operational_selection_or_changed_schedule_refuses_save_without_mutation() {
+        let (_directory, application, schedule, mut screen) = load_active_record();
+        screen.weeks[0].1[0].annual_leave_hours = 3.0;
+        let other = PayrollSchedule {
+            payroll_year: "2027/28".to_string(),
+            cycle_number: 1,
+            ..schedule.clone()
+        };
+        assert!(save_current_row(&application, &other, &screen).is_err());
+        assert_eq!(
+            application
+                .payroll_timesheet_repository
+                .get_weeks(screen.weeks[0].0.id)
+                .unwrap()[0]
+                .annual_leave_hours,
+            0.0
+        );
+
+        setup_connection(&application)
+            .execute(
+                "UPDATE payroll_schedules SET pay_date = '05/09/2026' WHERE id = ?1",
+                [schedule.id],
+            )
+            .unwrap();
+        assert!(save_current_row(&application, &schedule, &screen).is_err());
+        assert_eq!(
+            application
+                .payroll_timesheet_repository
+                .get_weeks(screen.weeks[0].0.id)
+                .unwrap()[0]
+                .annual_leave_hours,
+            0.0
+        );
+
+        setup_connection(&application)
+            .execute("DELETE FROM payroll_schedules WHERE id = ?1", [schedule.id])
+            .unwrap();
+        assert!(save_current_row(&application, &schedule, &screen).is_err());
+        assert_eq!(
+            application
+                .payroll_timesheet_repository
+                .get_weeks(screen.weeks[0].0.id)
+                .unwrap()[0]
+                .annual_leave_hours,
+            0.0
+        );
+    }
+
+    macro_rules! candidate_save_invalidation_test {
+        ($name:ident, $change:expr) => {
+            #[test]
+            fn $name() {
+                let (_directory, application, schedule, mut screen) = load_active_record();
+                create_candidate(&application, &screen);
+                let record_id = screen.weeks[0].0.id;
+                $change(&mut screen);
+                let result = save_current_row(&application, &schedule, &screen).unwrap();
+                assert!(result.changed);
+                assert!(result.candidate_invalidated);
+                assert!(application
+                    .payroll_worked_item_repository
+                    .snapshot_metadata(record_id)
+                    .unwrap()
+                    .is_none());
+                let error = crate::payroll_snapshot_service::verify_candidate(
+                    &application.payroll_worked_item_repository,
+                    record_id,
+                    std::path::Path::new("/tmp/stale-candidate.pdf"),
+                )
+                .unwrap_err();
+                assert!(error.to_string().contains("No generated candidate"));
+            }
+        };
+    }
+
+    #[test]
+    fn worked_hours_save_invalidates_candidate_and_persists_manual_adjustment() {
+        let (_directory, application, schedule, mut screen) = load_active_record();
+        create_candidate(&application, &screen);
+        let record_id = screen.weeks[0].0.id;
+        screen.weeks[0].1[0].worked_hours = 1.0;
+        let result = save_current_row(&application, &schedule, &screen).unwrap();
+        assert!(result.candidate_invalidated);
+        assert_eq!(
+            application
+                .payroll_worked_item_repository
+                .get_manual_adjustments(record_id)
+                .unwrap()[0]
+                .adjustment_minutes,
+            60
+        );
+    }
+    candidate_save_invalidation_test!(
+        annual_leave_save_invalidates_candidate,
+        |screen: &mut PayrollTimesheetScreen| {
+            screen.weeks[0].1[0].annual_leave_hours = 1.0;
+        }
+    );
+    candidate_save_invalidation_test!(
+        sick_leave_save_invalidates_candidate,
+        |screen: &mut PayrollTimesheetScreen| {
+            screen.weeks[0].1[0].sick_leave_hours = 1.0;
+        }
+    );
+    candidate_save_invalidation_test!(
+        mileage_save_invalidates_candidate,
+        |screen: &mut PayrollTimesheetScreen| {
+            screen.weeks[0].1[0].travel_miles = 1.0;
+        }
+    );
+    candidate_save_invalidation_test!(
+        public_holiday_save_invalidates_candidate,
+        |screen: &mut PayrollTimesheetScreen| {
+            screen.public_holidays[0][0].hours = 1.0;
+        }
+    );
 }
 
 fn parse_date(value: &str) -> Option<chrono::NaiveDate> {

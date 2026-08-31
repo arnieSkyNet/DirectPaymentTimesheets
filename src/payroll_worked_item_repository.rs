@@ -311,8 +311,7 @@ impl PayrollWorkedItemRepository {
         transaction.commit()
     }
 
-    #[cfg(test)]
-    pub fn get_snapshot(&self, payroll_timesheet_id: i64) -> Result<Vec<WorkedItemSnapshot>> {
+    pub fn get_snapshot_items(&self, payroll_timesheet_id: i64) -> Result<Vec<WorkedItemSnapshot>> {
         let mut statement = self.connection.prepare(
             "SELECT week_number, source_type, timesheet_id, work_date, worked_minutes,
                     pay_rate_id, pay_rate_effective_date, total_hourly_rate, reason

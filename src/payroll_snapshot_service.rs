@@ -347,7 +347,7 @@ mod tests {
         .unwrap();
         assert_eq!(fs::read_to_string(path).unwrap(), "PDF 2");
         assert_eq!(
-            repository.get_snapshot(10).unwrap()[0].timesheet_id,
+            repository.get_snapshot_items(10).unwrap()[0].timesheet_id,
             Some(2)
         );
     }
@@ -445,7 +445,7 @@ mod tests {
         let error = publish(&repository, &path, 2).unwrap_err().to_string();
         assert!(error.contains("already been submitted"));
         assert_eq!(
-            repository.get_snapshot(10).unwrap()[0].timesheet_id,
+            repository.get_snapshot_items(10).unwrap()[0].timesheet_id,
             Some(1)
         );
     }
@@ -486,7 +486,7 @@ mod tests {
             .to_string();
         assert!(error.contains("has changed"));
         assert_eq!(
-            repository.get_snapshot(10).unwrap()[0].timesheet_id,
+            repository.get_snapshot_items(10).unwrap()[0].timesheet_id,
             Some(2)
         );
     }
