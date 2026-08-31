@@ -126,6 +126,39 @@ impl PayrollScheduleRepository {
         entries.collect()
     }
 
+    pub fn get_all(&self) -> Result<Vec<PayrollSchedule>> {
+        let mut statement = self.connection.prepare(
+            "
+            SELECT
+                id,
+                payroll_year,
+                cycle_number,
+                first_week_commencing,
+                latest_posting_date,
+                pay_date,
+                created_at,
+                payslips_sent
+            FROM payroll_schedules
+            ORDER BY payroll_year, cycle_number
+            ",
+        )?;
+
+        let entries = statement.query_map([], |row| {
+            Ok(PayrollSchedule {
+                id: row.get(0)?,
+                payroll_year: row.get(1)?,
+                cycle_number: row.get(2)?,
+                first_week_commencing: row.get(3)?,
+                latest_posting_date: row.get(4)?,
+                pay_date: row.get(5)?,
+                created_at: row.get(6)?,
+                payslips_sent: row.get::<_, i64>(7)? != 0,
+            })
+        })?;
+
+        entries.collect()
+    }
+
     pub fn resolve_for_date(
         &self,
         date: NaiveDate,
