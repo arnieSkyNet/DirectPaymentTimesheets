@@ -24,7 +24,7 @@ pub fn preview_payroll_email(
     personal_assistant_name: &str,
     personal_assistant_dob: Option<&str>,
     personal_assistant_ni: Option<&str>,
-    first_week_commencing: &str,
+    payroll_period: &str,
     attachment_path: &Path,
     email_body: &str,
     additional_note: Option<&str>,
@@ -39,7 +39,7 @@ pub fn preview_payroll_email(
         personal_assistant_name,
         personal_assistant_dob,
         personal_assistant_ni,
-        first_week_commencing,
+        payroll_period,
         attachment_path,
         email_body,
         additional_note,
@@ -58,7 +58,7 @@ pub fn preview_test_payroll_email(
     personal_assistant_name: &str,
     personal_assistant_dob: Option<&str>,
     personal_assistant_ni: Option<&str>,
-    first_week_commencing: &str,
+    payroll_period: &str,
     attachment_path: &Path,
     email_body: &str,
     additional_note: Option<&str>,
@@ -73,7 +73,7 @@ pub fn preview_test_payroll_email(
         personal_assistant_name,
         personal_assistant_dob,
         personal_assistant_ni,
-        first_week_commencing,
+        payroll_period,
         attachment_path,
         email_body,
         additional_note,
@@ -91,7 +91,7 @@ pub fn preview_test_payslip_email(
     personal_assistant_name: &str,
     personal_assistant_dob: Option<&str>,
     personal_assistant_ni: Option<&str>,
-    first_week_commencing: &str,
+    payroll_period: &str,
     attachment_path: &Path,
     email_body: &str,
     additional_note: Option<&str>,
@@ -106,7 +106,7 @@ pub fn preview_test_payslip_email(
         personal_assistant_name,
         personal_assistant_dob,
         personal_assistant_ni,
-        first_week_commencing,
+        payroll_period,
         attachment_path,
         email_body,
         additional_note,
@@ -127,7 +127,7 @@ fn compose_payroll_email(
     personal_assistant_name: &str,
     personal_assistant_dob: Option<&str>,
     personal_assistant_ni: Option<&str>,
-    first_week_commencing: &str,
+    payroll_period: &str,
     attachment_path: &Path,
     email_body: &str,
     additional_note: Option<&str>,
@@ -151,8 +151,6 @@ fn compose_payroll_email(
 
     let cc_email = cc_email.map(str::trim).filter(|email| !email.is_empty());
     let bcc_email = bcc_email.map(str::trim).filter(|email| !email.is_empty());
-
-    let payroll_period = crate::pdf_generator::payroll_week_filename(first_week_commencing);
 
     let subject = format!(
         "{}{}",
@@ -216,7 +214,7 @@ pub fn send_payroll_email(
     personal_assistant_name: &str,
     personal_assistant_dob: Option<&str>,
     personal_assistant_ni: Option<&str>,
-    first_week_commencing: &str,
+    payroll_period: &str,
     attachment_path: &Path,
     email_body: &str,
     additional_note: Option<&str>,
@@ -230,7 +228,7 @@ pub fn send_payroll_email(
         personal_assistant_name,
         personal_assistant_dob,
         personal_assistant_ni,
-        first_week_commencing,
+        payroll_period,
         attachment_path,
         email_body,
         additional_note,
@@ -260,7 +258,7 @@ pub fn send_test_payroll_email(
     personal_assistant_name: &str,
     personal_assistant_dob: Option<&str>,
     personal_assistant_ni: Option<&str>,
-    first_week_commencing: &str,
+    payroll_period: &str,
     attachment_path: &Path,
     email_body: &str,
     additional_note: Option<&str>,
@@ -274,7 +272,7 @@ pub fn send_test_payroll_email(
         personal_assistant_name,
         personal_assistant_dob,
         personal_assistant_ni,
-        first_week_commencing,
+        payroll_period,
         attachment_path,
         email_body,
         additional_note,
@@ -303,7 +301,7 @@ pub fn send_test_payslip_email(
     personal_assistant_name: &str,
     personal_assistant_dob: Option<&str>,
     personal_assistant_ni: Option<&str>,
-    first_week_commencing: &str,
+    payroll_period: &str,
     attachment_path: &Path,
     email_body: &str,
     additional_note: Option<&str>,
@@ -316,7 +314,7 @@ pub fn send_test_payslip_email(
         personal_assistant_name,
         personal_assistant_dob,
         personal_assistant_ni,
-        first_week_commencing,
+        payroll_period,
         attachment_path,
         email_body,
         additional_note,
@@ -407,7 +405,7 @@ mod tests {
             "Alex Smith",
             None,
             None,
-            "01/04/2026",
+            "202604w02",
             Path::new("/not-created/timesheet.pdf"),
             "Timesheet attached.",
             None,
@@ -420,7 +418,7 @@ mod tests {
         assert_eq!(preview.from, "employer@example.test");
         assert_eq!(preview.cc.as_deref(), Some("employer@example.test"));
         assert_eq!(preview.bcc.as_deref(), Some("pa@example.test"));
-        assert!(preview.subject.starts_with("Alex Smith "));
+        assert_eq!(preview.subject, "Alex Smith 202604w02");
         assert_eq!(preview.body, "Timesheet attached.\n\nKind regards");
         assert_eq!(preview.attachment_path, "/not-created/timesheet.pdf");
     }

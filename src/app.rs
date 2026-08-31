@@ -190,22 +190,21 @@ impl Application {
     pub fn import_payroll_return(
         &self,
         path: &std::path::Path,
-        _payroll_year: &str,
-        cycle_number: i64,
+        schedule: &crate::payroll_schedule_repository::PayrollSchedule,
     ) -> Result<crate::archive::PayrollReturnImportResult, Box<dyn std::error::Error>> {
         let assistants = self.personal_assistant_repository.get_all()?;
 
         let payslip_folder = crate::paths::expand_path(&self.context.config.folders.payslip_folder);
 
         let information_folder =
-            crate::paths::expand_path(&self.context.config.folders.email_archive);
+            crate::paths::expand_path(&self.context.config.folders.payroll_information_folder);
 
         Ok(crate::archive::import_payroll_return(
             path,
             &payslip_folder,
             &information_folder,
             &assistants,
-            cycle_number,
+            schedule,
         )?)
     }
 
@@ -231,7 +230,7 @@ impl Application {
         personal_assistant_name: &str,
         personal_assistant_dob: Option<&str>,
         personal_assistant_ni: Option<&str>,
-        first_week_commencing: &str,
+        schedule: &crate::payroll_schedule_repository::PayrollSchedule,
         attachment_path: &std::path::Path,
         email_body: &str,
         additional_note: Option<&str>,
@@ -244,7 +243,7 @@ impl Application {
             personal_assistant_name,
             personal_assistant_dob,
             personal_assistant_ni,
-            first_week_commencing,
+            &crate::payroll_file_naming::payroll_period_code(schedule)?,
             attachment_path,
             email_body,
             additional_note,
@@ -261,7 +260,7 @@ impl Application {
         personal_assistant_name: &str,
         personal_assistant_dob: Option<&str>,
         personal_assistant_ni: Option<&str>,
-        first_week_commencing: &str,
+        schedule: &crate::payroll_schedule_repository::PayrollSchedule,
         attachment_path: &std::path::Path,
         email_body: &str,
         additional_note: Option<&str>,
@@ -291,7 +290,7 @@ impl Application {
             personal_assistant_name,
             personal_assistant_dob,
             personal_assistant_ni,
-            first_week_commencing,
+            &crate::payroll_file_naming::payroll_period_code(schedule)?,
             attachment_path,
             email_body,
             additional_note,
@@ -309,7 +308,7 @@ impl Application {
         personal_assistant_name: &str,
         personal_assistant_dob: Option<&str>,
         personal_assistant_ni: Option<&str>,
-        first_week_commencing: &str,
+        schedule: &crate::payroll_schedule_repository::PayrollSchedule,
         attachment_path: &std::path::Path,
         email_body: &str,
         additional_note: Option<&str>,
@@ -339,7 +338,7 @@ impl Application {
             personal_assistant_name,
             personal_assistant_dob,
             personal_assistant_ni,
-            first_week_commencing,
+            &crate::payroll_file_naming::payroll_period_code(schedule)?,
             attachment_path,
             email_body,
             additional_note,
@@ -356,7 +355,7 @@ impl Application {
         personal_assistant_name: &str,
         personal_assistant_dob: Option<&str>,
         personal_assistant_ni: Option<&str>,
-        first_week_commencing: &str,
+        schedule: &crate::payroll_schedule_repository::PayrollSchedule,
         attachment_path: &std::path::Path,
         email_body: &str,
         additional_note: Option<&str>,
@@ -385,7 +384,7 @@ impl Application {
             personal_assistant_name,
             personal_assistant_dob,
             personal_assistant_ni,
-            first_week_commencing,
+            &crate::payroll_file_naming::payroll_period_code(schedule)?,
             attachment_path,
             email_body,
             additional_note,

@@ -1,7 +1,7 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use chrono::{Datelike, Local};
+use chrono::Local;
 use printpdf::{
     graphics::{Line, LinePoint, Point, Rect},
     ops::{Op, PdfPage},
@@ -10,6 +10,7 @@ use printpdf::{
 };
 
 pub struct TimesheetPdfData<'a> {
+    pub schedule: &'a crate::payroll_schedule_repository::PayrollSchedule,
     pub employer_name: &'a str,
     pub personal_assistant_name: &'a str,
     pub national_insurance_number: &'a str,
@@ -36,21 +37,16 @@ impl PdfGenerator {
     pub fn timesheet_output_path(
         output_dir: &Path,
         personal_assistant_name: &str,
-        first_week_commencing: &str,
-    ) -> PathBuf {
-        output_dir.join(format!(
-            "Timesheet - {} - {}.pdf",
-            sanitise_filename(personal_assistant_name),
-            payroll_week_filename(first_week_commencing)
-        ))
+        schedule: &crate::payroll_schedule_repository::PayrollSchedule,
+    ) -> Result<PathBuf, Box<dyn std::error::Error>> {
+        crate::payroll_file_naming::timesheet_path(output_dir, personal_assistant_name, schedule)
     }
 
-    pub fn output_path(output_dir: &Path, data: &TimesheetPdfData<'_>) -> PathBuf {
-        Self::timesheet_output_path(
-            output_dir,
-            data.personal_assistant_name,
-            data.week_commencing_dates[0],
-        )
+    pub fn output_path(
+        output_dir: &Path,
+        data: &TimesheetPdfData<'_>,
+    ) -> Result<PathBuf, Box<dyn std::error::Error>> {
+        Self::timesheet_output_path(output_dir, data.personal_assistant_name, data.schedule)
     }
 
     pub fn generate(
@@ -60,7 +56,7 @@ impl PdfGenerator {
     ) -> Result<PathBuf, Box<dyn std::error::Error>> {
         fs::create_dir_all(output_dir)?;
 
-        let output_path = Self::output_path(output_dir, data);
+        let output_path = Self::output_path(output_dir, data)?;
 
         Self::generate_to_path(&output_path, data, pdf_config)?;
         Ok(output_path)
@@ -871,43 +867,34 @@ fn draw_horizontal_line(ops: &mut Vec<Op>, left: f32, right: f32, y: f32) {
     });
 }
 
-pub(crate) fn payroll_week_filename(date: &str) -> String {
-    if let Ok(parsed) = chrono::NaiveDate::parse_from_str(date, "%d/%m/%Y") {
-        let payroll_start = chrono::NaiveDate::from_ymd_opt(2026, 3, 23)
-            .expect("Invalid payroll schedule start date");
-
-        let days_since_start = (parsed - payroll_start).num_days();
-
-        if days_since_start >= 0 && days_since_start % 7 == 0 {
-            let week_number = 2 + (days_since_start / 7);
-
-            return format!("{}{:02}w{:02}", parsed.year(), parsed.month(), week_number);
-        }
-    }
-
-    sanitise_filename(date)
-}
-
-fn sanitise_filename(value: &str) -> String {
-    value
-        .chars()
-        .map(|character| match character {
-            '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|' => '_',
-            _ => character,
-        })
-        .collect()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::env;
 
+    fn schedule(
+        first_week: &str,
+        pay_date: &str,
+    ) -> crate::payroll_schedule_repository::PayrollSchedule {
+        crate::payroll_schedule_repository::PayrollSchedule {
+            id: 1,
+            payroll_year: "2026/27".to_string(),
+            cycle_number: 1,
+            first_week_commencing: first_week.to_string(),
+            latest_posting_date: String::new(),
+            pay_date: pay_date.to_string(),
+            created_at: String::new(),
+            payslips_sent: false,
+        }
+    }
+
     #[test]
     fn generates_four_week_timesheet_pdf() {
         let output_dir = env::temp_dir().join("direct_payment_timesheets_test");
+        let schedule = schedule("23/03/2026", "17/04/2026");
 
         let data = TimesheetPdfData {
+            schedule: &schedule,
             employer_name: "Morgan",
             personal_assistant_name: "Birch Sample",
             national_insurance_number: "AB123456C",
@@ -962,11 +949,6 @@ mod tests {
     }
 
     #[test]
-    fn current_payroll_filename_is_correct() {
-        assert_eq!(payroll_week_filename("13/07/2026"), "202607w18");
-    }
-
-    #[test]
     fn contracted_hours_summary_groups_week_dates_across_a_boundary() {
         let values = [
             "16".to_string(),
@@ -1008,7 +990,9 @@ mod tests {
                 "31/08/2026".to_string(),
             ],
         );
+        let schedule = schedule("10/08/2026", "04/09/2026");
         let data = TimesheetPdfData {
+            schedule: &schedule,
             employer_name: "Morgan",
             personal_assistant_name: "Boundary Test",
             national_insurance_number: "AB123456C",
