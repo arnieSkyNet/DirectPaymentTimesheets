@@ -22,7 +22,6 @@ pub struct PayrollSettingsScreen {
     standard_rate_base: String,
     standard_rate_top_up: String,
     overtime_enabled: bool,
-    public_holiday_enabled: bool,
 
     status_message: String,
     confirm_bulk_pay_rate_update: bool,
@@ -47,7 +46,6 @@ impl PayrollSettingsScreen {
             standard_rate_base: String::new(),
             standard_rate_top_up: String::new(),
             overtime_enabled: false,
-            public_holiday_enabled: false,
 
             status_message: "Payroll settings not loaded.".to_string(),
             confirm_bulk_pay_rate_update: false,
@@ -230,16 +228,7 @@ impl PayrollSettingsScreen {
 
         ui.separator();
 
-        ui.horizontal(|ui| {
-            ui.checkbox(&mut self.overtime_enabled, "Enable overtime calculations");
-
-            ui.add_space(30.0);
-
-            ui.checkbox(
-                &mut self.public_holiday_enabled,
-                "Enable public holiday payments",
-            );
-        });
+        ui.checkbox(&mut self.overtime_enabled, "Enable overtime calculations");
 
         ui.separator();
 
@@ -268,7 +257,6 @@ impl PayrollSettingsScreen {
         self.start_of_workweek = payroll.start_of_workweek.clone();
 
         self.overtime_enabled = payroll.overtime_enabled;
-        self.public_holiday_enabled = payroll.public_holiday_enabled;
 
         if let Ok(Some(provider)) = application.payroll_provider_repository.get() {
             self.provider_name = provider.name.unwrap_or_default();
@@ -291,8 +279,6 @@ impl PayrollSettingsScreen {
         payroll.start_of_workweek = self.start_of_workweek.clone();
 
         payroll.overtime_enabled = self.overtime_enabled;
-
-        payroll.public_holiday_enabled = self.public_holiday_enabled;
 
         let payroll_department_email = match application.payroll_provider_repository.get() {
             Ok(provider) => provider.and_then(|provider| provider.payroll_department_email),
