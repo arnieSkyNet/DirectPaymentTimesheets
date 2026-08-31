@@ -1489,6 +1489,10 @@ impl DirectPaymentApp {
         let today = chrono::Local::now().date_naive();
         let current_schedule = self.application.resolve_payroll_schedule(today)?;
         let payroll_year = current_schedule.payroll_year.clone();
+        let previous_schedule = self
+            .application
+            .payroll_schedule_repository
+            .resolve_previous(&current_schedule)?;
 
         let first_week = parse_date_checked(&current_schedule.first_week_commencing)
             .ok_or("Invalid first week commencing date in payroll schedule.")?;
@@ -1552,11 +1556,14 @@ impl DirectPaymentApp {
                 .into());
             }
 
-            let previous_cycle_number = current_schedule.cycle_number - 1;
-            let previous_record = if previous_cycle_number > 0 {
+            let previous_record = if let Some(previous_schedule) = &previous_schedule {
                 self.application
                     .payroll_timesheet_repository
-                    .get_for_cycle_and_pa(&payroll_year, previous_cycle_number, assistant.id)?
+                    .get_for_cycle_and_pa(
+                        &previous_schedule.payroll_year,
+                        previous_schedule.cycle_number,
+                        assistant.id,
+                    )?
             } else {
                 None
             };
