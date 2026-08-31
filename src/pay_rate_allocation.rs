@@ -677,7 +677,7 @@ mod tests {
                 .len(),
             2
         );
-        let snapshot = worked_items.get_snapshot(44).unwrap();
+        let snapshot = worked_items.get_snapshot_items(44).unwrap();
         assert_eq!(snapshot[0].timesheet_id, Some(101));
         assert_eq!(snapshot[1].timesheet_id, Some(102));
         assert!(snapshot
@@ -970,7 +970,7 @@ mod tests {
                 &result.week_totals_minutes,
             )
             .unwrap();
-        let persisted = worked_items.get_snapshot(100).unwrap();
+        let persisted = worked_items.get_snapshot_items(100).unwrap();
         assert_eq!(persisted[0].pay_rate_id, None);
         assert_eq!(persisted[0].pay_rate_effective_date, None);
         assert_eq!(persisted[0].total_hourly_rate, None);
