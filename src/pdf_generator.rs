@@ -152,17 +152,26 @@ impl PdfGenerator {
             &regular_id,
         );
 
-        write_text(
-            &mut ops,
+        for (index, line) in wrap_text(
             &format!("Contracted Weekly Hours: {}", data.contracted_weekly_hours),
-            20.0,
-            235.0,
+            170.0,
             9.0,
-            false,
-            TextAlignment::Left,
-            &bold_id,
-            &regular_id,
-        );
+        )
+        .iter()
+        .enumerate()
+        {
+            write_text(
+                &mut ops,
+                line,
+                20.0,
+                235.0 - (index as f32 * 4.0),
+                9.0,
+                false,
+                TextAlignment::Left,
+                &bold_id,
+                &regular_id,
+            );
+        }
 
         // ------------------------------------------------------------
         // Main four-week table
@@ -426,6 +435,63 @@ fn display_table_value(value: &str) -> &str {
     } else {
         value
     }
+}
+
+pub fn contracted_hours_summary(
+    values: &[String; 4],
+    week_commencing_dates: &[String; 4],
+) -> String {
+    if values.iter().all(|value| value == &values[0]) {
+        return values[0].clone();
+    }
+
+    let mut groups: Vec<(String, Vec<String>)> = Vec::new();
+    for (value, date) in values.iter().zip(week_commencing_dates) {
+        let compact_date = date
+            .split_once('/')
+            .and_then(|(day, remainder)| {
+                remainder
+                    .split_once('/')
+                    .map(|(month, _)| format!("{day}/{month}"))
+            })
+            .unwrap_or_else(|| date.clone());
+        if let Some((_, dates)) = groups
+            .iter_mut()
+            .find(|(existing_value, _)| existing_value == value)
+        {
+            dates.push(compact_date);
+        } else {
+            groups.push((value.clone(), vec![compact_date]));
+        }
+    }
+
+    groups
+        .into_iter()
+        .map(|(value, dates)| format!("{} (w/c {})", value, dates.join(", ")))
+        .collect::<Vec<_>>()
+        .join("  ")
+}
+
+fn wrap_text(text: &str, max_width: f32, font_size: f32) -> Vec<String> {
+    let mut lines = Vec::new();
+    let mut current = String::new();
+    for word in text.split_whitespace() {
+        let candidate = if current.is_empty() {
+            word.to_string()
+        } else {
+            format!("{current} {word}")
+        };
+        if !current.is_empty() && approximate_text_width(&candidate, font_size, false) > max_width {
+            lines.push(current);
+            current = word.to_string();
+        } else {
+            current = candidate;
+        }
+    }
+    if !current.is_empty() {
+        lines.push(current);
+    }
+    lines
 }
 
 fn draw_table(
@@ -889,6 +955,7 @@ mod tests {
         assert!(!normalised.contains("from 01/04/2026"));
         assert!(!normalised.contains("see note"));
         assert!(!normalised.contains("historical work date"));
+        assert!(normalised.contains("Contracted Weekly Hours: 25"));
 
         let _ = fs::remove_file(path);
         let _ = fs::remove_dir_all(output_dir);
@@ -897,6 +964,80 @@ mod tests {
     #[test]
     fn current_payroll_filename_is_correct() {
         assert_eq!(payroll_week_filename("13/07/2026"), "202607w18");
+    }
+
+    #[test]
+    fn contracted_hours_summary_groups_week_dates_across_a_boundary() {
+        let values = [
+            "16".to_string(),
+            "16".to_string(),
+            "20".to_string(),
+            "20".to_string(),
+        ];
+        let dates = [
+            "10/08/2026".to_string(),
+            "17/08/2026".to_string(),
+            "24/08/2026".to_string(),
+            "31/08/2026".to_string(),
+        ];
+
+        assert_eq!(
+            contracted_hours_summary(&values, &dates),
+            "16 (w/c 10/08, 17/08)  20 (w/c 24/08, 31/08)"
+        );
+        assert_eq!(
+            contracted_hours_summary(&std::array::from_fn(|_| "25".to_string()), &dates),
+            "25"
+        );
+    }
+
+    #[test]
+    fn four_week_pdf_displays_boundary_summary_without_altering_worked_hours() {
+        let output_dir = env::temp_dir().join("direct_payment_timesheets_boundary_test");
+        let summary = contracted_hours_summary(
+            &[
+                "16".to_string(),
+                "16".to_string(),
+                "20".to_string(),
+                "20".to_string(),
+            ],
+            &[
+                "10/08/2026".to_string(),
+                "17/08/2026".to_string(),
+                "24/08/2026".to_string(),
+                "31/08/2026".to_string(),
+            ],
+        );
+        let data = TimesheetPdfData {
+            employer_name: "Morgan",
+            personal_assistant_name: "Boundary Test",
+            national_insurance_number: "AB123456C",
+            contracted_weekly_hours: &summary,
+            week_commencing_dates: ["10/08/2026", "17/08/2026", "24/08/2026", "31/08/2026"],
+            hours_worked: ["26.5", "21", "28.5", "6.25"],
+            annual_leave_hours: ["0", "0", "0", "0"],
+            sick_leave_hours: ["0", "0", "0", "0"],
+            public_holiday_hours: ["0", "0", "0", "0"],
+            public_holiday_dates: ["", "", "", ""],
+            travel_miles: ["0", "0", "0", "0"],
+            previous_cycle_hours: None,
+            employer_signature_path: None,
+            pa_signature_path: None,
+        };
+
+        let path = PdfGenerator::generate(&output_dir, &data, &crate::config::PdfConfig::default())
+            .unwrap();
+        let extracted = pdf_extract::extract_text(&path).unwrap();
+        let normalised = extracted.split_whitespace().collect::<Vec<_>>().join(" ");
+        assert!(normalised.contains("16 (w/c 10/08, 17/08)"));
+        assert!(normalised.contains("20 (w/c 24/08, 31/08)"));
+        assert!(normalised.contains("26.5"));
+        assert!(normalised.contains("21"));
+        assert!(normalised.contains("28.5"));
+        assert!(normalised.contains("6.25"));
+
+        let _ = fs::remove_file(path);
+        let _ = fs::remove_dir_all(output_dir);
     }
 
     #[test]
