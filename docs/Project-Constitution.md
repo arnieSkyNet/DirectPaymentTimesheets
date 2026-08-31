@@ -114,9 +114,9 @@ src/
 
 Application source code.
 
-tests/
+Tests
 
-Testing material.
+Automated tests are currently colocated with the relevant Rust modules under src/ where applicable. Separate testing resources may be added only when a feature requires them.
 
 ;
 
@@ -176,4 +176,3 @@ The project will be considered successful when it provides:
 This constitution defines the guiding principles for the DirectPaymentTimesheets project.
 
 Future development should follow these principles unless a documented decision is made to change them.
-

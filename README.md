@@ -1,82 +1,135 @@
 # DirectPaymentTimesheets
 
-An open-source system for managing Direct Payment care records, timesheets and administration.
+DirectPaymentTimesheets is a local desktop application for administering UK Direct Payment Personal Assistant timesheets and the four-week payroll-provider workflow. It imports externally recorded work, prepares payroll timesheets, generates the provider PDF, sends timesheets and payslips, imports Payroll Returns, and preserves the evidence represented by submitted payroll.
 
-## Overview
-
-DirectPaymentTimesheets is a project to create a reliable, accessible and maintainable system for people managing Direct Payment arrangements.
-
-The aim is to simplify the administration involved in recording care support, managing timesheets, and maintaining accurate records.
-
-The project is being developed with a focus on:
-
-- reliability
-- simplicity
-- accessibility
-- clear record keeping
-- long-term maintainability
-
-## Project Status
-
-This project is currently in the early development and design phase.
-
-The initial project foundations have been established:
-
-- GitHub repository created
-- Project structure established
-- Development workflow configured
-- Project Constitution completed
+The current pre-release is version `0.0.9` with SQLite schema version 19. It is a working application under active development, not an installer-packaged or general-purpose payroll product.
 
 ## Technology
 
-The main development language for this project is:
+- Rust 2021
+- `eframe`/`egui` desktop UI
+- SQLite through bundled `rusqlite`
+- `printpdf` document generation
+- SMTP through `lettre`
+- PDF text extraction and ZIP processing for provider files
 
-- Rust
+## Implemented functionality
 
-Rust has been selected for its focus on:
+### Records and settings
 
-- reliability
-- performance
-- memory safety
-- long-term maintainability
+- Employer, payroll-provider and Personal Assistant maintenance.
+- Effective-dated PA pay-rate history, including employer top-up.
+- Effective-dated contracted weekly hours.
+- Application themes, folder/font settings, payroll settings and email settings.
+- Dark, light, system, soft light/dark, blue and accessible high-contrast themes.
 
-## Goals
+### Work import and payroll preparation
 
-The project aims to provide tools for:
+- CSV import with duplicate detection, import audit and timestamped source archive.
+- Provider Payroll Prep Sheet PDF import with validation and atomic per-year replacement.
+- Coexistence of multiple imported payroll years, including early import of a future year.
+- Schedule-driven payroll rollover rather than hard-coded calendar-year selection.
+- A Dashboard operational payroll-period selector for deliberate current, historical or future work.
+- Payroll Timesheet Preparation bound to the selected period, including manual Hours Worked corrections, leave, sick/SSP, public-holiday and mileage values.
+- Read-only protection for submitted or indeterminate preparation records and invalidation of stale generated candidates when represented data changes.
 
-- recording care support hours
-- managing timesheets
-- maintaining Direct Payment administration records
-- producing accurate summaries and reports
+Imported `worked_minutes` is parsed from the CSV Worked Hours field. It is not recalculated from Start Time/End Time and is not changed by the persisted rounding setting. CSV rate and amount fields are retained as imported data but are not the authoritative payroll rate; maintained PA rate history is authoritative.
 
-## Development Principles
+### Payroll PDFs and historical evidence
 
-The project follows these principles:
+- Four-week provider PDF generation using configured fonts and sizes.
+- Per-shift effective-dated rate allocation retained internally without printing pay rates on the provider form.
+- Per-week effective-dated contracted-hours presentation.
+- Cross-payroll-year previous-cycle late-shift reconciliation.
+- Persistent manual adjustments and exact worked-item snapshots.
+- Candidate PDFs associated with SHA-256 digests before production sending.
+- Immutable submitted baselines and protected indeterminate-delivery state.
+- Historical inactive PA generation when that PA already has a selected-period payroll record.
 
-- Keep the system simple and understandable
-- Document decisions before major implementation
-- Make small, controlled changes
-- Prioritise reliability over unnecessary complexity
-- Build with accessibility in mind
+### Email and Payroll Returns
 
-## Repository Structure
+- Timesheet and payslip preview, test and production workflows.
+- Production batches bound to the exact operational payroll period captured at confirmation.
+- Production timesheet and payslip routing from the employer to the payroll department, CC employer and BCC PA when available.
+- Test routing through configured test addresses; payslip test email targets the configured PA test address.
+- Explicit Payroll Return period selection before choosing a ZIP file.
+- UK PAYE tax-week filename calculation and payroll-year-aware payslip/information folders.
+- Collision-safe storage of non-payslip payroll information.
 
-The project will maintain a clear separation between:
+### Backup and restore
 
-```text
-docs/       Documentation and project decisions
-src/        Application source code
-tests/      Testing resources
+- Manual consistent SQLite backups with optional `config.toml` and a human-readable manifest.
+- Discovery and validation of application-created backups.
+- Integrity/schema checks and a mandatory pre-restore safety backup.
+- SQLite-safe restore with optional configuration restore and required application restart.
+
+## Build and run
+
+Install a current Rust toolchain, then from the repository root run:
+
+```bash
+cargo check
+cargo test
+cargo run
 ```
 
+No packaged installer is currently provided. Native desktop/TLS build prerequisites may depend on the operating system and Rust toolchain installation.
 
-## Contributing
+## Runtime data and configuration
 
-The project is open-source and contributions will be welcomed as the project develops.
+The default application data root is:
 
-Before making major changes, please review the project documentation and development principles.
+```text
+~/.directpaymenttimesheets/
+```
+
+Set `DIRECTPAYMENTTIMESHEETS_HOME` before launching to use a different data root, which is strongly recommended for disposable development/manual-test data.
+
+The application root contains `database.sqlite`, `config.toml` and internal import, archive, backup, log, template and cache directories. Application Settings also configures external business folders for CSV import, generated PDFs, payslips and returned payroll information. These paths can be outside the application root and may contain sensitive payroll data. Inspect them before running a workflow that writes files.
+
+The configured `email_archive` path is currently persisted but has no production consumer. Returned payroll information uses the separate payroll-information folder.
+
+## Sample CSV
+
+[data/sample_timesheets.csv](data/sample_timesheets.csv) is a parser-compatible example. To test it safely:
+
+1. use a disposable `DIRECTPAYMENTTIMESHEETS_HOME`;
+2. configure the CSV import folder in Application Settings;
+3. copy the sample into that folder; and
+4. use **Import CSV** on the Dashboard.
+
+The sample's PA name must correspond to a maintained PA if downstream payroll work is required. Its rate and amount columns demonstrate the external format only and are not authoritative for generated payroll.
+
+## Payroll-period selections
+
+Three selections are intentionally independent:
+
+- the Dashboard operational period drives preparation, generation and email operations;
+- Payroll Return import selects the period to which a returned ZIP belongs; and
+- View Payroll Schedule selects an imported payroll year for display only.
+
+User-facing labels use Payroll Week, the four-week date range and pay date. Internal cycle numbers remain database identity rather than filename Payroll Week.
+
+## Current limitations
+
+- This is a pre-release, single-user local desktop application.
+- There is no packaged installer, authentication or multi-user coordination.
+- Persisted frequency, rounding, workweek and overtime choices are not downstream configurable calculation rules; no overtime engine is implemented.
+- Payroll Prep Sheet PDF import is implemented; DOCX import is recognised but not implemented.
+- Production email batches currently include active and legacy-`NULL`-status PAs only, even though preparation/generation can retain an inactive historical PA.
+- There is no P60-specific Payroll Return processing.
+- Backup/restore has no scheduling, retention cleanup, compression or cloud integration.
+- Restore accepts only recognised DirectPaymentTimesheets backup directories, not arbitrary SQLite files.
+
+## Documentation
+
+- [Project state](docs/PROJECT_STATE.md)
+- [Architecture](docs/ARCHITECTURE.md)
+- [Domain rules](docs/DOMAIN.md)
+- [Development guide](docs/DEVELOPMENT.md)
+- [Conceptual data model](docs/DATA-MODEL.md)
+- [Database schema 19](docs/DATABASE-SCHEMA.md)
 
 ## Licence
 
-Licence details will be added as the project develops.
-
+No licence file has been selected yet. Do not assume permissions beyond those granted by applicable law or the repository owner.
