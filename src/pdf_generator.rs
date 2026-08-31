@@ -14,7 +14,6 @@ pub struct TimesheetPdfData<'a> {
     pub personal_assistant_name: &'a str,
     pub national_insurance_number: &'a str,
     pub contracted_weekly_hours: &'a str,
-    pub pay_rate: f64,
 
     pub week_commencing_dates: [&'a str; 4],
     pub hours_worked: [&'a str; 4],
@@ -34,6 +33,26 @@ pub struct TimesheetPdfData<'a> {
 pub struct PdfGenerator;
 
 impl PdfGenerator {
+    pub fn timesheet_output_path(
+        output_dir: &Path,
+        personal_assistant_name: &str,
+        first_week_commencing: &str,
+    ) -> PathBuf {
+        output_dir.join(format!(
+            "Timesheet - {} - {}.pdf",
+            sanitise_filename(personal_assistant_name),
+            payroll_week_filename(first_week_commencing)
+        ))
+    }
+
+    pub fn output_path(output_dir: &Path, data: &TimesheetPdfData<'_>) -> PathBuf {
+        Self::timesheet_output_path(
+            output_dir,
+            data.personal_assistant_name,
+            data.week_commencing_dates[0],
+        )
+    }
+
     pub fn generate(
         output_dir: &Path,
         data: &TimesheetPdfData<'_>,
@@ -41,13 +60,20 @@ impl PdfGenerator {
     ) -> Result<PathBuf, Box<dyn std::error::Error>> {
         fs::create_dir_all(output_dir)?;
 
-        let filename = format!(
-            "Timesheet - {} - {}.pdf",
-            sanitise_filename(data.personal_assistant_name),
-            payroll_week_filename(data.week_commencing_dates[0])
-        );
+        let output_path = Self::output_path(output_dir, data);
 
-        let output_path = output_dir.join(filename);
+        Self::generate_to_path(&output_path, data, pdf_config)?;
+        Ok(output_path)
+    }
+
+    pub fn generate_to_path(
+        output_path: &Path,
+        data: &TimesheetPdfData<'_>,
+        pdf_config: &crate::config::PdfConfig,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        if let Some(parent) = output_path.parent() {
+            fs::create_dir_all(parent)?;
+        }
 
         let mut document = PdfDocument::new("Direct Payment Timesheet");
 
@@ -128,10 +154,7 @@ impl PdfGenerator {
 
         write_text(
             &mut ops,
-            &format!(
-                "Contracted Weekly Hours: {}     Pay Rate: £{:.2} per hour",
-                data.contracted_weekly_hours, data.pay_rate
-            ),
+            &format!("Contracted Weekly Hours: {}", data.contracted_weekly_hours),
             20.0,
             235.0,
             9.0,
@@ -149,11 +172,11 @@ impl PdfGenerator {
         let table_top = 220.0;
 
         let header_height = 24.0;
-        let week_row_height = 16.0;
+        let week_row_height = 20.0;
 
         let columns = [
             ("W/c\nDate", 28.0),
-            ("Hours\nworked\nPay rate £", 25.0),
+            ("Hours\nworked", 42.0),
             ("Annual\nLeave\nHrs.", 25.0),
             ("Sick\nleave\n/ SSP", 25.0),
             ("Public Hols.\nhours\nworked", 25.0),
@@ -322,7 +345,7 @@ impl PdfGenerator {
 
         fs::write(&output_path, bytes)?;
 
-        Ok(output_path)
+        Ok(())
     }
 }
 
@@ -424,6 +447,8 @@ fn draw_table(
     bold_font: &printpdf::FontId,
     regular_font: &printpdf::FontId,
 ) {
+    let (week_commencing_font_size, hours_font_size, information_font_size) =
+        configured_table_font_sizes(pdf_config);
     let table_width: f32 = columns.iter().map(|(_, width)| *width).sum();
 
     let table_height = header_height + (week_row_height * 4.0);
@@ -500,7 +525,7 @@ fn draw_table(
             week_dates[index],
             x + 1.5,
             row_top - 10.0,
-            pdf_config.week_commencing_font_size as f32,
+            week_commencing_font_size,
             false,
             TextAlignment::Left,
             bold_font,
@@ -514,9 +539,9 @@ fn draw_table(
         write_text(
             ops,
             hours_worked[index],
-            x + 28.0 + 1.5,
+            x + columns[0].1 + 1.5,
             row_top - 10.0,
-            pdf_config.hours_font_size as f32,
+            hours_font_size,
             true,
             TextAlignment::Left,
             bold_font,
@@ -532,10 +557,10 @@ fn draw_table(
                 if !previous.trim().is_empty() {
                     write_text(
                         ops,
-                        &format!("(info.only +{} prev)", previous),
-                        x + 28.0 + 1.5,
+                        &format!("[Info.only +{} prev]", previous),
+                        x + columns[0].1 + 1.5,
                         row_top - 14.5,
-                        pdf_config.information_font_size as f32,
+                        information_font_size,
                         false,
                         TextAlignment::Left,
                         bold_font,
@@ -555,7 +580,7 @@ fn draw_table(
             write_text(
                 ops,
                 annual_leave,
-                x + 28.0 + 25.0 + 7.0,
+                x + columns[0].1 + columns[1].1 + 7.0,
                 row_top - 10.0,
                 12.0,
                 true,
@@ -575,7 +600,7 @@ fn draw_table(
             write_text(
                 ops,
                 sick_leave,
-                x + 28.0 + 50.0 + 7.0,
+                x + columns[0].1 + columns[1].1 + columns[2].1 + 7.0,
                 row_top - 10.0,
                 12.0,
                 true,
@@ -592,7 +617,8 @@ fn draw_table(
         let public_holiday = display_table_value(public_holiday_hours[index]);
 
         if !public_holiday.is_empty() {
-            let public_holiday_x = x + 28.0 + 75.0 + 1.5;
+            let public_holiday_x =
+                x + columns[0].1 + columns[1].1 + columns[2].1 + columns[3].1 + 1.5;
 
             // Public Holiday hours.
             write_text(
@@ -644,7 +670,7 @@ fn draw_table(
             write_text(
                 ops,
                 travel,
-                x + 28.0 + 100.0 + 7.0,
+                x + columns[0].1 + columns[1].1 + columns[2].1 + columns[3].1 + columns[4].1 + 7.0,
                 row_top - 10.0,
                 12.0,
                 true,
@@ -654,6 +680,14 @@ fn draw_table(
             );
         }
     }
+}
+
+fn configured_table_font_sizes(pdf_config: &crate::config::PdfConfig) -> (f32, f32, f32) {
+    (
+        pdf_config.week_commencing_font_size as f32,
+        pdf_config.hours_font_size as f32,
+        pdf_config.information_font_size as f32,
+    )
 }
 
 fn add_signature(
@@ -812,23 +846,21 @@ mod tests {
             personal_assistant_name: "Birch Sample",
             national_insurance_number: "AB123456C",
             contracted_weekly_hours: "25",
-            pay_rate: 12.72,
-
             week_commencing_dates: ["23/03/2026", "30/03/2026", "06/04/2026", "13/04/2026"],
 
-            hours_worked: ["25", "25", "25", "25"],
+            hours_worked: ["26.5", "21", "6.25", "0"],
 
             annual_leave_hours: ["0", "0", "0", "0"],
 
             sick_leave_hours: ["0", "0", "0", "0"],
 
-            public_holiday_hours: ["0", "0", "0", "0"],
+            public_holiday_hours: ["0", "7.5", "0", "0"],
 
-            public_holiday_dates: ["", "", "", ""],
+            public_holiday_dates: ["", "7.5 (03/04/2026)", "", ""],
 
             travel_miles: ["0", "0", "0", "0"],
 
-            previous_cycle_hours: Some("5.25"),
+            previous_cycle_hours: Some("1.25"),
 
             employer_signature_path: None,
 
@@ -845,6 +877,19 @@ mod tests {
 
         assert!(path.exists());
 
+        let extracted = pdf_extract::extract_text(&path).unwrap();
+        let normalised = extracted.split_whitespace().collect::<Vec<_>>().join(" ");
+        assert!(!normalised.contains("Total"));
+        assert!(normalised.contains("26.5"));
+        assert!(normalised.contains("21"));
+        assert!(normalised.contains("6.25"));
+        assert!(normalised.contains("[Info.only +1.25 prev]"));
+        assert!(normalised.contains("(03/04/2026)"));
+        assert!(!normalised.contains('£'));
+        assert!(!normalised.contains("from 01/04/2026"));
+        assert!(!normalised.contains("see note"));
+        assert!(!normalised.contains("historical work date"));
+
         let _ = fs::remove_file(path);
         let _ = fs::remove_dir_all(output_dir);
     }
@@ -852,5 +897,15 @@ mod tests {
     #[test]
     fn current_payroll_filename_is_correct() {
         assert_eq!(payroll_week_filename("13/07/2026"), "202607w18");
+    }
+
+    #[test]
+    fn configured_table_font_sizes_keep_established_roles() {
+        let mut config = crate::config::PdfConfig::default();
+        config.week_commencing_font_size = 8.25;
+        config.hours_font_size = 14.0;
+        config.information_font_size = 5.25;
+
+        assert_eq!(configured_table_font_sizes(&config), (8.25, 14.0, 5.25));
     }
 }

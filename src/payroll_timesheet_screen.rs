@@ -1,5 +1,6 @@
 use chrono::Datelike;
 use eframe::egui;
+use std::collections::HashMap;
 
 use crate::app::Application;
 use crate::payroll_schedule_repository::PayrollSchedule;
@@ -15,6 +16,7 @@ pub struct PayrollTimesheetScreen {
     records: Vec<PayrollTimesheet>,
     weeks: Vec<(PayrollTimesheet, Vec<PayrollTimesheetWeek>, String)>,
     public_holidays: Vec<Vec<PayrollTimesheetPublicHoliday>>,
+    worked_hours_baselines: HashMap<(i64, i64), i64>,
     status_message: String,
 }
 
@@ -28,6 +30,7 @@ impl PayrollTimesheetScreen {
             records: Vec::new(),
             weeks: Vec::new(),
             public_holidays: Vec::new(),
+            worked_hours_baselines: HashMap::new(),
             status_message: "Payroll Timesheets not loaded.".to_string(),
         }
     }
@@ -79,18 +82,11 @@ impl PayrollTimesheetScreen {
             ui.horizontal(|ui| {
                 ui.label("Previous cycle hours");
 
-                let mut previous = record
+                let previous = record
                     .previous_cycle_hours
                     .map(|value| format_decimal_hours(value))
                     .unwrap_or_default();
-
-                if ui.text_edit_singleline(&mut previous).changed() {
-                    record.previous_cycle_hours = if previous.trim().is_empty() {
-                        None
-                    } else {
-                        previous.parse::<f64>().ok()
-                    };
-                }
+                ui.label(previous);
             });
 
             egui::Grid::new(format!("payroll_week_grid_{}", record_index))
@@ -138,6 +134,29 @@ impl PayrollTimesheetScreen {
                     .update_previous_cycle_hours(record.id, record.previous_cycle_hours, &now)
                     .and_then(|_| {
                         for week in weeks.iter() {
+                            let final_minutes = (week.worked_hours * 60.0).round() as i64;
+                            let baseline_minutes = self
+                                .worked_hours_baselines
+                                .get(&(record.id, week.week_number))
+                                .copied()
+                                .unwrap_or(final_minutes);
+                            let existing_reason = application
+                                .payroll_worked_item_repository
+                                .get_manual_adjustments(record.id)?
+                                .into_iter()
+                                .find(|adjustment| adjustment.week_number == week.week_number)
+                                .and_then(|adjustment| adjustment.reason);
+                            application
+                                .payroll_worked_item_repository
+                                .set_manual_adjustment(
+                                    record.id,
+                                    &crate::payroll_worked_item_repository::ManualHoursAdjustment {
+                                        week_number: week.week_number,
+                                        adjustment_minutes: final_minutes - baseline_minutes,
+                                        reason: existing_reason,
+                                    },
+                                    &now,
+                                )?;
                             application.payroll_timesheet_repository.update_week(week)?;
                         }
 
@@ -242,6 +261,7 @@ impl PayrollTimesheetScreen {
         self.records.clear();
         self.weeks.clear();
         self.public_holidays.clear();
+        self.worked_hours_baselines.clear();
 
         for assistant in assistants {
             let is_active = match &assistant.employment_status {
@@ -323,27 +343,61 @@ impl PayrollTimesheetScreen {
             // public holidays and mileage are left untouched.
             // --------------------------------------------------------
 
-            let actual_hours = calculate_actual_hours(&all_timesheets, assistant.id, &week_dates);
-
             let previous_cycle_number = schedule.cycle_number - 1;
-
-            let previous_cycle_hours = if previous_cycle_number > 0 {
-                calculate_previous_cycle_adjustment(
-                    application,
-                    &self.payroll_year,
-                    previous_cycle_number,
-                    assistant.id,
-                    &all_timesheets,
-                    first_week,
-                )?
+            let previous_record = if previous_cycle_number > 0 {
+                application
+                    .payroll_timesheet_repository
+                    .get_for_cycle_and_pa(&self.payroll_year, previous_cycle_number, assistant.id)?
             } else {
                 None
             };
+            let previous_context = if let Some(previous_record) = &previous_record {
+                let previous_weeks = application
+                    .payroll_timesheet_repository
+                    .get_weeks(previous_record.id)?;
+                previous_weeks
+                    .get(2)
+                    .and_then(|week| parse_date(&week.week_commencing))
+                    .map(
+                        |week_three_start| crate::pay_rate_allocation::PreviousCycleContext {
+                            payroll_timesheet_id: previous_record.id,
+                            week_three_start,
+                            legacy_adjustment_minutes: record
+                                .previous_cycle_hours
+                                .map(|hours| (hours * 60.0).round() as i64)
+                                .unwrap_or(0),
+                        },
+                    )
+            } else {
+                None
+            };
+            let reconciled = crate::pay_rate_allocation::reconcile_payroll_hours(
+                &application.pay_rate_repository,
+                &application.payroll_worked_item_repository,
+                &all_timesheets,
+                assistant.id,
+                record.id,
+                &week_dates,
+                previous_context.as_ref(),
+            )?;
+            let previous_cycle_hours = (reconciled.previous_cycle_minutes > 0)
+                .then(|| reconciled.previous_cycle_minutes as f64 / 60.0);
+            let current_cycle_hours =
+                std::array::from_fn(|index| reconciled.week_totals_minutes[index] as f64 / 60.0);
 
-            let mut current_cycle_hours = actual_hours;
-
-            if let Some(extra_hours) = previous_cycle_hours {
-                current_cycle_hours[0] += extra_hours;
+            let manual_adjustments = application
+                .payroll_worked_item_repository
+                .get_manual_adjustments(record.id)?;
+            for index in 0..4 {
+                let adjustment = manual_adjustments
+                    .iter()
+                    .find(|adjustment| adjustment.week_number == (index + 1) as i64)
+                    .map(|adjustment| adjustment.adjustment_minutes)
+                    .unwrap_or(0);
+                self.worked_hours_baselines.insert(
+                    (record.id, (index + 1) as i64),
+                    reconciled.week_totals_minutes[index] - adjustment,
+                );
             }
 
             application

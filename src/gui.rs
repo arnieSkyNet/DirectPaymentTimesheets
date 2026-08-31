@@ -173,14 +173,19 @@ impl eframe::App for DirectPaymentApp {
             }
 
             ActiveScreen::PayrollTimesheet => {
-                self.payroll_timesheet_screen.show(ui, &self.application);
+                egui::ScrollArea::vertical().show(ui, |ui| {
+                    self.payroll_timesheet_screen.show(ui, &self.application);
+                });
             }
 
             ActiveScreen::ApplicationSettings => {
-                if self
-                    .application_settings_screen
-                    .show(ui, &mut self.application)
-                {
+                let mut open_email_settings = false;
+                egui::ScrollArea::vertical().show(ui, |ui| {
+                    open_email_settings = self
+                        .application_settings_screen
+                        .show(ui, &mut self.application);
+                });
+                if open_email_settings {
                     self.active_screen = ActiveScreen::EmailSettings;
                 }
                 if let Some(message) = self.application_settings_screen.restart_message() {
@@ -1458,13 +1463,11 @@ impl DirectPaymentApp {
 
             let personal_assistant_email = assistant.email.as_deref();
 
-            let filename = format!(
-                "Timesheet - {} - {}.pdf",
-                personal_assistant_name,
-                payroll_week_filename(&current_schedule.first_week_commencing)
+            let timesheet_path = PdfGenerator::timesheet_output_path(
+                &pdf_output_folder,
+                &personal_assistant_name,
+                &current_schedule.first_week_commencing,
             );
-
-            let timesheet_path = pdf_output_folder.join(filename);
 
             if !timesheet_path.exists() {
                 return Err(format!(
@@ -1475,33 +1478,43 @@ impl DirectPaymentApp {
                 .into());
             }
 
-            self.application.send_payroll_email(
-                payroll_department_email,
-                employer_email,
-                personal_assistant_email,
-                &personal_assistant_name,
-                assistant.date_of_birth.as_deref(),
-                assistant.national_insurance_number.as_deref(),
-                &current_schedule.first_week_commencing,
+            let payroll_timesheet = self
+                .application
+                .payroll_timesheet_repository
+                .get_for_cycle_and_pa(&payroll_year, current_schedule.cycle_number, assistant.id)?
+                .ok_or_else(|| {
+                    format!(
+                        "No Payroll Timesheet Preparation record exists for {}.",
+                        personal_assistant_name
+                    )
+                })?;
+            let attempted_at = chrono::Local::now().to_rfc3339();
+            crate::payroll_snapshot_service::send_production_candidate(
+                &self.application.payroll_worked_item_repository,
+                payroll_timesheet.id,
+                assistant.id,
+                &payroll_year,
+                current_schedule.cycle_number,
                 &timesheet_path,
-                &self.application.context.config.payroll.timesheet_email_body,
-                self.additional_notes_by_personal_assistant
-                    .get(&assistant.id)
-                    .map(String::as_str),
-                employer.email_signature.as_deref(),
+                &attempted_at,
+                || {
+                    self.application.send_payroll_email(
+                        payroll_department_email,
+                        employer_email,
+                        personal_assistant_email,
+                        &personal_assistant_name,
+                        assistant.date_of_birth.as_deref(),
+                        assistant.national_insurance_number.as_deref(),
+                        &current_schedule.first_week_commencing,
+                        &timesheet_path,
+                        &self.application.context.config.payroll.timesheet_email_body,
+                        self.additional_notes_by_personal_assistant
+                            .get(&assistant.id)
+                            .map(String::as_str),
+                        employer.email_signature.as_deref(),
+                    )
+                },
             )?;
-
-            let sent_at = chrono::Local::now().to_rfc3339();
-
-            self.application
-                .payroll_timesheet_email_repository
-                .mark_sent(
-                    assistant.id,
-                    &payroll_year,
-                    current_schedule.cycle_number,
-                    "timesheet",
-                    &sent_at,
-                )?;
 
             sent += 1;
         }
@@ -1684,6 +1697,7 @@ impl DirectPaymentApp {
         ];
 
         let assistants = self.application.personal_assistant_repository.get_all()?;
+        let all_timesheets = self.application.get_timesheets()?;
 
         let output_dir =
             crate::paths::expand_path(&self.application.context.config.folders.pdf_output);
@@ -1727,14 +1741,46 @@ impl DirectPaymentApp {
                 .into());
             }
 
-            let pay_rate = self
-                .application
-                .get_current_pay_rate_for_personal_assistant(assistant.id)?;
-
-            let pay_rate = match pay_rate {
-                Some(rate) => rate.base_hourly_rate + rate.employer_top_up_rate,
-                None => 0.0,
+            let previous_cycle_number = current_schedule.cycle_number - 1;
+            let previous_record = if previous_cycle_number > 0 {
+                self.application
+                    .payroll_timesheet_repository
+                    .get_for_cycle_and_pa(&payroll_year, previous_cycle_number, assistant.id)?
+            } else {
+                None
             };
+            let previous_context = if let Some(previous_record) = &previous_record {
+                let previous_weeks = self
+                    .application
+                    .payroll_timesheet_repository
+                    .get_weeks(previous_record.id)?;
+                previous_weeks.get(2).and_then(|week| {
+                    parse_date_checked(&week.week_commencing).map(|week_three_start| {
+                        crate::pay_rate_allocation::PreviousCycleContext {
+                            payroll_timesheet_id: previous_record.id,
+                            week_three_start,
+                            legacy_adjustment_minutes: payroll_timesheet
+                                .previous_cycle_hours
+                                .map(|hours| (hours * 60.0).round() as i64)
+                                .unwrap_or(0),
+                        }
+                    })
+                })
+            } else {
+                None
+            };
+            let reconciled = crate::pay_rate_allocation::reconcile_payroll_hours(
+                &self.application.pay_rate_repository,
+                &self.application.payroll_worked_item_repository,
+                &all_timesheets,
+                assistant.id,
+                payroll_timesheet.id,
+                &week_dates,
+                previous_context.as_ref(),
+            )
+            .map_err(|error| {
+                format!("Cannot generate payroll timesheet for {personal_assistant_name}: {error}")
+            })?;
 
             let contracted_hours = self
                 .application
@@ -1745,12 +1791,11 @@ impl DirectPaymentApp {
                 .map(|hours| hours.contracted_hours)
                 .unwrap_or_else(|| "0".to_string());
 
-            let hours_worked = [
-                format_pdf_hours(payroll_weeks[0].worked_hours),
-                format_pdf_hours(payroll_weeks[1].worked_hours),
-                format_pdf_hours(payroll_weeks[2].worked_hours),
-                format_pdf_hours(payroll_weeks[3].worked_hours),
-            ];
+            let hours_worked: [String; 4] = std::array::from_fn(|index| {
+                crate::pay_rate_allocation::format_total_minutes(
+                    reconciled.week_totals_minutes[index],
+                )
+            });
 
             let annual_leave_hours = [
                 format_pdf_hours(payroll_weeks[0].annual_leave_hours),
@@ -1836,7 +1881,9 @@ impl DirectPaymentApp {
                 format_pdf_hours(payroll_weeks[3].travel_miles),
             ];
 
-            let previous_cycle_hours = payroll_timesheet.previous_cycle_hours.map(format_pdf_hours);
+            let previous_cycle_hours = (reconciled.previous_cycle_minutes > 0).then(|| {
+                crate::pay_rate_allocation::format_total_minutes(reconciled.previous_cycle_minutes)
+            });
 
             let employer_signature_path = employer
                 .employer_signature
@@ -1861,8 +1908,6 @@ impl DirectPaymentApp {
                     .unwrap_or(""),
 
                 contracted_weekly_hours: &contracted_weekly_hours,
-
-                pay_rate,
 
                 week_commencing_dates: [
                     &week_date_strings[0],
@@ -1920,7 +1965,33 @@ impl DirectPaymentApp {
                 pa_signature_path: pa_signature_path.as_deref(),
             };
 
-            PdfGenerator::generate(&output_dir, &data, &self.application.context.config.pdf)?;
+            let captured_at = chrono::Local::now().to_rfc3339();
+            let final_pdf_path = PdfGenerator::output_path(&output_dir, &data);
+            let week_ids = [
+                payroll_weeks[0].id,
+                payroll_weeks[1].id,
+                payroll_weeks[2].id,
+                payroll_weeks[3].id,
+            ];
+            crate::payroll_snapshot_service::publish_candidate(
+                &self.application.payroll_worked_item_repository,
+                crate::payroll_snapshot_service::CandidatePublication {
+                    payroll_timesheet_id: payroll_timesheet.id,
+                    items: &reconciled.snapshot_items,
+                    final_pdf_path: &final_pdf_path,
+                    generated_at: &captured_at,
+                    previous_cycle_minutes: reconciled.previous_cycle_minutes,
+                    week_ids: &week_ids,
+                    week_totals_minutes: &reconciled.week_totals_minutes,
+                },
+                |temporary_path| {
+                    PdfGenerator::generate_to_path(
+                        temporary_path,
+                        &data,
+                        &self.application.context.config.pdf,
+                    )
+                },
+            )?;
 
             generated += 1;
         }
