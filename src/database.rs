@@ -2,7 +2,7 @@ use std::path::Path;
 
 use rusqlite::{Connection, Result};
 
-pub const CURRENT_SCHEMA_VERSION: i64 = 18;
+pub const CURRENT_SCHEMA_VERSION: i64 = 19;
 
 pub fn initialise_database(database_path: &Path) -> Result<()> {
     let connection = Connection::open(database_path)?;
@@ -158,6 +158,11 @@ fn apply_migrations(connection: &Connection) -> Result<()> {
 
     if current_version < 18 {
         migrate_to_version_18(connection)?;
+        current_version = 18;
+    }
+
+    if current_version < 19 {
+        migrate_to_version_19(connection)?;
     }
 
     Ok(())
@@ -581,6 +586,74 @@ fn migrate_to_version_18(connection: &Connection) -> Result<()> {
     Ok(())
 }
 
+fn migrate_to_version_19(connection: &Connection) -> Result<()> {
+    let transaction = connection.unchecked_transaction()?;
+    transaction.execute_batch(
+        "
+        CREATE TABLE payroll_timesheet_manual_adjustments (
+            id INTEGER PRIMARY KEY,
+            payroll_timesheet_id INTEGER NOT NULL,
+            week_number INTEGER NOT NULL,
+            adjustment_minutes INTEGER NOT NULL,
+            reason TEXT,
+            updated_at TEXT NOT NULL,
+            UNIQUE (payroll_timesheet_id, week_number)
+        );
+
+        CREATE TABLE payroll_timesheet_worked_item_snapshots (
+            id INTEGER PRIMARY KEY,
+            payroll_timesheet_id INTEGER NOT NULL,
+            week_number INTEGER NOT NULL,
+            source_type TEXT NOT NULL,
+            timesheet_id INTEGER,
+            work_date TEXT,
+            worked_minutes INTEGER NOT NULL,
+            pay_rate_id INTEGER,
+            pay_rate_effective_date TEXT,
+            total_hourly_rate REAL,
+            reason TEXT,
+            captured_at TEXT NOT NULL,
+            CHECK (
+                (source_type = 'legacy_previous_cycle_adjustment'
+                 AND timesheet_id IS NULL
+                 AND work_date IS NULL
+                 AND pay_rate_id IS NULL
+                 AND pay_rate_effective_date IS NULL
+                 AND total_hourly_rate IS NULL)
+                OR
+                (source_type <> 'legacy_previous_cycle_adjustment'
+                 AND pay_rate_id IS NOT NULL
+                 AND pay_rate_effective_date IS NOT NULL
+                 AND total_hourly_rate IS NOT NULL)
+            )
+        );
+
+        CREATE TABLE payroll_timesheet_snapshot_states (
+            payroll_timesheet_id INTEGER PRIMARY KEY,
+            state TEXT NOT NULL CHECK (state IN ('candidate', 'submitted', 'indeterminate')),
+            pdf_path TEXT NOT NULL,
+            pdf_sha256 TEXT NOT NULL,
+            generated_at TEXT NOT NULL,
+            submitted_at TEXT,
+            indeterminate_at TEXT
+        );
+
+        CREATE UNIQUE INDEX payroll_snapshot_raw_shift
+        ON payroll_timesheet_worked_item_snapshots (
+            payroll_timesheet_id,
+            timesheet_id
+        )
+        WHERE timesheet_id IS NOT NULL;
+
+        CREATE INDEX payroll_snapshot_timesheet_id
+        ON payroll_timesheet_worked_item_snapshots (timesheet_id);
+        ",
+    )?;
+    transaction.execute("UPDATE schema_version SET version = 19", [])?;
+    transaction.commit()?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -610,6 +683,9 @@ mod tests {
                     cycle_number,
                     sent_at
                 ) VALUES (1, '2026/27', 1, '2026-04-01T10:00:00Z');
+                DROP TABLE payroll_timesheet_manual_adjustments;
+                DROP TABLE payroll_timesheet_worked_item_snapshots;
+                DROP TABLE payroll_timesheet_snapshot_states;
                 UPDATE schema_version SET version = 17;
                 ",
             )
@@ -629,6 +705,6 @@ mod tests {
             .unwrap();
 
         assert_eq!(email_type, "timesheet");
-        assert_eq!(version, 18);
+        assert_eq!(version, 19);
     }
 }

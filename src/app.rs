@@ -10,6 +10,7 @@ use crate::payroll_provider_repository::PayrollProviderRepository;
 use crate::payroll_schedule_repository::PayrollScheduleRepository;
 use crate::payroll_timesheet_email_repository::PayrollTimesheetEmailRepository;
 use crate::payroll_timesheet_repository::PayrollTimesheetRepository;
+use crate::payroll_worked_item_repository::PayrollWorkedItemRepository;
 use crate::pdf_generator::{PdfGenerator, TimesheetPdfData};
 use crate::personal_assistant_repository::PersonalAssistantRepository;
 use crate::repository::TimesheetRepository;
@@ -24,6 +25,7 @@ pub struct Application {
     pub payroll_provider_repository: PayrollProviderRepository,
     pub payroll_schedule_repository: PayrollScheduleRepository,
     pub payroll_timesheet_repository: PayrollTimesheetRepository,
+    pub payroll_worked_item_repository: PayrollWorkedItemRepository,
     pub payroll_timesheet_email_repository: PayrollTimesheetEmailRepository,
 }
 
@@ -54,6 +56,9 @@ impl Application {
         let payroll_timesheet_repository =
             PayrollTimesheetRepository::new(Connection::open(database_path)?);
 
+        let payroll_worked_item_repository =
+            PayrollWorkedItemRepository::new(Connection::open(database_path)?);
+
         let payroll_timesheet_email_repository =
             PayrollTimesheetEmailRepository::new(Connection::open(database_path)?);
 
@@ -67,6 +72,7 @@ impl Application {
             payroll_provider_repository,
             payroll_schedule_repository,
             payroll_timesheet_repository,
+            payroll_worked_item_repository,
             payroll_timesheet_email_repository,
         })
     }
@@ -135,6 +141,7 @@ impl Application {
         Ok(self.repository.get_all()?)
     }
 
+    #[allow(dead_code)]
     pub fn get_current_pay_rate_for_personal_assistant(
         &self,
         personal_assistant_id: i64,
