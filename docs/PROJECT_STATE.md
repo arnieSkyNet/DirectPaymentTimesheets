@@ -1,599 +1,141 @@
-# DirectPaymentTimesheets
+# DirectPaymentTimesheets project state
 
-# Project State
+This document describes the implementation on `main`. Source code, migrations and tests are the authority if this summary becomes stale.
 
----
+## Current release and platform
 
-## Project Overview
+- Application version: `0.0.9`.
+- Database schema: version 19, upgraded in place by ordered SQLite migrations.
+- Desktop UI: Rust with `eframe`/`egui`.
+- Persistence: SQLite through `rusqlite` (bundled SQLite).
+- Documents and integration: `printpdf`, PDF text extraction, ZIP import and SMTP via `lettre`.
 
-DirectPaymentTimesheets is an open-source application for managing UK Direct Payment administration.
+The application is a single-user desktop tool for importing externally recorded work, preparing four-week payroll timesheets, generating the provider PDF, sending timesheets and payslips, and retaining the evidence needed to reproduce submitted payroll.
 
-The long-term goal is to provide a complete workflow from recording Personal Assistant (PA) hours through to generating payroll timesheets, PDFs and payroll emails.
+## Runtime data and configuration
 
-The application is designed to reduce the manual administration currently required using separate tools such as Hours Keeper, spreadsheets and document templates.
+The application data root is `~/.directpaymenttimesheets`, or the path in `DIRECTPAYMENTTIMESHEETS_HOME`. Initialisation creates:
 
-The project is designed to be cross-platform and written in Rust.
-
----
-
-# Current Version
-
-Pre-release
-
-Development Version:
-
-```
-0.0.x
-```
-
-Status:
-
-```
-Active Development
+```text
+<data-root>/
+  database.sqlite
+  config.toml
+  import/
+  archive/
+  backups/
+  logs/
+  templates/
+  cache/
 ```
 
----
+Configured business folders are separate from this internal data root: CSV import, PDF output, email archive, payslips and payroll information. Paths and PDF fonts/sizes are edited in Application Settings. `email_archive` is persisted but currently has no production consumer; Payroll Return information deliberately uses `payroll_information_folder` instead. SMTP/test-address settings and payroll subject/body templates are edited in Email Settings, although the template fields are stored in `PayrollConfig`. Existing unknown TOML keys are ignored, including the removed `public_holiday_enabled` key.
 
-# Project Objectives
+## Implemented workflow
 
-The application will eventually provide:
+### Maintenance
 
-- Recording of PA working hours.
-- Import of Hours Keeper CSV files.
-- Payroll calculations.
-- Timesheet generation.
-- PDF generation.
-- Payroll email generation.
-- Annual leave management.
-- Public holiday calculations.
-- Mileage recording.
-- Audit trail.
-- Reporting.
-- Future Personal Assistant self-service.
-- Future client approval workflow.
-- Cross-platform desktop application.
-- Future browser/mobile interface.
+The application maintains employer, payroll-provider and Personal Assistant (PA) records. PA maintenance retains pay-rate and contracted-hours histories, including future-dated rows. Themes include system, light/dark variants, blue and high contrast.
 
----
+Payroll Settings persists payroll frequency, rounding choice, workweek start and overtime enabled. These values are not currently applied as downstream configurable calculation rules: schedule dates define the four payroll weeks, imported worked minutes are not altered by the rounding setting, and no overtime calculation is implemented. Public-holiday handling is permanently active and has no enable/disable setting. Email subject/body templates are configured separately through Email Settings.
 
-# Current Architecture
+### Importing work
 
-The application is structured into separate layers.
+CSV import parses provider rows, prevents duplicates and stores stable `TimesheetEntry` identities. Start/end values are retained unchanged, and `worked_minutes` is parsed directly from the CSV worked-duration field rather than calculated from those values or altered using the persisted rounding settings. The imported CSV rate and amount are not authoritative payroll rates.
 
-Current structure:
+After a successful import, the source CSV is copied to the internal `archive/YYYY/MM/` hierarchy with a timestamped filename and is not subsequently modified by the application. Successes and failures are recorded in `import_audit`, including row counts, source/archive paths and errors where applicable.
 
-```
-main.rs
+### Payroll schedules and rollover
 
-    |
+Importing a provider Payroll Prep Sheet is the only payroll-year creation trigger. PDF text extraction is implemented. DOCX is recognised as a file type but its import path currently returns a clear not-implemented error. Import validates:
 
-    v
+- a payroll year such as `2027/28`, whose suffix is the following calendar year;
+- exactly 13 cycles;
+- unique, strictly chronological first-week dates exactly 28 days apart; and
+- parseable posting/pay dates with the provider-supported relationship to the cycle start.
 
-application.rs
+One year's replacement is transactional and does not remove other years. Each schedule row has a `payslips_sent` flag: a safely re-imported cycle with unchanged material dates preserves that flag, while a materially changed cycle is inserted with sent state reset when the re-import is otherwise allowed. A changed re-import is refused when downstream payroll history would make rewriting it unsafe. Multiple years can therefore coexist, and importing a future year does not make it current.
 
-    |
+The authoritative resolver searches every imported schedule for a date within the inclusive four-week window from `first_week_commencing` through day 27. No match and overlapping matches are errors; the application does not guess from the calendar year. The preceding-cycle resolver is chronological and requires an exact 28-day boundary, so cycle 1 can use cycle 13 from the preceding payroll year.
 
-    +-- Application context
-    +-- Environment handling
-    +-- Database initialisation
-    +-- Repository creation
-    +-- Service startup
+### Payroll-period selections
 
-    |
+There are deliberately separate selections:
 
-    v
+- The Dashboard operational payroll period controls preparation/generation and non-production email operations. It defaults to the schedule containing today, or the newest imported schedule when none contains today. Historical or future choices are explicit and can be reset with **Use current payroll period**.
+- Payroll Return import has its own schedule-selection dialog, then opens the ZIP chooser.
+- View Payroll Schedule has a payroll-year selector and is display-only.
 
-Services
+Normal UI labels use Payroll Week, date range and pay date. The database still uses `cycle_number` 1–13 as part of schedule identity; it is not the user-facing payroll week.
 
-    |
+### Payroll Timesheet Preparation
 
-    +-- Import Service
+Preparation is bound to the complete selected schedule and remembers payroll year, internal cycle, first-week date and pay date. Its PA list is the union of currently active PAs (including legacy `NULL` active state) and PAs that already have a payroll-timesheet record for that selected period. An inactive PA with no such record is not added.
 
-    |
+Unsent records and generated candidates are editable. Submitted and indeterminate records load their persisted timesheet, week and public-holiday values read-only, without reconciliation or load-time writes. Saving rechecks the operational selection and the schedule facts; a changed selection, missing schedule or materially re-imported schedule requires the screen to be reloaded.
 
-    v
+Worked Hours remains editable. Imported shifts are not changed: the persistent manual adjustment is the difference between imported/reconciled minutes and the employer's final value, with an optional reason. Annual leave, sick/SSP, public-holiday rows and mileage remain editable preparation values.
 
-Repositories
+If editable reconciliation or a save changes data represented by an existing generated candidate, the candidate is invalidated before preparation writes. Merely viewing an unchanged candidate does not invalidate it. A failed invalidation aborts the associated mutation.
 
-    |
+### Effective-dated values
 
-    +-- Timesheet repository
-    +-- Import audit repository
-    +-- Employer repository
-    +-- Personal Assistant repository
-    +-- Pay rate repository
-```
+For each positive imported shift, the authoritative pay rate is the newest PA rate effective on or before the shift's start calendar date. Stored `DD/MM/YYYY` dates are parsed as dates; equal effective dates are ordered deterministically by newest row ID. Base rate plus employer top-up forms the applicable total. Future rates never apply early, and generation fails clearly if worked time has no effective rate.
 
----
+Rate allocation is retained internally by integer minutes. A cycle or week may contain several rates. Shifts are assigned wholly to their start date; the real workflow does not contain midnight-crossing shifts. A positive manual adjustment uses the higher/newer rate genuinely applicable within that week; a negative adjustment uses the lower/older rate; a one-rate week uses that rate. These allocations are snapshot/accounting data and are not printed on the provider PDF.
 
-# Application Data
+Contracted weekly hours are informational. Each PDF week resolves the newest contracted-hours record effective on or before that week's commencing date. Future records are excluded and a week before the first record is shown as unavailable. A single value retains the original header; differing values use a compact week-labelled header summary. Contracted hours do not change worked hours or pay.
 
-Application data is stored outside the Git repository.
+### Previous-cycle adjustments and snapshots
 
-Default application directory:
+Late imported shifts from previous-cycle weeks three and four are identified against the frozen submitted snapshot's stable TimesheetEntry membership. Their actual historical work dates and effective rates are retained, including when the previous cycle belongs to another payroll year. The compatible aggregate `previous_cycle_hours` display is reconciled from those items.
 
-```
-~/.directpaymenttimesheets/
-```
+Schema-18 positive previous-cycle aggregates that lack historical membership are carried forward as explicitly opaque legacy items. Their minutes remain in totals, but work date, entry ID and rate fields stay `NULL`; the PDF shows only the compact previous-cycle information and never fabricates historical precision. The first schema-19 submission establishes exact membership for later detection.
 
-Current structure:
+### PDF and snapshot safety
 
-```
-~/.directpaymenttimesheets/
+The PDF displays reconciled weekly Hours Worked totals using configured font roles. Pay rates and allocations remain internal. Existing leave, sick/SSP, public-holiday and mileage presentation is retained; positive previous-cycle hours use the compact `[Info.only +… prev]` line.
 
-config.toml
+Generation writes a temporary PDF, persists a candidate snapshot and SHA-256 digest, then publishes the final PDF. Required output parents are created only when writing. A generic PDF root remains flat; an already year-suffixed root such as `2026 to 2027` rolls over to a sibling year directory.
 
-database.sqlite
+Only a successful production timesheet send freezes the candidate as the immutable submitted baseline. Preview and test email do not. Production verifies the exact candidate path and digest. SMTP failure leaves the candidate replaceable. If transport may have succeeded but persisting the submitted state fails, the record enters protected indeterminate state to prevent an unsafe automatic resend or regeneration.
 
-archive/
+Generation uses the same PA eligibility principle as preparation: active PAs plus inactive PAs with an existing selected-period payroll record. It does not create unrelated historical records for inactive PAs.
 
-backups/
+That historical inactive-PA eligibility applies to preparation and PDF generation only. Production timesheet and payslip batches currently include active PAs and legacy `NULL`-status PAs, not inactive historical PAs.
 
-cache/
+### Email and Payroll Returns
 
-import/
+Preview and test operations use the operational selection. Test messages use configured test recipients and test markers rather than production recipient routing.
 
-logs/
+Both production timesheet and payslip messages are sent from the employer address to the payroll department, with the employer copied and the PA blind-copied when an address is available. Payslip test email is different: it is sent to the configured PA test address.
 
-templates/
-```
+A production email batch captures the selected schedule key and material facts when it starts. Confirmation displays the Payroll Week/date/pay-date label and warns for historical or future periods. Before dispatch, the schedule and global selection are revalidated; changed, missing or materially re-imported schedules are refused. Attachment paths, subject period code and status reads/writes use only the captured schedule. Cancel sends nothing and changes no status or snapshot.
 
-User data should never be stored inside the source repository.
+Payroll Return import uses the explicitly selected complete schedule, not today's cycle and not the internal cycle number as a filename week. Payslips are named `Payslip for Week <PAYE-week> for <PA>.pdf`. Other returned payroll information keeps a safe original name where possible and goes under the configured payroll-information folder, with deterministic collision avoidance.
 
----
+### PAYE filenames and year folders
 
-# Database
+The PAYE week is calculated from `PayrollSchedule.pay_date`: the tax year starts on 6 April of the pay date's year, or the previous year when the pay date precedes 6 April; week is `floor(days / 7) + 1`, including week 53 when applicable. The period code remains `YYYYMMwWW`, where `YYYYMM` comes from the first week commencing date.
 
-The database uses SQLite.
+Year folders use `YYYY to YYYY`. If a configured root already ends with any year suffix in that form, its parent is treated as the reusable base before the selected schedule's year is appended. Payslips and payroll information are year-separated. Directories are created on actual import/write, not by schedule import, selection or viewing.
 
-Database creation uses schema versioning and migrations.
+### Backup and restore
 
-Current database tables:
+Application Settings can create timestamped backups under `<data-root>/backups/YYYYMMDD-HHMMSS/` containing `database.sqlite`, optional `config.toml` and `README.txt`. SQLite's online backup API creates a consistent snapshot of the live connection.
 
----
+Restore accepts only recognised backup directories beneath that backup root. It checks identity, paths/symlinks, required files, schema and read-only opening, and requires exactly one `PRAGMA integrity_check` result equal to `ok` case-insensitively. A mandatory safety backup is made first. SQLite's backup API restores into the live database safely; config is restored only when present. Success requires application restart so in-memory state is not used after restoration. There is no automatic scheduling, retention/deletion, compression or cloud backup.
 
-## schema_version
+## Tests and current limitations
 
-Purpose:
+The test suite uses temporary/in-memory databases and temporary filesystem roots. It covers migrations, repositories, schedule rollover/resolution, PAYE naming, year paths, preparation/snapshot safety, PDF data, email-period binding, returns, backups and effective-dated values.
 
-Tracks database structure versions.
-
-Used for:
-
-- Applying future migrations.
-- Maintaining database upgrades.
-
----
-
-## timesheets
-
-Stores imported working records.
-
-Current fields:
-
-```
-id
-
-pa_name
-
-start_time
-
-end_time
-
-break_minutes
-
-worked_minutes
-
-hourly_rate
-
-amount
-
-notes
-```
-
-Future improvement:
-
-Replace:
-
-```
-pa_name
-```
-
-with:
-
-```
-personal_assistant_id
-```
-
-while preserving historical imported data.
-
----
-
-## import_audit
-
-Stores import history.
-
-Current fields:
-
-```
-id
-
-import_time
-
-original_filename
-
-archive_filename
-
-rows_processed
-
-rows_imported
-
-rows_skipped
-
-status
-
-error_message
-```
-
-The import audit provides traceability for every imported CSV file.
-
----
-
-## employers
-
-Stores Direct Payment employer information.
-
-Current fields include:
-
-```
-id
-
-name
-
-address
-
-postcode
-
-telephone
-
-email
-
-payroll_provider
-
-payroll_provider_address
-
-payroll_provider_phone
-
-employer_signature
-
-default_pdf_template
-```
-
----
-
-## personal_assistants
-
-Stores Personal Assistant employment information.
-
-Current fields include:
-
-```
-id
-
-first_name
-
-surname
-
-date_of_birth
-
-national_insurance_number
-
-address
-
-postcode
-
-telephone
-
-email
-
-employment_status
-```
-
----
-
-## personal_assistant_pay_rates
-
-Stores historical PA pay rates.
-
-Purpose:
-
-- Preserve old rates.
-- Support future payroll calculations.
-- Allow rate changes over time.
-
----
-
-# Current Components
-
-Implemented:
-
-- Application configuration.
-- Environment handling.
-- Application context.
-- SQLite database.
-- Database schema versioning.
-- Database migrations.
-- Repository layer.
-- Timesheet repository.
-- Employer repository.
-- Personal Assistant repository.
-- Pay rate repository.
-- CSV import.
-- CSV validation.
-- Money validation.
-- Duration validation.
-- Duplicate detection.
-- CSV archive.
-- Import audit trail.
-- Failed import logging.
-
----
-
-# Import Pipeline
-
-Current workflow:
-
-```
-Configured Import Folder
-
-        |
-
-        v
-
-Discover CSV Files
-
-        |
-
-        v
-
-Check Previous Successful Imports
-
-        |
-
-        v
-
-Validate CSV
-
-        |
-
-        v
-
-Insert Records
-
-        |
-
-        v
-
-Archive Original CSV
-
-        |
-
-        v
-
-Write Import Audit Record
-```
-
-The import system records:
-
-- Files processed.
-- Rows processed.
-- Rows imported.
-- Rows skipped.
-- Failed imports.
-- Archive locations.
-
----
-
-# Archive Strategy
-
-Imported CSV files are archived.
-
-Archive files are preserved as historical records.
-
-Example:
-
-```
-archive/
-
-    2026/
-
-        08/
-
-            2026-08-02_150024_timesheet.csv
-```
-
-Archive files should not be modified after creation.
-
----
-
-# Testing
-
-The project includes automated Rust tests.
-
-Current coverage includes:
-
-- CSV duration parsing.
-- CSV money parsing.
-- Invalid CSV values.
-- Archive filename handling.
-- Repository database operations.
-- Duplicate detection.
-- Import audit checking.
-- Employer repository operations.
-- Personal Assistant repository operations.
-- Pay rate repository operations.
-
-Tests use isolated databases where appropriate.
-
----
-
-# Current Development Status
-
-The application foundation is established.
-
-Completed foundation work:
-
-- Application startup structure.
-- Configuration layer.
-- Environment handling.
-- Database abstraction.
-- Schema migration system.
-- Core repositories.
-- Import pipeline.
-
-The project is ready for further business feature development.
-
----
-
-# Next Development Areas
-
-Planned future work:
-
-## Leave Management
-
-Including:
-
-- Annual leave records.
-- Public holiday dates.
-- Payroll allocation rules.
-
----
-
-## Payroll Engine
-
-Including:
-
-- Payroll period calculations.
-- Historical pay rates.
-- Leave handling.
-- Public holiday handling.
-- Payroll outputs.
-
----
-
-## Document Generation
-
-Including:
-
-- Four-week payroll timesheet PDFs.
-- Email preparation.
-- Payroll submission workflow.
-
----
-
-## User Access
-
-Future support for:
-
-- Employer login.
-- Personal Assistant login.
-- Optional self-service hours submission.
-
----
-
-# Design Principles
-
-The project follows these principles:
-
-- Cross-platform.
-- Rust-first.
-- SQLite database.
-- Human-readable configuration.
-- No hard-coded paths.
-- Small incremental development.
-- Git used as permanent project memory.
-- Every significant feature committed.
-- Every import auditable.
-- Preserve historical data.
-- Separate business logic from technical implementation.
-
----
-
-# Long-Term Vision
-
-DirectPaymentTimesheets will eventually replace the current manual workflow:
-
-```
-Hours Keeper
-
-        |
-
-        v
-
-Google Sheets
-
-        |
-
-        v
-
-Google Docs
-
-        |
-
-        v
-
-Manual PDF Export
-
-        |
-
-        v
-
-Manual Email
-```
-
-with:
-
-```
-DirectPaymentTimesheets
-
-        |
-
-        v
-
-Payroll Engine
-
-        |
-
-        v
-
-PDF Generation
-
-        |
-
-        v
-
-Email Generation
-
-        |
-
-        v
-
-Completed Payroll Submission
-```
-
----
-
-# Current Project Status
-
-Foundation complete.
-
-Database structure established.
-
-Import pipeline operational.
-
-Core employment records implemented.
-
-Documentation aligned with current implementation.
-
-Ready for continued business feature development.
-
+Known limitations and deliberately deferred work include:
+
+- no overtime calculation despite the persisted setting;
+- persisted frequency, rounding, workweek and overtime choices are not applied as downstream configurable calculation rules;
+- no P60-specific Payroll Return handling;
+- no implemented DOCX Payroll Prep Sheet import;
+- no production consumer for the configured `email_archive` path;
+- no arbitrary-file restore or automated backup retention/scheduling;
+- public-holiday weekly aggregate hours and individual holiday rows remain distinct existing representations; and
+- generated historical payroll is limited to active PAs or PAs with an existing record for the selected period, while production email batches remain active/legacy-`NULL` only.

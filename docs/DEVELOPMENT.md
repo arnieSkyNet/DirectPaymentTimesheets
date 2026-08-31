@@ -1,405 +1,178 @@
-# DirectPaymentTimesheets Development Guide
+# DirectPaymentTimesheets development guide
 
-## Purpose
+## Scope
 
-This document describes the development practices used for DirectPaymentTimesheets.
+This is a local Rust/egui/SQLite application. Prefer small, evidence-led changes that preserve payroll history and existing provider output. Inspect the current source, schema and tests before changing behaviour; documentation and conversation history are secondary evidence.
 
-The purpose is to keep development consistent, maintainable and safe while the application grows.
+Current package version is `0.0.9`; current SQLite schema version is 19. Do not change either unless a task explicitly requires it.
 
----
+## Local setup
 
-# Development Principles
+From the repository root:
 
-The project follows these principles:
-
-- Small incremental changes.
-- Test before committing.
-- Keep documentation aligned with code.
-- Preserve existing data.
-- Avoid unnecessary complexity.
-- Use Git as permanent project history.
-- Build the foundation before adding advanced features.
-
----
-
-# Technology Stack
-
-Current technology:
-
-```
-Rust
-
-SQLite
-
-Cargo
-
-Git
-```
-
-The application is designed to remain cross-platform.
-
----
-
-# Development Environment
-
-The project is developed using a Rust toolchain.
-
-Required tools:
-
-```
-cargo
-
-rustc
-
-git
-```
-
-The Rust version should be kept current enough to support required dependencies.
-
----
-
-# Common Development Commands
-
-## Check Code
-
-Use:
-
-```
+```bash
 cargo check
-```
-
-Purpose:
-
-- Quickly verify compilation.
-- Detect code errors.
-
----
-
-## Run Tests
-
-Use:
-
-```
 cargo test
+cargo run
 ```
 
-Purpose:
+By default, running the application uses `~/.directpaymenttimesheets`. For development against disposable data, set `DIRECTPAYMENTTIMESHEETS_HOME` to a dedicated temporary/test directory. Never point exploratory runs or tests at the real database.
 
-- Run automated tests.
-- Confirm existing functionality still works.
+The application creates `database.sqlite`, `config.toml` and its internal subdirectories beneath that root. Configured PDF, payslip, payroll-information and other business folders can be elsewhere, so inspect configuration before any manual integration test that writes files.
 
-All tests should pass before committing changes.
+Real runtime and payroll data must remain outside Git and must never be committed. This includes databases, configuration containing credentials or personal paths, imported/archived files, generated payroll documents, payslips and backups.
 
----
+## Required validation
 
-## Format Code
+For a normal Rust change, run:
 
-Use:
-
-```
+```bash
 cargo fmt
+cargo fmt -- --check
+cargo check
+cargo test
+git diff --check
+git status --short
 ```
 
-Purpose:
+For documentation-only work, `git diff --check`, `cargo check` and `cargo test` provide formatting and regression assurance. Review `git diff --stat` and the complete diff before handoff. Do not commit or push unless explicitly requested.
 
-- Keep Rust formatting consistent.
-- Reduce unnecessary code differences.
+## Source organisation
 
-Formatting should be run before committing Rust changes.
+Key entry/orchestration modules:
 
----
+- `main.rs`: module wiring, environment/database/config initialisation and eframe startup.
+- `application.rs` and `app.rs`: application operations and repository access.
+- `gui.rs`: Dashboard, selector/dialog state, navigation and email workflow orchestration.
+- `context.rs`, `environment.rs`, `config.rs`, `paths.rs`: runtime context and paths.
 
-# Project Structure
+Persistence and domain repositories:
 
-Current source layout:
+- `database.rs`: schema creation and migrations.
+- `repository.rs`, `personal_assistant_repository.rs`, `employer_repository.rs`, `payroll_provider_repository.rs`.
+- `pay_rate_repository.rs`, `contracted_hours_repository.rs`.
+- `payroll_schedule_repository.rs`, `payroll_timesheet_repository.rs`, `payroll_timesheet_email_repository.rs`, `payroll_worked_item_repository.rs`.
 
-```
-src/
+Services/adapters:
 
-    main.rs
+- `csv_import.rs`, `import_service.rs`, `archive.rs`.
+- `payroll_prep_sheet_import_service.rs`.
+- `pay_rate_allocation.rs` and `payroll_snapshot_service.rs`.
+- `payroll_file_naming.rs`, `pdf_generator.rs`, `email_service.rs`, `backup_service.rs`.
 
-    application.rs
-    context.rs
-    environment.rs
+Dedicated screens include employer, PA, payroll settings, payroll preparation and application settings. Email settings and several workflow dialogs are currently coordinated from `gui.rs`.
 
-    database.rs
+`src/main.rs.before_application_refactor` is a retained historical/reference file, not the compiled application path; do not treat it as production behaviour.
 
-    models.rs
+CSV import parses `worked_minutes` from the supplied worked-duration field. It does not derive payable time from start/end values or consult the persisted rounding setting. Successful CSV files are copied to the internal `archive/YYYY/MM/` hierarchy with timestamped names and recorded in `import_audit`.
 
-    repository.rs
-    employer_repository.rs
-    personal_assistant_repository.rs
-    pay_rate_repository.rs
+## Database conventions
 
-    csv_import.rs
-    import_service.rs
-    archive.rs
+The database is upgraded by sequential functions in `database.rs`. To add persisted state:
 
-    config.rs
-    paths.rs
-    error.rs
+1. increment `CURRENT_SCHEMA_VERSION` only when authorised;
+2. add one ordered migration that preserves existing data;
+3. update repository/model code;
+4. add tests for fresh initialisation and the relevant upgrade/compatibility path; and
+5. do not mutate a real database during automated work.
 
-    gui.rs
-```
+Schema 19 added manual adjustments, worked-item snapshot rows and candidate/submitted/indeterminate state with PDF path and SHA-256 digest. Preserve its constraints: opaque legacy previous-cycle rows alone may have null rate/date evidence; ordinary allocated items require it.
 
----
+Use stable business keys where the workflow does. Payroll operations identify schedules by `(payroll_year, cycle_number)` and then validate material dates. Row IDs must not replace this identity in UI state.
 
-# Adding New Features
+## Dates and payroll periods
 
-New features should normally follow this pattern:
+Stored business dates are commonly `DD/MM/YYYY`; timestamps use existing ISO-like formats. Parse dates before chronological comparison rather than relying on string sort.
 
-## 1. Define the Domain Requirement
+Do not derive operational payroll year from the calendar. Use `PayrollScheduleRepository::resolve_for_date` for a date-based default and lookup by year/internal cycle immediately before an operation. Reject gaps and ambiguity. Use the chronological predecessor resolver for previous-cycle work, including year rollover.
 
-Before writing code:
+Payroll Prep Sheet PDF extraction is implemented. DOCX is recognised but deliberately returns not implemented. On re-import, preserve `payslips_sent` for cycles whose material dates are unchanged; safely replaced changed cycles use reset sent state, and prepared payroll history blocks unsafe date changes.
 
-- Describe the real-world problem.
-- Update documentation if required.
-- Define the data needed.
+Keep the three selector concerns separate:
 
----
+- Dashboard operational payroll period;
+- Payroll Return's explicit period; and
+- View Payroll Schedule's selected year.
 
-## 2. Update the Data Model
+Normal labels use Payroll Week, period dates and pay date. Internal cycle numbers may appear in code/tests/diagnostics but not ordinary user-facing labels.
 
-Add or modify:
+## Payroll file conventions
 
-```
-docs/DATA-MODEL.md
-```
+Use `payroll_file_naming` for every producer and consumer. Do not reimplement period strings, PAYE weeks or paths.
 
-Consider:
+- PAYE week comes from `pay_date` relative to the applicable 6 April.
+- Period code is `YYYYMMwWW`, with `YYYYMM` from first week commencing.
+- Payslip filename is `Payslip for Week N for Name.pdf`.
+- A root ending in `YYYY to YYYY` is normalised back to its parent before applying another schedule year.
+- Generic timesheet PDF roots stay flat; year-suffixed timesheet roots roll to sibling years.
+- Create directories only immediately before an actual write/import.
 
-- Historical accuracy.
-- Future expansion.
-- Relationships between records.
+When adding file writes, preserve collision handling and propagate directory/write errors before changing related database state.
 
----
+## Payroll preparation and snapshots
 
-## 3. Update Database Schema
+`PayrollTimesheetScreen` must be supplied a complete operational schedule. Its bound key and material dates are a stale-save guard. Do not add an independent `Local::now()` period resolver; current-time calls in this screen are for timestamps only.
 
-Database changes should use migrations.
+Preparation PA eligibility is active/legacy-NULL-active plus any PA with an existing selected-period payroll record. Generation deliberately uses the same union. Do not create selected-period records for unrelated inactive PAs.
 
-Do not manually edit existing databases.
+Submitted and indeterminate records are persisted-only/read-only. Loading them must not create missing weeks/holidays, reconcile imports or update timestamps. Candidate/unsent records are editable.
 
-The process should be:
+Before changing data represented by a candidate:
 
-```
-Add migration
+1. compare the represented preparation/worked-item data;
+2. discard/invalidate the candidate before the first preparation write when material data changed; and
+3. abort the mutation if invalidation fails.
 
-        |
+Material changes include item membership/date/rate/manual allocation, previous-cycle minutes, weekly worked totals, annual leave, sick/SSP, individual holiday hours and mileage. Merely opening unchanged data must not discard the candidate.
 
-Update schema version
+Generate via `payroll_snapshot_service::publish_candidate`, not direct final-path PDF writing. Production timesheet send must verify the candidate path/digest and preserve submitted/indeterminate transitions.
 
-        |
+## Effective-dated data
 
-Test upgrade path
+Pay-rate lookup is as of each imported shift's start date and returns newest effective date then newest ID. It excludes future rates and includes employer top-up. Missing effective rate for positive work is an error. Manual adjustment allocation rules and integer-minute reconciliation live in `pay_rate_allocation`; do not use imported CSV rate/amount.
 
-        |
+Contracted-hours lookup is independently as of each payroll week commencing date. It is PDF information only. Do not apply pay-rate midweek rules to contracted hours or make it affect worked totals.
 
-Commit change
-```
+## Email development
 
----
+Keep preview, test and production semantics distinct:
 
-## 4. Add Repository Layer
+- preview composes only;
+- test sends use configured test recipients and markers and do not freeze snapshots;
+- production uses established employer/payroll/PA routing and updates status/snapshot state.
 
-Database access should be contained inside repositories.
+That production route is the employer as sender, payroll department as recipient, employer as CC and PA as BCC when available for both timesheets and payslips. Payslip test email instead targets the configured PA test address. `PendingEmailBatch` captures selected PA IDs and period facts/revision, not resolved email addresses. Production batches currently include active/legacy-`NULL` PAs only; the inactive-with-existing-record eligibility rule is limited to preparation and generation.
 
-Repositories handle:
+Production batches capture the selected schedule and selection revision. Final dispatch must re-fetch and validate that schedule, refuse a changed global selection and use only captured/re-fetched period facts for attachments, subject and status. Never re-resolve today during dispatch.
 
-- Inserts.
-- Queries.
-- Updates.
-- Data retrieval.
+## Backup/restore development
 
-Business rules should not be placed inside repositories.
+Keep filesystem and SQLite details in `BackupService`. A backup must use SQLite's online backup API, not copy an open database file. Restore must stay confined to recognised application backup directories, validate read-only integrity/schema, create a safety backup first and require restart after success. Tests use temporary roots only.
 
----
+## Testing conventions
 
-## 5. Add Tests
+Prefer focused module tests near the implementation. Use `Connection::open_in_memory()` or a temporary database/file tree. Inject dates/schedules and test stable helpers rather than depending on today's date.
 
-Every new feature should include tests where practical.
+Important regression areas include:
 
-Tests should cover:
+- all-years schedule import, replacement, resolution and predecessor rollover;
+- PAYE week/year-directory path agreement between import and lookup;
+- effective-date boundaries and deterministic equal-date rows;
+- preparation read-only, candidate invalidation and stale-save behaviour;
+- snapshot membership, digest verification and indeterminate transport handling;
+- inactive historical PA eligibility without unrelated record creation;
+- PDF totals/configured font roles without exposing internal rates;
+- email batch period binding and test/production routing; and
+- backup validation/restore with no access to runtime data.
 
-- Normal operation.
-- Invalid data.
-- Edge cases.
-- Duplicate handling where relevant.
+Avoid brittle pixel assertions for PDFs. Test prepared content/data and extract text where practical.
 
----
+## Configuration compatibility
 
-# Database Development
+Serde ignores unknown TOML fields, so removed settings such as `public_holiday_enabled` remain load-compatible but are not saved. New optional fields should normally have defaults. Preserve legacy timesheet email-body reconciliation unless a separately scoped migration removes it.
 
-The application uses SQLite.
+The persisted payroll frequency, rounding, workweek and overtime settings are not currently applied as downstream configurable calculation rules. Do not wire them into unrelated behaviour merely because they exist. Email subject/body fields live in `PayrollConfig` but are edited through Email Settings. The configured `email_archive` path currently has no production consumer; Payroll Return information must continue to use `payroll_information_folder`. Public holidays are permanently active.
 
-Database responsibilities:
+## Current boundaries
 
-```
-database.rs
-```
-
-Handles:
-
-- Creating tables.
-- Checking schema version.
-- Running migrations.
-
-Repositories handle database operations.
-
----
-
-# Data Storage Rules
-
-Application data is stored outside the Git repository.
-
-Default location:
-
-```
-~/.directpaymenttimesheets/
-```
-
-The repository must not contain:
-
-- Real personal information.
-- Payroll records.
-- Private signatures.
-- User databases.
-
----
-
-# Import Development
-
-CSV imports must:
-
-- Validate incoming data.
-- Prevent duplicate imports.
-- Preserve original files.
-- Record audit information.
-
-Import changes should include tests.
-
----
-
-# Testing Database Code
-
-Database tests should use isolated databases.
-
-Preferred approach:
-
-```
-SQLite in-memory database
-```
-
-This prevents tests from modifying real user data.
-
----
-
-# Git Workflow
-
-Git is used as project history.
-
-Each significant change should:
-
-- Have a clear commit message.
-- Represent one logical change.
-- Pass tests before committing.
-
-Examples of good commit messages:
-
-```
-Add employer repository
-
-Add pay rate history model
-
-Improve database migration handling
-
-Update project documentation
-```
-
----
-
-# Documentation Rules
-
-Documentation should be updated when:
-
-- A major feature is added.
-- Database structure changes.
-- Architecture changes.
-- Business rules change.
-
-Important documents:
-
-```
-docs/DATA-MODEL.md
-
-docs/DOMAIN.md
-
-docs/ARCHITECTURE.md
-
-docs/PROJECT_STATE.md
-```
-
----
-
-# Current Development Stage
-
-The current focus is completing the application foundation.
-
-Completed:
-
-- Application structure.
-- Configuration handling.
-- Environment management.
-- SQLite database.
-- Database migrations.
-- Core repositories.
-- CSV import pipeline.
-- Import audit system.
-
----
-
-# Current Development Priorities
-
-Next areas:
-
-## Business Records
-
-Continue building:
-
-- Leave records.
-- Public holiday records.
-- Payroll periods.
-
----
-
-## Payroll Engine Preparation
-
-Prepare:
-
-- Pay calculations.
-- Historical rates.
-- Payroll rules.
-
----
-
-## Document Generation
-
-Prepare:
-
-- Timesheet PDFs.
-- Payroll outputs.
-- Email workflow.
-
----
-
-# Future Development
-
-Future features may include:
-
-- Employer login.
-- Personal Assistant self-service.
-- Browser/mobile access.
-- Advanced payroll automation.
-
-These should only be added after the underlying data model and business rules are stable.
-
+Do not document or build these as if already present: overtime calculations, arbitrary/scheduled/cloud restore, backup retention, P60-specific Payroll Return handling, multi-user/authentication, or a general payroll calculation engine. Keep future-work descriptions explicit and separate from implemented behaviour.
