@@ -164,6 +164,14 @@ impl Application {
             .get_all_for_year(payroll_year)?)
     }
 
+    pub fn resolve_payroll_schedule(
+        &self,
+        date: chrono::NaiveDate,
+    ) -> Result<crate::payroll_schedule_repository::PayrollSchedule, Box<dyn std::error::Error>>
+    {
+        Ok(self.payroll_schedule_repository.resolve_for_date(date)?)
+    }
+
     pub fn import_csv(
         &self,
     ) -> Result<crate::import_service::ImportSummary, Box<dyn std::error::Error>> {

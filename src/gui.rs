@@ -1,4 +1,3 @@
-use chrono::Datelike;
 use eframe::egui;
 use std::collections::{HashMap, HashSet};
 
@@ -140,6 +139,7 @@ impl eframe::App for DirectPaymentApp {
                 }
 
                 if ui.button("Payroll Timesheet Preparation").clicked() {
+                    self.payroll_timesheet_screen.reload();
                     self.active_screen = ActiveScreen::PayrollTimesheet;
                 }
 
@@ -664,19 +664,8 @@ impl DirectPaymentApp {
                 .filter(|email| !email.is_empty())
                 .ok_or("Employer has no email address.")?;
 
-            let payroll_year = current_payroll_year();
             let today = chrono::Local::now().date_naive();
-            let current_schedule = self
-                .application
-                .get_payroll_schedule(&payroll_year)?
-                .into_iter()
-                .filter_map(|schedule| {
-                    let first_week = parse_date_checked(&schedule.first_week_commencing)?;
-                    let cycle_end = first_week + chrono::Duration::days(27);
-                    (first_week <= today && today <= cycle_end).then_some(schedule)
-                })
-                .max_by_key(|schedule| schedule.first_week_commencing.clone())
-                .ok_or("No current payroll cycle was found.")?;
+            let current_schedule = self.application.resolve_payroll_schedule(today)?;
 
             let personal_assistant_name = format!("{} {}", assistant.first_name, assistant.surname);
             let attachment_path =
@@ -761,19 +750,8 @@ impl DirectPaymentApp {
                 .filter(|email| !email.is_empty())
                 .ok_or("Employer has no email address.")?;
 
-            let payroll_year = current_payroll_year();
             let today = chrono::Local::now().date_naive();
-            let current_schedule = self
-                .application
-                .get_payroll_schedule(&payroll_year)?
-                .into_iter()
-                .filter_map(|schedule| {
-                    let first_week = parse_date_checked(&schedule.first_week_commencing)?;
-                    let cycle_end = first_week + chrono::Duration::days(27);
-                    (first_week <= today && today <= cycle_end).then_some(schedule)
-                })
-                .max_by_key(|schedule| schedule.first_week_commencing.clone())
-                .ok_or("No current payroll cycle was found.")?;
+            let current_schedule = self.application.resolve_payroll_schedule(today)?;
 
             let personal_assistant_name = format!("{} {}", assistant.first_name, assistant.surname);
             let attachment_path =
@@ -866,39 +844,15 @@ impl DirectPaymentApp {
                 .add_filter("ZIP files", &["zip"])
                 .pick_file()
             {
-                let payroll_year = current_payroll_year();
+                let today = chrono::Local::now().date_naive();
 
-                match self.application.get_payroll_schedule(&payroll_year) {
-                    Ok(schedules) => {
-                        let today = chrono::Local::now().date_naive();
-
-                        let current_schedule = schedules
-                            .into_iter()
-                            .filter_map(|schedule| {
-                                let first_week = chrono::NaiveDate::parse_from_str(
-                                    &schedule.first_week_commencing,
-                                    "%d/%m/%Y",
-                                )
-                                .ok()?;
-
-                                let cycle_end = first_week + chrono::Duration::days(27);
-
-                                if first_week <= today && today <= cycle_end {
-                                    Some((first_week, schedule))
-                                } else {
-                                    None
-                                }
-                            })
-                            .max_by_key(|(date, _)| *date)
-                            .map(|(_, schedule)| schedule);
-
-                        match current_schedule {
-                            Some(schedule) => {
-                                match self.application.import_payroll_return(
-                                    &path,
-                                    &payroll_year,
-                                    schedule.cycle_number,
-                                ) {
+                match self.application.resolve_payroll_schedule(today) {
+                    Ok(schedule) => {
+                        match self.application.import_payroll_return(
+                            &path,
+                            &schedule.payroll_year,
+                            schedule.cycle_number,
+                        ) {
                                     Ok(result) => {
                                         self.status_message = format!(
                                             "Payroll return imported: {} payslip(s), {} information file(s).",
@@ -911,19 +865,12 @@ impl DirectPaymentApp {
                                         self.status_message =
                                             format!("Payroll return import failed: {}", error);
                                     }
-                                }
-                            }
-
-                            None => {
-                                self.status_message =
-                                    "No current payroll cycle found.".to_string();
-                            }
                         }
                     }
 
                     Err(error) => {
                         self.status_message =
-                            format!("Failed loading payroll schedule: {}", error);
+                            format!("Payroll return import failed: {}", error);
                     }
                 }
             }
@@ -951,21 +898,24 @@ impl DirectPaymentApp {
         }
 
         if ui.button("View Payroll Schedule").clicked() {
-            let payroll_year = current_payroll_year();
-
-            match self.application.get_payroll_schedule(&payroll_year) {
-                Ok(schedules) => {
-                    self.payroll_schedules = schedules;
-
-                    self.status_message = format!(
-                        "Loaded {} payroll schedule entries.",
-                        self.payroll_schedules.len()
-                    );
-                }
-
+            let today = chrono::Local::now().date_naive();
+            match self.application.resolve_payroll_schedule(today) {
+                Ok(current) => match self.application.get_payroll_schedule(&current.payroll_year) {
+                    Ok(schedules) => {
+                        self.payroll_schedules = schedules;
+                        self.status_message = format!(
+                            "Loaded {} payroll schedule entries for {}.",
+                            self.payroll_schedules.len(),
+                            current.payroll_year
+                        );
+                    }
+                    Err(error) => {
+                        self.status_message =
+                            format!("Failed loading payroll schedule: {}", error);
+                    }
+                },
                 Err(error) => {
-                    self.status_message =
-                        format!("Failed loading payroll schedule: {}", error);
+                    self.status_message = format!("Failed loading payroll schedule: {}", error);
                 }
             }
         }
@@ -1114,19 +1064,8 @@ impl DirectPaymentApp {
                 .filter(|email| !email.is_empty())
                 .ok_or("Payroll Department has no email address.")?;
 
-            let payroll_year = current_payroll_year();
             let today = chrono::Local::now().date_naive();
-            let current_schedule = self
-                .application
-                .get_payroll_schedule(&payroll_year)?
-                .into_iter()
-                .filter_map(|schedule| {
-                    let first_week = parse_date_checked(&schedule.first_week_commencing)?;
-                    let cycle_end = first_week + chrono::Duration::days(27);
-                    (first_week <= today && today <= cycle_end).then_some(schedule)
-                })
-                .max_by_key(|schedule| schedule.first_week_commencing.clone())
-                .ok_or("No current payroll cycle was found.")?;
+            let current_schedule = self.application.resolve_payroll_schedule(today)?;
 
             let personal_assistant_name = format!("{} {}", assistant.first_name, assistant.surname);
             let (attachment_path, body) = match kind {
@@ -1220,33 +1159,9 @@ impl DirectPaymentApp {
             .filter(|email| !email.is_empty())
             .ok_or("Payroll Department has no email address.")?;
 
-        let payroll_year = current_payroll_year();
-
-        let schedules = self.application.get_payroll_schedule(&payroll_year)?;
-
         let today = chrono::Local::now().date_naive();
-
-        let current_schedule = schedules
-            .into_iter()
-            .filter_map(|schedule| {
-                let first_week = parse_date_checked(&schedule.first_week_commencing)?;
-
-                let cycle_end = first_week + chrono::Duration::days(27);
-
-                if first_week <= today && today <= cycle_end {
-                    Some((first_week, schedule))
-                } else {
-                    None
-                }
-            })
-            .max_by_key(|(first_week, _)| *first_week)
-            .map(|(_, schedule)| schedule)
-            .ok_or_else(|| {
-                format!(
-                    "No current payroll cycle was found for {}.",
-                    today.format("%d/%m/%Y")
-                )
-            })?;
+        let current_schedule = self.application.resolve_payroll_schedule(today)?;
+        let payroll_year = current_schedule.payroll_year.clone();
 
         let assistants = self.application.personal_assistant_repository.get_all()?;
 
@@ -1396,33 +1311,9 @@ impl DirectPaymentApp {
             .filter(|email| !email.is_empty())
             .ok_or("Payroll Department has no email address.")?;
 
-        let payroll_year = current_payroll_year();
-
-        let schedules = self.application.get_payroll_schedule(&payroll_year)?;
-
         let today = chrono::Local::now().date_naive();
-
-        let current_schedule = schedules
-            .into_iter()
-            .filter_map(|schedule| {
-                let first_week = parse_date_checked(&schedule.first_week_commencing)?;
-
-                let cycle_end = first_week + chrono::Duration::days(27);
-
-                if first_week <= today && today <= cycle_end {
-                    Some((first_week, schedule))
-                } else {
-                    None
-                }
-            })
-            .max_by_key(|(first_week, _)| *first_week)
-            .map(|(_, schedule)| schedule)
-            .ok_or_else(|| {
-                format!(
-                    "No current payroll cycle was found for {}.",
-                    today.format("%d/%m/%Y")
-                )
-            })?;
+        let current_schedule = self.application.resolve_payroll_schedule(today)?;
+        let payroll_year = current_schedule.payroll_year.clone();
 
         let assistants = self.application.personal_assistant_repository.get_all()?;
 
@@ -1526,41 +1417,18 @@ impl DirectPaymentApp {
         ui.separator();
         ui.heading("Timesheet Email Status");
 
-        let payroll_year = current_payroll_year();
-
-        let schedules = match self.application.get_payroll_schedule(&payroll_year) {
-            Ok(schedules) => schedules,
-            Err(error) => {
-                ui.label(format!("Unable to load payroll schedule: {}", error));
-                return;
-            }
-        };
-
         let today = chrono::Local::now().date_naive();
-
-        let current_schedule = schedules
-            .into_iter()
-            .filter_map(|schedule| {
-                let first_week = parse_date_checked(&schedule.first_week_commencing)?;
-
-                let cycle_end = first_week + chrono::Duration::days(27);
-
-                if first_week <= today && today <= cycle_end {
-                    Some((first_week, schedule))
-                } else {
-                    None
-                }
-            })
-            .max_by_key(|(first_week, _)| *first_week)
-            .map(|(_, schedule)| schedule);
-
-        let current_schedule = match current_schedule {
-            Some(schedule) => schedule,
-            None => {
-                ui.label("No current payroll cycle found.");
+        let current_schedule = match self.application.resolve_payroll_schedule(today) {
+            Ok(schedule) => schedule,
+            Err(error) => {
+                ui.label(format!(
+                    "Unable to resolve current payroll cycle: {}",
+                    error
+                ));
                 return;
             }
         };
+        let payroll_year = current_schedule.payroll_year.clone();
 
         let assistants = match self.application.personal_assistant_repository.get_all() {
             Ok(assistants) => assistants,
@@ -1645,39 +1513,9 @@ impl DirectPaymentApp {
             .next()
             .ok_or("No employer has been configured.")?;
 
-        let payroll_year = current_payroll_year();
-
-        let schedules = self.application.get_payroll_schedule(&payroll_year)?;
-
-        if schedules.is_empty() {
-            return Err(
-                format!("No payroll schedule has been loaded for {}.", payroll_year).into(),
-            );
-        }
-
         let today = chrono::Local::now().date_naive();
-
-        let current_schedule = schedules
-            .into_iter()
-            .filter_map(|schedule| {
-                let first_week = parse_date_checked(&schedule.first_week_commencing)?;
-
-                let cycle_end = first_week + chrono::Duration::days(27);
-
-                if first_week <= today && today <= cycle_end {
-                    Some((first_week, schedule))
-                } else {
-                    None
-                }
-            })
-            .max_by_key(|(first_week, _)| *first_week)
-            .map(|(_, schedule)| schedule)
-            .ok_or_else(|| {
-                format!(
-                    "No current payroll cycle was found for {}.",
-                    today.format("%d/%m/%Y")
-                )
-            })?;
+        let current_schedule = self.application.resolve_payroll_schedule(today)?;
+        let payroll_year = current_schedule.payroll_year.clone();
 
         let first_week = parse_date_checked(&current_schedule.first_week_commencing)
             .ok_or("Invalid first week commencing date in payroll schedule.")?;
@@ -2008,18 +1846,6 @@ impl DirectPaymentApp {
 
         Ok(generated)
     }
-}
-
-fn current_payroll_year() -> String {
-    let today = chrono::Local::now().date_naive();
-
-    let start_year = if today.month() >= 4 {
-        today.year()
-    } else {
-        today.year() - 1
-    };
-
-    format!("{}/{}", start_year, (start_year + 1) % 100)
 }
 
 fn format_pdf_hours(value: f64) -> String {
