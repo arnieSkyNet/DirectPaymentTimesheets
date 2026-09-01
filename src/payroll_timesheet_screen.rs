@@ -39,6 +39,16 @@ struct PreparationBaseline {
 struct SaveResult {
     changed: bool,
     candidate_invalidated: bool,
+    public_holiday_totals: [f64; 4],
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+enum NumericEditorKey {
+    Worked(i64),
+    AnnualLeave(i64),
+    SickLeave(i64),
+    PublicHoliday(i64),
+    TravelMiles(i64),
 }
 
 pub struct PayrollTimesheetScreen {
@@ -53,6 +63,7 @@ pub struct PayrollTimesheetScreen {
     worked_hours_baselines: HashMap<(i64, i64), i64>,
     snapshot_states: HashMap<i64, SnapshotState>,
     preparation_baselines: HashMap<i64, PreparationBaseline>,
+    numeric_editor_texts: HashMap<NumericEditorKey, String>,
     status_message: String,
 }
 
@@ -70,6 +81,7 @@ impl PayrollTimesheetScreen {
             worked_hours_baselines: HashMap::new(),
             snapshot_states: HashMap::new(),
             preparation_baselines: HashMap::new(),
+            numeric_editor_texts: HashMap::new(),
             status_message: "Payroll Timesheets not loaded.".to_string(),
         }
     }
@@ -85,6 +97,7 @@ impl PayrollTimesheetScreen {
         self.worked_hours_baselines.clear();
         self.snapshot_states.clear();
         self.preparation_baselines.clear();
+        self.numeric_editor_texts.clear();
     }
 
     pub fn show(
@@ -129,7 +142,11 @@ impl PayrollTimesheetScreen {
         }
 
         for record_index in 0..self.weeks.len() {
-            let (records, public_holidays) = (&mut self.weeks, &mut self.public_holidays);
+            let (records, public_holidays, numeric_editor_texts) = (
+                &mut self.weeks,
+                &mut self.public_holidays,
+                &mut self.numeric_editor_texts,
+            );
 
             let (record, weeks, assistant_name) = &mut records[record_index];
             let holidays = &mut public_holidays[record_index];
@@ -179,26 +196,52 @@ impl PayrollTimesheetScreen {
                         for week in weeks.iter_mut() {
                             ui.label(&week.week_commencing);
 
-                            edit_number(ui, &mut week.worked_hours);
-                            edit_number(ui, &mut week.annual_leave_hours);
-                            edit_number(ui, &mut week.sick_leave_hours);
+                            edit_number(
+                                ui,
+                                numeric_editor_texts,
+                                NumericEditorKey::Worked(week.id),
+                                &mut week.worked_hours,
+                            );
+                            edit_number(
+                                ui,
+                                numeric_editor_texts,
+                                NumericEditorKey::AnnualLeave(week.id),
+                                &mut week.annual_leave_hours,
+                            );
+                            edit_number(
+                                ui,
+                                numeric_editor_texts,
+                                NumericEditorKey::SickLeave(week.id),
+                                &mut week.sick_leave_hours,
+                            );
 
                             ui.vertical(|ui| {
+                                let week_number = week.week_number;
                                 for holiday in holidays
                                     .iter_mut()
-                                    .filter(|holiday| holiday.week_number == week.week_number)
+                                    .filter(|holiday| holiday.week_number == week_number)
                                 {
                                     ui.horizontal(|ui| {
                                         ui.label(
                                             egui::RichText::new(&holiday.holiday_date).size(8.0),
                                         );
 
-                                        edit_optional_number(ui, &mut holiday.hours);
+                                        edit_optional_number(
+                                            ui,
+                                            numeric_editor_texts,
+                                            NumericEditorKey::PublicHoliday(holiday.id),
+                                            &mut holiday.hours,
+                                        );
                                     });
                                 }
                             });
 
-                            edit_number(ui, &mut week.travel_miles);
+                            edit_number(
+                                ui,
+                                numeric_editor_texts,
+                                NumericEditorKey::TravelMiles(week.id),
+                                &mut week.travel_miles,
+                            );
 
                             ui.end_row();
                         }
@@ -206,6 +249,7 @@ impl PayrollTimesheetScreen {
             });
 
             if !read_only && ui.button(format!("Save {}", assistant_name)).clicked() {
+                commit_record_numeric_editors(numeric_editor_texts, weeks, holidays);
                 let result = save_preparation_record(
                     application,
                     self.bound_period.as_ref(),
@@ -221,6 +265,9 @@ impl PayrollTimesheetScreen {
                     Ok(result) => {
                         if result.candidate_invalidated {
                             self.snapshot_states.remove(&record.id);
+                        }
+                        for (index, week) in weeks.iter_mut().enumerate() {
+                            week.public_holiday_hours = result.public_holiday_totals[index];
                         }
                         self.preparation_baselines.insert(
                             record.id,
@@ -330,6 +377,7 @@ impl PayrollTimesheetScreen {
         self.worked_hours_baselines.clear();
         self.snapshot_states.clear();
         self.preparation_baselines.clear();
+        self.numeric_editor_texts.clear();
 
         for assistant in assistants {
             let is_active = match &assistant.employment_status {
@@ -419,6 +467,20 @@ impl PayrollTimesheetScreen {
                 continue;
             }
 
+            let stored_weeks = application
+                .payroll_timesheet_repository
+                .get_weeks(record.id)?;
+            let stored_holidays = application
+                .payroll_timesheet_repository
+                .get_public_holidays(record.id)?;
+            validate_public_holiday_consistency(&stored_weeks, &stored_holidays).map_err(
+                |error| {
+                    format!(
+                        "Public-holiday data for {assistant_name} requires review before editing: {error}"
+                    )
+                },
+            )?;
+
             // --------------------------------------------------------
             // Recalculate the worked hours from the current
             // Hours Keeper data whenever the payroll screen loads.
@@ -477,9 +539,6 @@ impl PayrollTimesheetScreen {
             let current_cycle_hours =
                 std::array::from_fn(|index| reconciled.week_totals_minutes[index] as f64 / 60.0);
 
-            let stored_weeks = application
-                .payroll_timesheet_repository
-                .get_weeks(record.id)?;
             let reconciled_changes_persisted = record
                 .previous_cycle_hours
                 .map(|hours| (hours * 60.0).round() as i64)
@@ -499,14 +558,8 @@ impl PayrollTimesheetScreen {
             } else {
                 false
             };
-            if snapshot_state == Some(SnapshotState::Candidate)
-                && (reconciled_changes_persisted || candidate_items_changed)
-            {
-                application
-                    .payroll_worked_item_repository
-                    .discard_candidate(record.id)?;
-                self.snapshot_states.remove(&record.id);
-            }
+            let invalidate_candidate = snapshot_state == Some(SnapshotState::Candidate)
+                && (reconciled_changes_persisted || candidate_items_changed);
 
             let manual_adjustments = application
                 .payroll_worked_item_repository
@@ -523,40 +576,19 @@ impl PayrollTimesheetScreen {
                 );
             }
 
-            if reconciled_changes_persisted {
-                application
+            if reconciled_changes_persisted || invalidate_candidate {
+                let candidate_invalidated = application
                     .payroll_timesheet_repository
-                    .update_previous_cycle_hours(
+                    .reconcile_editable_hours_atomically(
                         record.id,
                         previous_cycle_hours,
+                        &week_date_strings,
+                        &current_cycle_hours,
                         &chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string(),
+                        invalidate_candidate,
                     )?;
-            }
-
-            application
-                .payroll_timesheet_repository
-                .create_missing_weeks(record.id, &week_date_strings, &current_cycle_hours)?;
-
-            let mut weeks = application
-                .payroll_timesheet_repository
-                .get_weeks(record.id)?;
-
-            // Update only the four worked-hour values.
-            for index in 0..4 {
-                if let Some(week) = weeks.get_mut(index) {
-                    week.worked_hours = current_cycle_hours[index];
-
-                    let stored_worked_hours = stored_weeks
-                        .iter()
-                        .find(|stored| stored.week_number == week.week_number)
-                        .map(|stored| stored.worked_hours);
-                    if stored_worked_hours
-                        .is_none_or(|stored| (stored - week.worked_hours).abs() > f64::EPSILON)
-                    {
-                        application
-                            .payroll_timesheet_repository
-                            .update_week_worked_hours(week.id, week.worked_hours)?;
-                    }
+                if candidate_invalidated {
+                    self.snapshot_states.remove(&record.id);
                 }
             }
 
@@ -565,7 +597,7 @@ impl PayrollTimesheetScreen {
                 .get_for_cycle_and_pa(&payroll_year, schedule.cycle_number, assistant.id)?
                 .ok_or("Failed reloading payroll timesheet.")?;
 
-            weeks = application
+            let weeks = application
                 .payroll_timesheet_repository
                 .get_weeks(record.id)?;
 
@@ -661,6 +693,11 @@ fn save_preparation_record(
         return Err("This payroll timesheet is submitted or has an indeterminate delivery state and is read-only.".into());
     }
 
+    let mut weeks = weeks.to_vec();
+    derive_public_holiday_aggregates(&mut weeks, public_holidays)?;
+    validate_public_holiday_values(&weeks, public_holidays)?;
+    let public_holiday_totals = std::array::from_fn(|index| weeks[index].public_holiday_hours);
+
     let existing_adjustments = application
         .payroll_worked_item_repository
         .get_manual_adjustments(record.id)?;
@@ -691,7 +728,7 @@ fn save_preparation_record(
 
     let changed = baseline.is_none_or(|baseline| {
         !optional_hours_equal(baseline.previous_cycle_hours, record.previous_cycle_hours)
-            || !weeks_equal(&baseline.weeks, weeks)
+            || !weeks_equal(&baseline.weeks, &weeks)
             || !public_holidays_equal(&baseline.public_holidays, public_holidays)
             || baseline.manual_adjustments != desired_persisted_adjustments
     });
@@ -699,35 +736,19 @@ fn save_preparation_record(
         return Ok(SaveResult {
             changed: false,
             candidate_invalidated: false,
+            public_holiday_totals,
         });
     }
 
-    let candidate_invalidated = snapshot_state == Some(SnapshotState::Candidate);
-    if candidate_invalidated {
-        application
-            .payroll_worked_item_repository
-            .discard_candidate(record.id)?;
-    }
-
     let now = chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
-    application
+    let candidate_invalidated = application
         .payroll_timesheet_repository
-        .update_previous_cycle_hours(record.id, record.previous_cycle_hours, &now)?;
-    for (week, adjustment) in weeks.iter().zip(desired_adjustments.iter()) {
-        application
-            .payroll_worked_item_repository
-            .set_manual_adjustment(record.id, adjustment, &now)?;
-        application.payroll_timesheet_repository.update_week(week)?;
-    }
-    for holiday in public_holidays {
-        application
-            .payroll_timesheet_repository
-            .update_public_holiday(holiday)?;
-    }
+        .save_preparation_atomically(record, &weeks, public_holidays, &desired_adjustments, &now)?;
 
     Ok(SaveResult {
         changed: true,
         candidate_invalidated,
+        public_holiday_totals,
     })
 }
 
@@ -766,34 +787,181 @@ fn public_holidays_equal(
         })
 }
 
-fn edit_number(ui: &mut egui::Ui, value: &mut f64) {
-    let mut text = if *value == 0.0 {
-        "0".to_string()
-    } else {
-        format_decimal_hours(*value)
-    };
+fn public_holiday_sum_for_week(
+    holidays: &[PayrollTimesheetPublicHoliday],
+    week_number: i64,
+) -> f64 {
+    holidays
+        .iter()
+        .filter(|holiday| holiday.week_number == week_number)
+        .map(|holiday| holiday.hours)
+        .sum()
+}
 
-    if ui.text_edit_singleline(&mut text).changed() {
-        if let Ok(parsed) = text.trim().parse::<f64>() {
-            *value = parsed;
+fn validate_public_holiday_values(
+    weeks: &[PayrollTimesheetWeek],
+    holidays: &[PayrollTimesheetPublicHoliday],
+) -> Result<(), Box<dyn std::error::Error>> {
+    for holiday in holidays {
+        if !holiday.hours.is_finite() || holiday.hours < 0.0 {
+            return Err(format!(
+                "Public-holiday hours for {} must be a finite value of zero or more.",
+                holiday.holiday_date
+            )
+            .into());
+        }
+        if !weeks
+            .iter()
+            .any(|week| week.week_number == holiday.week_number)
+        {
+            return Err(format!(
+                "Public-holiday date {} refers to invalid payroll week {}.",
+                holiday.holiday_date, holiday.week_number
+            )
+            .into());
+        }
+    }
+    Ok(())
+}
+
+fn derive_public_holiday_aggregates(
+    weeks: &mut [PayrollTimesheetWeek],
+    holidays: &[PayrollTimesheetPublicHoliday],
+) -> Result<(), Box<dyn std::error::Error>> {
+    validate_public_holiday_values(weeks, holidays)?;
+    for week in weeks {
+        week.public_holiday_hours = public_holiday_sum_for_week(holidays, week.week_number);
+    }
+    Ok(())
+}
+
+fn validate_public_holiday_consistency(
+    weeks: &[PayrollTimesheetWeek],
+    holidays: &[PayrollTimesheetPublicHoliday],
+) -> Result<(), String> {
+    for week in weeks {
+        let detail_total = public_holiday_sum_for_week(holidays, week.week_number);
+        if (week.public_holiday_hours - detail_total).abs() > 0.000_001 {
+            return Err(format!(
+                "week {} stores {} aggregate hour(s), but its dated entries total {}. No values were changed.",
+                week.week_number,
+                format_decimal_hours(week.public_holiday_hours),
+                format_decimal_hours(detail_total)
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn edit_number(
+    ui: &mut egui::Ui,
+    editor_texts: &mut HashMap<NumericEditorKey, String>,
+    key: NumericEditorKey,
+    value: &mut f64,
+) {
+    edit_preparation_number(ui, editor_texts, key, value);
+}
+
+fn edit_optional_number(
+    ui: &mut egui::Ui,
+    editor_texts: &mut HashMap<NumericEditorKey, String>,
+    key: NumericEditorKey,
+    value: &mut f64,
+) {
+    edit_preparation_number(ui, editor_texts, key, value);
+}
+
+fn numeric_editor_text(value: f64) -> String {
+    format_decimal_hours(value)
+}
+
+fn edit_preparation_number(
+    ui: &mut egui::Ui,
+    editor_texts: &mut HashMap<NumericEditorKey, String>,
+    key: NumericEditorKey,
+    value: &mut f64,
+) {
+    let text = editor_texts
+        .entry(key)
+        .or_insert_with(|| numeric_editor_text(*value));
+    let response = edit_numeric_text(ui, text);
+
+    if response.changed() {
+        update_numeric_value(text, value);
+    }
+    if response.lost_focus() {
+        commit_numeric_text(text, value);
+    }
+}
+
+fn update_numeric_value(text: &str, value: &mut f64) {
+    if let Ok(parsed) = text.trim().parse::<f64>() {
+        *value = parsed;
+    }
+}
+
+fn commit_numeric_text(text: &mut String, value: &mut f64) {
+    if text.trim().is_empty() {
+        *value = 0.0;
+    } else {
+        update_numeric_value(text, value);
+    }
+    *text = format_decimal_hours(*value);
+}
+
+fn commit_record_numeric_editors(
+    editor_texts: &mut HashMap<NumericEditorKey, String>,
+    weeks: &mut [PayrollTimesheetWeek],
+    holidays: &mut [PayrollTimesheetPublicHoliday],
+) {
+    for week in weeks {
+        for (key, value) in [
+            (NumericEditorKey::Worked(week.id), &mut week.worked_hours),
+            (
+                NumericEditorKey::AnnualLeave(week.id),
+                &mut week.annual_leave_hours,
+            ),
+            (
+                NumericEditorKey::SickLeave(week.id),
+                &mut week.sick_leave_hours,
+            ),
+            (
+                NumericEditorKey::TravelMiles(week.id),
+                &mut week.travel_miles,
+            ),
+        ] {
+            if let Some(text) = editor_texts.get_mut(&key) {
+                commit_numeric_text(text, value);
+            }
+        }
+    }
+
+    for holiday in holidays {
+        if let Some(text) = editor_texts.get_mut(&NumericEditorKey::PublicHoliday(holiday.id)) {
+            commit_numeric_text(text, &mut holiday.hours);
         }
     }
 }
 
-fn edit_optional_number(ui: &mut egui::Ui, value: &mut f64) {
-    let mut text = if *value == 0.0 {
-        String::new()
-    } else {
-        format_decimal_hours(*value)
-    };
+fn edit_numeric_text(ui: &mut egui::Ui, text: &mut String) -> egui::Response {
+    let mut output = egui::TextEdit::singleline(text).show(ui);
 
-    if ui.text_edit_singleline(&mut text).changed() {
-        if text.trim().is_empty() {
-            *value = 0.0;
-        } else if let Ok(parsed) = text.trim().parse::<f64>() {
-            *value = parsed;
-        }
+    if output.response.gained_focus() {
+        output
+            .state
+            .cursor
+            .set_char_range(Some(full_text_selection(text)));
+        output.state.store(ui.ctx(), output.response.id);
     }
+
+    output.response
+}
+
+fn full_text_selection(text: &str) -> egui::text::CCursorRange {
+    egui::text::CCursorRange::two(
+        egui::text::CCursor::new(0),
+        egui::text::CCursor::new(text.chars().count()),
+    )
 }
 
 fn calculate_actual_hours(
@@ -1596,6 +1764,323 @@ mod tests {
             screen.public_holidays[0][0].hours = 1.0;
         }
     );
+
+    fn load_week_with_eighteen_imported_hours() -> (
+        TempDir,
+        Application,
+        PayrollSchedule,
+        PayrollTimesheetScreen,
+    ) {
+        let (directory, application, schedule, _screen) = load_active_record();
+        let connection = setup_connection(&application);
+        connection
+            .execute(
+                "INSERT INTO personal_assistant_pay_rates (
+                personal_assistant_id, effective_date, base_hourly_rate,
+                employer_top_up_rate, created_at
+             ) VALUES (1, '01/01/2026', 12, 0, 'created')",
+                [],
+            )
+            .unwrap();
+        connection
+            .execute(
+                "INSERT INTO timesheets (
+                pa_name, personal_assistant_id, start_time, end_time,
+                break_minutes, worked_minutes, hourly_rate, amount, notes
+             ) VALUES ('Active Test', 1, '31/08/2026', '31/08/2026', 0, 1080, 0, 0, NULL)",
+                [],
+            )
+            .unwrap();
+        let mut screen = PayrollTimesheetScreen::new();
+        screen.load(&application, &schedule, "period").unwrap();
+        (directory, application, schedule, screen)
+    }
+
+    #[test]
+    fn public_holiday_edits_leave_worked_hours_unchanged() {
+        let (_directory, application, schedule, mut screen) =
+            load_week_with_eighteen_imported_hours();
+        let week_index = 3;
+        screen.weeks[0].1[week_index].worked_hours = 8.0;
+        screen.public_holidays[0][0].hours = 7.0;
+        save_current_row(&application, &schedule, &screen).unwrap();
+
+        let record_id = screen.weeks[0].0.id;
+        let mut reloaded = PayrollTimesheetScreen::new();
+        reloaded.load(&application, &schedule, "period").unwrap();
+        reloaded.public_holidays[0][0].hours = 6.0;
+        save_current_row(&application, &schedule, &reloaded).unwrap();
+        assert_eq!(
+            application
+                .payroll_timesheet_repository
+                .get_weeks(record_id)
+                .unwrap()[week_index]
+                .worked_hours,
+            8.0
+        );
+
+        let mut reloaded = PayrollTimesheetScreen::new();
+        reloaded.load(&application, &schedule, "period").unwrap();
+        reloaded.public_holidays[0][0].hours = 8.0;
+        save_current_row(&application, &schedule, &reloaded).unwrap();
+        assert_eq!(
+            application
+                .payroll_timesheet_repository
+                .get_weeks(record_id)
+                .unwrap()[week_index]
+                .worked_hours,
+            8.0
+        );
+    }
+
+    #[test]
+    fn deliberate_worked_and_public_holiday_values_save_and_reload_independently() {
+        let (_directory, application, schedule, mut screen) =
+            load_week_with_eighteen_imported_hours();
+        let week_index = 3;
+        screen.weeks[0].1[week_index].worked_hours = 11.0;
+        screen.public_holidays[0][0].hours = 7.0;
+        save_current_row(&application, &schedule, &screen).unwrap();
+
+        let record_id = screen.weeks[0].0.id;
+        let stored_weeks = application
+            .payroll_timesheet_repository
+            .get_weeks(record_id)
+            .unwrap();
+        assert_eq!(stored_weeks[week_index].worked_hours, 11.0);
+        assert_eq!(stored_weeks[week_index].public_holiday_hours, 7.0);
+        assert_eq!(
+            application
+                .payroll_timesheet_repository
+                .get_public_holidays(record_id)
+                .unwrap()[0]
+                .hours,
+            7.0
+        );
+        assert_eq!(
+            application
+                .payroll_worked_item_repository
+                .get_manual_adjustments(record_id)
+                .unwrap()[0]
+                .adjustment_minutes,
+            -420
+        );
+
+        let mut reloaded = PayrollTimesheetScreen::new();
+        reloaded.load(&application, &schedule, "period").unwrap();
+        assert_eq!(reloaded.weeks[0].1[week_index].worked_hours, 11.0);
+        assert_eq!(reloaded.public_holidays[0][0].hours, 7.0);
+        assert!(
+            !save_current_row(&application, &schedule, &reloaded)
+                .unwrap()
+                .changed
+        );
+    }
+
+    #[test]
+    fn failed_holiday_save_rolls_back_candidate_and_all_preparation_changes() {
+        let (directory, application, schedule, mut screen) = load_active_record();
+        let record_id = screen.weeks[0].0.id;
+        let candidate_path = directory.path().join("candidate.pdf");
+        std::fs::write(&candidate_path, b"candidate").unwrap();
+        let digest = crate::payroll_snapshot_service::sha256_file(&candidate_path).unwrap();
+        let week_ids = std::array::from_fn(|index| screen.weeks[0].1[index].id);
+        application
+            .payroll_worked_item_repository
+            .replace_candidate(
+                record_id,
+                &[],
+                candidate_path.to_string_lossy().as_ref(),
+                &digest,
+                "generated",
+                0,
+                &week_ids,
+                &[0; 4],
+            )
+            .unwrap();
+
+        screen.weeks[0].1[3].worked_hours = 1.0;
+        screen.public_holidays[0][0].hours = 1.0;
+        screen.public_holidays[0][0].id = -1;
+        assert!(save_current_row(&application, &schedule, &screen).is_err());
+
+        assert_eq!(
+            application
+                .payroll_worked_item_repository
+                .snapshot_metadata(record_id)
+                .unwrap()
+                .unwrap()
+                .state,
+            SnapshotState::Candidate
+        );
+        crate::payroll_snapshot_service::verify_candidate(
+            &application.payroll_worked_item_repository,
+            record_id,
+            &candidate_path,
+        )
+        .unwrap();
+        assert_eq!(
+            application
+                .payroll_timesheet_repository
+                .get_weeks(record_id)
+                .unwrap()[3]
+                .public_holiday_hours,
+            0.0
+        );
+        assert!(application
+            .payroll_worked_item_repository
+            .get_manual_adjustments(record_id)
+            .unwrap()
+            .is_empty());
+    }
+
+    #[test]
+    fn invalidated_candidate_file_cannot_be_reused_even_if_it_still_exists() {
+        let (directory, application, schedule, mut screen) =
+            load_week_with_eighteen_imported_hours();
+        let record_id = screen.weeks[0].0.id;
+        let candidate_path = directory.path().join("stale-candidate.pdf");
+        std::fs::write(&candidate_path, b"candidate").unwrap();
+        let digest = crate::payroll_snapshot_service::sha256_file(&candidate_path).unwrap();
+        let week_ids = std::array::from_fn(|index| screen.weeks[0].1[index].id);
+        application
+            .payroll_worked_item_repository
+            .replace_candidate(
+                record_id,
+                &[],
+                candidate_path.to_string_lossy().as_ref(),
+                &digest,
+                "generated",
+                0,
+                &week_ids,
+                &[0, 0, 0, 1080],
+            )
+            .unwrap();
+
+        screen.public_holidays[0][0].hours = 7.0;
+        assert!(
+            save_current_row(&application, &schedule, &screen)
+                .unwrap()
+                .candidate_invalidated
+        );
+        assert!(candidate_path.is_file());
+        let error = crate::payroll_snapshot_service::verify_candidate(
+            &application.payroll_worked_item_repository,
+            record_id,
+            &candidate_path,
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("No generated candidate"));
+    }
+
+    #[test]
+    fn two_holiday_entries_remain_independent_of_worked_hours() {
+        let (_directory, application, schedule, mut screen) =
+            load_week_with_eighteen_imported_hours();
+        let record_id = screen.weeks[0].0.id;
+        application
+            .payroll_timesheet_repository
+            .insert_public_holiday(record_id, 4, "01/09/2026")
+            .unwrap();
+        screen = PayrollTimesheetScreen::new();
+        screen.load(&application, &schedule, "period").unwrap();
+
+        screen.weeks[0].1[3].worked_hours = 8.0;
+        screen.public_holidays[0][0].hours = 6.0;
+        screen.public_holidays[0][1].hours = 4.0;
+        save_current_row(&application, &schedule, &screen).unwrap();
+
+        let weeks = application
+            .payroll_timesheet_repository
+            .get_weeks(record_id)
+            .unwrap();
+        let holidays = application
+            .payroll_timesheet_repository
+            .get_public_holidays(record_id)
+            .unwrap();
+        assert_eq!(weeks[3].worked_hours, 8.0);
+        assert_eq!(weeks[3].public_holiday_hours, 10.0);
+        assert_eq!(
+            holidays
+                .iter()
+                .map(|holiday| holiday.hours)
+                .collect::<Vec<_>>(),
+            vec![6.0, 4.0]
+        );
+    }
+
+    #[test]
+    fn negative_and_non_finite_holiday_hours_are_rejected() {
+        for invalid in [-1.0, f64::NAN, f64::INFINITY] {
+            let (_directory, application, schedule, mut screen) = load_active_record();
+            screen.public_holidays[0][0].hours = invalid;
+            assert!(save_current_row(&application, &schedule, &screen).is_err());
+        }
+    }
+
+    #[test]
+    fn explicit_zero_holiday_round_trips_visibly_without_changing_worked_hours() {
+        let (_directory, application, schedule, mut screen) =
+            load_week_with_eighteen_imported_hours();
+        let record_id = screen.weeks[0].0.id;
+        let week_index = 3;
+        screen.weeks[0].1[week_index].worked_hours = 8.0;
+        screen.public_holidays[0][0].hours = 1.0;
+        save_current_row(&application, &schedule, &screen).unwrap();
+
+        let mut reloaded = PayrollTimesheetScreen::new();
+        reloaded.load(&application, &schedule, "period").unwrap();
+        reloaded.public_holidays[0][0].hours = 0.0;
+        save_current_row(&application, &schedule, &reloaded).unwrap();
+
+        let mut reloaded = PayrollTimesheetScreen::new();
+        reloaded.load(&application, &schedule, "period").unwrap();
+        assert_eq!(reloaded.weeks[0].1[week_index].worked_hours, 8.0);
+        assert_eq!(reloaded.public_holidays[0][0].hours, 0.0);
+        assert_eq!(numeric_editor_text(0.0), "0");
+        assert_eq!(
+            application
+                .payroll_timesheet_repository
+                .get_weeks(record_id)
+                .unwrap()[week_index]
+                .public_holiday_hours,
+            0.0
+        );
+    }
+
+    #[test]
+    fn numeric_editor_full_selection_covers_the_existing_value() {
+        for text in ["0", "7", "8", "26.5"] {
+            assert_eq!(
+                full_text_selection(text).as_sorted_char_range(),
+                0..text.len()
+            );
+        }
+    }
+
+    #[test]
+    fn numeric_editor_keeps_temporary_blank_text_until_replacement_or_commit() {
+        for (existing, replacement) in [(6.0, "6"), (0.0, "5"), (26.5, "8.25")] {
+            let mut value = existing;
+            let mut text = format_decimal_hours(value);
+
+            text.clear();
+            update_numeric_value(&text, &mut value);
+            assert!(text.is_empty());
+            assert_eq!(value, existing);
+
+            text.push_str(replacement);
+            update_numeric_value(&text, &mut value);
+            assert_eq!(value, replacement.parse::<f64>().unwrap());
+            assert_eq!(text, replacement);
+        }
+
+        let mut value = 26.5;
+        let mut text = String::new();
+        commit_numeric_text(&mut text, &mut value);
+        assert_eq!(value, 0.0);
+        assert_eq!(text, "0");
+    }
 }
 
 fn parse_date(value: &str) -> Option<chrono::NaiveDate> {

@@ -1,5 +1,7 @@
 use rusqlite::{params, Connection, Result};
 
+use crate::payroll_worked_item_repository::ManualHoursAdjustment;
+
 #[derive(Debug, Clone)]
 #[allow(dead_code)]
 pub struct PayrollTimesheet {
@@ -147,25 +149,6 @@ impl PayrollTimesheetRepository {
         Ok(self.connection.last_insert_rowid())
     }
 
-    pub fn update_previous_cycle_hours(
-        &self,
-        id: i64,
-        previous_cycle_hours: Option<f64>,
-        updated_at: &str,
-    ) -> Result<()> {
-        self.connection.execute(
-            "
-            UPDATE payroll_timesheets
-            SET previous_cycle_hours = ?1,
-                updated_at = ?2
-            WHERE id = ?3
-            ",
-            params![previous_cycle_hours, updated_at, id],
-        )?;
-
-        Ok(())
-    }
-
     pub fn get_weeks(&self, payroll_timesheet_id: i64) -> Result<Vec<PayrollTimesheetWeek>> {
         let mut statement = self.connection.prepare(
             "
@@ -234,44 +217,6 @@ impl PayrollTimesheetRepository {
         Ok(self.connection.last_insert_rowid())
     }
 
-    pub fn update_week_worked_hours(&self, id: i64, worked_hours: f64) -> Result<()> {
-        self.connection.execute(
-            "
-            UPDATE payroll_timesheet_weeks
-            SET worked_hours = ?1
-            WHERE id = ?2
-            ",
-            params![worked_hours, id],
-        )?;
-
-        Ok(())
-    }
-
-    pub fn update_week(&self, week: &PayrollTimesheetWeek) -> Result<()> {
-        self.connection.execute(
-            "
-            UPDATE payroll_timesheet_weeks
-            SET
-                worked_hours = ?1,
-                annual_leave_hours = ?2,
-                sick_leave_hours = ?3,
-                public_holiday_hours = ?4,
-                travel_miles = ?5
-            WHERE id = ?6
-            ",
-            params![
-                week.worked_hours,
-                week.annual_leave_hours,
-                week.sick_leave_hours,
-                week.public_holiday_hours,
-                week.travel_miles,
-                week.id
-            ],
-        )?;
-
-        Ok(())
-    }
-
     pub fn create_missing_weeks(
         &self,
         payroll_timesheet_id: i64,
@@ -294,6 +239,69 @@ impl PayrollTimesheetRepository {
         }
 
         Ok(())
+    }
+
+    pub fn reconcile_editable_hours_atomically(
+        &self,
+        payroll_timesheet_id: i64,
+        previous_cycle_hours: Option<f64>,
+        week_dates: &[String; 4],
+        worked_hours: &[f64; 4],
+        updated_at: &str,
+        invalidate_candidate: bool,
+    ) -> Result<bool> {
+        use rusqlite::OptionalExtension;
+
+        let transaction = self.connection.unchecked_transaction()?;
+        let state: Option<String> = transaction
+            .query_row(
+                "SELECT state FROM payroll_timesheet_snapshot_states
+                 WHERE payroll_timesheet_id = ?1",
+                [payroll_timesheet_id],
+                |row| row.get(0),
+            )
+            .optional()?;
+        if matches!(state.as_deref(), Some("submitted" | "indeterminate")) {
+            return Err(rusqlite::Error::InvalidParameterName(
+                "Submitted or indeterminate payroll cannot be reconciled.".to_string(),
+            ));
+        }
+        let candidate_invalidated = invalidate_candidate && state.as_deref() == Some("candidate");
+        if candidate_invalidated {
+            transaction.execute(
+                "DELETE FROM payroll_timesheet_snapshot_states
+                 WHERE payroll_timesheet_id = ?1 AND state = 'candidate'",
+                [payroll_timesheet_id],
+            )?;
+            transaction.execute(
+                "DELETE FROM payroll_timesheet_worked_item_snapshots
+                 WHERE payroll_timesheet_id = ?1",
+                [payroll_timesheet_id],
+            )?;
+        }
+        transaction.execute(
+            "UPDATE payroll_timesheets
+             SET previous_cycle_hours = ?1, updated_at = ?2 WHERE id = ?3",
+            params![previous_cycle_hours, updated_at, payroll_timesheet_id],
+        )?;
+        for index in 0..4 {
+            transaction.execute(
+                "INSERT INTO payroll_timesheet_weeks (
+                    payroll_timesheet_id, week_number, week_commencing, worked_hours,
+                    annual_leave_hours, sick_leave_hours, public_holiday_hours, travel_miles
+                 ) VALUES (?1, ?2, ?3, ?4, 0, 0, 0, 0)
+                 ON CONFLICT(payroll_timesheet_id, week_number) DO UPDATE SET
+                    worked_hours = excluded.worked_hours",
+                params![
+                    payroll_timesheet_id,
+                    (index + 1) as i64,
+                    week_dates[index],
+                    worked_hours[index]
+                ],
+            )?;
+        }
+        transaction.commit()?;
+        Ok(candidate_invalidated)
     }
 
     pub fn get_public_holidays(
@@ -349,17 +357,134 @@ impl PayrollTimesheetRepository {
         Ok(self.connection.last_insert_rowid())
     }
 
-    pub fn update_public_holiday(&self, holiday: &PayrollTimesheetPublicHoliday) -> Result<()> {
-        self.connection.execute(
-            "
-            UPDATE payroll_timesheet_public_holidays
-            SET hours = ?1
-            WHERE id = ?2
-            ",
-            params![holiday.hours, holiday.id],
+    pub fn save_preparation_atomically(
+        &self,
+        record: &PayrollTimesheet,
+        weeks: &[PayrollTimesheetWeek],
+        holidays: &[PayrollTimesheetPublicHoliday],
+        adjustments: &[ManualHoursAdjustment],
+        updated_at: &str,
+    ) -> Result<bool> {
+        use rusqlite::OptionalExtension;
+
+        if weeks.len() != 4 || adjustments.len() != weeks.len() {
+            return Err(rusqlite::Error::InvalidParameterName(
+                "Preparation save requires exactly four matched payroll weeks and adjustments."
+                    .to_string(),
+            ));
+        }
+
+        let transaction = self.connection.unchecked_transaction()?;
+        let state: Option<String> = transaction
+            .query_row(
+                "SELECT state FROM payroll_timesheet_snapshot_states
+                 WHERE payroll_timesheet_id = ?1",
+                [record.id],
+                |row| row.get(0),
+            )
+            .optional()?;
+        if matches!(state.as_deref(), Some("submitted" | "indeterminate")) {
+            return Err(rusqlite::Error::InvalidParameterName(
+                "This payroll timesheet is submitted or indeterminate and is read-only."
+                    .to_string(),
+            ));
+        }
+
+        let candidate_invalidated = state.as_deref() == Some("candidate");
+        if candidate_invalidated {
+            transaction.execute(
+                "DELETE FROM payroll_timesheet_snapshot_states
+                 WHERE payroll_timesheet_id = ?1 AND state = 'candidate'",
+                [record.id],
+            )?;
+            transaction.execute(
+                "DELETE FROM payroll_timesheet_worked_item_snapshots
+                 WHERE payroll_timesheet_id = ?1",
+                [record.id],
+            )?;
+        }
+
+        transaction.execute(
+            "UPDATE payroll_timesheets
+             SET previous_cycle_hours = ?1, updated_at = ?2
+             WHERE id = ?3",
+            params![record.previous_cycle_hours, updated_at, record.id],
         )?;
 
-        Ok(())
+        for (week, adjustment) in weeks.iter().zip(adjustments) {
+            if week.payroll_timesheet_id != record.id || adjustment.week_number != week.week_number
+            {
+                return Err(rusqlite::Error::InvalidParameterName(
+                    "Preparation week does not belong to the selected payroll timesheet."
+                        .to_string(),
+                ));
+            }
+            if adjustment.adjustment_minutes == 0 && adjustment.reason.is_none() {
+                transaction.execute(
+                    "DELETE FROM payroll_timesheet_manual_adjustments
+                     WHERE payroll_timesheet_id = ?1 AND week_number = ?2",
+                    params![record.id, week.week_number],
+                )?;
+            } else {
+                transaction.execute(
+                    "INSERT INTO payroll_timesheet_manual_adjustments (
+                        payroll_timesheet_id, week_number, adjustment_minutes, reason, updated_at
+                     ) VALUES (?1, ?2, ?3, ?4, ?5)
+                     ON CONFLICT(payroll_timesheet_id, week_number) DO UPDATE SET
+                        adjustment_minutes = excluded.adjustment_minutes,
+                        reason = excluded.reason,
+                        updated_at = excluded.updated_at",
+                    params![
+                        record.id,
+                        adjustment.week_number,
+                        adjustment.adjustment_minutes,
+                        adjustment.reason,
+                        updated_at
+                    ],
+                )?;
+            }
+            let changed = transaction.execute(
+                "UPDATE payroll_timesheet_weeks SET
+                    worked_hours = ?1,
+                    annual_leave_hours = ?2,
+                    sick_leave_hours = ?3,
+                    public_holiday_hours = ?4,
+                    travel_miles = ?5
+                 WHERE id = ?6 AND payroll_timesheet_id = ?7",
+                params![
+                    week.worked_hours,
+                    week.annual_leave_hours,
+                    week.sick_leave_hours,
+                    week.public_holiday_hours,
+                    week.travel_miles,
+                    week.id,
+                    record.id
+                ],
+            )?;
+            if changed != 1 {
+                return Err(rusqlite::Error::QueryReturnedNoRows);
+            }
+        }
+
+        for holiday in holidays {
+            if holiday.payroll_timesheet_id != record.id {
+                return Err(rusqlite::Error::InvalidParameterName(
+                    "Public-holiday row does not belong to the selected payroll timesheet."
+                        .to_string(),
+                ));
+            }
+            let changed = transaction.execute(
+                "UPDATE payroll_timesheet_public_holidays SET hours = ?1
+                 WHERE id = ?2 AND payroll_timesheet_id = ?3",
+                params![holiday.hours, holiday.id, record.id],
+            )?;
+            if changed != 1 {
+                return Err(rusqlite::Error::QueryReturnedNoRows);
+            }
+        }
+
+        transaction.commit()?;
+        Ok(candidate_invalidated)
     }
 
     pub fn create_missing_public_holidays(

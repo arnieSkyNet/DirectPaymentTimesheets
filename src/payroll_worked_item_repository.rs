@@ -78,6 +78,7 @@ impl PayrollWorkedItemRepository {
         adjustments
     }
 
+    #[cfg(test)]
     pub fn set_manual_adjustment(
         &self,
         payroll_timesheet_id: i64,
