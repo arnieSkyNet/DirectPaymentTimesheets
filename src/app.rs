@@ -2,6 +2,7 @@ use rusqlite::Connection;
 
 use crate::context::AppContext;
 use crate::contracted_hours_repository::ContractedHoursRepository;
+use crate::direct_shift_repository::DirectShiftRepository;
 use crate::employer_repository::EmployerRepository;
 use crate::import_service::ImportService;
 use crate::pay_rate_repository::PayRateRepository;
@@ -22,6 +23,7 @@ pub struct Application {
     pub personal_assistant_repository: PersonalAssistantRepository,
     pub pay_rate_repository: PayRateRepository,
     pub contracted_hours_repository: ContractedHoursRepository,
+    pub direct_shift_repository: DirectShiftRepository,
     pub payroll_provider_repository: PayrollProviderRepository,
     pub payroll_schedule_repository: PayrollScheduleRepository,
     pub payroll_timesheet_repository: PayrollTimesheetRepository,
@@ -47,6 +49,8 @@ impl Application {
         let contracted_hours_repository =
             ContractedHoursRepository::new(Connection::open(database_path)?);
 
+        let direct_shift_repository = DirectShiftRepository::new(Connection::open(database_path)?);
+
         let payroll_provider_repository =
             PayrollProviderRepository::new(Connection::open(database_path)?);
 
@@ -69,6 +73,7 @@ impl Application {
             personal_assistant_repository,
             pay_rate_repository,
             contracted_hours_repository,
+            direct_shift_repository,
             payroll_provider_repository,
             payroll_schedule_repository,
             payroll_timesheet_repository,

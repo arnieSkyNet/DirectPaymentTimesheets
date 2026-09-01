@@ -5,7 +5,7 @@ This document describes the implementation on `main`. Source code, migrations an
 ## Current release and platform
 
 - Application version: `0.0.10`.
-- Database schema: version 19, upgraded in place by ordered SQLite migrations.
+- Database schema: version 20, upgraded in place by ordered SQLite migrations.
 - Desktop UI: Rust with `eframe`/`egui`.
 - Persistence: SQLite through `rusqlite` (bundled SQLite).
 - Documents and integration: `printpdf`, PDF text extraction, ZIP import and SMTP via `lettre`.
@@ -45,6 +45,12 @@ Payroll Settings persists payroll frequency, rounding choice, workweek start and
 CSV import parses provider rows, prevents duplicates and stores stable `TimesheetEntry` identities. Start/end values are retained unchanged, and `worked_minutes` is parsed directly from the CSV worked-duration field rather than calculated from those values or altered using the persisted rounding settings. The imported CSV rate and amount are not authoritative payroll rates.
 
 After a successful import, the source CSV is copied to the internal `archive/YYYY/MM/` hierarchy with a timestamped filename and is not subsequently modified by the application. Successes and failures are recorded in `import_audit`, including row counts, source/archive paths and errors where applicable.
+
+### Direct hours/shift evidence
+
+Enter Hours/Shifts records actual work independently from imported CSV rows. A clock-in is persisted immediately with no end time, so a running shift survives restart. Clock-out stores the exact local end minute, actual break minutes and optional notes. Actual duration is derived without payroll rounding.
+
+Completed shifts can be corrected through the same exact-minute picker. Creation, completion, edits, soft deletion and running-clock cancellation atomically append immutable before/after audit evidence under the current `local_employer` desktop actor. Delete hides a completed row from normal use without removing its evidence. The actor field is designed for future authenticated identities, but accounts, roles and web/mobile access are not implemented. Integration into Payroll Timesheet Preparation remains deliberately deferred.
 
 ### Payroll schedules and rollover
 

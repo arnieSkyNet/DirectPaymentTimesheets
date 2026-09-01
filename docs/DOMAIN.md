@@ -28,6 +28,14 @@ The external file's hourly-rate and amount values are not authoritative for payr
 
 The established duration rule assigns an entire shift to its start calendar date; real project shifts do not cross midnight. Imported clock values are not rewritten by preparation corrections.
 
+## Directly recorded work
+
+A DirectShift is application-created source evidence stored independently from imported `TimesheetEntry` rows. It records the maintained PA, exact local start and optional end date/time to the minute, actual break minutes, an optional note, a fixed `direct` source marker and creation/update timestamps. A `NULL` end represents a durable running shift and survives application restart.
+
+Direct shift evidence represents what actually happened. Payroll calculations may later derive payable time and rates from it, but must never rewrite evidence as a side effect. Deliberate completed-shift corrections update the current record only while atomically appending immutable before/after audit evidence. Delete is a soft deletion: deleted rows remain stored and audited but are excluded from normal use. Cancelling an accidental running clock-in removes its current row only after recording a cancellation audit snapshot.
+
+Every mutation records action type/time and actor. The desktop actor is currently the stable `local_employer` identity; the text actor field is intentionally suitable for future authenticated identities, but authentication, accounts and web/mobile access do not yet exist. Actual worked minutes are derived as end minus start minus break, without payroll rounding. Direct shifts are not yet included in Payroll Timesheet Preparation and are not deduplicated or reconciled against imported work.
+
 ## Payroll years, periods and Payroll Week
 
 A provider Payroll Prep Sheet defines a payroll year and its 13 consecutive four-week cycles. Importing this sheet—not a manual “new year” command—creates or refreshes the year. PDF import is implemented; DOCX is recognised but not implemented. Several years may coexist, including a future year imported months early.
