@@ -100,6 +100,8 @@ To test CSV import safely, prepare a parser-compatible CSV containing only synth
 
 The test CSV's PA name must correspond to a maintained PA if downstream payroll work is required. Its rate and amount columns represent the external format only and are not authoritative for generated payroll.
 
+The files `data/sig-Employer.jpg` and `data/sig-PA.jpg` are deliberately blank white, project-created test signature images. They contain no real signatures or personal data.
+
 ## Payroll-period selections
 
 Three selections are intentionally independent:
@@ -132,4 +134,6 @@ User-facing labels use Payroll Week, the four-week date range and pay date. Inte
 
 ## Licence
 
-No licence file has been selected yet. Do not assume permissions beyond those granted by applicable law or the repository owner.
+DirectPaymentTimesheets is free software licensed under the [GNU General Public License version 3 or later](LICENSE), identified by the SPDX expression `GPL-3.0-or-later`. You may redistribute and modify the source under that licence. Charging for copies or genuine services is permitted, but recipients retain the GPL freedoms and distributed modified versions remain subject to the GPL's requirements.
+
+Third-party dependencies and bundled font components remain subject to their respective terms; see [THIRD_PARTY_LICENSES.md](THIRD_PARTY_LICENSES.md).
