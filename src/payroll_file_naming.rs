@@ -332,4 +332,25 @@ mod tests {
             "Payslip for Week 22 for Alex_Smith_Payroll.pdf"
         );
     }
+
+    #[test]
+    fn portable_default_payslip_root_expands_then_remains_year_aware() {
+        let item = schedule(
+            "2026/27",
+            6,
+            NaiveDate::from_ymd_opt(2026, 8, 10).unwrap(),
+            NaiveDate::from_ymd_opt(2026, 9, 4).unwrap(),
+        );
+        let root = crate::paths::expand_path_with_home(
+            Path::new("~/Documents/DirectPaymentTimesheets/payslips"),
+            Some(Path::new("/srv/arbitrary-user")),
+        );
+
+        assert_eq!(
+            payslip_path(&root, "Alex Smith", &item).unwrap(),
+            Path::new(
+                "/srv/arbitrary-user/Documents/DirectPaymentTimesheets/payslips/2026 to 2027/Payslip for Week 22 for Alex Smith.pdf"
+            )
+        );
+    }
 }

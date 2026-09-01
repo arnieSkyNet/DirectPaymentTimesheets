@@ -87,6 +87,8 @@ Set `DIRECTPAYMENTTIMESHEETS_HOME` before launching to use a different data root
 
 The application root contains `database.sqlite`, `config.toml` and internal import, archive, backup, log, template and cache directories. Application Settings also configures external business folders for CSV import, generated PDFs, payslips and returned payroll information. These paths can be outside the application root and may contain sensitive payroll data. Inspect them before running a workflow that writes files.
 
+New configurations use provider-neutral paths beneath `~/Documents/DirectPaymentTimesheets/` for those business folders. The `~` prefix is expanded to the current user's home directory at runtime. Existing configured paths are preserved and remain editable in Application Settings.
+
 The configured `email_archive` path is currently persisted but has no production consumer. Returned payroll information uses the separate payroll-information folder.
 
 ## CSV import testing

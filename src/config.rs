@@ -36,8 +36,13 @@ pub enum ApplicationTheme {
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct FolderConfig {
+    #[serde(default = "default_csv_import_folder")]
     pub csv_import: PathBuf,
+
+    #[serde(default = "default_pdf_output_folder")]
     pub pdf_output: PathBuf,
+
+    #[serde(default = "default_email_archive_folder")]
     pub email_archive: PathBuf,
 
     #[serde(default = "default_payslip_folder")]
@@ -47,12 +52,28 @@ pub struct FolderConfig {
     pub payroll_information_folder: PathBuf,
 }
 
+fn portable_business_folder(name: &str) -> PathBuf {
+    PathBuf::from("~/Documents/DirectPaymentTimesheets").join(name)
+}
+
+fn default_csv_import_folder() -> PathBuf {
+    portable_business_folder("import")
+}
+
+fn default_pdf_output_folder() -> PathBuf {
+    portable_business_folder("pdf")
+}
+
+fn default_email_archive_folder() -> PathBuf {
+    portable_business_folder("emails")
+}
+
 fn default_payslip_folder() -> PathBuf {
-    PathBuf::from("/home/example/Desktop/launchers/Example Timesheets Payslips/2026 to 2027/")
+    portable_business_folder("payslips")
 }
 
 fn default_payroll_information_folder() -> PathBuf {
-    PathBuf::from("/home/example/Desktop/launchers/Example Personal Budgets/")
+    portable_business_folder("payroll-information")
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -225,14 +246,12 @@ impl Default for EmailConfig {
 
 impl Default for AppConfig {
     fn default() -> Self {
-        let home = dirs::home_dir().expect("Could not determine home directory");
-
         Self {
             theme: ApplicationTheme::default(),
             folders: FolderConfig {
-                csv_import: home.join("Documents/DirectPaymentTimesheets/import"),
-                pdf_output: home.join("Documents/DirectPaymentTimesheets/pdf"),
-                email_archive: home.join("Documents/DirectPaymentTimesheets/emails"),
+                csv_import: default_csv_import_folder(),
+                pdf_output: default_pdf_output_folder(),
+                email_archive: default_email_archive_folder(),
                 payslip_folder: default_payslip_folder(),
                 payroll_information_folder: default_payroll_information_folder(),
             },
@@ -303,6 +322,90 @@ fn reconcile_legacy_timesheet_email_body(config: &mut AppConfig, source: &toml::
 mod tests {
     use super::*;
     use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[test]
+    fn first_run_folder_defaults_are_portable_and_provider_neutral() {
+        let directory = tempfile::TempDir::new().unwrap();
+        let path = directory.path().join("config.toml");
+        let config = AppConfig::load(&path).unwrap();
+        let serialized = fs::read_to_string(path).unwrap();
+
+        assert!(!serialized.contains("/home/example"));
+        assert!(!serialized.contains("NCC"));
+        assert_eq!(
+            config.folders.csv_import,
+            Path::new("~/Documents/DirectPaymentTimesheets/import")
+        );
+        assert_eq!(
+            config.folders.pdf_output,
+            Path::new("~/Documents/DirectPaymentTimesheets/pdf")
+        );
+        assert_eq!(
+            config.folders.email_archive,
+            Path::new("~/Documents/DirectPaymentTimesheets/emails")
+        );
+        assert_eq!(
+            config.folders.payslip_folder,
+            Path::new("~/Documents/DirectPaymentTimesheets/payslips")
+        );
+        assert_eq!(
+            config.folders.payroll_information_folder,
+            Path::new("~/Documents/DirectPaymentTimesheets/payroll-information")
+        );
+    }
+
+    #[test]
+    fn missing_folder_keys_receive_the_same_portable_defaults() {
+        let mut value = toml::Value::try_from(AppConfig::default()).unwrap();
+        value
+            .get_mut("folders")
+            .and_then(toml::Value::as_table_mut)
+            .unwrap()
+            .clear();
+
+        let config: AppConfig = value.try_into().unwrap();
+
+        assert_eq!(config.folders.csv_import, default_csv_import_folder());
+        assert_eq!(config.folders.pdf_output, default_pdf_output_folder());
+        assert_eq!(config.folders.email_archive, default_email_archive_folder());
+        assert_eq!(config.folders.payslip_folder, default_payslip_folder());
+        assert_eq!(
+            config.folders.payroll_information_folder,
+            default_payroll_information_folder()
+        );
+    }
+
+    #[test]
+    fn explicitly_configured_absolute_business_paths_round_trip_unchanged() {
+        let directory = tempfile::TempDir::new().unwrap();
+        let path = directory.path().join("config.toml");
+        let mut config = AppConfig::default();
+        config.folders.csv_import = PathBuf::from("/existing/import");
+        config.folders.pdf_output = PathBuf::from("/existing/pdf");
+        config.folders.email_archive = PathBuf::from("/existing/email-archive");
+        config.folders.payslip_folder = PathBuf::from("/home/example/user-selected/payslips");
+        config.folders.payroll_information_folder = PathBuf::from("/existing/payroll-information");
+
+        config.save(&path).unwrap();
+        let loaded = AppConfig::load(&path).unwrap();
+        loaded.save(&path).unwrap();
+        let reloaded = AppConfig::load(&path).unwrap();
+
+        assert_eq!(reloaded.folders.csv_import, Path::new("/existing/import"));
+        assert_eq!(reloaded.folders.pdf_output, Path::new("/existing/pdf"));
+        assert_eq!(
+            reloaded.folders.email_archive,
+            Path::new("/existing/email-archive")
+        );
+        assert_eq!(
+            reloaded.folders.payslip_folder,
+            Path::new("/home/example/user-selected/payslips")
+        );
+        assert_eq!(
+            reloaded.folders.payroll_information_folder,
+            Path::new("/existing/payroll-information")
+        );
+    }
 
     #[test]
     fn config_without_theme_defaults_to_dark() {

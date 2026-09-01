@@ -17,15 +17,9 @@ pub struct AppEnvironment {
 
 impl AppEnvironment {
     pub fn initialise() -> Result<Self, AppError> {
-        let data_dir = match std::env::var("DIRECTPAYMENTTIMESHEETS_HOME") {
-            Ok(path) => PathBuf::from(path),
-            Err(_) => {
-                let home =
-                    std::env::var("HOME").map_err(|_| AppError::Config("HOME not set".into()))?;
-
-                PathBuf::from(home).join(".directpaymenttimesheets")
-            }
-        };
+        let configured_home = std::env::var("DIRECTPAYMENTTIMESHEETS_HOME").ok();
+        let user_home = std::env::var("HOME").ok();
+        let data_dir = resolve_data_dir(configured_home.as_deref(), user_home.as_deref())?;
 
         let database_path = data_dir.join("database.sqlite");
         let import_dir = data_dir.join("import");
@@ -57,5 +51,40 @@ impl AppEnvironment {
             templates_dir,
             cache_dir,
         })
+    }
+}
+
+fn resolve_data_dir(
+    configured_home: Option<&str>,
+    user_home: Option<&str>,
+) -> Result<PathBuf, AppError> {
+    match configured_home {
+        Some(path) => Ok(PathBuf::from(path)),
+        None => user_home
+            .map(PathBuf::from)
+            .map(|home| home.join(".directpaymenttimesheets"))
+            .ok_or_else(|| AppError::Config("HOME not set".into())),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn data_root_is_deterministic_for_arbitrary_user_and_application_homes() {
+        assert_eq!(
+            resolve_data_dir(None, Some("/srv/arbitrary-user")).unwrap(),
+            PathBuf::from("/srv/arbitrary-user/.directpaymenttimesheets")
+        );
+        assert_eq!(
+            resolve_data_dir(
+                Some("/var/lib/direct-payment-test"),
+                Some("/srv/arbitrary-user")
+            )
+            .unwrap(),
+            PathBuf::from("/var/lib/direct-payment-test")
+        );
+        assert!(resolve_data_dir(None, None).is_err());
     }
 }
