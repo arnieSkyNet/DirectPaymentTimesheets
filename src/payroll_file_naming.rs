@@ -53,7 +53,7 @@ pub fn payslip_filename(
     Ok(format!(
         "Payslip for Week {} for {}.pdf",
         paye_week(schedule)?,
-        personal_assistant_name
+        sanitise_filename(personal_assistant_name)
     ))
 }
 
@@ -315,6 +315,21 @@ mod tests {
             )
             .unwrap(),
             Path::new("/Timesheets/2027 to 2028/Timesheet - Cedar Fixture - 202708w22.pdf")
+        );
+    }
+
+    #[test]
+    fn payslip_filename_sanitises_maintained_name_path_characters() {
+        let item = schedule(
+            "2026/27",
+            6,
+            NaiveDate::from_ymd_opt(2026, 8, 10).unwrap(),
+            NaiveDate::from_ymd_opt(2026, 9, 4).unwrap(),
+        );
+
+        assert_eq!(
+            payslip_filename("Alex/Smith:Payroll", &item).unwrap(),
+            "Payslip for Week 22 for Alex_Smith_Payroll.pdf"
         );
     }
 }

@@ -920,6 +920,8 @@ impl DirectPaymentApp {
                 &current_schedule,
             )?;
 
+            crate::archive::validate_payslip_pdf(&attachment_path)?;
+
             self.application.send_test_payslip_email(
                 sender_email,
                 pa_test_email,
@@ -1236,10 +1238,7 @@ impl DirectPaymentApp {
             {
                 match self.application.import_payroll_return(&path, &schedule) {
                     Ok(result) => {
-                        self.status_message = format!(
-                            "Payroll return imported: {} payslip(s), {} information file(s).",
-                            result.payslips_imported, result.information_files_imported
-                        );
+                        self.status_message = payroll_return_status_message(&result);
                     }
                     Err(error) => {
                         self.status_message = format!("Payroll return import failed: {error}");
@@ -1608,6 +1607,10 @@ impl DirectPaymentApp {
                 ),
             };
 
+            if matches!(kind, PayrollEmailKind::Payslip) {
+                crate::archive::validate_payslip_pdf(&attachment_path)?;
+            }
+
             if matches!(kind, PayrollEmailKind::Timesheet) {
                 verify_timesheet_candidate_for_attachment(
                     &self.application,
@@ -1724,14 +1727,9 @@ impl DirectPaymentApp {
                 schedule,
             )?;
 
-            if !payslip_path.exists() {
-                return Err(format!(
-                    "Payslip PDF not found for {}: {}",
-                    personal_assistant_name,
-                    payslip_path.display()
-                )
-                .into());
-            }
+            crate::archive::validate_payslip_pdf(&payslip_path).map_err(|error| {
+                format!("Payslip PDF is not safe to send for {personal_assistant_name}: {error}")
+            })?;
 
             self.application.send_payroll_email(
                 payroll_department_email,
@@ -2523,6 +2521,34 @@ fn selected_payroll_return_schedule(
         .find(|schedule| schedule.id == selected_schedule_id)
 }
 
+fn payroll_return_status_message(result: &crate::archive::PayrollReturnImportResult) -> String {
+    let summary = format!(
+        "{} payslip(s) imported, {} already present unchanged, {} information file(s) imported, {} entry/entries skipped",
+        result.payslips_imported,
+        result.payslips_already_present,
+        result.information_files_imported,
+        result.files_skipped
+    );
+    if let Some(failure) = &result.publication_failure {
+        format!(
+            "Payroll return was only partially published ({summary}). {failure} Published paths: {}",
+            result
+                .published_paths
+                .iter()
+                .map(|path| path.display().to_string())
+                .collect::<Vec<_>>()
+                .join(", ")
+        )
+    } else {
+        let details = if result.details.is_empty() {
+            String::new()
+        } else {
+            format!(" Details: {}", result.details.join(" "))
+        };
+        format!("Payroll return imported safely: {summary}.{details}")
+    }
+}
+
 fn payroll_schedule_label(schedule: &PayrollSchedule) -> String {
     let paye_week = crate::payroll_file_naming::paye_week(schedule)
         .map(|week| week.to_string())
@@ -3005,6 +3031,36 @@ fn draw_payroll_schedule(ui: &mut egui::Ui, schedules: &[PayrollSchedule]) {
 #[cfg(test)]
 mod payroll_return_schedule_selection_tests {
     use super::*;
+
+    #[test]
+    fn payroll_return_reporting_distinguishes_safe_and_partial_results() {
+        let safe = crate::archive::PayrollReturnImportResult {
+            payslips_imported: 2,
+            payslips_already_present: 1,
+            information_files_imported: 3,
+            files_skipped: 1,
+            details: vec!["Ignored directory entry 'provider/'.".to_string()],
+            publication_failure: None,
+            published_paths: Vec::new(),
+        };
+        let safe_message = payroll_return_status_message(&safe);
+        assert!(safe_message.contains("imported safely"));
+        assert!(safe_message.contains("2 payslip(s) imported"));
+        assert!(safe_message.contains("1 already present unchanged"));
+        assert!(safe_message.contains("3 information file(s) imported"));
+        assert!(safe_message.contains("1 entry/entries skipped"));
+
+        let partial = crate::archive::PayrollReturnImportResult {
+            publication_failure: Some("destination appeared during publication".to_string()),
+            published_paths: vec![std::path::PathBuf::from("/payslips/first.pdf")],
+            ..crate::archive::PayrollReturnImportResult::default()
+        };
+        let partial_message = payroll_return_status_message(&partial);
+        assert!(partial_message.contains("only partially published"));
+        assert!(partial_message.contains("destination appeared"));
+        assert!(partial_message.contains("/payslips/first.pdf"));
+        assert!(!partial_message.contains("imported safely"));
+    }
 
     fn schedule(
         id: i64,
