@@ -30,6 +30,8 @@ The application data root is `~/.directpaymenttimesheets`, or the path in `DIREC
 
 Configured business folders are separate from this internal data root: CSV import, PDF output, email archive, payslips and payroll information. Paths and PDF fonts/sizes are edited in Application Settings. `email_archive` is persisted but currently has no production consumer; Payroll Return information deliberately uses `payroll_information_folder` instead. SMTP/test-address settings and payroll subject/body templates are edited in Email Settings, although the template fields are stored in `PayrollConfig`. Existing unknown TOML keys are ignored, including the removed `public_holiday_enabled` key.
 
+First-run and missing-key business-folder defaults are provider-neutral `~/Documents/DirectPaymentTimesheets/` subdirectories. Runtime expansion uses the current user's home directory; explicitly persisted absolute or relative paths are not rewritten on upgrade.
+
 ## Implemented workflow
 
 ### Maintenance
