@@ -29,6 +29,7 @@ mod payroll_timesheet_email_repository;
 mod payroll_timesheet_repository;
 mod payroll_timesheet_screen;
 mod payroll_worked_item_repository;
+mod payslip_delivery_service;
 mod pdf_generator;
 mod personal_assistant_repository;
 mod personal_assistant_screen;

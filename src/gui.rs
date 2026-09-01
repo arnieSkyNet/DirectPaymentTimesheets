@@ -1711,12 +1711,21 @@ impl DirectPaymentApp {
                     "payslip",
                 )?;
 
-            if existing_status
-                .as_ref()
-                .and_then(|status| status.sent_at.as_ref())
-                .is_some()
-            {
-                continue;
+            if let Some(status) = existing_status {
+                match status.delivery_state {
+                    crate::payroll_timesheet_email_repository::EmailDeliveryState::Sent {
+                        ..
+                    } => continue,
+                    crate::payroll_timesheet_email_repository::EmailDeliveryState::Indeterminate {
+                        attempted_at,
+                    } => {
+                        return Err(format!(
+                            "Payslip delivery for {personal_assistant_name} is indeterminate from the production attempt at {attempted_at}. Delivery may already have occurred, so automatic resend is refused. Verify delivery outside the application; recovery controls are not yet available."
+                        )
+                        .into());
+                    }
+                    crate::payroll_timesheet_email_repository::EmailDeliveryState::Unsent => {}
+                }
             }
 
             let personal_assistant_email = assistant.email.as_deref();
@@ -1731,63 +1740,57 @@ impl DirectPaymentApp {
                 format!("Payslip PDF is not safe to send for {personal_assistant_name}: {error}")
             })?;
 
-            self.application.send_payroll_email(
-                payroll_department_email,
-                employer_email,
-                personal_assistant_email,
-                &personal_assistant_name,
-                assistant.date_of_birth.as_deref(),
-                assistant.national_insurance_number.as_deref(),
-                schedule,
-                &payslip_path,
-                &self.application.context.config.payroll.payslip_email_body,
-                self.additional_notes_by_personal_assistant
-                    .get(&assistant.id)
-                    .map(String::as_str),
-                employer.email_signature.as_deref(),
+            let attempted_at = chrono::Local::now().to_rfc3339();
+            crate::payslip_delivery_service::send_production_payslip(
+                &self.application.payroll_timesheet_email_repository,
+                crate::payslip_delivery_service::PayslipDeliveryIdentity {
+                    personal_assistant_id: assistant.id,
+                    payroll_year: &payroll_year,
+                    cycle_number: schedule.cycle_number,
+                },
+                &attempted_at,
+                || {
+                    self.application.send_payroll_email(
+                        payroll_department_email,
+                        employer_email,
+                        personal_assistant_email,
+                        &personal_assistant_name,
+                        assistant.date_of_birth.as_deref(),
+                        assistant.national_insurance_number.as_deref(),
+                        schedule,
+                        &payslip_path,
+                        &self.application.context.config.payroll.payslip_email_body,
+                        self.additional_notes_by_personal_assistant
+                            .get(&assistant.id)
+                            .map(String::as_str),
+                        employer.email_signature.as_deref(),
+                    )
+                },
             )?;
-
-            let sent_at = chrono::Local::now().to_rfc3339();
-
-            self.application
-                .payroll_timesheet_email_repository
-                .mark_sent(
-                    assistant.id,
-                    &payroll_year,
-                    schedule.cycle_number,
-                    "payslip",
-                    &sent_at,
-                )?;
 
             sent += 1;
         }
 
-        let all_active_sent = assistants
+        let required = assistants
             .iter()
             .filter(|assistant| match &assistant.employment_status {
                 Some(status) => status.trim().eq_ignore_ascii_case("active"),
                 None => true,
             })
-            .all(|assistant| {
-                self.application
-                    .payroll_timesheet_email_repository
-                    .get_for_pa_and_cycle(
-                        assistant.id,
-                        &payroll_year,
-                        schedule.cycle_number,
-                        "payslip",
-                    )
-                    .ok()
-                    .flatten()
-                    .and_then(|status| status.sent_at)
-                    .is_some()
-            });
-
-        if all_active_sent {
-            self.application
-                .payroll_schedule_repository
-                .mark_payslips_sent(schedule.id)?;
-        }
+            .map(
+                |assistant| crate::payslip_delivery_service::PayslipDeliveryIdentity {
+                    personal_assistant_id: assistant.id,
+                    payroll_year: &payroll_year,
+                    cycle_number: schedule.cycle_number,
+                },
+            )
+            .collect::<Vec<_>>();
+        crate::payslip_delivery_service::mark_schedule_sent_if_complete(
+            &self.application.payroll_timesheet_email_repository,
+            &self.application.payroll_schedule_repository,
+            schedule.id,
+            &required,
+        )?;
 
         Ok(sent)
     }
@@ -1956,7 +1959,7 @@ impl DirectPaymentApp {
                 ui.label("Sent");
                 ui.end_row();
 
-                for assistant in assistants {
+                for assistant in &assistants {
                     let is_active = match &assistant.employment_status {
                         Some(status) => status.trim().eq_ignore_ascii_case("active"),
                         None => true,
@@ -2009,6 +2012,71 @@ impl DirectPaymentApp {
                         }
                     }
 
+                    ui.end_row();
+                }
+            });
+
+        ui.separator();
+        ui.heading("Payslip Delivery Status");
+        egui::Grid::new("payslip_email_status")
+            .num_columns(3)
+            .striped(true)
+            .show(ui, |ui| {
+                ui.label("Personal Assistant");
+                ui.label("Status");
+                ui.label("Recorded");
+                ui.end_row();
+
+                for assistant in assistants {
+                    let is_active = assistant
+                        .employment_status
+                        .as_deref()
+                        .is_none_or(|status| status.trim().eq_ignore_ascii_case("active"));
+                    if !is_active {
+                        continue;
+                    }
+                    let name = format!("{} {}", assistant.first_name, assistant.surname);
+                    let status = self
+                        .application
+                        .payroll_timesheet_email_repository
+                        .get_for_pa_and_cycle(
+                            assistant.id,
+                            &payroll_year,
+                            current_schedule.cycle_number,
+                            "payslip",
+                        );
+                    ui.label(name);
+                    match status {
+                        Ok(Some(status)) => match status.delivery_state {
+                            crate::payroll_timesheet_email_repository::EmailDeliveryState::Sent {
+                                sent_at,
+                            } => {
+                                ui.label("Sent");
+                                ui.label(display_email_status_time(&sent_at));
+                            }
+                            crate::payroll_timesheet_email_repository::EmailDeliveryState::Indeterminate {
+                                attempted_at,
+                            } => {
+                                ui.colored_label(
+                                    ui.visuals().warn_fg_color,
+                                    "Delivery uncertain — do not resend",
+                                );
+                                ui.label(display_email_status_time(&attempted_at));
+                            }
+                            crate::payroll_timesheet_email_repository::EmailDeliveryState::Unsent => {
+                                ui.label("Not sent");
+                                ui.label("");
+                            }
+                        },
+                        Ok(None) => {
+                            ui.label("Not sent");
+                            ui.label("");
+                        }
+                        Err(error) => {
+                            ui.label("Error");
+                            ui.label(error.to_string());
+                        }
+                    }
                     ui.end_row();
                 }
             });
@@ -2547,6 +2615,17 @@ fn payroll_return_status_message(result: &crate::archive::PayrollReturnImportRes
         };
         format!("Payroll return imported safely: {summary}.{details}")
     }
+}
+
+fn display_email_status_time(value: &str) -> String {
+    chrono::DateTime::parse_from_rfc3339(value)
+        .map(|date_time| {
+            date_time
+                .with_timezone(&chrono::Local)
+                .format("%d %b %Y %H:%M")
+                .to_string()
+        })
+        .unwrap_or_else(|_| value.to_string())
 }
 
 fn payroll_schedule_label(schedule: &PayrollSchedule) -> String {
