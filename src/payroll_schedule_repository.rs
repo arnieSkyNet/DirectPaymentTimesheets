@@ -385,17 +385,15 @@ impl PayrollScheduleRepository {
         Ok(schedules.len())
     }
 
-    pub fn mark_payslips_sent(&self, id: i64) -> Result<()> {
-        self.connection.execute(
+    pub fn mark_payslips_sent(&self, id: i64) -> Result<bool> {
+        Ok(self.connection.execute(
             "
             UPDATE payroll_schedules
             SET payslips_sent = 1
             WHERE id = ?1
             ",
             params![id],
-        )?;
-
-        Ok(())
+        )? == 1)
     }
 }
 

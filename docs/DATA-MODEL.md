@@ -109,7 +109,7 @@ Positive manual minutes use the higher/newer rate genuinely applicable during th
 
 Email status identifies one PA, payroll year, internal cycle and email type (`timesheet` or `payslip`) with an optional sent timestamp. Timesheet and payslip status are independent.
 
-The schedule-level `payslips_sent` flag is separate compatibility/summary state and is marked after all currently active/legacy-active PA payslips are recorded as sent.
+The schedule-level `payslips_sent` flag is separate compatibility/summary state and is marked only after all currently active/legacy-active PA payslips are definitively recorded as sent. Payslip production delivery uses the existing nullable `sent_at` value as a small state machine: null is unsent, a reserved `indeterminate:` attempt marker protects the SMTP uncertainty window, and a normal RFC 3339 timestamp is definitively sent. Indeterminate rows survive restart and block automatic resend.
 
 ## Worked-item snapshot
 

@@ -3,6 +3,22 @@ use rusqlite::{params, Connection, Result};
 #[derive(Debug, Clone)]
 pub struct PayrollTimesheetEmailStatus {
     pub sent_at: Option<String>,
+    pub delivery_state: EmailDeliveryState,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum EmailDeliveryState {
+    Unsent,
+    Indeterminate { attempted_at: String },
+    Sent { sent_at: String },
+}
+
+const INDETERMINATE_PREFIX: &str = "indeterminate:";
+
+impl PayrollTimesheetEmailStatus {
+    pub fn is_definitively_sent(&self) -> bool {
+        matches!(self.delivery_state, EmailDeliveryState::Sent { .. })
+    }
 }
 
 pub struct PayrollTimesheetEmailRepository {
@@ -42,8 +58,10 @@ impl PayrollTimesheetEmailRepository {
         ])?;
 
         if let Some(row) = rows.next()? {
+            let sent_at: Option<String> = row.get(0)?;
             Ok(Some(PayrollTimesheetEmailStatus {
-                sent_at: row.get(0)?,
+                delivery_state: delivery_state(sent_at.as_deref()),
+                sent_at,
             }))
         } else {
             Ok(None)
@@ -79,6 +97,7 @@ impl PayrollTimesheetEmailRepository {
         Ok(())
     }
 
+    #[allow(dead_code)]
     pub fn mark_sent(
         &self,
         personal_assistant_id: i64,
@@ -113,6 +132,92 @@ impl PayrollTimesheetEmailRepository {
         )?;
 
         Ok(())
+    }
+
+    pub fn protect_payslip_for_send(
+        &self,
+        personal_assistant_id: i64,
+        payroll_year: &str,
+        cycle_number: i64,
+        attempted_at: &str,
+    ) -> Result<bool> {
+        self.ensure_record(personal_assistant_id, payroll_year, cycle_number, "payslip")?;
+        let marker = indeterminate_marker(attempted_at);
+        Ok(self.connection.execute(
+            "UPDATE payroll_timesheet_email_status
+             SET sent_at = ?1
+             WHERE personal_assistant_id = ?2
+               AND payroll_year = ?3
+               AND cycle_number = ?4
+               AND email_type = 'payslip'
+               AND sent_at IS NULL",
+            params![marker, personal_assistant_id, payroll_year, cycle_number],
+        )? == 1)
+    }
+
+    pub fn restore_unsent_after_failed_payslip_send(
+        &self,
+        personal_assistant_id: i64,
+        payroll_year: &str,
+        cycle_number: i64,
+        attempted_at: &str,
+    ) -> Result<bool> {
+        let marker = indeterminate_marker(attempted_at);
+        Ok(self.connection.execute(
+            "UPDATE payroll_timesheet_email_status
+             SET sent_at = NULL
+             WHERE personal_assistant_id = ?1
+               AND payroll_year = ?2
+               AND cycle_number = ?3
+               AND email_type = 'payslip'
+               AND sent_at = ?4",
+            params![personal_assistant_id, payroll_year, cycle_number, marker],
+        )? == 1)
+    }
+
+    pub fn mark_payslip_sent_from_indeterminate(
+        &self,
+        personal_assistant_id: i64,
+        payroll_year: &str,
+        cycle_number: i64,
+        attempted_at: &str,
+        sent_at: &str,
+    ) -> Result<bool> {
+        let marker = indeterminate_marker(attempted_at);
+        Ok(self.connection.execute(
+            "UPDATE payroll_timesheet_email_status
+             SET sent_at = ?1
+             WHERE personal_assistant_id = ?2
+               AND payroll_year = ?3
+               AND cycle_number = ?4
+               AND email_type = 'payslip'
+               AND sent_at = ?5",
+            params![
+                sent_at,
+                personal_assistant_id,
+                payroll_year,
+                cycle_number,
+                marker
+            ],
+        )? == 1)
+    }
+}
+
+fn indeterminate_marker(attempted_at: &str) -> String {
+    format!("{INDETERMINATE_PREFIX}{attempted_at}")
+}
+
+fn delivery_state(value: Option<&str>) -> EmailDeliveryState {
+    match value {
+        None => EmailDeliveryState::Unsent,
+        Some(value) => match value.strip_prefix(INDETERMINATE_PREFIX) {
+            Some(attempted_at) => EmailDeliveryState::Indeterminate {
+                attempted_at: attempted_at.to_string(),
+            },
+            None => EmailDeliveryState::Sent {
+                sent_at: value.to_string(),
+            },
+        },
     }
 }
 
