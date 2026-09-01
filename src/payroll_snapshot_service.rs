@@ -221,6 +221,44 @@ pub fn verify_candidate(
     Ok(())
 }
 
+pub fn verify_preview_or_test_attachment(
+    repository: &PayrollWorkedItemRepository,
+    payroll_timesheet_id: i64,
+    attachment_path: &Path,
+) -> Result<(), SnapshotSafetyError> {
+    let metadata = repository
+        .snapshot_metadata(payroll_timesheet_id)
+        .map_err(operation_error)?
+        .ok_or_else(|| {
+            SnapshotSafetyError::Refused(
+                "No generated candidate or submitted snapshot exists for this payroll timesheet."
+                    .to_string(),
+            )
+        })?;
+    if metadata.state == SnapshotState::Indeterminate {
+        return Err(SnapshotSafetyError::Indeterminate(
+            "The prior production-send result has not been reconciled.".to_string(),
+        ));
+    }
+    if metadata.pdf_path != attachment_path.to_string_lossy() {
+        return Err(SnapshotSafetyError::Refused(
+            "The selected PDF path does not match the generated snapshot.".to_string(),
+        ));
+    }
+    if !attachment_path.is_file() {
+        return Err(SnapshotSafetyError::Refused(format!(
+            "The generated PDF is missing: {}",
+            attachment_path.display()
+        )));
+    }
+    if sha256_file(attachment_path)? != metadata.pdf_sha256 {
+        return Err(SnapshotSafetyError::Refused(
+            "The payroll PDF has changed since its snapshot was generated.".to_string(),
+        ));
+    }
+    Ok(())
+}
+
 pub fn sha256_file(path: &Path) -> Result<String, SnapshotSafetyError> {
     let bytes = fs::read(path).map_err(|error| {
         SnapshotSafetyError::Operation(format!(
@@ -350,6 +388,25 @@ mod tests {
             repository.get_snapshot_items(10).unwrap()[0].timesheet_id,
             Some(2)
         );
+    }
+
+    #[test]
+    fn preview_and_test_require_an_exact_candidate_or_submitted_snapshot() {
+        let (directory, repository) = repository();
+        let path = directory.path().join("timesheet.pdf");
+        publish(&repository, &path, 1).unwrap();
+        verify_preview_or_test_attachment(&repository, 10, &path).unwrap();
+
+        repository.discard_candidate(10).unwrap();
+        assert!(path.is_file());
+        assert!(verify_preview_or_test_attachment(&repository, 10, &path).is_err());
+
+        publish(&repository, &path, 2).unwrap();
+        send_production_candidate(&repository, 10, 1, "2026/27", 1, &path, "attempted", || {
+            Ok(())
+        })
+        .unwrap();
+        verify_preview_or_test_attachment(&repository, 10, &path).unwrap();
     }
 
     #[test]

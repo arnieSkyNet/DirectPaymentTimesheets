@@ -8,8 +8,10 @@ use crate::import_service::ImportSummary;
 use crate::models::TimesheetEntry;
 use crate::payroll_schedule_repository::PayrollSchedule;
 use crate::payroll_settings_screen::PayrollSettingsScreen;
+use crate::payroll_timesheet_repository::{PayrollTimesheetPublicHoliday, PayrollTimesheetWeek};
 use crate::payroll_timesheet_screen::PayrollTimesheetScreen;
-use crate::pdf_generator::{PdfGenerator, TimesheetPdfData};
+use crate::payroll_worked_item_repository::{PayrollWorkedItemRepository, SnapshotState};
+use crate::pdf_generator::{PdfGenerator, PublicHolidayPdfEntry, TimesheetPdfData};
 use crate::personal_assistant_screen::PersonalAssistantScreen;
 
 enum ActiveScreen {
@@ -781,6 +783,12 @@ impl DirectPaymentApp {
                 &personal_assistant_name,
                 &current_schedule,
             )?;
+            verify_timesheet_candidate_for_attachment(
+                &self.application,
+                assistant.id,
+                &current_schedule,
+                &attachment_path,
+            )?;
             let pa_test_email = self
                 .application
                 .context
@@ -1529,6 +1537,15 @@ impl DirectPaymentApp {
                 ),
             };
 
+            if matches!(kind, PayrollEmailKind::Timesheet) {
+                verify_timesheet_candidate_for_attachment(
+                    &self.application,
+                    assistant.id,
+                    &current_schedule,
+                    &attachment_path,
+                )?;
+            }
+
             self.application.preview_payroll_email(
                 &payroll_department_email,
                 employer_email,
@@ -2094,68 +2111,31 @@ impl DirectPaymentApp {
                 format_pdf_hours(payroll_weeks[3].sick_leave_hours),
             ];
 
-            let public_holiday_hours = [
-                format_pdf_hours(payroll_weeks[0].public_holiday_hours),
-                format_pdf_hours(payroll_weeks[1].public_holiday_hours),
-                format_pdf_hours(payroll_weeks[2].public_holiday_hours),
-                format_pdf_hours(payroll_weeks[3].public_holiday_hours),
-            ];
-
             let public_holidays = self
                 .application
                 .payroll_timesheet_repository
                 .get_public_holidays(payroll_timesheet.id)?;
 
-            let public_holiday_dates = [
+            validate_public_holidays_for_generation(
+                &payroll_weeks,
+                &public_holidays,
+                snapshot_state_for_generation(
+                    &self.application.payroll_worked_item_repository,
+                    payroll_timesheet.id,
+                )?,
+            )?;
+            let public_holiday_entries = std::array::from_fn(|index| {
                 public_holidays
                     .iter()
-                    .filter(|holiday| holiday.week_number == 1 && holiday.hours > 0.0)
-                    .map(|holiday| {
-                        format!(
-                            "{} ({})",
-                            format_pdf_hours(holiday.hours),
-                            holiday.holiday_date
-                        )
+                    .filter(|holiday| {
+                        holiday.week_number == (index + 1) as i64 && holiday.hours > 0.0
+                    })
+                    .map(|holiday| PublicHolidayPdfEntry {
+                        hours: format_pdf_hours(holiday.hours),
+                        date: holiday.holiday_date.clone(),
                     })
                     .collect::<Vec<_>>()
-                    .join("\n"),
-                public_holidays
-                    .iter()
-                    .filter(|holiday| holiday.week_number == 2 && holiday.hours > 0.0)
-                    .map(|holiday| {
-                        format!(
-                            "{} ({})",
-                            format_pdf_hours(holiday.hours),
-                            holiday.holiday_date
-                        )
-                    })
-                    .collect::<Vec<_>>()
-                    .join("\n"),
-                public_holidays
-                    .iter()
-                    .filter(|holiday| holiday.week_number == 3 && holiday.hours > 0.0)
-                    .map(|holiday| {
-                        format!(
-                            "{} ({})",
-                            format_pdf_hours(holiday.hours),
-                            holiday.holiday_date
-                        )
-                    })
-                    .collect::<Vec<_>>()
-                    .join("\n"),
-                public_holidays
-                    .iter()
-                    .filter(|holiday| holiday.week_number == 4 && holiday.hours > 0.0)
-                    .map(|holiday| {
-                        format!(
-                            "{} ({})",
-                            format_pdf_hours(holiday.hours),
-                            holiday.holiday_date
-                        )
-                    })
-                    .collect::<Vec<_>>()
-                    .join("\n"),
-            ];
+            });
 
             let travel_miles = [
                 format_pdf_hours(payroll_weeks[0].travel_miles),
@@ -2221,19 +2201,7 @@ impl DirectPaymentApp {
                     &sick_leave_hours[3],
                 ],
 
-                public_holiday_hours: [
-                    &public_holiday_hours[0],
-                    &public_holiday_hours[1],
-                    &public_holiday_hours[2],
-                    &public_holiday_hours[3],
-                ],
-
-                public_holiday_dates: [
-                    &public_holiday_dates[0],
-                    &public_holiday_dates[1],
-                    &public_holiday_dates[2],
-                    &public_holiday_dates[3],
-                ],
+                public_holidays: public_holiday_entries,
 
                 travel_miles: [
                     &travel_miles[0],
@@ -2536,6 +2504,76 @@ fn format_pdf_hours(value: f64) -> String {
     let text = format!("{:.2}", value);
 
     text.trim_end_matches('0').trim_end_matches('.').to_string()
+}
+
+fn snapshot_state_for_generation(
+    repository: &PayrollWorkedItemRepository,
+    payroll_timesheet_id: i64,
+) -> rusqlite::Result<Option<SnapshotState>> {
+    Ok(repository
+        .snapshot_metadata(payroll_timesheet_id)?
+        .map(|metadata| metadata.state))
+}
+
+fn validate_public_holidays_for_generation(
+    weeks: &[PayrollTimesheetWeek],
+    holidays: &[PayrollTimesheetPublicHoliday],
+    snapshot_state: Option<SnapshotState>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    if matches!(
+        snapshot_state,
+        Some(SnapshotState::Submitted | SnapshotState::Indeterminate)
+    ) {
+        return Ok(());
+    }
+    for holiday in holidays {
+        if !holiday.hours.is_finite() || holiday.hours < 0.0 {
+            return Err(format!(
+                "Public-holiday hours for {} must be a finite value of zero or more.",
+                holiday.holiday_date
+            )
+            .into());
+        }
+    }
+    for week in weeks {
+        let detail_total: f64 = holidays
+            .iter()
+            .filter(|holiday| holiday.week_number == week.week_number)
+            .map(|holiday| holiday.hours)
+            .sum();
+        if (week.public_holiday_hours - detail_total).abs() > 0.000_001 {
+            return Err(format!(
+                "Public-holiday data for payroll week {} is inconsistent: the compatibility aggregate is {}, while dated entries total {}. Review Payroll Timesheet Preparation before generating.",
+                week.week_number,
+                format_pdf_hours(week.public_holiday_hours),
+                format_pdf_hours(detail_total)
+            )
+            .into());
+        }
+    }
+    Ok(())
+}
+
+fn verify_timesheet_candidate_for_attachment(
+    application: &Application,
+    personal_assistant_id: i64,
+    schedule: &PayrollSchedule,
+    attachment_path: &std::path::Path,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let payroll_timesheet = application
+        .payroll_timesheet_repository
+        .get_for_cycle_and_pa(
+            &schedule.payroll_year,
+            schedule.cycle_number,
+            personal_assistant_id,
+        )?
+        .ok_or("No Payroll Timesheet Preparation record exists for this Personal Assistant.")?;
+    crate::payroll_snapshot_service::verify_preview_or_test_attachment(
+        &application.payroll_worked_item_repository,
+        payroll_timesheet.id,
+        attachment_path,
+    )?;
+    Ok(())
 }
 
 fn parse_date_checked(value: &str) -> Option<chrono::NaiveDate> {

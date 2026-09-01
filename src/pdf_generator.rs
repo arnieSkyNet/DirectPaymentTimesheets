@@ -21,14 +21,18 @@ pub struct TimesheetPdfData<'a> {
 
     pub annual_leave_hours: [&'a str; 4],
     pub sick_leave_hours: [&'a str; 4],
-    pub public_holiday_hours: [&'a str; 4],
-    pub public_holiday_dates: [&'a str; 4],
+    pub public_holidays: [Vec<PublicHolidayPdfEntry>; 4],
     pub travel_miles: [&'a str; 4],
 
     pub previous_cycle_hours: Option<&'a str>,
 
     pub employer_signature_path: Option<&'a Path>,
     pub pa_signature_path: Option<&'a Path>,
+}
+
+pub struct PublicHolidayPdfEntry {
+    pub hours: String,
+    pub date: String,
 }
 
 pub struct PdfGenerator;
@@ -204,8 +208,7 @@ impl PdfGenerator {
             &data.hours_worked,
             &data.annual_leave_hours,
             &data.sick_leave_hours,
-            &data.public_holiday_hours,
-            &data.public_holiday_dates,
+            &data.public_holidays,
             &data.travel_miles,
             data.previous_cycle_hours,
             pdf_config,
@@ -506,8 +509,7 @@ fn draw_table(
     hours_worked: &[&str; 4],
     annual_leave_hours: &[&str; 4],
     sick_leave_hours: &[&str; 4],
-    public_holiday_hours: &[&str; 4],
-    public_holiday_dates: &[&str; 4],
+    public_holidays: &[Vec<PublicHolidayPdfEntry>; 4],
     travel_miles: &[&str; 4],
     previous_cycle_hours: Option<&str>,
     pdf_config: &crate::config::PdfConfig,
@@ -681,44 +683,34 @@ fn draw_table(
         // Public Holiday
         // --------------------------------------------------------
 
-        let public_holiday = display_table_value(public_holiday_hours[index]);
-
-        if !public_holiday.is_empty() {
-            let public_holiday_x =
-                x + columns[0].1 + columns[1].1 + columns[2].1 + columns[3].1 + 1.5;
-
-            // Public Holiday hours.
+        let public_holiday_x = x + columns[0].1 + columns[1].1 + columns[2].1 + columns[3].1 + 1.5;
+        let line_spacing = (hours_font_size * 0.42).max(4.5);
+        for (line_index, entry) in public_holidays[index].iter().enumerate() {
+            let public_holiday = display_table_value(&entry.hours);
+            if public_holiday.is_empty() {
+                continue;
+            }
+            let line_y = row_top - 7.0 - line_index as f32 * line_spacing;
             write_text(
                 ops,
                 public_holiday,
                 public_holiday_x,
-                row_top - 10.0,
-                12.0,
+                line_y,
+                hours_font_size,
                 true,
                 TextAlignment::Left,
                 bold_font,
                 regular_font,
             );
 
-            // Public Holiday date uses the configurable
-            // Information / Secondary Text size.
-            let public_holiday_date = public_holiday_dates[index].trim();
-
-            if !public_holiday_date.is_empty() {
-                let hours_width = approximate_text_width(public_holiday, 12.0, true);
-
-                let date_text = public_holiday_date
-                    .split_once('(')
-                    .and_then(|(_, date)| date.strip_suffix(')'))
-                    .map(|date| format!("({})", date))
-                    .unwrap_or_else(|| public_holiday_date.to_string());
-
+            if !entry.date.trim().is_empty() {
+                let hours_width = approximate_text_width(public_holiday, hours_font_size, true);
                 write_text(
                     ops,
-                    &date_text,
+                    &format!("({})", entry.date.trim()),
                     public_holiday_x + hours_width,
-                    row_top - 10.0,
-                    pdf_config.information_font_size as f32,
+                    line_y,
+                    information_font_size,
                     false,
                     TextAlignment::Left,
                     bold_font,
@@ -912,9 +904,15 @@ mod tests {
 
             sick_leave_hours: ["0", "0", "0", "0"],
 
-            public_holiday_hours: ["0", "7.5", "0", "0"],
-
-            public_holiday_dates: ["", "7.5 (03/04/2026)", "", ""],
+            public_holidays: [
+                vec![],
+                vec![PublicHolidayPdfEntry {
+                    hours: "7.5".to_string(),
+                    date: "03/04/2026".to_string(),
+                }],
+                vec![],
+                vec![],
+            ],
 
             travel_miles: ["0", "0", "0", "0"],
 
@@ -948,6 +946,61 @@ mod tests {
         assert!(!normalised.contains("see note"));
         assert!(!normalised.contains("historical work date"));
         assert!(normalised.contains("Contracted Weekly Hours: 25"));
+
+        let _ = fs::remove_file(path);
+        let _ = fs::remove_dir_all(output_dir);
+    }
+
+    #[test]
+    fn public_holidays_render_as_separate_dated_lines_without_combined_total() {
+        let output_dir = env::temp_dir().join("direct_payment_timesheets_holiday_test");
+        let schedule = schedule("21/12/2026", "15/01/2027");
+        let data = TimesheetPdfData {
+            schedule: &schedule,
+            employer_name: "Test Employer",
+            personal_assistant_name: "Holiday Test",
+            national_insurance_number: "AB123456C",
+            contracted_weekly_hours: "20",
+            week_commencing_dates: ["21/12/2026", "28/12/2026", "04/01/2027", "11/01/2027"],
+            hours_worked: ["8", "0", "0", "0"],
+            annual_leave_hours: ["0", "0", "0", "0"],
+            sick_leave_hours: ["0", "0", "0", "0"],
+            public_holidays: [
+                vec![
+                    PublicHolidayPdfEntry {
+                        hours: "6".to_string(),
+                        date: "25/12/2026".to_string(),
+                    },
+                    PublicHolidayPdfEntry {
+                        hours: "4".to_string(),
+                        date: "26/12/2026".to_string(),
+                    },
+                ],
+                vec![PublicHolidayPdfEntry {
+                    hours: "0".to_string(),
+                    date: "28/12/2026".to_string(),
+                }],
+                vec![],
+                vec![],
+            ],
+            travel_miles: ["0", "0", "0", "0"],
+            previous_cycle_hours: None,
+            employer_signature_path: None,
+            pa_signature_path: None,
+        };
+
+        let path = PdfGenerator::generate(&output_dir, &data, &crate::config::PdfConfig::default())
+            .unwrap();
+        let extracted = pdf_extract::extract_text(&path).unwrap();
+        let tokens = extracted.split_whitespace().collect::<Vec<_>>();
+        assert!(tokens.contains(&"8"));
+        assert!(tokens.contains(&"6"));
+        assert!(tokens.contains(&"4"));
+        assert!(tokens.contains(&"(25/12/2026)"));
+        assert!(tokens.contains(&"(26/12/2026)"));
+        assert!(!tokens.contains(&"10"));
+        assert!(!tokens.contains(&"18"));
+        assert!(!tokens.contains(&"(28/12/2026)"));
 
         let _ = fs::remove_file(path);
         let _ = fs::remove_dir_all(output_dir);
@@ -1006,8 +1059,7 @@ mod tests {
             hours_worked: ["26.5", "21", "28.5", "6.25"],
             annual_leave_hours: ["0", "0", "0", "0"],
             sick_leave_hours: ["0", "0", "0", "0"],
-            public_holiday_hours: ["0", "0", "0", "0"],
-            public_holiday_dates: ["", "", "", ""],
+            public_holidays: std::array::from_fn(|_| Vec::new()),
             travel_miles: ["0", "0", "0", "0"],
             previous_cycle_hours: None,
             employer_signature_path: None,
