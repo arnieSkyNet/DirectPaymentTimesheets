@@ -3,6 +3,7 @@ use eframe::egui;
 use std::collections::HashMap;
 
 use crate::app::Application;
+use crate::config::ApplicationTheme;
 use crate::payroll_schedule_repository::PayrollSchedule;
 use crate::payroll_timesheet_repository::{
     PayrollTimesheet, PayrollTimesheetPublicHoliday, PayrollTimesheetWeek,
@@ -40,6 +41,12 @@ struct SaveResult {
     changed: bool,
     candidate_invalidated: bool,
     public_holiday_totals: [f64; 4],
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct PaSectionStyle {
+    fill: egui::Color32,
+    stroke: egui::Stroke,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -107,6 +114,8 @@ impl PayrollTimesheetScreen {
         operational_schedule: &PayrollSchedule,
         period_label: &str,
     ) {
+        self.rebind_if_operational_period_changed(operational_schedule);
+
         if !self.loaded {
             match self.load(application, operational_schedule, period_label) {
                 Ok(()) => self.loaded = true,
@@ -115,10 +124,6 @@ impl PayrollTimesheetScreen {
                 }
             }
         }
-
-        ui.heading("Payroll Timesheet Preparation");
-
-        ui.separator();
 
         if let Some(schedule) = &self.schedule {
             let _ = schedule;
@@ -155,6 +160,14 @@ impl PayrollTimesheetScreen {
                 snapshot_state,
                 Some(SnapshotState::Submitted | SnapshotState::Indeterminate)
             );
+
+            let section_style =
+                pa_section_style(record_index, application.context.config.theme, ui.visuals());
+            egui::Frame::new()
+                .fill(section_style.fill)
+                .stroke(section_style.stroke)
+                .show(ui, |ui| {
+                    ui.set_width(ui.available_width());
 
             ui.heading(&*assistant_name);
 
@@ -298,9 +311,24 @@ impl PayrollTimesheetScreen {
             }
 
             ui.separator();
+                });
         }
 
         ui.label(&self.status_message);
+    }
+
+    fn rebind_if_operational_period_changed(
+        &mut self,
+        operational_schedule: &PayrollSchedule,
+    ) -> bool {
+        let changed = self
+            .bound_period
+            .as_ref()
+            .is_some_and(|bound| *bound != BoundPayrollPeriod::from(operational_schedule));
+        if changed {
+            self.reload();
+        }
+        changed
     }
 
     fn load(
@@ -851,6 +879,31 @@ fn validate_public_holiday_consistency(
         }
     }
     Ok(())
+}
+
+fn pa_section_style(
+    displayed_index: usize,
+    theme: ApplicationTheme,
+    visuals: &egui::Visuals,
+) -> PaSectionStyle {
+    if displayed_index % 2 == 0 {
+        return PaSectionStyle {
+            fill: visuals.panel_fill,
+            stroke: egui::Stroke::NONE,
+        };
+    }
+
+    if theme == ApplicationTheme::AccessibleHighContrast {
+        PaSectionStyle {
+            fill: visuals.panel_fill,
+            stroke: visuals.widgets.noninteractive.bg_stroke,
+        }
+    } else {
+        PaSectionStyle {
+            fill: visuals.faint_bg_color,
+            stroke: egui::Stroke::NONE,
+        }
+    }
 }
 
 fn edit_number(
@@ -1426,6 +1479,73 @@ mod tests {
                 screen.schedule.as_ref().unwrap().payroll_year,
                 schedule.payroll_year
             );
+        }
+    }
+
+    #[test]
+    fn operational_period_change_clears_stale_preparation_before_rebinding() {
+        let (_directory, application) = test_application();
+        insert_pa(&application, 1, "Active", Some("Active"));
+        let first = insert_schedule(&application, "2026/27", 6, "10/08/2026", "04/09/2026");
+        let second = insert_schedule(&application, "2026/27", 7, "07/09/2026", "02/10/2026");
+        let mut screen = PayrollTimesheetScreen::new();
+        screen.load(&application, &first, "first period").unwrap();
+        screen.loaded = true;
+        screen.numeric_editor_texts.insert(
+            NumericEditorKey::Worked(screen.weeks[0].1[0].id),
+            "stale edit".to_string(),
+        );
+
+        assert!(screen.rebind_if_operational_period_changed(&second));
+        assert!(!screen.loaded);
+        assert!(screen.bound_period.is_none());
+        assert!(screen.weeks.is_empty());
+        assert!(screen.numeric_editor_texts.is_empty());
+
+        screen.load(&application, &second, "second period").unwrap();
+        assert_eq!(screen.bound_period, Some(BoundPayrollPeriod::from(&second)));
+        assert_eq!(screen.period_label, "second period");
+    }
+
+    #[test]
+    fn unchanged_operational_period_preserves_preparation_state() {
+        let (_directory, _application, schedule, mut screen) = load_active_record();
+        let record_id = screen.weeks[0].0.id;
+
+        assert!(!screen.rebind_if_operational_period_changed(&schedule));
+        assert_eq!(screen.weeks[0].0.id, record_id);
+        assert_eq!(
+            screen.bound_period,
+            Some(BoundPayrollPeriod::from(&schedule))
+        );
+    }
+
+    #[test]
+    fn pa_section_alternation_is_deterministic_by_display_order_for_every_theme() {
+        let visuals = egui::Visuals::dark();
+        let themes = [
+            ApplicationTheme::System,
+            ApplicationTheme::Light,
+            ApplicationTheme::SoftLight,
+            ApplicationTheme::Dark,
+            ApplicationTheme::SoftDark,
+            ApplicationTheme::Blue,
+            ApplicationTheme::AccessibleHighContrast,
+        ];
+
+        for theme in themes {
+            let first = pa_section_style(0, theme, &visuals);
+            let second = pa_section_style(1, theme, &visuals);
+            let third = pa_section_style(2, theme, &visuals);
+
+            assert_eq!(first, third);
+            if theme == ApplicationTheme::AccessibleHighContrast {
+                assert_eq!(second.fill, visuals.panel_fill);
+                assert_ne!(second.stroke, egui::Stroke::NONE);
+            } else {
+                assert_eq!(second.fill, visuals.faint_bg_color);
+                assert_ne!(first.fill, second.fill);
+            }
         }
     }
 
