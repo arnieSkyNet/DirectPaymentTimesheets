@@ -5,6 +5,7 @@ use crate::app::Application;
 use crate::application_settings_screen::ApplicationSettingsScreen;
 use crate::config::ApplicationTheme;
 use crate::email_service::PayrollEmailPreview;
+use crate::enter_hours_screen::EnterHoursScreen;
 use crate::import_service::ImportSummary;
 use crate::models::TimesheetEntry;
 use crate::payroll_schedule_repository::PayrollSchedule;
@@ -186,6 +187,7 @@ pub struct DirectPaymentApp {
     personal_assistant_screen: PersonalAssistantScreen,
     payroll_settings_screen: PayrollSettingsScreen,
     payroll_timesheet_screen: PayrollTimesheetScreen,
+    enter_hours_screen: EnterHoursScreen,
     application_settings_screen: ApplicationSettingsScreen,
     active_screen: ActiveScreen,
     restart_required_message: Option<String>,
@@ -220,6 +222,7 @@ impl DirectPaymentApp {
             personal_assistant_screen: PersonalAssistantScreen::new(),
             payroll_settings_screen: PayrollSettingsScreen::new(),
             payroll_timesheet_screen: PayrollTimesheetScreen::new(),
+            enter_hours_screen: EnterHoursScreen::new(),
             application_settings_screen: ApplicationSettingsScreen::new(),
             active_screen: ActiveScreen::Dashboard,
             restart_required_message: None,
@@ -296,10 +299,9 @@ impl eframe::App for DirectPaymentApp {
             }
 
             ActiveScreen::EnterHours => {
-                ui.heading("Enter Hours/Shifts");
-                ui.label(
-                    "Direct entry of hours and shifts will be implemented in the next development stage.",
-                );
+                egui::ScrollArea::vertical().show(ui, |ui| {
+                    self.enter_hours_screen.show(ui, &self.application);
+                });
             }
 
             ActiveScreen::Employer => {
@@ -1364,6 +1366,7 @@ impl DirectPaymentApp {
             let actions = draw_dashboard_workflow_actions(ui);
 
                 if actions.enter_hours {
+                    self.enter_hours_screen.reload();
                     navigate_to_enter_hours(&mut self.active_screen);
                 }
 

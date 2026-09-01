@@ -2,7 +2,7 @@
 
 ## Purpose
 
-This document describes the implemented business entities and their relationships. It is intentionally conceptual; [DATABASE-SCHEMA.md](DATABASE-SCHEMA.md) is the exact schema-19 table/column reference and the Rust source remains authoritative.
+This document describes the implemented business entities and their relationships. It is intentionally conceptual; [DATABASE-SCHEMA.md](DATABASE-SCHEMA.md) is the exact schema-20 table/column reference and the Rust source remains authoritative.
 
 The model preserves imported facts, effective-dated employment terms, prepared payroll values and the exact worked-item evidence represented by a generated or submitted timesheet.
 
@@ -24,7 +24,7 @@ A Personal Assistant (PA) record contains identity/contact data, employment stat
 
 `NULL` employment status is treated as active for compatibility. Inactive PAs remain valid historical identities. Preparation and generation include an inactive PA only when a payroll-timesheet record already exists for the selected period; production email batches remain active/legacy-`NULL` only.
 
-Deletion is refused when dependent imported work, rate/contracted-hours history, payroll records, holiday details or email statuses exist.
+Deletion is refused when dependent imported or directly recorded work, rate/contracted-hours history, payroll records, holiday details or email statuses exist.
 
 ## Effective-dated pay rate
 
@@ -62,7 +62,15 @@ New imports are preflighted as a complete file. PA names are matched case-insens
 
 An import-audit record captures import time, original/archive filenames, row counts, status and optional error. Validated source bytes are written first to a unique, non-overwriting file in `archive/YYYY/MM/`; all imported rows and the SUCCESS audit are then committed in one SQLite transaction. A database failure leaves the archive as reported recoverable evidence and rolls back all rows. Failed/refused audits are best-effort.
 
-Schema 19 has no content hash or row-to-import relationship. Historical successful-import detection therefore remains based on the original pathname: changed content at an already-successful pathname is conservatively skipped, while renamed identical content is preflighted again and may be refused as competing evidence. Durable content identity and row provenance require an explicitly approved future migration.
+Schema 20 still has no imported-file content hash or row-to-import relationship. Historical successful-import detection therefore remains based on the original pathname: changed content at an already-successful pathname is conservatively skipped, while renamed identical content is preflighted again and may be refused as competing evidence. Durable content identity and row provenance require an explicitly approved future migration.
+
+## DirectShift
+
+A direct shift is separate application-created source evidence linked to one maintained PA. It stores an exact local start minute, nullable exact end minute, actual break minutes, optional notes, a fixed direct-source marker, creation/update metadata and nullable soft-deletion actor/time. A nullable end is a durable running clock-in. At most one non-deleted direct shift may run per PA.
+
+Completed actual worked minutes are derived from end minus start minus break and are never payroll-rounded. Completed rows can be corrected, but every mutation and soft deletion atomically appends an immutable audit row containing actor, action, time and the relevant before/after snapshots. The current actor is `local_employer`; the text identity can later hold authenticated actors without claiming that authentication exists today. Cancelling an accidental running clock-in retains creation/cancellation history even though its current row is removed.
+
+Direct shifts are not yet inputs to Payroll Timesheet Preparation and are not automatically reconciled against imported `TimesheetEntry` evidence.
 
 ## Payroll schedule
 

@@ -2,11 +2,13 @@
 
 ## Scope and versioning
 
-This is the implemented SQLite schema at version 19. It is derived from `create_schema` and migrations in `src/database.rs`; those migrations are authoritative.
+This is the implemented SQLite schema at version 20. It is derived from `create_schema` and migrations in `src/database.rs`; those migrations are authoritative.
 
-`schema_version` contains the current integer version. A new database begins at version 1 and receives each ordered migration through `CURRENT_SCHEMA_VERSION` 19. Existing databases are upgraded in place.
+`schema_version` contains the current integer version. A new database begins at version 1 and receives each ordered migration through `CURRENT_SCHEMA_VERSION` 20. Existing databases are upgraded in place.
 
-SQLite foreign-key constraints are not declared in schema 19. Relationships described below are logical relationships enforced by repository/application code and stored IDs/business keys.
+During unreleased schema-20 development, an earlier local database shape contained `direct_shifts` without soft-deletion columns or the audit table. Startup therefore performs an idempotent schema-20 compatibility check after normal migrations. When that exact incomplete shape is found, it transactionally rebuilds `direct_shifts` into the final constrained form while preserving IDs and row values, then creates the audit table/indexes. It does not fabricate historical audit events, and repeated startup does not duplicate existing audit rows.
+
+SQLite foreign-key constraints are not declared in schema 20. Relationships described below are logical relationships enforced by repository/application code and stored IDs/business keys.
 
 ## `schema_version`
 
@@ -16,7 +18,47 @@ SQLite foreign-key constraints are not declared in schema 19. Relationships desc
 
 There is no primary key or uniqueness constraint. Initialisation inserts one row when the table is empty and application code expects one effective version row.
 
-## Imported work and audit
+## Work evidence and import audit
+
+### `direct_shifts`
+
+Application-created actual-shift evidence, deliberately separate from imported `timesheets` rows.
+
+| Column | Type/constraint | Purpose |
+|---|---|---|
+| `id` | `INTEGER PRIMARY KEY` | Stable direct-shift evidence identity. |
+| `personal_assistant_id` | `INTEGER NOT NULL` | Logical reference to the maintained PA. |
+| `start_time` | `TEXT NOT NULL` | Canonical local minute, `YYYY-MM-DDTHH:MM`. |
+| `end_time` | nullable `TEXT` | Canonical completed minute; `NULL` means running. |
+| `break_minutes` | `INTEGER NOT NULL DEFAULT 0`, non-negative check | Actual break evidence. |
+| `notes` | nullable `TEXT` | Optional source note. |
+| `source_type` | `TEXT NOT NULL`, checked to `direct` | Explicit source provenance. |
+| `created_at`, `updated_at` | `TEXT NOT NULL` | Audit metadata for creation and latest deliberate write. |
+| `deleted_at`, `deleted_by` | nullable `TEXT`, both null or both present | Soft-deletion time and actor. |
+
+The schema checks that a stored end does not sort before its canonical start. Repository validation additionally rejects end-before-start and a break longer than the elapsed shift. A partial unique index permits at most one non-deleted running direct shift per PA. Normal current/recent queries exclude soft-deleted rows. `(personal_assistant_id, start_time DESC, id DESC)` supports deterministic recent-shift retrieval.
+
+### `direct_shift_audit`
+
+Append-only direct-shift mutation evidence. Normal repository/UI operations provide no update or delete path for these rows.
+
+| Column | Type/constraint | Purpose |
+|---|---|---|
+| `id` | `INTEGER PRIMARY KEY` | Ordered audit identity. |
+| `direct_shift_id` | `INTEGER NOT NULL` | Stable subject ID, retained even after a cancelled running row is removed. |
+| `actor_id` | `TEXT NOT NULL` | Current desktop value `local_employer`; future-compatible authenticated identity. |
+| `action_type` | checked `TEXT` | `clock_in`, `clock_out`, `edit`, `delete` or `cancel_clock_in`. |
+| `action_at` | `TEXT NOT NULL` | Timestamp of the action. |
+| `before_personal_assistant_id`, `after_personal_assistant_id` | nullable `INTEGER` | PA identity before/after. |
+| `before_start_time`, `after_start_time` | nullable `TEXT` | Exact start snapshots. |
+| `before_end_time`, `after_end_time` | nullable `TEXT` | Exact end snapshots. |
+| `before_break_minutes`, `after_break_minutes` | nullable `INTEGER` | Break snapshots. |
+| `before_notes`, `after_notes` | nullable `TEXT` | Note snapshots. |
+| `before_updated_at`, `after_updated_at` | nullable `TEXT` | Current-row update metadata snapshots. |
+| `before_deleted_at`, `after_deleted_at` | nullable `TEXT` | Soft-deletion time snapshots. |
+| `before_deleted_by`, `after_deleted_by` | nullable `TEXT` | Soft-deletion actor snapshots. |
+
+Shift mutation and its audit insert share one SQLite transaction. Creation has no before snapshot; cancellation has no after snapshot. No foreign key is declared because cancellation deliberately retains history after removing the accidental current row.
 
 ### `timesheets`
 
@@ -131,7 +173,7 @@ There is no uniqueness constraint on PA/effective date. The as-of lookup uses ef
 | `created_at` | `TEXT NOT NULL` |
 | `payslips_sent` | `INTEGER NOT NULL DEFAULT 0` boolean |
 
-Dates are stored as `DD/MM/YYYY`. Repository logic treats `(payroll_year, cycle_number)` as schedule identity, but schema 19 does not declare that pair unique. Validated import supplies exactly 13 chronological four-week cycles and replaces one year transactionally.
+Dates are stored as `DD/MM/YYYY`. Repository logic treats `(payroll_year, cycle_number)` as schedule identity, but schema 20 does not declare that pair unique. Validated import supplies exactly 13 chronological four-week cycles and replaces one year transactionally.
 
 ## Payroll preparation
 
@@ -262,4 +304,4 @@ Declared uniqueness beyond primary keys:
 - one email status per PA/year/cycle/type; and
 - one occurrence of a non-null source TimesheetEntry ID per payroll-timesheet snapshot.
 
-No other indexes, foreign keys, cascading deletes or table-level date/value checks are declared by schema 19. Repository and service validation supplies the remaining business rules.
+Schema 20 also declares the direct-shift running/recent indexes and direct-shift value checks described above. No foreign keys or cascading deletes are declared. Repository and service validation supplies the remaining business rules.

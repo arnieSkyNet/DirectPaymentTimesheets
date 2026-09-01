@@ -2,7 +2,7 @@ use std::path::Path;
 
 use rusqlite::{Connection, Result};
 
-pub const CURRENT_SCHEMA_VERSION: i64 = 19;
+pub const CURRENT_SCHEMA_VERSION: i64 = 20;
 
 pub fn initialise_database(database_path: &Path) -> Result<()> {
     let connection = Connection::open(database_path)?;
@@ -66,6 +66,7 @@ pub fn create_schema(connection: &Connection) -> Result<()> {
     )?;
 
     apply_migrations(connection)?;
+    repair_unreleased_schema_20(connection)?;
 
     Ok(())
 }
@@ -163,6 +164,11 @@ fn apply_migrations(connection: &Connection) -> Result<()> {
 
     if current_version < 19 {
         migrate_to_version_19(connection)?;
+        current_version = 19;
+    }
+
+    if current_version < 20 {
+        migrate_to_version_20(connection)?;
     }
 
     Ok(())
@@ -654,6 +660,150 @@ fn migrate_to_version_19(connection: &Connection) -> Result<()> {
     Ok(())
 }
 
+fn migrate_to_version_20(connection: &Connection) -> Result<()> {
+    let transaction = connection.unchecked_transaction()?;
+    create_final_schema_20_tables(&transaction)?;
+    transaction.execute("UPDATE schema_version SET version = 20", [])?;
+    transaction.commit()?;
+    Ok(())
+}
+
+fn repair_unreleased_schema_20(connection: &Connection) -> Result<()> {
+    let version: i64 =
+        connection.query_row("SELECT version FROM schema_version LIMIT 1", [], |row| {
+            row.get(0)
+        })?;
+    if version != 20 {
+        return Ok(());
+    }
+
+    let transaction = connection.unchecked_transaction()?;
+    if !table_exists(&transaction, "direct_shifts")? {
+        create_final_schema_20_tables(&transaction)?;
+        transaction.commit()?;
+        return Ok(());
+    }
+
+    let has_deleted_at = table_has_column(&transaction, "direct_shifts", "deleted_at")?;
+    let has_deleted_by = table_has_column(&transaction, "direct_shifts", "deleted_by")?;
+    if !has_deleted_at || !has_deleted_by {
+        if !has_deleted_at {
+            transaction.execute("ALTER TABLE direct_shifts ADD COLUMN deleted_at TEXT", [])?;
+        }
+        if !has_deleted_by {
+            transaction.execute("ALTER TABLE direct_shifts ADD COLUMN deleted_by TEXT", [])?;
+        }
+        transaction.execute_batch(
+            "
+            DROP INDEX IF EXISTS one_running_direct_shift_per_pa;
+            DROP INDEX IF EXISTS direct_shifts_pa_start;
+            ALTER TABLE direct_shifts RENAME TO direct_shifts_development_20;
+            ",
+        )?;
+        create_final_schema_20_tables(&transaction)?;
+        transaction.execute_batch(
+            "
+            INSERT INTO direct_shifts (
+                id, personal_assistant_id, start_time, end_time, break_minutes,
+                notes, source_type, created_at, updated_at, deleted_at, deleted_by
+            )
+            SELECT
+                id, personal_assistant_id, start_time, end_time, break_minutes,
+                notes, source_type, created_at, updated_at,
+                CASE WHEN deleted_at IS NOT NULL AND deleted_by IS NOT NULL THEN deleted_at END,
+                CASE WHEN deleted_at IS NOT NULL AND deleted_by IS NOT NULL THEN deleted_by END
+            FROM direct_shifts_development_20;
+            DROP TABLE direct_shifts_development_20;
+            ",
+        )?;
+    } else {
+        create_final_schema_20_tables(&transaction)?;
+    }
+    transaction.commit()?;
+    Ok(())
+}
+
+fn create_final_schema_20_tables(connection: &Connection) -> Result<()> {
+    connection.execute_batch(
+        "
+        CREATE TABLE IF NOT EXISTS direct_shifts (
+            id INTEGER PRIMARY KEY,
+            personal_assistant_id INTEGER NOT NULL,
+            start_time TEXT NOT NULL,
+            end_time TEXT,
+            break_minutes INTEGER NOT NULL DEFAULT 0 CHECK (break_minutes >= 0),
+            notes TEXT,
+            source_type TEXT NOT NULL DEFAULT 'direct' CHECK (source_type = 'direct'),
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            deleted_at TEXT,
+            deleted_by TEXT,
+            CHECK (
+                (deleted_at IS NULL AND deleted_by IS NULL)
+                OR (deleted_at IS NOT NULL AND deleted_by IS NOT NULL)
+            ),
+            CHECK (end_time IS NULL OR end_time >= start_time)
+        );
+
+        CREATE TABLE IF NOT EXISTS direct_shift_audit (
+            id INTEGER PRIMARY KEY,
+            direct_shift_id INTEGER NOT NULL,
+            actor_id TEXT NOT NULL,
+            action_type TEXT NOT NULL CHECK (
+                action_type IN ('clock_in', 'clock_out', 'edit', 'delete', 'cancel_clock_in')
+            ),
+            action_at TEXT NOT NULL,
+            before_personal_assistant_id INTEGER,
+            before_start_time TEXT,
+            before_end_time TEXT,
+            before_break_minutes INTEGER,
+            before_notes TEXT,
+            before_updated_at TEXT,
+            before_deleted_at TEXT,
+            before_deleted_by TEXT,
+            after_personal_assistant_id INTEGER,
+            after_start_time TEXT,
+            after_end_time TEXT,
+            after_break_minutes INTEGER,
+            after_notes TEXT,
+            after_updated_at TEXT,
+            after_deleted_at TEXT,
+            after_deleted_by TEXT
+        );
+
+        CREATE UNIQUE INDEX IF NOT EXISTS one_running_direct_shift_per_pa
+        ON direct_shifts (personal_assistant_id)
+        WHERE end_time IS NULL AND deleted_at IS NULL;
+
+        CREATE INDEX IF NOT EXISTS direct_shifts_pa_start
+        ON direct_shifts (personal_assistant_id, start_time DESC, id DESC);
+
+        CREATE INDEX IF NOT EXISTS direct_shift_audit_shift_action
+        ON direct_shift_audit (direct_shift_id, id);
+        ",
+    )?;
+    Ok(())
+}
+
+fn table_exists(connection: &Connection, table: &str) -> Result<bool> {
+    connection.query_row(
+        "SELECT EXISTS (SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?1)",
+        [table],
+        |row| row.get(0),
+    )
+}
+
+fn table_has_column(connection: &Connection, table: &str, column: &str) -> Result<bool> {
+    let mut statement = connection.prepare(&format!("PRAGMA table_info({table})"))?;
+    let columns = statement.query_map([], |row| row.get::<_, String>(1))?;
+    for existing in columns {
+        if existing? == column {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -686,6 +836,8 @@ mod tests {
                 DROP TABLE payroll_timesheet_manual_adjustments;
                 DROP TABLE payroll_timesheet_worked_item_snapshots;
                 DROP TABLE payroll_timesheet_snapshot_states;
+                DROP TABLE direct_shifts;
+                DROP TABLE direct_shift_audit;
                 UPDATE schema_version SET version = 17;
                 ",
             )
@@ -705,6 +857,144 @@ mod tests {
             .unwrap();
 
         assert_eq!(email_type, "timesheet");
-        assert_eq!(version, 19);
+        assert_eq!(version, 20);
+    }
+
+    #[test]
+    fn migration_to_version_20_adds_direct_shift_evidence_storage() {
+        let connection = Connection::open_in_memory().unwrap();
+        create_schema(&connection).unwrap();
+
+        connection
+            .execute(
+                "INSERT INTO direct_shifts (
+                    personal_assistant_id, start_time, end_time, break_minutes,
+                    notes, source_type, created_at, updated_at
+                 ) VALUES (1, '2026-09-01T09:07', NULL, 0, NULL, 'direct', 'created', 'updated')",
+                [],
+            )
+            .unwrap();
+        let duplicate = connection.execute(
+            "INSERT INTO direct_shifts (
+                personal_assistant_id, start_time, end_time, break_minutes,
+                notes, source_type, created_at, updated_at
+             ) VALUES (1, '2026-09-01T10:08', NULL, 0, NULL, 'direct', 'created', 'updated')",
+            [],
+        );
+        let version: i64 = connection
+            .query_row("SELECT version FROM schema_version", [], |row| row.get(0))
+            .unwrap();
+
+        assert!(duplicate.is_err());
+        assert_eq!(version, 20);
+    }
+
+    #[test]
+    fn final_schema_19_migrates_directly_to_final_schema_20() {
+        let connection = Connection::open_in_memory().unwrap();
+        create_schema(&connection).unwrap();
+        connection
+            .execute_batch(
+                "DROP TABLE direct_shift_audit;
+                 DROP TABLE direct_shifts;
+                 UPDATE schema_version SET version = 19;",
+            )
+            .unwrap();
+
+        create_schema(&connection).unwrap();
+
+        assert!(table_has_column(&connection, "direct_shifts", "deleted_at").unwrap());
+        assert!(table_has_column(&connection, "direct_shifts", "deleted_by").unwrap());
+        assert!(table_exists(&connection, "direct_shift_audit").unwrap());
+        assert_eq!(
+            connection
+                .query_row("SELECT version FROM schema_version", [], |row| row
+                    .get::<_, i64>(0))
+                .unwrap(),
+            20
+        );
+    }
+
+    #[test]
+    fn earlier_development_schema_20_is_repaired_idempotently_without_data_loss() {
+        let connection = Connection::open_in_memory().unwrap();
+        create_schema(&connection).unwrap();
+        connection
+            .execute_batch(
+                "DROP TABLE direct_shift_audit;
+                 DROP TABLE direct_shifts;
+                 CREATE TABLE direct_shifts (
+                    id INTEGER PRIMARY KEY,
+                    personal_assistant_id INTEGER NOT NULL,
+                    start_time TEXT NOT NULL,
+                    end_time TEXT,
+                    break_minutes INTEGER NOT NULL DEFAULT 0 CHECK (break_minutes >= 0),
+                    notes TEXT,
+                    source_type TEXT NOT NULL DEFAULT 'direct' CHECK (source_type = 'direct'),
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    CHECK (end_time IS NULL OR end_time >= start_time)
+                 );
+                 CREATE UNIQUE INDEX one_running_direct_shift_per_pa
+                 ON direct_shifts (personal_assistant_id) WHERE end_time IS NULL;
+                 INSERT INTO direct_shifts (
+                    id, personal_assistant_id, start_time, end_time, break_minutes,
+                    notes, source_type, created_at, updated_at
+                 ) VALUES (
+                    42, 7, '2026-09-01T09:07', '2026-09-01T10:19', 12,
+                    'existing test shift', 'direct', 'created', 'updated'
+                 );",
+            )
+            .unwrap();
+
+        create_schema(&connection).unwrap();
+        connection
+            .execute(
+                "INSERT INTO direct_shift_audit (
+                    direct_shift_id, actor_id, action_type, action_at
+                 ) VALUES (42, 'local_employer', 'edit', 'existing-audit')",
+                [],
+            )
+            .unwrap();
+        create_schema(&connection).unwrap();
+
+        let preserved: (i64, i64, String, String, i64, String) = connection
+            .query_row(
+                "SELECT id, personal_assistant_id, start_time, end_time,
+                        break_minutes, notes
+                 FROM direct_shifts WHERE id = 42",
+                [],
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                        row.get(5)?,
+                    ))
+                },
+            )
+            .unwrap();
+        let audit_count: i64 = connection
+            .query_row("SELECT COUNT(*) FROM direct_shift_audit", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+
+        assert_eq!(
+            preserved,
+            (
+                42,
+                7,
+                "2026-09-01T09:07".to_string(),
+                "2026-09-01T10:19".to_string(),
+                12,
+                "existing test shift".to_string()
+            )
+        );
+        assert!(table_has_column(&connection, "direct_shifts", "deleted_at").unwrap());
+        assert!(table_has_column(&connection, "direct_shifts", "deleted_by").unwrap());
+        assert_eq!(audit_count, 1);
     }
 }

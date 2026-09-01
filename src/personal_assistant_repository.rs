@@ -177,6 +177,17 @@ impl PersonalAssistantRepository {
 
                 UNION ALL
 
+                SELECT 1 FROM direct_shifts
+                WHERE personal_assistant_id = ?1
+
+                UNION ALL
+
+                SELECT 1 FROM direct_shift_audit
+                WHERE before_personal_assistant_id = ?1
+                   OR after_personal_assistant_id = ?1
+
+                UNION ALL
+
                 SELECT 1 FROM payroll_timesheets
                 WHERE personal_assistant_id = ?1
 
@@ -327,5 +338,28 @@ mod tests {
 
         assert_eq!(result, PersonalAssistantDeleteResult::HasDependentRecords);
         assert_eq!(repository.get_all().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn refuses_to_delete_a_personal_assistant_with_direct_shift_evidence() {
+        let repository = test_repository();
+        let personal_assistant_id = insert_test_assistant(&repository);
+        repository
+            .connection
+            .execute(
+                "INSERT INTO direct_shifts (
+                    personal_assistant_id, start_time, end_time, break_minutes,
+                    notes, source_type, created_at, updated_at
+                 ) VALUES (?1, '2026-09-01T09:00', NULL, 0, NULL, 'direct', 'created', 'updated')",
+                params![personal_assistant_id],
+            )
+            .unwrap();
+
+        assert_eq!(
+            repository
+                .delete_if_unreferenced(personal_assistant_id)
+                .unwrap(),
+            PersonalAssistantDeleteResult::HasDependentRecords
+        );
     }
 }

@@ -1344,6 +1344,9 @@ mod tests {
             pay_rate_repository: crate::pay_rate_repository::PayRateRepository::new(open()),
             contracted_hours_repository:
                 crate::contracted_hours_repository::ContractedHoursRepository::new(open()),
+            direct_shift_repository: crate::direct_shift_repository::DirectShiftRepository::new(
+                open(),
+            ),
             payroll_provider_repository:
                 crate::payroll_provider_repository::PayrollProviderRepository::new(open()),
             payroll_schedule_repository:
