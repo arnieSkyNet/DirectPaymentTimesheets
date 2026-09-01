@@ -4,7 +4,7 @@ This document describes the implementation on `main`. Source code, migrations an
 
 ## Current release and platform
 
-- Application version: `0.0.9`.
+- Application version: `0.0.10`.
 - Database schema: version 19, upgraded in place by ordered SQLite migrations.
 - Desktop UI: Rust with `eframe`/`egui`.
 - Persistence: SQLite through `rusqlite` (bundled SQLite).
