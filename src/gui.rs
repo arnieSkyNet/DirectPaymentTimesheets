@@ -3,6 +3,7 @@ use std::collections::{HashMap, HashSet};
 
 use crate::app::Application;
 use crate::application_settings_screen::ApplicationSettingsScreen;
+use crate::config::ApplicationTheme;
 use crate::email_service::PayrollEmailPreview;
 use crate::import_service::ImportSummary;
 use crate::models::TimesheetEntry;
@@ -14,8 +15,10 @@ use crate::payroll_worked_item_repository::{PayrollWorkedItemRepository, Snapsho
 use crate::pdf_generator::{PdfGenerator, PublicHolidayPdfEntry, TimesheetPdfData};
 use crate::personal_assistant_screen::PersonalAssistantScreen;
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum ActiveScreen {
     Dashboard,
+    EnterHours,
     Employer,
     PersonalAssistant,
     PayrollSettings,
@@ -44,6 +47,25 @@ enum SortDirection {
 struct TimesheetSortState {
     column: TimesheetSortColumn,
     direction: SortDirection,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct DashboardStatusPanelStyle {
+    fill: egui::Color32,
+    stroke: egui::Stroke,
+}
+
+#[derive(Default)]
+struct DashboardWorkflowActions {
+    enter_hours: bool,
+    import_hours_csv: bool,
+    view_imported_hours: bool,
+    generate_timesheets: bool,
+    email_timesheets: bool,
+    import_payroll_return: bool,
+    email_payslips: bool,
+    import_payroll_prep_sheet: bool,
+    view_payroll_schedule: bool,
 }
 
 impl Default for TimesheetSortState {
@@ -224,12 +246,17 @@ impl eframe::App for DirectPaymentApp {
                 ui.heading("Direct Payments Timesheets");
                 ui.label(format!("Version {}", self.version));
 
-                if ui.button(" Settings").clicked() {
+                if ui.button("Settings").clicked() {
                     self.active_screen = ActiveScreen::ApplicationSettings;
                 }
 
                 if ui.button("Email Settings").clicked() {
                     self.active_screen = ActiveScreen::EmailSettings;
+                }
+
+                ui.add_space(10.0);
+                if ui.button("Exit").clicked() {
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Close);
                 }
             });
         });
@@ -266,6 +293,13 @@ impl eframe::App for DirectPaymentApp {
         egui::CentralPanel::default().show(ctx, |ui| match self.active_screen {
             ActiveScreen::Dashboard => {
                 self.draw_dashboard(ui);
+            }
+
+            ActiveScreen::EnterHours => {
+                ui.heading("Enter Hours/Shifts");
+                ui.label(
+                    "Direct entry of hours and shifts will be implemented in the next development stage.",
+                );
             }
 
             ActiveScreen::Employer => {
@@ -1327,146 +1361,163 @@ impl DirectPaymentApp {
 
             ui.separator();
 
-            if ui.button("Import CSV").clicked() {
-                match self.application.import_csv() {
-                    Ok(summary) => {
-                        self.status_message = if summary.has_failures() {
-                            format!(
-                                "Import completed with {} refused and {} failed file(s). Review the Import Summary.",
-                                summary.files_refused, summary.files_failed
-                            )
-                        } else {
-                            format!(
-                                "Import completed: {} file(s) succeeded, {} already imported.",
-                                summary.files_succeeded, summary.files_already_imported
-                            )
-                        };
-                        self.last_import = Some(summary);
-                    }
+            let actions = draw_dashboard_workflow_actions(ui);
 
-                    Err(error) => {
-                        self.status_message = format!("Import failed: {}", error);
-                        self.last_import = None;
+                if actions.enter_hours {
+                    navigate_to_enter_hours(&mut self.active_screen);
+                }
+
+                if actions.import_hours_csv {
+                    match self.application.import_csv() {
+                        Ok(summary) => {
+                            self.status_message = if summary.has_failures() {
+                                format!(
+                                    "Import completed with {} refused and {} failed file(s). Review the Import Summary.",
+                                    summary.files_refused, summary.files_failed
+                                )
+                            } else {
+                                format!(
+                                    "Import completed: {} file(s) succeeded, {} already imported.",
+                                    summary.files_succeeded, summary.files_already_imported
+                                )
+                            };
+                            self.last_import = Some(summary);
+                        }
+
+                        Err(error) => {
+                            self.status_message = format!("Import failed: {}", error);
+                            self.last_import = None;
+                        }
                     }
                 }
-            }
 
-            if ui.button("View Imported CSV").clicked() {
-                match self.application.get_timesheets() {
-                    Ok(entries) => {
-                        self.timesheets = entries;
-                        self.timesheet_sort = TimesheetSortState::default();
+                if actions.view_imported_hours {
+                    match self.application.get_timesheets() {
+                        Ok(entries) => {
+                            self.timesheets = entries;
+                            self.timesheet_sort = TimesheetSortState::default();
 
-                        self.status_message =
-                            format!("Loaded {} timesheets.", self.timesheets.len());
-                    }
+                            self.status_message =
+                                format!("Loaded {} timesheets.", self.timesheets.len());
+                        }
 
-                    Err(error) => {
-                        self.status_message = format!("Failed loading timesheets: {}", error);
-                    }
-                }
-            }
-
-            if ui.button("Generate Payroll Timesheets").clicked() {
-                match self.generate_payroll_timesheets() {
-                    Ok(count) => {
-                        self.status_message =
-                            format!("Payroll timesheets generated: {} PDF(s).", count);
-                    }
-
-                    Err(error) => {
-                        self.status_message =
-                            format!("Payroll timesheet generation failed: {}", error);
+                        Err(error) => {
+                            self.status_message = format!("Failed loading timesheets: {}", error);
+                        }
                     }
                 }
-            }
-
-            if ui.button("Email Timesheets").clicked() {
-                self.begin_email_batch(PayrollEmailKind::Timesheet);
-            }
-
-            if ui.button("Import Payroll Return").clicked() {
-                self.begin_payroll_return_import();
-            }
-
-            if ui.button("Email Payslips").clicked() {
-                self.begin_email_batch(PayrollEmailKind::Payslip);
-            }
-
-            if ui.button("Import Payroll Prep Sheet").clicked() {
-                if let Some(path) = rfd::FileDialog::new()
-                    .add_filter("Payroll Prep Sheet", &["pdf", "docx"])
-                    .pick_file()
-                {
-                    match self.application.import_payroll_prep_sheet(&path) {
+                if actions.generate_timesheets {
+                    match self.generate_payroll_timesheets() {
                         Ok(count) => {
                             self.status_message =
-                                format!("Payroll Prep Sheet imported: {} schedule entries.", count);
-                            if let Err(error) = self.refresh_operational_payroll_schedules() {
-                                self.operational_payroll_period_error = Some(format!(
-                                    "Could not refresh operational payroll periods: {error}"
-                                ));
-                            }
+                                format!("Payroll timesheets generated: {} PDF(s).", count);
                         }
 
                         Err(error) => {
                             self.status_message =
-                                format!("Payroll Prep Sheet import failed: {}", error);
+                                format!("Payroll timesheet generation failed: {}", error);
                         }
                     }
                 }
-            }
 
-            if ui.button("View Payroll Schedule").clicked() {
-                self.begin_view_payroll_schedule();
-            }
+                if actions.email_timesheets {
+                    self.begin_email_batch(PayrollEmailKind::Timesheet);
+                }
+
+                if actions.import_payroll_return {
+                    self.begin_payroll_return_import();
+                }
+
+                if actions.email_payslips {
+                    self.begin_email_batch(PayrollEmailKind::Payslip);
+                }
+
+                if actions.import_payroll_prep_sheet {
+                    if let Some(path) = rfd::FileDialog::new()
+                        .add_filter("Payroll Prep Sheet", &["pdf", "docx"])
+                        .pick_file()
+                    {
+                        match self.application.import_payroll_prep_sheet(&path) {
+                            Ok(count) => {
+                                self.status_message = format!(
+                                    "Payroll Prep Sheet imported: {} schedule entries.",
+                                    count
+                                );
+                                if let Err(error) = self.refresh_operational_payroll_schedules() {
+                                    self.operational_payroll_period_error = Some(format!(
+                                        "Could not refresh operational payroll periods: {error}"
+                                    ));
+                                }
+                            }
+
+                            Err(error) => {
+                                self.status_message =
+                                    format!("Payroll Prep Sheet import failed: {}", error);
+                            }
+                        }
+                    }
+                }
+
+                if actions.view_payroll_schedule {
+                    self.begin_view_payroll_schedule();
+                }
 
             self.draw_additional_note_prompt(ui);
 
             ui.separator();
 
-            ui.heading("Import Summary");
+            let theme = self.application.context.config.theme;
 
-            match &self.last_import {
-                Some(summary) => {
-                    ui.label(format!("Files discovered: {}", summary.files_discovered));
-                    ui.label(format!("Files attempted: {}", summary.files_processed));
-                    ui.label(format!("Files succeeded: {}", summary.files_succeeded));
-                    ui.label(format!(
-                        "Files already imported: {}",
-                        summary.files_already_imported
-                    ));
-                    ui.label(format!("Files refused: {}", summary.files_refused));
-                    ui.label(format!("Files failed: {}", summary.files_failed));
-                    ui.label(format!("Rows imported: {}", summary.rows_imported));
-                    ui.label(format!("Rows skipped: {}", summary.rows_skipped));
-                    for message in &summary.failure_messages {
-                        ui.label(egui::RichText::new(message).color(egui::Color32::RED));
+            dashboard_status_panel(ui, 0, theme, |ui| {
+                ui.heading("Import Summary");
+
+                match &self.last_import {
+                    Some(summary) => {
+                        ui.label(format!("Files discovered: {}", summary.files_discovered));
+                        ui.label(format!("Files attempted: {}", summary.files_processed));
+                        ui.label(format!("Files succeeded: {}", summary.files_succeeded));
+                        ui.label(format!(
+                            "Files already imported: {}",
+                            summary.files_already_imported
+                        ));
+                        ui.label(format!("Files refused: {}", summary.files_refused));
+                        ui.label(format!("Files failed: {}", summary.files_failed));
+                        ui.label(format!("Rows imported: {}", summary.rows_imported));
+                        ui.label(format!("Rows skipped: {}", summary.rows_skipped));
+                        for message in &summary.failure_messages {
+                            ui.label(egui::RichText::new(message).color(egui::Color32::RED));
+                        }
+                        for path in &summary.orphaned_archives {
+                            ui.label(format!("Recoverable orphan archive: {}", path.display()));
+                        }
                     }
-                    for path in &summary.orphaned_archives {
-                        ui.label(format!("Recoverable orphan archive: {}", path.display()));
+
+                    None => {
+                        ui.label("No import performed yet.");
                     }
                 }
+            });
 
-                None => {
-                    ui.label("No import performed yet.");
+            dashboard_status_panel(ui, 1, theme, |ui| {
+                ui.label(format!("Status: {}", self.status_message));
+            });
+
+            dashboard_status_panel(ui, 2, theme, |ui| {
+                if let Some(selected_year) = draw_payroll_schedule_year_selector(
+                    ui,
+                    &self.payroll_schedule_years,
+                    self.selected_payroll_schedule_year.as_deref(),
+                ) {
+                    self.load_payroll_schedule_year(&selected_year);
                 }
-            }
-
-            ui.separator();
-
-            ui.label(format!("Status: {}", self.status_message));
-
-            if let Some(selected_year) = draw_payroll_schedule_year_selector(
-                ui,
-                &self.payroll_schedule_years,
-                self.selected_payroll_schedule_year.as_deref(),
-            ) {
-                self.load_payroll_schedule_year(&selected_year);
-            }
-            draw_payroll_schedule(ui, &self.payroll_schedules);
-            draw_timesheets(ui, &self.timesheets, &mut self.timesheet_sort);
-            self.draw_timesheet_email_status(ui);
+                draw_payroll_schedule(ui, &self.payroll_schedules);
+            });
+            dashboard_status_panel(ui, 3, theme, |ui| {
+                draw_timesheets(ui, &self.timesheets, &mut self.timesheet_sort);
+            });
+            dashboard_status_panel(ui, 4, theme, |ui| {
+                self.draw_timesheet_email_status(ui);
+            });
             self.draw_payroll_return_schedule_dialog(ui.ctx());
         });
     }
@@ -2757,6 +2808,156 @@ fn verify_timesheet_candidate_for_attachment(
     Ok(())
 }
 
+fn navigate_to_enter_hours(active_screen: &mut ActiveScreen) {
+    *active_screen = ActiveScreen::EnterHours;
+}
+
+const WORKFLOW_COLUMN_WIDTHS: [f32; 3] = [225.0, 165.0, 165.0];
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum DashboardWorkflowLayout {
+    AlignedColumns,
+    WrappedRows,
+}
+
+fn dashboard_workflow_layout(
+    available_width: f32,
+    horizontal_spacing: f32,
+) -> DashboardWorkflowLayout {
+    let aligned_width = WORKFLOW_COLUMN_WIDTHS.iter().sum::<f32>() + horizontal_spacing * 2.0;
+    if available_width >= aligned_width {
+        DashboardWorkflowLayout::AlignedColumns
+    } else {
+        DashboardWorkflowLayout::WrappedRows
+    }
+}
+
+fn draw_dashboard_workflow_actions(ui: &mut egui::Ui) -> DashboardWorkflowActions {
+    let mut actions = DashboardWorkflowActions::default();
+    let available_width = ui.available_width();
+    let spacing = ui.spacing().item_spacing.x;
+
+    match dashboard_workflow_layout(available_width, spacing) {
+        DashboardWorkflowLayout::AlignedColumns => {
+            egui::Grid::new("dashboard_workflow_actions")
+                .spacing([spacing, ui.spacing().item_spacing.y])
+                .show(ui, |ui| {
+                    actions.enter_hours = workflow_button(ui, 0, "Enter Hours/Shifts");
+                    actions.import_hours_csv = workflow_button(ui, 1, "Import Hours CSV");
+                    actions.view_imported_hours = workflow_button(ui, 2, "View Imported Hours");
+                    ui.end_row();
+
+                    actions.generate_timesheets =
+                        workflow_button(ui, 0, "Generate Payroll Timesheets");
+                    actions.email_timesheets = workflow_button(ui, 1, "Email Timesheets");
+                    ui.end_row();
+
+                    actions.import_payroll_return =
+                        workflow_button(ui, 0, "Import Payroll Return (Payslips)");
+                    actions.email_payslips = workflow_button(ui, 1, "Email Payslips");
+                    ui.end_row();
+
+                    actions.import_payroll_prep_sheet =
+                        workflow_button(ui, 0, "Import Payroll Prep Sheet");
+                    actions.view_payroll_schedule = workflow_button(ui, 1, "View Payroll Schedule");
+                    ui.end_row();
+                });
+        }
+        DashboardWorkflowLayout::WrappedRows => {
+            let widths = WORKFLOW_COLUMN_WIDTHS.map(|width| width.min(available_width));
+            ui.horizontal_wrapped(|ui| {
+                actions.enter_hours = sized_workflow_button(ui, widths[0], "Enter Hours/Shifts");
+                actions.import_hours_csv = sized_workflow_button(ui, widths[1], "Import Hours CSV");
+                actions.view_imported_hours =
+                    sized_workflow_button(ui, widths[2], "View Imported Hours");
+            });
+            ui.horizontal_wrapped(|ui| {
+                actions.generate_timesheets =
+                    sized_workflow_button(ui, widths[0], "Generate Payroll Timesheets");
+                actions.email_timesheets = sized_workflow_button(ui, widths[1], "Email Timesheets");
+            });
+            ui.horizontal_wrapped(|ui| {
+                actions.import_payroll_return =
+                    sized_workflow_button(ui, widths[0], "Import Payroll Return (Payslips)");
+                actions.email_payslips = sized_workflow_button(ui, widths[1], "Email Payslips");
+            });
+            ui.horizontal_wrapped(|ui| {
+                actions.import_payroll_prep_sheet =
+                    sized_workflow_button(ui, widths[0], "Import Payroll Prep Sheet");
+                actions.view_payroll_schedule =
+                    sized_workflow_button(ui, widths[1], "View Payroll Schedule");
+            });
+        }
+    }
+
+    actions
+}
+
+fn workflow_button(ui: &mut egui::Ui, column: usize, label: &str) -> bool {
+    sized_workflow_button(ui, WORKFLOW_COLUMN_WIDTHS[column], label)
+}
+
+fn sized_workflow_button(ui: &mut egui::Ui, width: f32, label: &str) -> bool {
+    ui.add_sized(
+        [width, ui.spacing().interact_size.y],
+        egui::Button::new(label),
+    )
+    .clicked()
+}
+
+fn dashboard_status_panel(
+    ui: &mut egui::Ui,
+    displayed_index: usize,
+    theme: ApplicationTheme,
+    add_contents: impl FnOnce(&mut egui::Ui),
+) {
+    let style = dashboard_status_panel_style(displayed_index, theme, ui.visuals());
+    egui::Frame::new()
+        .fill(style.fill)
+        .stroke(style.stroke)
+        .inner_margin(egui::Margin::symmetric(8, 6))
+        .outer_margin(egui::Margin::symmetric(0, 4))
+        .show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            add_contents(ui);
+        });
+}
+
+fn dashboard_status_panel_style(
+    displayed_index: usize,
+    theme: ApplicationTheme,
+    visuals: &egui::Visuals,
+) -> DashboardStatusPanelStyle {
+    if theme == ApplicationTheme::AccessibleHighContrast {
+        return DashboardStatusPanelStyle {
+            fill: visuals.panel_fill,
+            stroke: visuals.widgets.noninteractive.bg_stroke,
+        };
+    }
+
+    let faint_weight = if displayed_index % 2 == 0 { 20 } else { 35 };
+    DashboardStatusPanelStyle {
+        fill: blend_theme_colors(visuals.panel_fill, visuals.faint_bg_color, faint_weight),
+        stroke: egui::Stroke::NONE,
+    }
+}
+
+fn blend_theme_colors(
+    base: egui::Color32,
+    accent: egui::Color32,
+    accent_percent: u16,
+) -> egui::Color32 {
+    let mix = |base: u8, accent: u8| {
+        let base_weight = 100 - accent_percent;
+        ((u16::from(base) * base_weight + u16::from(accent) * accent_percent) / 100) as u8
+    };
+    egui::Color32::from_rgb(
+        mix(base.r(), accent.r()),
+        mix(base.g(), accent.g()),
+        mix(base.b(), accent.b()),
+    )
+}
+
 fn parse_date_checked(value: &str) -> Option<chrono::NaiveDate> {
     chrono::NaiveDate::parse_from_str(value.trim(), "%d/%m/%Y")
         .or_else(|_| chrono::NaiveDate::parse_from_str(value.trim(), "%d-%m-%Y"))
@@ -3115,6 +3316,60 @@ fn draw_payroll_schedule(ui: &mut egui::Ui, schedules: &[PayrollSchedule]) {
 #[cfg(test)]
 mod payroll_return_schedule_selection_tests {
     use super::*;
+
+    #[test]
+    fn enter_hours_action_uses_the_existing_active_screen_navigation_state() {
+        let mut active_screen = ActiveScreen::Dashboard;
+
+        navigate_to_enter_hours(&mut active_screen);
+
+        assert_eq!(active_screen, ActiveScreen::EnterHours);
+    }
+
+    #[test]
+    fn dashboard_workflow_uses_aligned_columns_only_when_they_fit() {
+        let spacing = 8.0;
+        let required = WORKFLOW_COLUMN_WIDTHS.iter().sum::<f32>() + spacing * 2.0;
+
+        assert_eq!(
+            dashboard_workflow_layout(required, spacing),
+            DashboardWorkflowLayout::AlignedColumns
+        );
+        assert_eq!(
+            dashboard_workflow_layout(required - 1.0, spacing),
+            DashboardWorkflowLayout::WrappedRows
+        );
+    }
+
+    #[test]
+    fn dashboard_status_panel_styles_are_deterministic_for_all_themes() {
+        let visuals = egui::Visuals::dark();
+        let themes = [
+            ApplicationTheme::System,
+            ApplicationTheme::Light,
+            ApplicationTheme::SoftLight,
+            ApplicationTheme::Dark,
+            ApplicationTheme::SoftDark,
+            ApplicationTheme::Blue,
+            ApplicationTheme::AccessibleHighContrast,
+        ];
+
+        for theme in themes {
+            let first = dashboard_status_panel_style(0, theme, &visuals);
+            let second = dashboard_status_panel_style(1, theme, &visuals);
+            assert_eq!(first, dashboard_status_panel_style(2, theme, &visuals));
+
+            if theme == ApplicationTheme::AccessibleHighContrast {
+                assert_eq!(first.fill, visuals.panel_fill);
+                assert_eq!(second.fill, visuals.panel_fill);
+                assert_ne!(first.stroke, egui::Stroke::NONE);
+            } else {
+                assert_ne!(first.fill, second.fill);
+                assert_eq!(first.stroke, egui::Stroke::NONE);
+                assert_eq!(second.stroke, egui::Stroke::NONE);
+            }
+        }
+    }
 
     #[test]
     fn payroll_return_reporting_distinguishes_safe_and_partial_results() {
