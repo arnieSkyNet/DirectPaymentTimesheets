@@ -56,11 +56,13 @@ An imported timesheet row preserves:
 
 `worked_minutes` is parsed directly from the CSV Worked Hours field, not recalculated from start/end or altered by the configured rounding setting. Imported rate and amount are retained but are not authoritative for generated payroll.
 
-Duplicate detection currently uses PA name plus start/end values. The stable row ID is later used as submitted-snapshot membership evidence.
+New imports are preflighted as a complete file. PA names are matched case-insensitively after collapsing whitespace and must resolve to exactly one maintained PA. An incoming row that is materially identical to an existing immutable shift is counted and skipped; a same-PA/start row with any material difference refuses the complete file for explicit review. The same rule applies within one incoming file. Existing imported rows are never replaced or merged. The stable row ID is later used as submitted-snapshot membership evidence.
 
 ## Import audit and archive
 
-An import-audit record captures import time, original/archive filenames, row counts, status and optional error. A successfully processed source CSV is copied to the internal `archive/YYYY/MM/` directory using a timestamped name. Failed attempts are also audited where the workflow can record the error.
+An import-audit record captures import time, original/archive filenames, row counts, status and optional error. Validated source bytes are written first to a unique, non-overwriting file in `archive/YYYY/MM/`; all imported rows and the SUCCESS audit are then committed in one SQLite transaction. A database failure leaves the archive as reported recoverable evidence and rolls back all rows. Failed/refused audits are best-effort.
+
+Schema 19 has no content hash or row-to-import relationship. Historical successful-import detection therefore remains based on the original pathname: changed content at an already-successful pathname is conservatively skipped, while renamed identical content is preflighted again and may be refused as competing evidence. Durable content identity and row provenance require an explicitly approved future migration.
 
 ## Payroll schedule
 

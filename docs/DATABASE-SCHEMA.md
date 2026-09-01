@@ -35,7 +35,7 @@ Imported external work rows.
 | `notes` | `TEXT` | Optional source note. |
 | `personal_assistant_id` | `INTEGER` | Logical reference to `personal_assistants.id`; nullable for unresolved/legacy imports. |
 
-No database uniqueness constraint implements duplicate detection; `TimesheetRepository` checks PA name plus start/end before insert.
+No database uniqueness constraint implements duplicate detection. New CSV imports preflight possible collisions in application code: materially identical evidence is counted/skipped, while a same-PA/start material difference refuses the complete file rather than selecting or replacing a row. The complete file's new inserts and SUCCESS audit, including truthful imported/skipped counts, are committed in one SQLite transaction.
 
 ### `import_audit`
 

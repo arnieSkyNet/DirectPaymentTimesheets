@@ -11,6 +11,7 @@ impl TimesheetRepository {
         Self { connection }
     }
 
+    #[cfg(test)]
     pub fn insert(&self, entry: &TimesheetEntry) -> Result<()> {
         let personal_assistant_id: Option<i64> = self
             .connection
@@ -95,21 +96,77 @@ impl TimesheetRepository {
         Ok(entries)
     }
 
-    pub fn exists(&self, entry: &TimesheetEntry) -> Result<bool> {
-        let mut statement = self.connection.prepare(
-            "SELECT COUNT(*)
-             FROM timesheets
-             WHERE pa_name = ?1
-             AND start_time = ?2
-             AND end_time = ?3",
-        )?;
+    pub fn resolve_personal_assistant_ids(&self, imported_name: &str) -> Result<Vec<i64>> {
+        let wanted = normalize_person_name(imported_name);
+        let mut statement = self
+            .connection
+            .prepare("SELECT id, first_name, surname FROM personal_assistants ORDER BY id")?;
+        let candidates = statement.query_map([], |row| {
+            Ok((
+                row.get::<_, i64>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+            ))
+        })?;
+        let mut matches = Vec::new();
+        for candidate in candidates {
+            let (id, first_name, surname) = candidate?;
+            if normalize_person_name(&format!("{first_name} {surname}")) == wanted {
+                matches.push(id);
+            }
+        }
+        Ok(matches)
+    }
 
-        let count: i64 = statement.query_row(
-            params![&entry.pa_name, &entry.start_time, &entry.end_time],
-            |row| row.get(0),
+    pub fn import_file_atomically(
+        &self,
+        entries: &[TimesheetEntry],
+        import_time: &str,
+        original_filename: &str,
+        archive_filename: &str,
+        rows_processed: i64,
+        rows_skipped: i64,
+    ) -> Result<()> {
+        let transaction = self.connection.unchecked_transaction()?;
+        for entry in entries {
+            let personal_assistant_id = entry.personal_assistant_id.ok_or_else(|| {
+                rusqlite::Error::InvalidParameterName(
+                    "CSV import requires a uniquely resolved personal_assistant_id".to_string(),
+                )
+            })?;
+            transaction.execute(
+                "INSERT INTO timesheets (
+                    pa_name, personal_assistant_id, start_time, end_time,
+                    break_minutes, worked_minutes, hourly_rate, amount, notes
+                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                params![
+                    entry.pa_name,
+                    personal_assistant_id,
+                    entry.start_time,
+                    entry.end_time,
+                    entry.break_minutes,
+                    entry.worked_minutes,
+                    entry.hourly_rate,
+                    entry.amount,
+                    entry.notes,
+                ],
+            )?;
+        }
+        transaction.execute(
+            "INSERT INTO import_audit (
+                import_time, original_filename, archive_filename, rows_processed,
+                rows_imported, rows_skipped, status, error_message
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'SUCCESS', NULL)",
+            params![
+                import_time,
+                original_filename,
+                archive_filename,
+                rows_processed,
+                entries.len() as i64,
+                rows_skipped,
+            ],
         )?;
-
-        Ok(count > 0)
+        transaction.commit()
     }
 
     pub fn add_import_audit(
@@ -168,6 +225,14 @@ impl TimesheetRepository {
     }
 }
 
+fn normalize_person_name(value: &str) -> String {
+    value
+        .split_whitespace()
+        .map(str::to_lowercase)
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -206,17 +271,6 @@ mod tests {
 
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].pa_name, "Test PA");
-    }
-
-    #[test]
-    fn duplicate_timesheet_is_detected() {
-        let repository = create_test_repository();
-
-        let entry = test_entry();
-
-        repository.insert(&entry).unwrap();
-
-        assert!(repository.exists(&entry).unwrap());
     }
 
     #[test]

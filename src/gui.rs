@@ -24,6 +24,51 @@ enum ActiveScreen {
     EmailSettings,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum TimesheetSortColumn {
+    PaName,
+    Start,
+    End,
+    Worked,
+    Rate,
+    Amount,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SortDirection {
+    Ascending,
+    Descending,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct TimesheetSortState {
+    column: TimesheetSortColumn,
+    direction: SortDirection,
+}
+
+impl Default for TimesheetSortState {
+    fn default() -> Self {
+        Self {
+            column: TimesheetSortColumn::Start,
+            direction: SortDirection::Descending,
+        }
+    }
+}
+
+impl TimesheetSortState {
+    fn select(&mut self, column: TimesheetSortColumn) {
+        if self.column == column {
+            self.direction = match self.direction {
+                SortDirection::Ascending => SortDirection::Descending,
+                SortDirection::Descending => SortDirection::Ascending,
+            };
+        } else {
+            self.column = column;
+            self.direction = SortDirection::Ascending;
+        }
+    }
+}
+
 #[derive(Clone, Copy)]
 enum PayrollEmailKind {
     Timesheet,
@@ -100,6 +145,7 @@ pub struct DirectPaymentApp {
     status_message: String,
     last_import: Option<ImportSummary>,
     timesheets: Vec<TimesheetEntry>,
+    timesheet_sort: TimesheetSortState,
     payroll_schedules: Vec<PayrollSchedule>,
     payroll_schedule_years: Vec<String>,
     selected_payroll_schedule_year: Option<String>,
@@ -133,6 +179,7 @@ impl DirectPaymentApp {
             status_message: "Application ready.".to_string(),
             last_import: None,
             timesheets: Vec::new(),
+            timesheet_sort: TimesheetSortState::default(),
             payroll_schedules: Vec::new(),
             payroll_schedule_years: Vec::new(),
             selected_payroll_schedule_year: None,
@@ -1279,7 +1326,17 @@ impl DirectPaymentApp {
             if ui.button("Import CSV").clicked() {
                 match self.application.import_csv() {
                     Ok(summary) => {
-                        self.status_message = "Import completed successfully.".to_string();
+                        self.status_message = if summary.has_failures() {
+                            format!(
+                                "Import completed with {} refused and {} failed file(s). Review the Import Summary.",
+                                summary.files_refused, summary.files_failed
+                            )
+                        } else {
+                            format!(
+                                "Import completed: {} file(s) succeeded, {} already imported.",
+                                summary.files_succeeded, summary.files_already_imported
+                            )
+                        };
                         self.last_import = Some(summary);
                     }
 
@@ -1294,6 +1351,7 @@ impl DirectPaymentApp {
                 match self.application.get_timesheets() {
                     Ok(entries) => {
                         self.timesheets = entries;
+                        self.timesheet_sort = TimesheetSortState::default();
 
                         self.status_message =
                             format!("Loaded {} timesheets.", self.timesheets.len());
@@ -1368,9 +1426,22 @@ impl DirectPaymentApp {
             match &self.last_import {
                 Some(summary) => {
                     ui.label(format!("Files discovered: {}", summary.files_discovered));
-                    ui.label(format!("Files processed: {}", summary.files_processed));
+                    ui.label(format!("Files attempted: {}", summary.files_processed));
+                    ui.label(format!("Files succeeded: {}", summary.files_succeeded));
+                    ui.label(format!(
+                        "Files already imported: {}",
+                        summary.files_already_imported
+                    ));
+                    ui.label(format!("Files refused: {}", summary.files_refused));
+                    ui.label(format!("Files failed: {}", summary.files_failed));
                     ui.label(format!("Rows imported: {}", summary.rows_imported));
                     ui.label(format!("Rows skipped: {}", summary.rows_skipped));
+                    for message in &summary.failure_messages {
+                        ui.label(egui::RichText::new(message).color(egui::Color32::RED));
+                    }
+                    for path in &summary.orphaned_archives {
+                        ui.label(format!("Recoverable orphan archive: {}", path.display()));
+                    }
                 }
 
                 None => {
@@ -1390,7 +1461,7 @@ impl DirectPaymentApp {
                 self.load_payroll_schedule_year(&selected_year);
             }
             draw_payroll_schedule(ui, &self.payroll_schedules);
-            draw_timesheets(ui, &self.timesheets);
+            draw_timesheets(ui, &self.timesheets, &mut self.timesheet_sort);
             self.draw_timesheet_email_status(ui);
             self.draw_payroll_return_schedule_dialog(ui.ctx());
         });
@@ -2587,7 +2658,11 @@ fn format_date(date: chrono::NaiveDate) -> String {
     date.format("%d/%m/%Y").to_string()
 }
 
-fn draw_timesheets(ui: &mut egui::Ui, timesheets: &[TimesheetEntry]) {
+fn draw_timesheets(
+    ui: &mut egui::Ui,
+    timesheets: &[TimesheetEntry],
+    sort_state: &mut TimesheetSortState,
+) {
     ui.separator();
 
     ui.heading("Timesheets");
@@ -2600,15 +2675,15 @@ fn draw_timesheets(ui: &mut egui::Ui, timesheets: &[TimesheetEntry]) {
     egui::Grid::new("timesheet_grid")
         .striped(true)
         .show(ui, |ui| {
-            ui.label("PA Name");
-            ui.label("Start");
-            ui.label("End");
-            ui.label("Worked");
-            ui.label("Rate");
-            ui.label("Amount");
+            timesheet_sort_heading(ui, sort_state, TimesheetSortColumn::PaName, "PA Name");
+            timesheet_sort_heading(ui, sort_state, TimesheetSortColumn::Start, "Start");
+            timesheet_sort_heading(ui, sort_state, TimesheetSortColumn::End, "End");
+            timesheet_sort_heading(ui, sort_state, TimesheetSortColumn::Worked, "Worked");
+            timesheet_sort_heading(ui, sort_state, TimesheetSortColumn::Rate, "Rate");
+            timesheet_sort_heading(ui, sort_state, TimesheetSortColumn::Amount, "Amount");
             ui.end_row();
 
-            for entry in timesheets {
+            for entry in sorted_timesheets(timesheets, *sort_state) {
                 ui.label(&entry.pa_name);
                 ui.label(&entry.start_time);
                 ui.label(&entry.end_time);
@@ -2618,6 +2693,223 @@ fn draw_timesheets(ui: &mut egui::Ui, timesheets: &[TimesheetEntry]) {
                 ui.end_row();
             }
         });
+}
+
+fn timesheet_sort_heading(
+    ui: &mut egui::Ui,
+    sort_state: &mut TimesheetSortState,
+    column: TimesheetSortColumn,
+    label: &str,
+) {
+    let indicator = if sort_state.column == column {
+        match sort_state.direction {
+            SortDirection::Ascending => " ▲",
+            SortDirection::Descending => " ▼",
+        }
+    } else {
+        ""
+    };
+    if ui.small_button(format!("{label}{indicator}")).clicked() {
+        sort_state.select(column);
+    }
+}
+
+fn sorted_timesheets(
+    timesheets: &[TimesheetEntry],
+    sort_state: TimesheetSortState,
+) -> Vec<&TimesheetEntry> {
+    let mut sorted: Vec<_> = timesheets.iter().collect();
+    sorted.sort_by(|left, right| {
+        let ordering = match sort_state.column {
+            TimesheetSortColumn::PaName => directed_ordering(
+                left.pa_name
+                    .to_lowercase()
+                    .cmp(&right.pa_name.to_lowercase()),
+                sort_state.direction,
+            ),
+            TimesheetSortColumn::Start => compare_timesheet_datetimes(
+                &left.start_time,
+                &right.start_time,
+                sort_state.direction,
+            ),
+            TimesheetSortColumn::End => {
+                compare_timesheet_datetimes(&left.end_time, &right.end_time, sort_state.direction)
+            }
+            TimesheetSortColumn::Worked => directed_ordering(
+                left.worked_minutes.cmp(&right.worked_minutes),
+                sort_state.direction,
+            ),
+            TimesheetSortColumn::Rate => {
+                compare_timesheet_numbers(left.hourly_rate, right.hourly_rate, sort_state.direction)
+            }
+            TimesheetSortColumn::Amount => {
+                compare_timesheet_numbers(left.amount, right.amount, sort_state.direction)
+            }
+        };
+        ordering.then_with(|| left.id.cmp(&right.id))
+    });
+    sorted
+}
+
+fn directed_ordering(ordering: std::cmp::Ordering, direction: SortDirection) -> std::cmp::Ordering {
+    match direction {
+        SortDirection::Ascending => ordering,
+        SortDirection::Descending => ordering.reverse(),
+    }
+}
+
+fn compare_timesheet_datetimes(
+    left: &str,
+    right: &str,
+    direction: SortDirection,
+) -> std::cmp::Ordering {
+    match (
+        crate::csv_import::parse_supported_timestamp(left),
+        crate::csv_import::parse_supported_timestamp(right),
+    ) {
+        (Some(left), Some(right)) => directed_ordering(left.cmp(&right), direction),
+        (Some(_), None) => std::cmp::Ordering::Less,
+        (None, Some(_)) => std::cmp::Ordering::Greater,
+        (None, None) => left.cmp(right),
+    }
+}
+
+fn compare_timesheet_numbers(
+    left: f64,
+    right: f64,
+    direction: SortDirection,
+) -> std::cmp::Ordering {
+    match (left.is_finite(), right.is_finite()) {
+        (true, true) => directed_ordering(left.total_cmp(&right), direction),
+        (true, false) => std::cmp::Ordering::Less,
+        (false, true) => std::cmp::Ordering::Greater,
+        (false, false) => left.total_cmp(&right),
+    }
+}
+
+#[cfg(test)]
+mod timesheet_sort_tests {
+    use super::*;
+
+    fn entry(
+        id: i64,
+        name: &str,
+        start: &str,
+        end: &str,
+        worked: i64,
+        rate: f64,
+        amount: f64,
+    ) -> TimesheetEntry {
+        TimesheetEntry {
+            id,
+            pa_name: name.to_string(),
+            personal_assistant_id: Some(id),
+            start_time: start.to_string(),
+            end_time: end.to_string(),
+            break_minutes: 0,
+            worked_minutes: worked,
+            hourly_rate: rate,
+            amount,
+            notes: None,
+        }
+    }
+
+    fn ids(entries: &[TimesheetEntry], state: TimesheetSortState) -> Vec<i64> {
+        sorted_timesheets(entries, state)
+            .into_iter()
+            .map(|entry| entry.id)
+            .collect()
+    }
+
+    fn entries() -> Vec<TimesheetEntry> {
+        vec![
+            entry(
+                1,
+                "zoe",
+                "30 January 2026 at 09:00:00",
+                "30 January 2026 at 10:00:00",
+                90,
+                15.0,
+                22.5,
+            ),
+            entry(
+                2,
+                "Alice",
+                "2 February 2026 at 09:00:00",
+                "2 February 2026 at 12:00:00",
+                30,
+                12.0,
+                6.0,
+            ),
+            entry(
+                3,
+                "bob",
+                "1 February 2026 at 09:00:00",
+                "1 February 2026 at 11:00:00",
+                60,
+                14.0,
+                14.0,
+            ),
+        ]
+    }
+
+    #[test]
+    fn default_is_newest_start_first_using_chronological_values() {
+        assert_eq!(
+            ids(&entries(), TimesheetSortState::default()),
+            vec![2, 3, 1]
+        );
+    }
+
+    #[test]
+    fn selecting_active_start_toggles_to_oldest_first() {
+        let mut state = TimesheetSortState::default();
+        state.select(TimesheetSortColumn::Start);
+        assert_eq!(state.direction, SortDirection::Ascending);
+        assert_eq!(ids(&entries(), state), vec![1, 3, 2]);
+    }
+
+    #[test]
+    fn pa_name_sorts_case_insensitively_and_toggles_direction() {
+        let mut state = TimesheetSortState::default();
+        state.select(TimesheetSortColumn::PaName);
+        assert_eq!(ids(&entries(), state), vec![2, 3, 1]);
+        state.select(TimesheetSortColumn::PaName);
+        assert_eq!(ids(&entries(), state), vec![1, 3, 2]);
+    }
+
+    #[test]
+    fn worked_rate_and_amount_sort_numerically() {
+        let values = entries();
+        for (column, expected) in [
+            (TimesheetSortColumn::Worked, vec![2, 3, 1]),
+            (TimesheetSortColumn::Rate, vec![2, 3, 1]),
+            (TimesheetSortColumn::Amount, vec![2, 3, 1]),
+        ] {
+            let mut state = TimesheetSortState::default();
+            state.select(column);
+            assert_eq!(ids(&values, state), expected);
+            state.select(column);
+            assert_eq!(ids(&values, state), vec![1, 3, 2]);
+        }
+    }
+
+    #[test]
+    fn end_sorts_chronologically_and_legacy_non_finite_numbers_sort_last() {
+        let values = entries();
+        let mut state = TimesheetSortState::default();
+        state.select(TimesheetSortColumn::End);
+        assert_eq!(ids(&values, state), vec![1, 3, 2]);
+
+        let rates = vec![
+            entry(1, "A", "bad", "bad", 0, f64::NAN, 0.0),
+            entry(2, "B", "bad", "bad", 0, 10.0, 0.0),
+        ];
+        state.select(TimesheetSortColumn::Rate);
+        assert_eq!(ids(&rates, state), vec![2, 1]);
+        state.select(TimesheetSortColumn::Rate);
+        assert_eq!(ids(&rates, state), vec![2, 1]);
+    }
 }
 
 fn format_worked_time(minutes: i64) -> String {

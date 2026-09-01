@@ -1,14 +1,24 @@
 use chrono::Local;
 use std::error::Error;
 use std::fs;
-use std::io;
+use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use zip::ZipArchive;
 
 use crate::models::PersonalAssistant;
 use crate::payroll_schedule_repository::PayrollSchedule;
 
+#[cfg(test)]
 pub fn archive_csv(source: &Path, archive_dir: &Path) -> Result<PathBuf, Box<dyn Error>> {
+    let bytes = fs::read(source)?;
+    archive_csv_bytes(source, &bytes, archive_dir)
+}
+
+pub fn archive_csv_bytes(
+    source: &Path,
+    bytes: &[u8],
+    archive_dir: &Path,
+) -> Result<PathBuf, Box<dyn Error>> {
     let now = Local::now();
 
     let year = now.format("%Y").to_string();
@@ -23,15 +33,46 @@ pub fn archive_csv(source: &Path, archive_dir: &Path) -> Result<PathBuf, Box<dyn
         .ok_or("Invalid source filename")?
         .to_string_lossy();
 
-    let timestamp = now.format("%Y-%m-%d_%H%M%S");
+    let timestamp = now.format("%Y-%m-%d_%H%M%S_%f");
+    for sequence in 0..1000 {
+        let archive_filename = format!("{timestamp}_{sequence:03}_{filename}");
+        let destination = archive_path.join(archive_filename);
+        let mut file = match fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&destination)
+        {
+            Ok(file) => file,
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
+            Err(error) => return Err(error.into()),
+        };
 
-    let archive_filename = format!("{}_{}", timestamp, filename);
+        let result = (|| -> io::Result<()> {
+            file.write_all(bytes)?;
+            file.sync_all()?;
+            if file.metadata()?.len() != bytes.len() as u64 {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "archived CSV length does not match source bytes",
+                ));
+            }
+            drop(file);
+            if fs::read(&destination)? != bytes {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "archived CSV content does not match source bytes",
+                ));
+            }
+            Ok(())
+        })();
+        if let Err(error) = result {
+            let _ = fs::remove_file(&destination);
+            return Err(error.into());
+        }
+        return Ok(destination);
+    }
 
-    let destination = archive_path.join(archive_filename);
-
-    fs::copy(source, &destination)?;
-
-    Ok(destination)
+    Err("Could not allocate a unique CSV archive filename".into())
 }
 
 pub struct PayrollReturnImportResult {
@@ -256,6 +297,24 @@ mod tests {
         assert!(result.exists());
 
         fs::remove_dir_all(test_root).unwrap();
+    }
+
+    #[test]
+    fn csv_archives_use_exact_bytes_and_never_overwrite() {
+        let root = test_root("csv-no-overwrite");
+        let source = root.join("source.csv");
+        let archive_dir = root.join("archive");
+        fs::create_dir_all(&root).unwrap();
+        fs::write(&source, b"source changed after read").unwrap();
+        let captured = b"captured original bytes";
+
+        let first = archive_csv_bytes(&source, captured, &archive_dir).unwrap();
+        let second = archive_csv_bytes(&source, captured, &archive_dir).unwrap();
+
+        assert_ne!(first, second);
+        assert_eq!(fs::read(first).unwrap(), captured);
+        assert_eq!(fs::read(second).unwrap(), captured);
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
