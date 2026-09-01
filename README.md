@@ -89,16 +89,16 @@ The application root contains `database.sqlite`, `config.toml` and internal impo
 
 The configured `email_archive` path is currently persisted but has no production consumer. Returned payroll information uses the separate payroll-information folder.
 
-## Sample CSV
+## CSV import testing
 
-[data/sample_timesheets.csv](data/sample_timesheets.csv) is a parser-compatible example. To test it safely:
+To test CSV import safely, prepare a parser-compatible CSV containing only synthetic data, then:
 
 1. use a disposable `DIRECTPAYMENTTIMESHEETS_HOME`;
 2. configure the CSV import folder in Application Settings;
-3. copy the sample into that folder; and
+3. copy the test CSV into that folder; and
 4. use **Import CSV** on the Dashboard.
 
-The sample's PA name must correspond to a maintained PA if downstream payroll work is required. Its rate and amount columns demonstrate the external format only and are not authoritative for generated payroll.
+The test CSV's PA name must correspond to a maintained PA if downstream payroll work is required. Its rate and amount columns represent the external format only and are not authoritative for generated payroll.
 
 ## Payroll-period selections
 
