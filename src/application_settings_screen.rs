@@ -24,6 +24,7 @@ pub struct ApplicationSettingsScreen {
     information_font_size: String,
 
     status_message: String,
+    file_status: Option<(String, Vec<std::path::PathBuf>)>,
     backups: Vec<BackupInfo>,
     selected_backup: Option<std::path::PathBuf>,
     confirm_restore: bool,
@@ -51,6 +52,7 @@ impl ApplicationSettingsScreen {
             information_font_size: String::new(),
 
             status_message: "Application settings not loaded.".to_string(),
+            file_status: None,
             backups: Vec::new(),
             selected_backup: None,
             confirm_restore: false,
@@ -292,10 +294,12 @@ impl ApplicationSettingsScreen {
                 Ok(backup_path) => {
                     self.status_message =
                         format!("Backup created successfully at {}", backup_path.display());
+                    self.file_status = Some((self.status_message.clone(), vec![backup_path]));
                     self.refresh_backups(application);
                 }
                 Err(error) => {
                     self.status_message = format!("Failed to create backup: {error}");
+                    self.file_status = None;
                 }
             }
         }
@@ -411,11 +415,16 @@ impl ApplicationSettingsScreen {
                             config_note
                         );
                         self.status_message = message.clone();
+                        self.file_status = Some((
+                            message.clone(),
+                            vec![result.restored_backup, result.safety_backup],
+                        ));
                         self.restart_message = Some(message);
                     }
                     Err(error) => {
                         let message = format!("Restore failed: {error}");
                         self.status_message = message.clone();
+                        self.file_status = None;
                         if error.restart_required() {
                             self.restart_message = Some(message);
                         }
@@ -426,7 +435,23 @@ impl ApplicationSettingsScreen {
 
         ui.separator();
 
-        ui.label(&self.status_message);
+        let mut open_error = None;
+        ui.horizontal_wrapped(|ui| {
+            ui.label(&self.status_message);
+            if let Some((message, paths)) = &self.file_status {
+                if message == &self.status_message {
+                    for path in paths {
+                        if open_error.is_none() {
+                            open_error = crate::folder_opener::button(ui, path);
+                        }
+                    }
+                }
+            }
+        });
+        if let Some(error) = open_error {
+            self.status_message = error;
+            self.file_status = None;
+        }
         open_email_settings
     }
 
@@ -458,6 +483,13 @@ impl ApplicationSettingsScreen {
 
     pub fn restart_message(&self) -> Option<&str> {
         self.restart_message.as_deref()
+    }
+
+    pub fn restart_paths(&self) -> &[std::path::PathBuf] {
+        match (&self.restart_message, &self.file_status) {
+            (Some(restart), Some((status, paths))) if restart == status => paths,
+            _ => &[],
+        }
     }
 
     fn refresh_backups(&mut self, application: &Application) {
