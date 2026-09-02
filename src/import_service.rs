@@ -280,7 +280,7 @@ impl<'a> ImportService<'a> {
 
         let existing_entries = self
             .repository
-            .get_all()
+            .get_all_raw()
             .map_err(|error| FileFailure::failed(error, row_count))?;
         let mut entries = Vec::new();
         for row in unique_rows {
@@ -471,7 +471,7 @@ mod tests {
         assert_eq!(summary.files_discovered, 1);
         assert_eq!(summary.files_succeeded, 1);
         assert_eq!(summary.rows_imported, 2);
-        let entries = repository.get_all().unwrap();
+        let entries = repository.get_all_raw().unwrap();
         assert_eq!(entries.len(), 2);
         assert!(entries
             .iter()
@@ -563,7 +563,7 @@ mod tests {
             notes: Some("historical".to_string()),
         };
         repository.insert(&existing).unwrap();
-        let existing_id = repository.get_all().unwrap()[0].id;
+        let existing_id = repository.get_all_raw().unwrap()[0].id;
         write_source(
             &directory,
             "overlap.csv",
@@ -579,7 +579,7 @@ mod tests {
         assert_eq!(summary.rows_processed, 2);
         assert_eq!(summary.rows_imported, 1);
         assert_eq!(summary.rows_skipped, 1);
-        let entries = repository.get_all().unwrap();
+        let entries = repository.get_all_raw().unwrap();
         assert_eq!(entries.len(), 2);
         assert_eq!(entries[0].id, existing_id);
         let audit: (i64, i64, i64) = Connection::open(&database_path)
@@ -592,6 +592,47 @@ mod tests {
             )
             .unwrap();
         assert_eq!(audit, (2, 1, 1));
+    }
+
+    #[test]
+    fn corrected_effective_state_does_not_change_raw_import_collision_identity() {
+        use crate::repository::{TimesheetCorrectionProposal, LOCAL_CORRECTION_ACTOR_ID};
+
+        let (directory, _database_path, repository) = setup(&[("Alex", "Smith")]);
+        let raw_row = "Alex Smith,27 July 2026 at 09:00:00,27 July 2026 at 10:00:00,0h 00m,1h 00m,£12.00,£12.00,source";
+        write_source(&directory, "original.csv", &[raw_row]);
+        assert_eq!(run(&directory, &repository).rows_imported, 1);
+        let raw = repository.get_all_raw().unwrap().remove(0);
+        repository
+            .append_correction(
+                raw.id,
+                &TimesheetCorrectionProposal {
+                    start_time: "2026-07-27T09:00".to_string(),
+                    end_time: "2026-07-27T11:00".to_string(),
+                    break_minutes: 15,
+                    worked_minutes: 90,
+                    notes: Some("effective correction".to_string()),
+                },
+                LOCAL_CORRECTION_ACTOR_ID,
+                "2026-07-28T10:00:00Z",
+                None,
+            )
+            .unwrap();
+        write_source(&directory, "renamed-copy.csv", &[raw_row]);
+
+        let summary = run(&directory, &repository);
+
+        assert_eq!(summary.files_already_imported, 1);
+        assert_eq!(summary.files_succeeded, 1);
+        assert_eq!(summary.rows_imported, 0);
+        assert_eq!(summary.rows_skipped, 1);
+        assert_eq!(repository.get_all_raw().unwrap(), vec![raw]);
+        assert_eq!(
+            repository.get_all_effective().unwrap()[0]
+                .effective
+                .worked_minutes,
+            90
+        );
     }
 
     #[test]
@@ -718,7 +759,7 @@ mod tests {
             notes: None,
         };
         repository.insert(&existing).unwrap();
-        existing.id = repository.get_all().unwrap()[0].id;
+        existing.id = repository.get_all_raw().unwrap()[0].id;
         let connection = Connection::open(&database_path).unwrap();
         connection.execute("INSERT INTO payroll_timesheets (id, personal_assistant_id, payroll_year, cycle_number, created_at, updated_at) VALUES (10, 1, '2026 to 2027', 1, 'now', 'now')", []).unwrap();
         connection.execute("INSERT INTO payroll_timesheet_snapshot_states (payroll_timesheet_id, state, pdf_path, pdf_sha256, generated_at) VALUES (10, 'submitted', 'x', 'digest', 'now')", []).unwrap();
@@ -736,8 +777,8 @@ mod tests {
 
         assert_eq!(summary.files_refused, 1);
         assert_eq!(summary.rows_imported, 0);
-        assert_eq!(repository.get_all().unwrap().len(), 1);
-        assert_eq!(repository.get_all().unwrap()[0].id, existing.id);
+        assert_eq!(repository.get_all_raw().unwrap().len(), 1);
+        assert_eq!(repository.get_all_raw().unwrap()[0].id, existing.id);
         let snapshots = PayrollWorkedItemRepository::new(Connection::open(&database_path).unwrap());
         assert!(snapshots
             .submitted_snapshot_timesheet_ids(10)

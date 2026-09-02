@@ -1,4 +1,4 @@
-#[derive(Debug)]
+#[derive(Debug, Clone, PartialEq)]
 #[allow(dead_code)]
 pub struct TimesheetEntry {
     pub id: i64,
