@@ -2,7 +2,7 @@
 
 ## Purpose
 
-This document describes the implemented business entities and their relationships. It is intentionally conceptual; [DATABASE-SCHEMA.md](DATABASE-SCHEMA.md) is the exact schema-21 table/column reference and the Rust source remains authoritative.
+This document describes the implemented business entities and their relationships. It is intentionally conceptual; [DATABASE-SCHEMA.md](DATABASE-SCHEMA.md) is the exact schema-22 table/column reference and the Rust source remains authoritative.
 
 The model preserves imported facts, effective-dated employment terms, prepared payroll values and the exact worked-item evidence represented by a generated or submitted timesheet.
 
@@ -66,7 +66,7 @@ This is a storage/query foundation only: current imports, Dashboard display, Pay
 
 An import-audit record captures import time, original/archive filenames, row counts, status and optional error. Validated source bytes are written first to a unique, non-overwriting file in `archive/YYYY/MM/`; all imported rows and the SUCCESS audit are then committed in one SQLite transaction. A database failure leaves the archive as reported recoverable evidence and rolls back all rows. Failed/refused audits are best-effort.
 
-Schema 21 still has no imported-file content hash or row-to-import relationship. Historical successful-import detection therefore remains based on the original pathname: changed content at an already-successful pathname is conservatively skipped, while renamed identical content is preflighted again and may be refused as competing evidence. Correction events do not change raw collision identity. Durable content identity and row provenance require an explicitly approved future migration.
+Schema 22 still has no imported-file content hash or row-to-import relationship. Historical successful-import detection therefore remains based on the original pathname: changed content at an already-successful pathname is conservatively skipped, while renamed identical content is preflighted again and may be refused as competing evidence. Correction events do not change raw collision identity. Durable content identity and row provenance require an explicitly approved future migration.
 
 ## DirectShift
 
@@ -147,6 +147,14 @@ Each snapshotted payroll timesheet has one state row containing:
 - optional submitted/indeterminate timestamps.
 
 A candidate is replaceable until production send. Successful timesheet transport freezes it as submitted. If transport may have succeeded but final database persistence fails, indeterminate state protects against unsafe resend/regeneration.
+
+## Payroll revision persistence foundation
+
+Schema 22 adds immutable revision identities and revision-owned worked-item, weekly, dated-public-holiday and delivery-attempt storage alongside the existing mutable preparation and legacy snapshot system. Revision worked items can retain copied effective values plus nullable imported correction-event or future direct-shift/audit version identities. Repository APIs can read history/latest/current candidate and transactionally allocate or replace only the current candidate.
+
+Legacy snapshot states are backfilled as revision 1 with their exact state, PDF path/digest and stored timestamps. Legacy worked items and the then-current week/public-holiday preparation values are copied. The legacy marker records that PDF inputs never historically stored cannot be recreated. Preparations without a snapshot receive no revision.
+
+This is persistence infrastructure only. Current preparation locking, reconciliation, PDF naming/generation, previews, Email Timesheets and production delivery continue using the legacy one-snapshot tables. They do not yet create or consume revision records or delivery attempts.
 
 ## Main relationships
 

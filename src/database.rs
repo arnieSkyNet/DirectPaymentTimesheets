@@ -2,7 +2,7 @@ use std::path::Path;
 
 use rusqlite::{Connection, Result};
 
-pub const CURRENT_SCHEMA_VERSION: i64 = 21;
+pub const CURRENT_SCHEMA_VERSION: i64 = 22;
 
 pub fn initialise_database(database_path: &Path) -> Result<()> {
     let connection = Connection::open(database_path)?;
@@ -174,6 +174,11 @@ fn apply_migrations(connection: &Connection) -> Result<()> {
 
     if current_version < 21 {
         migrate_to_version_21(connection)?;
+        current_version = 21;
+    }
+
+    if current_version < 22 {
+        migrate_to_version_22(connection)?;
     }
 
     Ok(())
@@ -705,6 +710,179 @@ fn migrate_to_version_21(connection: &Connection) -> Result<()> {
     Ok(())
 }
 
+fn migrate_to_version_22(connection: &Connection) -> Result<()> {
+    let transaction = connection.unchecked_transaction()?;
+    transaction.execute_batch(
+        "
+        CREATE TABLE payroll_timesheet_revisions (
+            id INTEGER PRIMARY KEY,
+            payroll_timesheet_id INTEGER NOT NULL,
+            revision_number INTEGER NOT NULL CHECK (revision_number > 0),
+            state TEXT NOT NULL CHECK (state IN ('candidate', 'submitted', 'indeterminate')),
+            pdf_path TEXT NOT NULL CHECK (length(trim(pdf_path)) > 0),
+            pdf_sha256 TEXT NOT NULL CHECK (length(trim(pdf_sha256)) > 0),
+            generated_at TEXT NOT NULL CHECK (length(trim(generated_at)) > 0),
+            send_attempted_at TEXT,
+            submitted_at TEXT,
+            indeterminate_at TEXT,
+            legacy_backfilled INTEGER NOT NULL DEFAULT 0 CHECK (legacy_backfilled IN (0, 1)),
+            UNIQUE (payroll_timesheet_id, revision_number),
+            UNIQUE (payroll_timesheet_id, pdf_path)
+        );
+
+        CREATE UNIQUE INDEX new_payroll_timesheet_revision_pdf_path
+        ON payroll_timesheet_revisions (pdf_path)
+        WHERE legacy_backfilled = 0;
+
+        CREATE UNIQUE INDEX one_candidate_payroll_timesheet_revision
+        ON payroll_timesheet_revisions (payroll_timesheet_id)
+        WHERE state = 'candidate';
+
+        CREATE INDEX payroll_timesheet_revisions_history
+        ON payroll_timesheet_revisions (payroll_timesheet_id, revision_number DESC);
+
+        CREATE TABLE payroll_timesheet_revision_worked_items (
+            id INTEGER PRIMARY KEY,
+            payroll_timesheet_revision_id INTEGER NOT NULL,
+            week_number INTEGER NOT NULL,
+            source_type TEXT NOT NULL CHECK (length(trim(source_type)) > 0),
+            timesheet_id INTEGER,
+            timesheet_correction_event_id INTEGER,
+            direct_shift_id INTEGER,
+            direct_shift_audit_id INTEGER,
+            effective_start_time TEXT,
+            effective_end_time TEXT,
+            effective_break_minutes INTEGER CHECK (
+                effective_break_minutes IS NULL OR effective_break_minutes >= 0
+            ),
+            effective_notes TEXT,
+            work_date TEXT,
+            worked_minutes INTEGER NOT NULL,
+            pay_rate_id INTEGER,
+            pay_rate_effective_date TEXT,
+            total_hourly_rate REAL,
+            reason TEXT,
+            captured_at TEXT NOT NULL CHECK (length(trim(captured_at)) > 0),
+            CHECK (timesheet_correction_event_id IS NULL OR timesheet_id IS NOT NULL),
+            CHECK (direct_shift_audit_id IS NULL OR direct_shift_id IS NOT NULL),
+            CHECK (timesheet_id IS NULL OR direct_shift_id IS NULL)
+        );
+
+        CREATE UNIQUE INDEX payroll_revision_imported_source
+        ON payroll_timesheet_revision_worked_items (
+            payroll_timesheet_revision_id, timesheet_id
+        ) WHERE timesheet_id IS NOT NULL;
+
+        CREATE UNIQUE INDEX payroll_revision_direct_source
+        ON payroll_timesheet_revision_worked_items (
+            payroll_timesheet_revision_id, direct_shift_id
+        ) WHERE direct_shift_id IS NOT NULL;
+
+        CREATE INDEX payroll_revision_worked_items_revision
+        ON payroll_timesheet_revision_worked_items (payroll_timesheet_revision_id, id);
+
+        CREATE INDEX payroll_revision_worked_items_import_version
+        ON payroll_timesheet_revision_worked_items (timesheet_id, timesheet_correction_event_id);
+
+        CREATE INDEX payroll_revision_worked_items_direct_version
+        ON payroll_timesheet_revision_worked_items (direct_shift_id, direct_shift_audit_id);
+
+        CREATE TABLE payroll_timesheet_revision_weeks (
+            id INTEGER PRIMARY KEY,
+            payroll_timesheet_revision_id INTEGER NOT NULL,
+            week_number INTEGER NOT NULL,
+            week_commencing TEXT NOT NULL,
+            worked_hours REAL NOT NULL,
+            annual_leave_hours REAL NOT NULL,
+            sick_leave_hours REAL NOT NULL,
+            public_holiday_hours REAL NOT NULL,
+            travel_miles REAL NOT NULL,
+            UNIQUE (payroll_timesheet_revision_id, week_number)
+        );
+
+        CREATE TABLE payroll_timesheet_revision_public_holidays (
+            id INTEGER PRIMARY KEY,
+            payroll_timesheet_revision_id INTEGER NOT NULL,
+            week_number INTEGER NOT NULL,
+            holiday_date TEXT NOT NULL,
+            hours REAL NOT NULL,
+            UNIQUE (payroll_timesheet_revision_id, week_number, holiday_date)
+        );
+
+        CREATE TABLE payroll_timesheet_revision_delivery_attempts (
+            id INTEGER PRIMARY KEY,
+            payroll_timesheet_revision_id INTEGER NOT NULL,
+            outcome TEXT NOT NULL CHECK (
+                outcome IN ('protected', 'failed', 'submitted', 'indeterminate',
+                            'reconciled_sent', 'reconciled_unsent')
+            ),
+            attempted_at TEXT NOT NULL CHECK (length(trim(attempted_at)) > 0),
+            completed_at TEXT,
+            recipient_to TEXT,
+            recipient_cc TEXT,
+            recipient_bcc TEXT,
+            subject TEXT,
+            attachment_path TEXT NOT NULL CHECK (length(trim(attachment_path)) > 0),
+            attachment_sha256 TEXT NOT NULL CHECK (length(trim(attachment_sha256)) > 0),
+            transport_error TEXT
+        );
+
+        CREATE INDEX payroll_revision_delivery_attempts_history
+        ON payroll_timesheet_revision_delivery_attempts (
+            payroll_timesheet_revision_id, id
+        );
+
+        INSERT INTO payroll_timesheet_revisions (
+            payroll_timesheet_id, revision_number, state, pdf_path, pdf_sha256,
+            generated_at, send_attempted_at, submitted_at, indeterminate_at,
+            legacy_backfilled
+        )
+        SELECT payroll_timesheet_id, 1, state, pdf_path, pdf_sha256,
+               generated_at, indeterminate_at, submitted_at, indeterminate_at, 1
+        FROM payroll_timesheet_snapshot_states;
+
+        INSERT INTO payroll_timesheet_revision_worked_items (
+            payroll_timesheet_revision_id, week_number, source_type, timesheet_id,
+            work_date, worked_minutes, pay_rate_id, pay_rate_effective_date,
+            total_hourly_rate, reason, captured_at
+        )
+        SELECT revision.id, item.week_number, item.source_type, item.timesheet_id,
+               item.work_date, item.worked_minutes, item.pay_rate_id,
+               item.pay_rate_effective_date, item.total_hourly_rate, item.reason,
+               item.captured_at
+        FROM payroll_timesheet_worked_item_snapshots AS item
+        INNER JOIN payroll_timesheet_revisions AS revision
+            ON revision.payroll_timesheet_id = item.payroll_timesheet_id
+           AND revision.revision_number = 1;
+
+        INSERT INTO payroll_timesheet_revision_weeks (
+            payroll_timesheet_revision_id, week_number, week_commencing,
+            worked_hours, annual_leave_hours, sick_leave_hours,
+            public_holiday_hours, travel_miles
+        )
+        SELECT revision.id, week.week_number, week.week_commencing,
+               week.worked_hours, week.annual_leave_hours, week.sick_leave_hours,
+               week.public_holiday_hours, week.travel_miles
+        FROM payroll_timesheet_weeks AS week
+        INNER JOIN payroll_timesheet_revisions AS revision
+            ON revision.payroll_timesheet_id = week.payroll_timesheet_id
+           AND revision.revision_number = 1;
+
+        INSERT INTO payroll_timesheet_revision_public_holidays (
+            payroll_timesheet_revision_id, week_number, holiday_date, hours
+        )
+        SELECT revision.id, holiday.week_number, holiday.holiday_date, holiday.hours
+        FROM payroll_timesheet_public_holidays AS holiday
+        INNER JOIN payroll_timesheet_revisions AS revision
+            ON revision.payroll_timesheet_id = holiday.payroll_timesheet_id
+           AND revision.revision_number = 1;
+        ",
+    )?;
+    transaction.execute("UPDATE schema_version SET version = 22", [])?;
+    transaction.commit()?;
+    Ok(())
+}
+
 fn repair_unreleased_schema_20(connection: &Connection) -> Result<()> {
     let version: i64 =
         connection.query_row("SELECT version FROM schema_version LIMIT 1", [], |row| {
@@ -845,10 +1023,23 @@ fn table_has_column(connection: &Connection, table: &str, column: &str) -> Resul
 mod tests {
     use super::*;
 
+    fn drop_schema_22(connection: &Connection) {
+        connection
+            .execute_batch(
+                "DROP TABLE payroll_timesheet_revision_delivery_attempts;
+                 DROP TABLE payroll_timesheet_revision_public_holidays;
+                 DROP TABLE payroll_timesheet_revision_weeks;
+                 DROP TABLE payroll_timesheet_revision_worked_items;
+                 DROP TABLE payroll_timesheet_revisions;",
+            )
+            .unwrap();
+    }
+
     #[test]
     fn migration_to_version_18_preserves_legacy_statuses_as_timesheets() {
         let connection = Connection::open_in_memory().unwrap();
         create_schema(&connection).unwrap();
+        drop_schema_22(&connection);
 
         connection
             .execute("DROP TABLE payroll_timesheet_email_status", [])
@@ -895,7 +1086,7 @@ mod tests {
             .unwrap();
 
         assert_eq!(email_type, "timesheet");
-        assert_eq!(version, 21);
+        assert_eq!(version, 22);
     }
 
     #[test]
@@ -924,13 +1115,14 @@ mod tests {
             .unwrap();
 
         assert!(duplicate.is_err());
-        assert_eq!(version, 21);
+        assert_eq!(version, 22);
     }
 
     #[test]
     fn migration_to_version_21_adds_correction_history_without_changing_imported_rows() {
         let connection = Connection::open_in_memory().unwrap();
         create_schema(&connection).unwrap();
+        drop_schema_22(&connection);
         connection
             .execute(
                 "INSERT INTO timesheets (
@@ -974,7 +1166,7 @@ mod tests {
                 .query_row("SELECT version FROM schema_version", [], |row| row
                     .get::<_, i64>(0))
                 .unwrap(),
-            21
+            22
         );
     }
 
@@ -982,6 +1174,7 @@ mod tests {
     fn final_schema_19_migrates_directly_to_final_schema_20() {
         let connection = Connection::open_in_memory().unwrap();
         create_schema(&connection).unwrap();
+        drop_schema_22(&connection);
         connection
             .execute_batch(
                 "DROP TABLE direct_shift_audit;
@@ -1001,7 +1194,7 @@ mod tests {
                 .query_row("SELECT version FROM schema_version", [], |row| row
                     .get::<_, i64>(0))
                 .unwrap(),
-            21
+            22
         );
     }
 
@@ -1009,6 +1202,7 @@ mod tests {
     fn earlier_development_schema_20_is_repaired_idempotently_without_data_loss() {
         let connection = Connection::open_in_memory().unwrap();
         create_schema(&connection).unwrap();
+        drop_schema_22(&connection);
         connection
             .execute_batch(
                 "DROP TABLE direct_shift_audit;
@@ -1088,5 +1282,254 @@ mod tests {
         assert!(table_has_column(&connection, "direct_shifts", "deleted_at").unwrap());
         assert!(table_has_column(&connection, "direct_shifts", "deleted_by").unwrap());
         assert_eq!(audit_count, 1);
+    }
+
+    #[test]
+    fn migration_to_version_22_backfills_only_legacy_snapshots_with_exact_evidence() {
+        let connection = Connection::open_in_memory().unwrap();
+        create_schema(&connection).unwrap();
+        drop_schema_22(&connection);
+        connection
+            .execute_batch(
+                "INSERT INTO payroll_timesheets (
+                    id, personal_assistant_id, payroll_year, cycle_number,
+                    created_at, updated_at
+                 ) VALUES
+                    (101, 1, '2026/27', 6, 'created-1', 'updated-1'),
+                    (102, 2, '2026/27', 6, 'created-2', 'updated-2'),
+                    (103, 3, '2026/27', 6, 'created-3', 'updated-3');
+
+                 INSERT INTO payroll_timesheet_weeks (
+                    payroll_timesheet_id, week_number, week_commencing, worked_hours,
+                    annual_leave_hours, sick_leave_hours, public_holiday_hours, travel_miles
+                 ) VALUES
+                    (101, 1, '10/08/2026', 7.25, 1.5, 2.5, 3.5, 4.5),
+                    (102, 2, '17/08/2026', 8.25, 0.5, 1.5, 2.5, 5.5),
+                    (103, 3, '24/08/2026', 9.25, 0.0, 0.0, 0.0, 6.5);
+
+                 INSERT INTO payroll_timesheet_public_holidays (
+                    payroll_timesheet_id, week_number, holiday_date, hours
+                 ) VALUES
+                    (101, 1, '10/08/2026', 3.5),
+                    (102, 2, '17/08/2026', 2.5),
+                    (103, 3, '24/08/2026', 1.5);
+
+                 INSERT INTO payroll_timesheet_snapshot_states (
+                    payroll_timesheet_id, state, pdf_path, pdf_sha256, generated_at,
+                    submitted_at, indeterminate_at
+                 ) VALUES
+                    (101, 'submitted', '/legacy/shared.pdf', 'submitted-digest',
+                     'generated-submitted', 'submitted-at', NULL),
+                    (102, 'indeterminate', '/legacy/shared.pdf', 'indeterminate-digest',
+                     'generated-indeterminate', NULL, 'indeterminate-at');
+
+                 INSERT INTO payroll_timesheet_email_status (
+                    personal_assistant_id, payroll_year, cycle_number, email_type, sent_at
+                 ) VALUES (1, '2026/27', 6, 'timesheet', 'email-sent-at');
+
+                 INSERT INTO payroll_timesheet_worked_item_snapshots (
+                    payroll_timesheet_id, week_number, source_type, timesheet_id,
+                    work_date, worked_minutes, pay_rate_id, pay_rate_effective_date,
+                    total_hourly_rate, reason, captured_at
+                 ) VALUES
+                    (101, 1, 'imported_shift', 501, '2026-08-10', 435,
+                     31, '01/04/2026', 14.5, NULL, 'captured-1'),
+                    (102, 2, 'manual_adjustment', NULL, '2026-08-17', -30,
+                     32, '01/04/2026', 15.5, 'legacy reason', 'captured-2');
+
+                 UPDATE schema_version SET version = 21;",
+            )
+            .unwrap();
+
+        create_schema(&connection).unwrap();
+
+        let revisions = connection
+            .prepare(
+                "SELECT payroll_timesheet_id, revision_number, state, pdf_path,
+                        pdf_sha256, generated_at, send_attempted_at, submitted_at,
+                        indeterminate_at, legacy_backfilled
+                 FROM payroll_timesheet_revisions ORDER BY payroll_timesheet_id",
+            )
+            .unwrap()
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, i64>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, String>(3)?,
+                    row.get::<_, String>(4)?,
+                    row.get::<_, String>(5)?,
+                    row.get::<_, Option<String>>(6)?,
+                    row.get::<_, Option<String>>(7)?,
+                    row.get::<_, Option<String>>(8)?,
+                    row.get::<_, i64>(9)?,
+                ))
+            })
+            .unwrap()
+            .collect::<Result<Vec<_>>>()
+            .unwrap();
+        assert_eq!(revisions.len(), 2);
+        assert_eq!(
+            revisions[0],
+            (
+                101,
+                1,
+                "submitted".to_string(),
+                "/legacy/shared.pdf".to_string(),
+                "submitted-digest".to_string(),
+                "generated-submitted".to_string(),
+                None,
+                Some("submitted-at".to_string()),
+                None,
+                1,
+            )
+        );
+        assert_eq!(revisions[1].0, 102);
+        assert_eq!(revisions[1].2, "indeterminate");
+        assert_eq!(revisions[1].3, "/legacy/shared.pdf");
+        assert_eq!(revisions[1].4, "indeterminate-digest");
+        assert_eq!(revisions[1].5, "generated-indeterminate");
+        assert_eq!(revisions[1].6.as_deref(), Some("indeterminate-at"));
+        assert_eq!(revisions[1].7, None);
+        assert_eq!(revisions[1].8.as_deref(), Some("indeterminate-at"));
+        assert_eq!(revisions[1].9, 1);
+
+        let unsnapshotted_revisions: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM payroll_timesheet_revisions
+                 WHERE payroll_timesheet_id = 103",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(unsnapshotted_revisions, 0);
+
+        let mapped_items: Vec<(i64, String, Option<i64>, i64, Option<String>)> = connection
+            .prepare(
+                "SELECT revision.payroll_timesheet_id, item.source_type,
+                        item.timesheet_id, item.worked_minutes, item.reason
+                 FROM payroll_timesheet_revision_worked_items AS item
+                 INNER JOIN payroll_timesheet_revisions AS revision
+                    ON revision.id = item.payroll_timesheet_revision_id
+                 ORDER BY revision.payroll_timesheet_id",
+            )
+            .unwrap()
+            .query_map([], |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                ))
+            })
+            .unwrap()
+            .collect::<Result<_>>()
+            .unwrap();
+        assert_eq!(mapped_items.len(), 2);
+        assert_eq!(
+            mapped_items[0],
+            (101, "imported_shift".to_string(), Some(501), 435, None)
+        );
+        assert_eq!(mapped_items[1].0, 102);
+        assert_eq!(mapped_items[1].4.as_deref(), Some("legacy reason"));
+
+        let frozen_weeks: Vec<(i64, i64, f64, f64, f64, f64, f64)> = connection
+            .prepare(
+                "SELECT revision.payroll_timesheet_id, week.week_number,
+                        week.worked_hours, week.annual_leave_hours, week.sick_leave_hours,
+                        week.public_holiday_hours, week.travel_miles
+                 FROM payroll_timesheet_revision_weeks AS week
+                 INNER JOIN payroll_timesheet_revisions AS revision
+                    ON revision.id = week.payroll_timesheet_revision_id
+                 ORDER BY revision.payroll_timesheet_id",
+            )
+            .unwrap()
+            .query_map([], |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                    row.get(5)?,
+                    row.get(6)?,
+                ))
+            })
+            .unwrap()
+            .collect::<Result<_>>()
+            .unwrap();
+        assert_eq!(frozen_weeks.len(), 2);
+        assert_eq!(frozen_weeks[0], (101, 1, 7.25, 1.5, 2.5, 3.5, 4.5));
+        assert_eq!(frozen_weeks[1], (102, 2, 8.25, 0.5, 1.5, 2.5, 5.5));
+
+        let frozen_holidays: Vec<(i64, String, f64)> = connection
+            .prepare(
+                "SELECT revision.payroll_timesheet_id, holiday.holiday_date, holiday.hours
+                 FROM payroll_timesheet_revision_public_holidays AS holiday
+                 INNER JOIN payroll_timesheet_revisions AS revision
+                    ON revision.id = holiday.payroll_timesheet_revision_id
+                 ORDER BY revision.payroll_timesheet_id",
+            )
+            .unwrap()
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
+            .unwrap()
+            .collect::<Result<_>>()
+            .unwrap();
+        assert_eq!(
+            frozen_holidays,
+            vec![
+                (101, "10/08/2026".to_string(), 3.5),
+                (102, "17/08/2026".to_string(), 2.5)
+            ]
+        );
+
+        let legacy_state_count: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM payroll_timesheet_snapshot_states",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let email_status: (String, String) = connection
+            .query_row("SELECT email_type, sent_at FROM payroll_timesheet_email_status WHERE personal_assistant_id = 1 AND payroll_year = '2026/27' AND cycle_number = 6", [], |row| Ok((row.get(0)?, row.get(1)?)))
+            .unwrap();
+        assert_eq!(legacy_state_count, 2);
+        assert_eq!(
+            email_status,
+            ("timesheet".to_string(), "email-sent-at".to_string())
+        );
+        assert_eq!(
+            connection
+                .query_row("SELECT version FROM schema_version", [], |row| row
+                    .get::<_, i64>(0))
+                .unwrap(),
+            22
+        );
+    }
+
+    #[test]
+    fn migration_to_version_22_rolls_back_all_new_tables_on_failure() {
+        let connection = Connection::open_in_memory().unwrap();
+        create_schema(&connection).unwrap();
+        drop_schema_22(&connection);
+        connection
+            .execute_batch(
+                "CREATE TABLE payroll_timesheet_revision_weeks (injected INTEGER);
+                 UPDATE schema_version SET version = 21;",
+            )
+            .unwrap();
+
+        assert!(create_schema(&connection).is_err());
+        assert!(!table_exists(&connection, "payroll_timesheet_revisions").unwrap());
+        assert!(!table_exists(&connection, "payroll_timesheet_revision_worked_items").unwrap());
+        assert!(table_exists(&connection, "payroll_timesheet_revision_weeks").unwrap());
+        assert_eq!(
+            connection
+                .query_row("SELECT version FROM schema_version", [], |row| row
+                    .get::<_, i64>(0))
+                .unwrap(),
+            21
+        );
     }
 }

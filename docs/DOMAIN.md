@@ -26,9 +26,11 @@ After a successful import, the source CSV is copied unchanged to the internal `a
 
 The external file's hourly-rate and amount values are not authoritative for payroll. The application resolves employer-maintained rate history instead.
 
-Schema 21 provides an append-only correction-event layer for the effective start, end, break, worked minutes and notes of an imported row. Every event retains complete before/after values, actor, action time and optional reason; reverting is another event. The archived CSV and original `timesheets` row remain immutable, including PA identity, rate and amount. Worked minutes remain independent source evidence and are not recalculated from clocks or break.
+Schema 21 introduced an append-only correction-event layer for the effective start, end, break, worked minutes and notes of an imported row. Every event retains complete before/after values, actor, action time and optional reason; reverting is another event. The archived CSV and original `timesheets` row remain immutable, including PA identity, rate and amount. Worked minutes remain independent source evidence and are not recalculated from clocks or break.
 
 This foundation is intentionally not connected to the current UI or payroll pipeline. Import collision checks, Payroll Timesheet Preparation, snapshots and PDFs still consume raw imported evidence until revisioned payroll submissions can retain earlier submitted or indeterminate documents alongside corrected revisions.
+
+Schema 22 adds the persistence foundation for those future payroll revisions: stable numbered revision headers, frozen worked/week/public-holiday evidence and append-oriented delivery attempts. Existing legacy snapshots are copied to marked revision-1 records without touching their PDF files. This stage does not change preparation locking, source reconciliation, filenames, PDF generation, preview/test email or production Email Timesheets; all remain on the legacy snapshot system.
 
 The established duration rule assigns an entire shift to its start calendar date; real project shifts do not cross midnight. Imported clock values are not rewritten by preparation corrections.
 
