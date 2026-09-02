@@ -2,7 +2,7 @@ use std::path::Path;
 
 use rusqlite::{Connection, Result};
 
-pub const CURRENT_SCHEMA_VERSION: i64 = 22;
+pub const CURRENT_SCHEMA_VERSION: i64 = 23;
 
 pub fn initialise_database(database_path: &Path) -> Result<()> {
     let connection = Connection::open(database_path)?;
@@ -179,6 +179,11 @@ fn apply_migrations(connection: &Connection) -> Result<()> {
 
     if current_version < 22 {
         migrate_to_version_22(connection)?;
+        current_version = 22;
+    }
+
+    if current_version < 23 {
+        migrate_to_version_23(connection)?;
     }
 
     Ok(())
@@ -883,6 +888,20 @@ fn migrate_to_version_22(connection: &Connection) -> Result<()> {
     Ok(())
 }
 
+fn migrate_to_version_23(connection: &Connection) -> Result<()> {
+    let transaction = connection.unchecked_transaction()?;
+    transaction.execute_batch(
+        "DROP TABLE IF EXISTS payroll_timesheet_revision_delivery_attempts;
+         DROP TABLE IF EXISTS payroll_timesheet_revision_public_holidays;
+         DROP TABLE IF EXISTS payroll_timesheet_revision_weeks;
+         DROP TABLE IF EXISTS payroll_timesheet_revision_worked_items;
+         DROP TABLE IF EXISTS payroll_timesheet_revisions;",
+    )?;
+    transaction.execute("UPDATE schema_version SET version = 23", [])?;
+    transaction.commit()?;
+    Ok(())
+}
+
 fn repair_unreleased_schema_20(connection: &Connection) -> Result<()> {
     let version: i64 =
         connection.query_row("SELECT version FROM schema_version LIMIT 1", [], |row| {
@@ -1026,11 +1045,11 @@ mod tests {
     fn drop_schema_22(connection: &Connection) {
         connection
             .execute_batch(
-                "DROP TABLE payroll_timesheet_revision_delivery_attempts;
-                 DROP TABLE payroll_timesheet_revision_public_holidays;
-                 DROP TABLE payroll_timesheet_revision_weeks;
-                 DROP TABLE payroll_timesheet_revision_worked_items;
-                 DROP TABLE payroll_timesheet_revisions;",
+                "DROP TABLE IF EXISTS payroll_timesheet_revision_delivery_attempts;
+                 DROP TABLE IF EXISTS payroll_timesheet_revision_public_holidays;
+                 DROP TABLE IF EXISTS payroll_timesheet_revision_weeks;
+                 DROP TABLE IF EXISTS payroll_timesheet_revision_worked_items;
+                 DROP TABLE IF EXISTS payroll_timesheet_revisions;",
             )
             .unwrap();
     }
@@ -1086,7 +1105,7 @@ mod tests {
             .unwrap();
 
         assert_eq!(email_type, "timesheet");
-        assert_eq!(version, 22);
+        assert_eq!(version, 23);
     }
 
     #[test]
@@ -1115,7 +1134,7 @@ mod tests {
             .unwrap();
 
         assert!(duplicate.is_err());
-        assert_eq!(version, 22);
+        assert_eq!(version, 23);
     }
 
     #[test]
@@ -1166,7 +1185,7 @@ mod tests {
                 .query_row("SELECT version FROM schema_version", [], |row| row
                     .get::<_, i64>(0))
                 .unwrap(),
-            22
+            23
         );
     }
 
@@ -1194,7 +1213,7 @@ mod tests {
                 .query_row("SELECT version FROM schema_version", [], |row| row
                     .get::<_, i64>(0))
                 .unwrap(),
-            22
+            23
         );
     }
 
@@ -1341,7 +1360,7 @@ mod tests {
             )
             .unwrap();
 
-        create_schema(&connection).unwrap();
+        migrate_to_version_22(&connection).unwrap();
 
         let revisions = connection
             .prepare(
@@ -1520,7 +1539,7 @@ mod tests {
             )
             .unwrap();
 
-        assert!(create_schema(&connection).is_err());
+        assert!(migrate_to_version_22(&connection).is_err());
         assert!(!table_exists(&connection, "payroll_timesheet_revisions").unwrap());
         assert!(!table_exists(&connection, "payroll_timesheet_revision_worked_items").unwrap());
         assert!(table_exists(&connection, "payroll_timesheet_revision_weeks").unwrap());
@@ -1531,5 +1550,80 @@ mod tests {
                 .unwrap(),
             21
         );
+    }
+
+    #[test]
+    fn migration_to_version_23_removes_only_revision_infrastructure() {
+        let connection = Connection::open_in_memory().unwrap();
+        create_schema(&connection).unwrap();
+        connection
+            .execute(
+                "INSERT INTO payroll_timesheets
+             (id, personal_assistant_id, payroll_year, cycle_number, created_at, updated_at)
+             VALUES (77, 7, '2026/27', 6, 'created', 'updated')",
+                [],
+            )
+            .unwrap();
+        connection
+            .execute(
+                "INSERT INTO payroll_timesheet_snapshot_states
+             (payroll_timesheet_id, state, pdf_path, pdf_sha256, generated_at)
+             VALUES (77, 'candidate', '/legacy.pdf', 'digest', 'generated')",
+                [],
+            )
+            .unwrap();
+        migrate_to_version_22(&connection).unwrap();
+        assert!(table_exists(&connection, "payroll_timesheet_revisions").unwrap());
+
+        create_schema(&connection).unwrap();
+
+        for table in [
+            "payroll_timesheet_revisions",
+            "payroll_timesheet_revision_worked_items",
+            "payroll_timesheet_revision_weeks",
+            "payroll_timesheet_revision_public_holidays",
+            "payroll_timesheet_revision_delivery_attempts",
+        ] {
+            assert!(
+                !table_exists(&connection, table).unwrap(),
+                "{table} remains"
+            );
+        }
+        assert!(table_exists(&connection, "timesheet_correction_events").unwrap());
+        assert!(table_exists(&connection, "direct_shifts").unwrap());
+        assert!(table_exists(&connection, "direct_shift_audit").unwrap());
+        assert!(table_exists(&connection, "payroll_timesheet_worked_item_snapshots").unwrap());
+        assert!(table_exists(&connection, "payroll_timesheet_snapshot_states").unwrap());
+        let legacy: (String, String) = connection
+            .query_row(
+                "SELECT pdf_path, pdf_sha256 FROM payroll_timesheet_snapshot_states
+             WHERE payroll_timesheet_id = 77",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(legacy, ("/legacy.pdf".to_string(), "digest".to_string()));
+        assert_eq!(
+            connection
+                .query_row("SELECT version FROM schema_version", [], |row| row
+                    .get::<_, i64>(0))
+                .unwrap(),
+            23
+        );
+    }
+
+    #[test]
+    fn fresh_schema_23_never_retains_revision_tables() {
+        let connection = Connection::open_in_memory().unwrap();
+        create_schema(&connection).unwrap();
+        assert_eq!(
+            connection
+                .query_row("SELECT version FROM schema_version", [], |row| row
+                    .get::<_, i64>(0))
+                .unwrap(),
+            23
+        );
+        assert!(!table_exists(&connection, "payroll_timesheet_revisions").unwrap());
+        assert!(table_exists(&connection, "timesheet_correction_events").unwrap());
     }
 }

@@ -2,13 +2,13 @@
 
 ## Scope and versioning
 
-This is the implemented SQLite schema at version 22. It is derived from `create_schema` and migrations in `src/database.rs`; those migrations are authoritative.
+This is the implemented SQLite schema at version 23. It is derived from `create_schema` and migrations in `src/database.rs`; those migrations are authoritative.
 
-`schema_version` contains the current integer version. A new database begins at version 1 and receives each ordered migration through `CURRENT_SCHEMA_VERSION` 22. Existing databases are upgraded in place.
+`schema_version` contains the current integer version. A new database begins at version 1 and receives each ordered migration through `CURRENT_SCHEMA_VERSION` 23. Existing databases are upgraded in place. Migration 23 removes the short-lived revision-only tables introduced by migration 22 while retaining the operational legacy snapshot tables.
 
 During unreleased schema-20 development, an earlier local database shape contained `direct_shifts` without soft-deletion columns or the audit table. Startup therefore performs an idempotent schema-20 compatibility check after normal migrations. When that exact incomplete shape is found, it transactionally rebuilds `direct_shifts` into the final constrained form while preserving IDs and row values, then creates the audit table/indexes. It does not fabricate historical audit events, and repeated startup does not duplicate existing audit rows.
 
-SQLite foreign-key constraints are not declared in schema 22. Relationships described below are logical relationships enforced by repository/application code and stored IDs/business keys.
+SQLite foreign-key constraints are not declared in schema 23. Relationships described below are logical relationships enforced by repository/application code and stored IDs/business keys.
 
 ## `schema_version`
 
@@ -99,7 +99,7 @@ Append-only corrections to the effective interpretation of an immutable imported
 
 Correction timestamps use canonical local-minute text `YYYY-MM-DDTHH:MM`. `(timesheet_id, id)` supports ordered history and latest-event lookup. Repository validation requires end after start but deliberately does not derive worked minutes from clock times or break. Reversion appends another event whose after-values match the raw evidence; events are not updated or deleted.
 
-Schema 22 retains the schema-21 raw and effective repository queries, but current application, import collision and payroll paths continue to use raw rows. Corrected effective values are not yet consumed by Payroll Timesheet Preparation, snapshots or PDFs pending revision-aware payroll support.
+Schema 23 retains the schema-21 raw and effective repository queries, but current application, import collision and payroll paths continue to use raw rows. Corrected effective values are not yet consumed by Payroll Timesheet Preparation, snapshots or PDFs.
 
 ### `import_audit`
 
@@ -195,7 +195,7 @@ There is no uniqueness constraint on PA/effective date. The as-of lookup uses ef
 | `created_at` | `TEXT NOT NULL` |
 | `payslips_sent` | `INTEGER NOT NULL DEFAULT 0` boolean |
 
-Dates are stored as `DD/MM/YYYY`. Repository logic treats `(payroll_year, cycle_number)` as schedule identity, but schema 22 does not declare that pair unique. Validated import supplies exactly 13 chronological four-week cycles and replaces one year transactionally.
+Dates are stored as `DD/MM/YYYY`. Repository logic treats `(payroll_year, cycle_number)` as schedule identity, but schema 23 does not declare that pair unique. Validated import supplies exactly 13 chronological four-week cycles and replaces one year transactionally.
 
 ## Payroll preparation
 
@@ -315,20 +315,6 @@ The partial unique index prevents one raw imported row appearing twice in the sa
 
 The primary key enforces at most one publication state per payroll timesheet.
 
-### Revision persistence foundation
-
-Schema 22 adds parallel revision-owned storage without changing any current application consumer. The legacy `payroll_timesheet_snapshot_states` and `payroll_timesheet_worked_item_snapshots` tables remain operational and authoritative for the current GUI, generation and email workflows.
-
-`payroll_timesheet_revisions` gives a stable revision identity under a logical `payroll_timesheets` parent. It stores a positive `revision_number`, checked candidate/submitted/indeterminate state, exact non-empty PDF path/digest/generation time, nullable send-attempt/submitted/indeterminate timestamps and a `legacy_backfilled` marker. `(payroll_timesheet_id, revision_number)` and `(payroll_timesheet_id, pdf_path)` are unique. A partial unique index makes paths globally unique for newly created revisions, while allowing migration to preserve duplicate legacy paths that schema 21 did not prohibit. The immediate-write candidate API also refuses any new path already owned by a different revision, including a legacy revision. A partial unique index allows at most one candidate per payroll timesheet; `(payroll_timesheet_id, revision_number DESC)` supports latest/history queries. Lineage is the ordered revision number, so no redundant `supersedes_revision_id` is stored.
-
-`payroll_timesheet_revision_worked_items` freezes worked-item evidence under a revision. It retains every legacy worked-item field and adds nullable imported correction-event identity, direct-shift/audit identities and copied effective start/end/break/notes fields. Those new source-version fields are intentionally nullable because schema 22 does not yet consume imported corrections or direct shifts. A correction-event identity requires an imported-timesheet ID, an audit identity requires a direct-shift ID, and one item cannot identify both source families. Per-revision partial uniqueness prevents duplicate imported or direct source IDs; indexes support revision history and future version lookups.
-
-`payroll_timesheet_revision_weeks` freezes week number/date, worked hours, annual leave, sick leave, public-holiday aggregate and mileage. `payroll_timesheet_revision_public_holidays` freezes dated public-holiday detail. Their natural keys are unique within a revision. Week numbers are not newly range-constrained so migration can preserve any legacy database values exactly; normal preparation supplies four weeks numbered 1–4.
-
-`payroll_timesheet_revision_delivery_attempts` is append-oriented delivery evidence. It records the revision, checked outcome (`protected`, `failed`, `submitted`, `indeterminate`, `reconciled_sent` or `reconciled_unsent`), attempt/completion times, recipients, subject, exact attachment path/digest and optional transport error. No SMTP or GUI code uses it yet.
-
-Migration 22 creates and backfills all revision tables in one SQLite transaction. Every legacy snapshot state becomes revision 1 with state, path, digest and timestamps copied exactly; indeterminate time is also the best available legacy send-attempt time. Its legacy worked items are copied to the revision, and the current mutable week/public-holiday rows are copied as the best database representation available. Payroll timesheets without a legacy snapshot receive no revision. No PDF file is read, renamed, regenerated or written, and `payroll_timesheet_email_status` is untouched. `legacy_backfilled = 1` explicitly warns that inputs never stored historically—such as rendered identity, contracted-hours and signature/config values—cannot be reconstructed by migration.
-
 ## Constraint summary
 
 Declared uniqueness beyond primary keys:
@@ -338,10 +324,6 @@ Declared uniqueness beyond primary keys:
 - one public-holiday detail per payroll-timesheet/week/date;
 - one manual adjustment per payroll-timesheet/week;
 - one email status per PA/year/cycle/type; and
-- one occurrence of a non-null source TimesheetEntry ID per legacy payroll-timesheet snapshot;
-- one revision number and path occurrence per payroll timesheet, plus globally unique paths for new revisions;
-- at most one candidate revision per payroll timesheet;
-- one occurrence of each non-null imported/direct source ID per revision; and
-- one weekly row and one dated public-holiday row per natural key within a revision.
+- one occurrence of a non-null source TimesheetEntry ID per legacy payroll-timesheet snapshot.
 
-Schema 22 also declares the direct-shift running/recent indexes, direct-shift value checks, correction-history index and revision indexes described above. No foreign keys or cascading deletes are declared. Repository and service validation supplies the remaining business rules.
+Schema 23 also declares the direct-shift running/recent indexes, direct-shift value checks and correction-history index described above. No foreign keys or cascading deletes are declared. Repository and service validation supplies the remaining business rules.

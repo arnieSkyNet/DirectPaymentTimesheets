@@ -22,6 +22,7 @@ pub struct ImportSummary {
     pub files_failed: i64,
     pub failure_messages: Vec<String>,
     pub orphaned_archives: Vec<PathBuf>,
+    pub archived_paths: Vec<PathBuf>,
 }
 
 impl ImportSummary {
@@ -47,6 +48,7 @@ struct FileImportResult {
     rows_processed: i64,
     rows_imported: i64,
     rows_skipped: i64,
+    archive_path: PathBuf,
 }
 
 impl FileFailure {
@@ -130,6 +132,7 @@ impl<'a> ImportService<'a> {
                     summary.rows_processed += result.rows_processed;
                     summary.rows_imported += result.rows_imported;
                     summary.rows_skipped += result.rows_skipped;
+                    summary.archived_paths.push(result.archive_path);
                 }
                 Err(failure) => {
                     match failure.kind {
@@ -204,6 +207,7 @@ impl<'a> ImportService<'a> {
             rows_processed: row_count,
             rows_imported: entries.len() as i64,
             rows_skipped,
+            archive_path,
         })
     }
 

@@ -166,6 +166,7 @@ pub struct DirectPaymentApp {
     application: Application,
     version: String,
     status_message: String,
+    file_status: Option<(String, Vec<std::path::PathBuf>)>,
     last_import: Option<ImportSummary>,
     timesheets: Vec<TimesheetEntry>,
     timesheet_sort: TimesheetSortState,
@@ -191,6 +192,7 @@ pub struct DirectPaymentApp {
     application_settings_screen: ApplicationSettingsScreen,
     active_screen: ActiveScreen,
     restart_required_message: Option<String>,
+    restart_required_paths: Vec<std::path::PathBuf>,
 }
 
 impl DirectPaymentApp {
@@ -201,6 +203,7 @@ impl DirectPaymentApp {
             version: application.context.version.clone(),
             application,
             status_message: "Application ready.".to_string(),
+            file_status: None,
             last_import: None,
             timesheets: Vec::new(),
             timesheet_sort: TimesheetSortState::default(),
@@ -226,6 +229,7 @@ impl DirectPaymentApp {
             application_settings_screen: ApplicationSettingsScreen::new(),
             active_screen: ActiveScreen::Dashboard,
             restart_required_message: None,
+            restart_required_paths: Vec::new(),
         }
     }
 }
@@ -235,7 +239,12 @@ impl eframe::App for DirectPaymentApp {
         if let Some(message) = &self.restart_required_message {
             egui::CentralPanel::default().show(ctx, |ui| {
                 ui.heading("Restart Required");
-                ui.label(message);
+                ui.horizontal_wrapped(|ui| {
+                    ui.label(message);
+                    for path in &self.restart_required_paths {
+                        let _ = crate::folder_opener::button(ui, path);
+                    }
+                });
                 ui.separator();
                 if ui.button("Close DirectPaymentTimesheets").clicked() {
                     ctx.send_viewport_cmd(egui::ViewportCommand::Close);
@@ -246,8 +255,14 @@ impl eframe::App for DirectPaymentApp {
 
         egui::TopBottomPanel::top("header").show(ctx, |ui| {
             ui.horizontal(|ui| {
-                ui.heading("Direct Payments Timesheets");
-                ui.label(format!("Version {}", self.version));
+                ui.heading(format!("DirectPaymentTimesheets v{}", self.version));
+                ui.label(
+                    egui::RichText::new(format!(
+                        "(DBschema {})",
+                        crate::database::CURRENT_SCHEMA_VERSION
+                    ))
+                    .size(13.0),
+                );
 
                 if ui.button("Settings").clicked() {
                     self.active_screen = ActiveScreen::ApplicationSettings;
@@ -359,6 +374,8 @@ impl eframe::App for DirectPaymentApp {
                 }
                 if let Some(message) = self.application_settings_screen.restart_message() {
                     self.restart_required_message = Some(message.to_string());
+                    self.restart_required_paths =
+                        self.application_settings_screen.restart_paths().to_vec();
                 }
             }
 
@@ -1280,9 +1297,12 @@ impl DirectPaymentApp {
                 match self.application.import_payroll_return(&path, &schedule) {
                     Ok(result) => {
                         self.status_message = payroll_return_status_message(&result);
+                        self.file_status =
+                            Some((self.status_message.clone(), result.published_paths.clone()));
                     }
                     Err(error) => {
                         self.status_message = format!("Payroll return import failed: {error}");
+                        self.file_status = None;
                     }
                 }
             }
@@ -1384,11 +1404,16 @@ impl DirectPaymentApp {
                                     summary.files_succeeded, summary.files_already_imported
                                 )
                             };
+                            self.file_status = Some((
+                                self.status_message.clone(),
+                                summary.archived_paths.clone(),
+                            ));
                             self.last_import = Some(summary);
                         }
 
                         Err(error) => {
                             self.status_message = format!("Import failed: {}", error);
+                            self.file_status = None;
                             self.last_import = None;
                         }
                     }
@@ -1414,11 +1439,18 @@ impl DirectPaymentApp {
                         Ok(count) => {
                             self.status_message =
                                 format!("Payroll timesheets generated: {} PDF(s).", count);
+                            self.file_status = Some((
+                                self.status_message.clone(),
+                                vec![crate::paths::expand_path(
+                                    &self.application.context.config.folders.pdf_output,
+                                )],
+                            ));
                         }
 
                         Err(error) => {
                             self.status_message =
                                 format!("Payroll timesheet generation failed: {}", error);
+                            self.file_status = None;
                         }
                     }
                 }
@@ -1491,7 +1523,10 @@ impl DirectPaymentApp {
                             ui.label(egui::RichText::new(message).color(egui::Color32::RED));
                         }
                         for path in &summary.orphaned_archives {
-                            ui.label(format!("Recoverable orphan archive: {}", path.display()));
+                            ui.horizontal(|ui| {
+                                ui.label(format!("Recoverable orphan archive: {}", path.display()));
+                                let _ = crate::folder_opener::button(ui, path);
+                            });
                         }
                     }
 
@@ -1502,7 +1537,23 @@ impl DirectPaymentApp {
             });
 
             dashboard_status_panel(ui, 1, theme, |ui| {
-                ui.label(format!("Status: {}", self.status_message));
+                let mut open_error = None;
+                ui.horizontal_wrapped(|ui| {
+                    ui.label(format!("Status: {}", self.status_message));
+                    if let Some((message, paths)) = &self.file_status {
+                        if message == &self.status_message {
+                            for path in paths {
+                                if open_error.is_none() {
+                                    open_error = crate::folder_opener::button(ui, path);
+                                }
+                            }
+                        }
+                    }
+                });
+                if let Some(error) = open_error {
+                    self.status_message = error;
+                    self.file_status = None;
+                }
             });
 
             dashboard_status_panel(ui, 2, theme, |ui| {

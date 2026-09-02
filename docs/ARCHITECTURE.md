@@ -30,7 +30,7 @@ Configured business paths may point outside the data root. `email_archive` is cu
 
 ## SQLite and repositories
 
-`database.rs` creates the original schema and applies ordered migrations through `CURRENT_SCHEMA_VERSION` 19. Each repository opens/uses its own `rusqlite::Connection` to the same database path. Schema-changing work belongs in a migration; tests should exercise a newly initialised database and upgrade behaviour where relevant.
+`database.rs` creates the original schema and applies ordered migrations through `CURRENT_SCHEMA_VERSION` 23. Each repository opens/uses its own `rusqlite::Connection` to the same database path. Schema-changing work belongs in a migration; tests should exercise a newly initialised database and upgrade behaviour where relevant.
 
 Principal persisted areas are:
 

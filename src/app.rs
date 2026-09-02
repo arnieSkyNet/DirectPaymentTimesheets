@@ -144,7 +144,7 @@ impl Application {
         &self,
     ) -> Result<Vec<crate::models::TimesheetEntry>, Box<dyn std::error::Error>> {
         // Payroll and the current imported-hours view deliberately consume raw
-        // immutable evidence until revision-aware correction support is added.
+        // immutable evidence until correction-aware payroll support is added.
         Ok(self.repository.get_all_raw()?)
     }
 
