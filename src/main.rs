@@ -24,6 +24,7 @@ mod pay_rate_repository;
 mod payroll_file_naming;
 mod payroll_prep_sheet_import_service;
 mod payroll_provider_repository;
+mod payroll_revision_repository;
 mod payroll_schedule_repository;
 mod payroll_settings_screen;
 mod payroll_snapshot_service;
