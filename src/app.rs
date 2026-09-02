@@ -143,7 +143,9 @@ impl Application {
     pub fn get_timesheets(
         &self,
     ) -> Result<Vec<crate::models::TimesheetEntry>, Box<dyn std::error::Error>> {
-        Ok(self.repository.get_all()?)
+        // Payroll and the current imported-hours view deliberately consume raw
+        // immutable evidence until revision-aware correction support is added.
+        Ok(self.repository.get_all_raw()?)
     }
 
     #[allow(dead_code)]

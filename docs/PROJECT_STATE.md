@@ -5,7 +5,7 @@ This document describes the implementation on `main`. Source code, migrations an
 ## Current release and platform
 
 - Application version: `0.0.10`.
-- Database schema: version 20, upgraded in place by ordered SQLite migrations.
+- Database schema: version 21, upgraded in place by ordered SQLite migrations.
 - Desktop UI: Rust with `eframe`/`egui`.
 - Persistence: SQLite through `rusqlite` (bundled SQLite).
 - Documents and integration: `printpdf`, PDF text extraction, ZIP import and SMTP via `lettre`.
@@ -43,6 +43,8 @@ Payroll Settings persists payroll frequency, rounding choice, workweek start and
 ### Importing work
 
 CSV import parses provider rows, prevents duplicates and stores stable `TimesheetEntry` identities. Start/end values are retained unchanged, and `worked_minutes` is parsed directly from the CSV worked-duration field rather than calculated from those values or altered using the persisted rounding settings. The imported CSV rate and amount are not authoritative payroll rates.
+
+Schema 21 adds append-only imported-row correction events with actor/action metadata, optional reason and complete before/after start, end, break, worked-minute and note values. Raw and effective repository queries are explicit; the immutable imported row remains the raw source and reversion appends history. This is currently a repository foundation only: Dashboard display, duplicate detection, Payroll Timesheet Preparation, snapshots and PDFs continue to use raw imported rows until revision-aware payroll support is implemented.
 
 After a successful import, the source CSV is copied to the internal `archive/YYYY/MM/` hierarchy with a timestamped filename and is not subsequently modified by the application. Successes and failures are recorded in `import_audit`, including row counts, source/archive paths and errors where applicable.
 

@@ -2,13 +2,13 @@
 
 ## Scope and versioning
 
-This is the implemented SQLite schema at version 20. It is derived from `create_schema` and migrations in `src/database.rs`; those migrations are authoritative.
+This is the implemented SQLite schema at version 21. It is derived from `create_schema` and migrations in `src/database.rs`; those migrations are authoritative.
 
-`schema_version` contains the current integer version. A new database begins at version 1 and receives each ordered migration through `CURRENT_SCHEMA_VERSION` 20. Existing databases are upgraded in place.
+`schema_version` contains the current integer version. A new database begins at version 1 and receives each ordered migration through `CURRENT_SCHEMA_VERSION` 21. Existing databases are upgraded in place.
 
 During unreleased schema-20 development, an earlier local database shape contained `direct_shifts` without soft-deletion columns or the audit table. Startup therefore performs an idempotent schema-20 compatibility check after normal migrations. When that exact incomplete shape is found, it transactionally rebuilds `direct_shifts` into the final constrained form while preserving IDs and row values, then creates the audit table/indexes. It does not fabricate historical audit events, and repeated startup does not duplicate existing audit rows.
 
-SQLite foreign-key constraints are not declared in schema 20. Relationships described below are logical relationships enforced by repository/application code and stored IDs/business keys.
+SQLite foreign-key constraints are not declared in schema 21. Relationships described below are logical relationships enforced by repository/application code and stored IDs/business keys.
 
 ## `schema_version`
 
@@ -78,6 +78,28 @@ Imported external work rows.
 | `personal_assistant_id` | `INTEGER` | Logical reference to `personal_assistants.id`; nullable for unresolved/legacy imports. |
 
 No database uniqueness constraint implements duplicate detection. New CSV imports preflight possible collisions in application code: materially identical evidence is counted/skipped, while a same-PA/start material difference refuses the complete file rather than selecting or replacing a row. The complete file's new inserts and SUCCESS audit, including truthful imported/skipped counts, are committed in one SQLite transaction.
+
+### `timesheet_correction_events`
+
+Append-only corrections to the effective interpretation of an immutable imported `timesheets` row. The original row, imported PA identity, rate and amount are never changed.
+
+| Column | Type/constraint | Purpose |
+|---|---|---|
+| `id` | `INTEGER PRIMARY KEY` | Ordered correction-event identity. |
+| `timesheet_id` | `INTEGER NOT NULL` | Logical reference to immutable `timesheets.id`. |
+| `actor_id` | non-empty `TEXT` | Actor responsible for the correction; current desktop identity is `local_employer`. |
+| `action_type` | checked `TEXT` | `edit` or `revert`. |
+| `action_at` | non-empty `TEXT` | Time of the correction action. |
+| `reason` | nullable `TEXT` | Optional correction explanation. |
+| `before_start_time`, `after_start_time` | `TEXT NOT NULL` | Complete effective start values before and after. |
+| `before_end_time`, `after_end_time` | `TEXT NOT NULL` | Complete effective end values before and after. |
+| `before_break_minutes`, `after_break_minutes` | non-negative `INTEGER` | Complete effective break values. |
+| `before_worked_minutes`, `after_worked_minutes` | non-negative `INTEGER` | Complete independently authoritative worked values. |
+| `before_notes`, `after_notes` | nullable `TEXT` | Complete effective notes. |
+
+Correction timestamps use canonical local-minute text `YYYY-MM-DDTHH:MM`. `(timesheet_id, id)` supports ordered history and latest-event lookup. Repository validation requires end after start but deliberately does not derive worked minutes from clock times or break. Reversion appends another event whose after-values match the raw evidence; events are not updated or deleted.
+
+Schema 21 exposes explicit raw and effective repository queries, but current application, import collision and payroll paths continue to use raw rows. Corrected effective values are not yet consumed by Payroll Timesheet Preparation, snapshots or PDFs pending revision-aware payroll support.
 
 ### `import_audit`
 
@@ -173,7 +195,7 @@ There is no uniqueness constraint on PA/effective date. The as-of lookup uses ef
 | `created_at` | `TEXT NOT NULL` |
 | `payslips_sent` | `INTEGER NOT NULL DEFAULT 0` boolean |
 
-Dates are stored as `DD/MM/YYYY`. Repository logic treats `(payroll_year, cycle_number)` as schedule identity, but schema 20 does not declare that pair unique. Validated import supplies exactly 13 chronological four-week cycles and replaces one year transactionally.
+Dates are stored as `DD/MM/YYYY`. Repository logic treats `(payroll_year, cycle_number)` as schedule identity, but schema 21 does not declare that pair unique. Validated import supplies exactly 13 chronological four-week cycles and replaces one year transactionally.
 
 ## Payroll preparation
 
@@ -304,4 +326,4 @@ Declared uniqueness beyond primary keys:
 - one email status per PA/year/cycle/type; and
 - one occurrence of a non-null source TimesheetEntry ID per payroll-timesheet snapshot.
 
-Schema 20 also declares the direct-shift running/recent indexes and direct-shift value checks described above. No foreign keys or cascading deletes are declared. Repository and service validation supplies the remaining business rules.
+Schema 21 also declares the direct-shift running/recent indexes, direct-shift value checks and correction-history index described above. No foreign keys or cascading deletes are declared. Repository and service validation supplies the remaining business rules.

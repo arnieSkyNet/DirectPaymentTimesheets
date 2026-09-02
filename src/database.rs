@@ -2,7 +2,7 @@ use std::path::Path;
 
 use rusqlite::{Connection, Result};
 
-pub const CURRENT_SCHEMA_VERSION: i64 = 20;
+pub const CURRENT_SCHEMA_VERSION: i64 = 21;
 
 pub fn initialise_database(database_path: &Path) -> Result<()> {
     let connection = Connection::open(database_path)?;
@@ -65,8 +65,8 @@ pub fn create_schema(connection: &Connection) -> Result<()> {
         [],
     )?;
 
-    apply_migrations(connection)?;
     repair_unreleased_schema_20(connection)?;
+    apply_migrations(connection)?;
 
     Ok(())
 }
@@ -169,6 +169,11 @@ fn apply_migrations(connection: &Connection) -> Result<()> {
 
     if current_version < 20 {
         migrate_to_version_20(connection)?;
+        current_version = 20;
+    }
+
+    if current_version < 21 {
+        migrate_to_version_21(connection)?;
     }
 
     Ok(())
@@ -668,6 +673,38 @@ fn migrate_to_version_20(connection: &Connection) -> Result<()> {
     Ok(())
 }
 
+fn migrate_to_version_21(connection: &Connection) -> Result<()> {
+    let transaction = connection.unchecked_transaction()?;
+    transaction.execute_batch(
+        "
+        CREATE TABLE timesheet_correction_events (
+            id INTEGER PRIMARY KEY,
+            timesheet_id INTEGER NOT NULL,
+            actor_id TEXT NOT NULL CHECK (length(trim(actor_id)) > 0),
+            action_type TEXT NOT NULL CHECK (action_type IN ('edit', 'revert')),
+            action_at TEXT NOT NULL CHECK (length(trim(action_at)) > 0),
+            reason TEXT,
+            before_start_time TEXT NOT NULL,
+            before_end_time TEXT NOT NULL,
+            before_break_minutes INTEGER NOT NULL CHECK (before_break_minutes >= 0),
+            before_worked_minutes INTEGER NOT NULL CHECK (before_worked_minutes >= 0),
+            before_notes TEXT,
+            after_start_time TEXT NOT NULL,
+            after_end_time TEXT NOT NULL,
+            after_break_minutes INTEGER NOT NULL CHECK (after_break_minutes >= 0),
+            after_worked_minutes INTEGER NOT NULL CHECK (after_worked_minutes >= 0),
+            after_notes TEXT
+        );
+
+        CREATE INDEX timesheet_correction_events_timesheet_id
+        ON timesheet_correction_events (timesheet_id, id);
+        ",
+    )?;
+    transaction.execute("UPDATE schema_version SET version = 21", [])?;
+    transaction.commit()?;
+    Ok(())
+}
+
 fn repair_unreleased_schema_20(connection: &Connection) -> Result<()> {
     let version: i64 =
         connection.query_row("SELECT version FROM schema_version LIMIT 1", [], |row| {
@@ -838,6 +875,7 @@ mod tests {
                 DROP TABLE payroll_timesheet_snapshot_states;
                 DROP TABLE direct_shifts;
                 DROP TABLE direct_shift_audit;
+                DROP TABLE timesheet_correction_events;
                 UPDATE schema_version SET version = 17;
                 ",
             )
@@ -857,7 +895,7 @@ mod tests {
             .unwrap();
 
         assert_eq!(email_type, "timesheet");
-        assert_eq!(version, 20);
+        assert_eq!(version, 21);
     }
 
     #[test]
@@ -886,7 +924,58 @@ mod tests {
             .unwrap();
 
         assert!(duplicate.is_err());
-        assert_eq!(version, 20);
+        assert_eq!(version, 21);
+    }
+
+    #[test]
+    fn migration_to_version_21_adds_correction_history_without_changing_imported_rows() {
+        let connection = Connection::open_in_memory().unwrap();
+        create_schema(&connection).unwrap();
+        connection
+            .execute(
+                "INSERT INTO timesheets (
+                    id, pa_name, personal_assistant_id, start_time, end_time,
+                    break_minutes, worked_minutes, hourly_rate, amount, notes
+                 ) VALUES (
+                    41, 'Alex Smith', 7, '1 September 2026 at 09:00:00',
+                    '1 September 2026 at 10:00:00', 0, 60, 12.0, 12.0, 'source'
+                 )",
+                [],
+            )
+            .unwrap();
+        connection
+            .execute_batch(
+                "DROP TABLE timesheet_correction_events;
+                 UPDATE schema_version SET version = 20;",
+            )
+            .unwrap();
+
+        create_schema(&connection).unwrap();
+
+        let preserved: (i64, String, i64, String) = connection
+            .query_row(
+                "SELECT id, start_time, worked_minutes, notes FROM timesheets WHERE id = 41",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )
+            .unwrap();
+        assert_eq!(
+            preserved,
+            (
+                41,
+                "1 September 2026 at 09:00:00".to_string(),
+                60,
+                "source".to_string()
+            )
+        );
+        assert!(table_exists(&connection, "timesheet_correction_events").unwrap());
+        assert_eq!(
+            connection
+                .query_row("SELECT version FROM schema_version", [], |row| row
+                    .get::<_, i64>(0))
+                .unwrap(),
+            21
+        );
     }
 
     #[test]
@@ -897,6 +986,7 @@ mod tests {
             .execute_batch(
                 "DROP TABLE direct_shift_audit;
                  DROP TABLE direct_shifts;
+                 DROP TABLE timesheet_correction_events;
                  UPDATE schema_version SET version = 19;",
             )
             .unwrap();
@@ -911,7 +1001,7 @@ mod tests {
                 .query_row("SELECT version FROM schema_version", [], |row| row
                     .get::<_, i64>(0))
                 .unwrap(),
-            20
+            21
         );
     }
 
@@ -923,6 +1013,7 @@ mod tests {
             .execute_batch(
                 "DROP TABLE direct_shift_audit;
                  DROP TABLE direct_shifts;
+                 DROP TABLE timesheet_correction_events;
                  CREATE TABLE direct_shifts (
                     id INTEGER PRIMARY KEY,
                     personal_assistant_id INTEGER NOT NULL,
@@ -943,7 +1034,8 @@ mod tests {
                  ) VALUES (
                     42, 7, '2026-09-01T09:07', '2026-09-01T10:19', 12,
                     'existing test shift', 'direct', 'created', 'updated'
-                 );",
+                 );
+                 UPDATE schema_version SET version = 20;",
             )
             .unwrap();
 

@@ -2,7 +2,7 @@
 
 ## Purpose
 
-This document describes the implemented business entities and their relationships. It is intentionally conceptual; [DATABASE-SCHEMA.md](DATABASE-SCHEMA.md) is the exact schema-20 table/column reference and the Rust source remains authoritative.
+This document describes the implemented business entities and their relationships. It is intentionally conceptual; [DATABASE-SCHEMA.md](DATABASE-SCHEMA.md) is the exact schema-21 table/column reference and the Rust source remains authoritative.
 
 The model preserves imported facts, effective-dated employment terms, prepared payroll values and the exact worked-item evidence represented by a generated or submitted timesheet.
 
@@ -58,11 +58,15 @@ An imported timesheet row preserves:
 
 New imports are preflighted as a complete file. PA names are matched case-insensitively after collapsing whitespace and must resolve to exactly one maintained PA. An incoming row that is materially identical to an existing immutable shift is counted and skipped; a same-PA/start row with any material difference refuses the complete file for explicit review. The same rule applies within one incoming file. Existing imported rows are never replaced or merged. The stable row ID is later used as submitted-snapshot membership evidence.
 
+An imported row can now have an append-only correction history for start, end, break minutes, worked minutes and notes. Each event records actor/action/time, optional reason and complete before/after effective values. The raw `TimesheetEntry`, PA identity, imported rate and imported amount remain immutable. Reversion is another event, and an identical effective proposal creates no event. Explicit repository APIs distinguish raw evidence from a latest-event effective projection.
+
+This is a storage/query foundation only: current imports, Dashboard display, Payroll Timesheet Preparation, snapshots and PDF generation still consume raw imported rows. Effective corrections will not affect payroll until revision-aware payroll submission can preserve earlier submitted/indeterminate evidence.
+
 ## Import audit and archive
 
 An import-audit record captures import time, original/archive filenames, row counts, status and optional error. Validated source bytes are written first to a unique, non-overwriting file in `archive/YYYY/MM/`; all imported rows and the SUCCESS audit are then committed in one SQLite transaction. A database failure leaves the archive as reported recoverable evidence and rolls back all rows. Failed/refused audits are best-effort.
 
-Schema 20 still has no imported-file content hash or row-to-import relationship. Historical successful-import detection therefore remains based on the original pathname: changed content at an already-successful pathname is conservatively skipped, while renamed identical content is preflighted again and may be refused as competing evidence. Durable content identity and row provenance require an explicitly approved future migration.
+Schema 21 still has no imported-file content hash or row-to-import relationship. Historical successful-import detection therefore remains based on the original pathname: changed content at an already-successful pathname is conservatively skipped, while renamed identical content is preflighted again and may be refused as competing evidence. Correction events do not change raw collision identity. Durable content identity and row provenance require an explicitly approved future migration.
 
 ## DirectShift
 
