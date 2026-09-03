@@ -4,6 +4,14 @@ pub fn expand_path(path: &PathBuf) -> PathBuf {
     expand_path_with_home(path, dirs::home_dir().as_deref())
 }
 
+pub fn ensure_directories(paths: &[&PathBuf]) -> std::io::Result<()> {
+    for path in paths {
+        std::fs::create_dir_all(expand_path(path))?;
+    }
+
+    Ok(())
+}
+
 pub fn expand_path_with_home(path: &Path, home: Option<&Path>) -> PathBuf {
     let path_string = path.to_string_lossy();
 
@@ -35,6 +43,18 @@ mod tests {
             home.join("Documents/DirectPaymentTimesheets/payslips")
         );
         assert_eq!(expand_path_with_home(Path::new("~"), Some(home)), home);
+    }
+
+    #[test]
+    fn ensure_directories_creates_missing_configured_directories() {
+        let directory = tempfile::TempDir::new().unwrap();
+        let first = directory.path().join("one");
+        let second = directory.path().join("two").join("nested");
+
+        ensure_directories(&[&first, &second]).unwrap();
+
+        assert!(first.is_dir());
+        assert!(second.is_dir());
     }
 
     #[test]

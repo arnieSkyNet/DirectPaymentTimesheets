@@ -16,6 +16,15 @@ impl AppContext {
 
         let config = AppConfig::load(&config_path)?;
 
+        crate::paths::ensure_directories(&[
+            &config.folders.csv_import,
+            &config.folders.pdf_output,
+            &config.folders.email_archive,
+            &config.folders.payslip_folder,
+            &config.folders.payroll_information_folder,
+        ])
+        .map_err(|error| AppError::Config(error.to_string()))?;
+
         Ok(Self {
             environment,
             config,
