@@ -64,17 +64,59 @@ Imported `worked_minutes` is parsed from the CSV Worked Hours field. It is not r
 - Integrity/schema checks and a mandatory pre-restore safety backup.
 - SQLite-safe restore with optional configuration restore and required application restart.
 
-## Build and run
+## Install, build and run
 
-Install a current Rust toolchain, then from the repository root run:
+DirectPaymentTimesheets is currently a pre-release application. Building from source is presently the supported way to run it.
+
+### Linux
+
+#### Build and run from source
+
+You will need:
+
+- Git
+- A current Rust toolchain, including Cargo
+- The native development libraries required by the application's desktop and TLS dependencies
+
+If Rust and Cargo are not already installed, see the official Rust installation instructions:
+
+https://www.rust-lang.org/tools/install
+
+Clone the DirectPaymentTimesheets source from GitHub:
+
+```bash
+git clone https://github.com/ArnieSkyNet/DirectPaymentTimesheets.git
+cd DirectPaymentTimesheets
+```
+
+Check that the project builds and passes its tests:
 
 ```bash
 cargo check
 cargo test
+```
+
+Run the application:
+
+```bash
 cargo run
 ```
 
-No packaged installer is currently provided. Native desktop/TLS build prerequisites may depend on the operating system and Rust toolchain installation.
+#### Debian/Ubuntu `.deb` package
+
+Not yet available. A packaged `.deb` release is planned for a future version.
+
+#### AppImage
+
+Not yet available. An AppImage release is planned for a future version.
+
+### Windows
+
+Windows installation instructions and packaged releases are planned for a future version.
+
+### macOS
+
+macOS installation instructions and packaged releases are planned for a future version.
 
 ## Runtime data and configuration
 
@@ -133,7 +175,7 @@ User-facing labels use Payroll Week, the four-week date range and pay date. Inte
 - [Domain rules](docs/DOMAIN.md)
 - [Development guide](docs/DEVELOPMENT.md)
 - [Conceptual data model](docs/DATA-MODEL.md)
-- [Database schema 20](docs/DATABASE-SCHEMA.md)
+- [Database schema 23](docs/DATABASE-SCHEMA.md)
 
 ## Licence
 
