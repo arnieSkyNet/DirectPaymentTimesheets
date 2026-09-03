@@ -9,6 +9,7 @@ pub struct ApplicationSettingsScreen {
     loaded: bool,
 
     theme: ApplicationTheme,
+    hours_shift_date_time_spinner: bool,
 
     csv_import: String,
     pdf_output: String,
@@ -37,6 +38,7 @@ impl ApplicationSettingsScreen {
             loaded: false,
 
             theme: ApplicationTheme::default(),
+            hours_shift_date_time_spinner: false,
 
             csv_import: String::new(),
             pdf_output: String::new(),
@@ -95,6 +97,15 @@ impl ApplicationSettingsScreen {
 
             if self.theme != previous_theme {
                 apply_theme(ui.ctx(), self.theme);
+            }
+
+            let spinner_label = if self.hours_shift_date_time_spinner {
+                "Hours Shift Date/Time Spinner: ON"
+            } else {
+                "Hours Shift Date/Time Spinner: OFF"
+            };
+            if ui.button(spinner_label).clicked() {
+                self.hours_shift_date_time_spinner = !self.hours_shift_date_time_spinner;
             }
         });
 
@@ -459,6 +470,7 @@ impl ApplicationSettingsScreen {
         let config = &application.context.config;
 
         self.theme = config.theme;
+        self.hours_shift_date_time_spinner = config.hours_shift_date_time_spinner;
 
         self.csv_import = config.folders.csv_import.to_string_lossy().to_string();
         self.pdf_output = config.folders.pdf_output.to_string_lossy().to_string();
@@ -539,6 +551,8 @@ impl ApplicationSettingsScreen {
         }
 
         application.context.config.theme = self.theme;
+        application.context.config.hours_shift_date_time_spinner =
+            self.hours_shift_date_time_spinner;
 
         application.context.config.folders.csv_import =
             std::path::PathBuf::from(self.csv_import.trim());

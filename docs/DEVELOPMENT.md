@@ -4,7 +4,7 @@
 
 This is a local Rust/egui/SQLite application. Prefer small, evidence-led changes that preserve payroll history and existing provider output. Inspect the current source, schema and tests before changing behaviour; documentation and conversation history are secondary evidence.
 
-Current package version is `0.0.10`; current SQLite schema version is 19. Do not change either unless a task explicitly requires it.
+Current package version is `0.0.11`; current SQLite schema version is 23. Do not change either unless a task explicitly requires it.
 
 ## Local setup
 
