@@ -113,6 +113,8 @@ impl ApplicationSettingsScreen {
 
         ui.heading("Folders");
 
+        let mut folder_open_error = None;
+
         egui::Grid::new("application_settings_folders")
             .num_columns(3)
             .striped(true)
@@ -124,11 +126,19 @@ impl ApplicationSettingsScreen {
                     egui::TextEdit::singleline(&mut self.csv_import),
                 );
 
-                if ui.button("Browse...").clicked() {
-                    if let Some(path) = rfd::FileDialog::new().pick_folder() {
-                        self.csv_import = path.to_string_lossy().to_string();
+                ui.horizontal(|ui| {
+                    if ui.button("Browse...").clicked() {
+                        if let Some(path) = rfd::FileDialog::new().pick_folder() {
+                            self.csv_import = path.to_string_lossy().to_string();
+                        }
                     }
-                }
+                    if folder_open_error.is_none() {
+                        let path = crate::paths::expand_path(&std::path::PathBuf::from(
+                            self.csv_import.trim(),
+                        ));
+                        folder_open_error = crate::folder_opener::button(ui, &path);
+                    }
+                });
 
                 ui.end_row();
 
@@ -139,11 +149,19 @@ impl ApplicationSettingsScreen {
                     egui::TextEdit::singleline(&mut self.pdf_output),
                 );
 
-                if ui.button("Browse...").clicked() {
-                    if let Some(path) = rfd::FileDialog::new().pick_folder() {
-                        self.pdf_output = path.to_string_lossy().to_string();
+                ui.horizontal(|ui| {
+                    if ui.button("Browse...").clicked() {
+                        if let Some(path) = rfd::FileDialog::new().pick_folder() {
+                            self.pdf_output = path.to_string_lossy().to_string();
+                        }
                     }
-                }
+                    if folder_open_error.is_none() {
+                        let path = crate::paths::expand_path(&std::path::PathBuf::from(
+                            self.pdf_output.trim(),
+                        ));
+                        folder_open_error = crate::folder_opener::button(ui, &path);
+                    }
+                });
 
                 ui.end_row();
 
@@ -154,11 +172,19 @@ impl ApplicationSettingsScreen {
                     egui::TextEdit::singleline(&mut self.email_archive),
                 );
 
-                if ui.button("Browse...").clicked() {
-                    if let Some(path) = rfd::FileDialog::new().pick_folder() {
-                        self.email_archive = path.to_string_lossy().to_string();
+                ui.horizontal(|ui| {
+                    if ui.button("Browse...").clicked() {
+                        if let Some(path) = rfd::FileDialog::new().pick_folder() {
+                            self.email_archive = path.to_string_lossy().to_string();
+                        }
                     }
-                }
+                    if folder_open_error.is_none() {
+                        let path = crate::paths::expand_path(&std::path::PathBuf::from(
+                            self.email_archive.trim(),
+                        ));
+                        folder_open_error = crate::folder_opener::button(ui, &path);
+                    }
+                });
 
                 ui.end_row();
 
@@ -169,11 +195,19 @@ impl ApplicationSettingsScreen {
                     egui::TextEdit::singleline(&mut self.payslip_folder),
                 );
 
-                if ui.button("Browse...").clicked() {
-                    if let Some(path) = rfd::FileDialog::new().pick_folder() {
-                        self.payslip_folder = path.to_string_lossy().to_string();
+                ui.horizontal(|ui| {
+                    if ui.button("Browse...").clicked() {
+                        if let Some(path) = rfd::FileDialog::new().pick_folder() {
+                            self.payslip_folder = path.to_string_lossy().to_string();
+                        }
                     }
-                }
+                    if folder_open_error.is_none() {
+                        let path = crate::paths::expand_path(&std::path::PathBuf::from(
+                            self.payslip_folder.trim(),
+                        ));
+                        folder_open_error = crate::folder_opener::button(ui, &path);
+                    }
+                });
 
                 ui.end_row();
 
@@ -184,14 +218,27 @@ impl ApplicationSettingsScreen {
                     egui::TextEdit::singleline(&mut self.payroll_information_folder),
                 );
 
-                if ui.button("Browse...").clicked() {
-                    if let Some(path) = rfd::FileDialog::new().pick_folder() {
-                        self.payroll_information_folder = path.to_string_lossy().to_string();
+                ui.horizontal(|ui| {
+                    if ui.button("Browse...").clicked() {
+                        if let Some(path) = rfd::FileDialog::new().pick_folder() {
+                            self.payroll_information_folder = path.to_string_lossy().to_string();
+                        }
                     }
-                }
+                    if folder_open_error.is_none() {
+                        let path = crate::paths::expand_path(&std::path::PathBuf::from(
+                            self.payroll_information_folder.trim(),
+                        ));
+                        folder_open_error = crate::folder_opener::button(ui, &path);
+                    }
+                });
 
                 ui.end_row();
             });
+
+        if let Some(error) = folder_open_error {
+            self.status_message = error;
+            self.file_status = None;
+        }
 
         ui.separator();
 

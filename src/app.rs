@@ -85,6 +85,14 @@ impl Application {
     pub fn save_config(&self) -> Result<(), Box<dyn std::error::Error>> {
         let config_path = self.context.environment.data_dir.join("config.toml");
 
+        crate::paths::ensure_directories(&[
+            &self.context.config.folders.csv_import,
+            &self.context.config.folders.pdf_output,
+            &self.context.config.folders.email_archive,
+            &self.context.config.folders.payslip_folder,
+            &self.context.config.folders.payroll_information_folder,
+        ])?;
+
         self.context.config.save(&config_path)?;
 
         Ok(())
