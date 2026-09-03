@@ -1,4 +1,4 @@
-use chrono::{Datelike, Local, NaiveDate, NaiveDateTime, Timelike};
+use chrono::{Datelike, Local, NaiveDate, NaiveDateTime, NaiveTime, Timelike};
 use eframe::egui;
 
 use crate::app::Application;
@@ -29,6 +29,17 @@ struct CompletedShiftEdit {
     end: NaiveDateTime,
     break_minutes: i64,
     notes: String,
+    date_text: String,
+    start_text: String,
+    end_text: String,
+}
+
+impl CompletedShiftEdit {
+    fn refresh_date_time_text(&mut self) {
+        self.date_text = self.start.format("%d/%m/%Y").to_string();
+        self.start_text = self.start.format("%H:%M").to_string();
+        self.end_text = self.end.format("%d/%m %H:%M").to_string();
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -39,6 +50,12 @@ struct DateTimePickerState {
     day: u32,
     hour: u32,
     minute: u32,
+    original: NaiveDateTime,
+    day_text: String,
+    month_text: String,
+    year_text: String,
+    hour_text: String,
+    minute_text: String,
 }
 
 impl DateTimePickerState {
@@ -50,6 +67,12 @@ impl DateTimePickerState {
             day: initial.day(),
             hour: initial.hour(),
             minute: initial.minute(),
+            original: initial,
+            day_text: format!("{:02}", initial.day()),
+            month_text: format!("{:02}", initial.month()),
+            year_text: initial.year().to_string(),
+            hour_text: format!("{:02}", initial.hour()),
+            minute_text: format!("{:02}", initial.minute()),
         }
     }
 
@@ -57,6 +80,41 @@ impl DateTimePickerState {
         NaiveDate::from_ymd_opt(self.year, self.month, self.day)
             .and_then(|date| date.and_hms_opt(self.hour, self.minute, 0))
             .ok_or_else(|| "Select a valid date and time.".to_string())
+    }
+
+    fn clamp_date(&mut self) {
+        self.month = self.month.clamp(1, 12);
+        self.day = self.day.clamp(1, days_in_month(self.year, self.month));
+        self.refresh_text();
+    }
+
+    fn refresh_text(&mut self) {
+        self.day_text = format!("{:02}", self.day);
+        self.month_text = format!("{:02}", self.month);
+        self.year_text = self.year.to_string();
+        self.hour_text = format!("{:02}", self.hour);
+        self.minute_text = format!("{:02}", self.minute);
+    }
+
+    fn accept_typed_values(&mut self) -> Result<(), String> {
+        let parse = |text: &str, label: &str| {
+            text.trim()
+                .parse::<i32>()
+                .map_err(|_| format!("Enter a valid {label}."))
+        };
+        let in_range = |value: i32, range: std::ops::RangeInclusive<i32>, label: &str| {
+            range
+                .contains(&value)
+                .then_some(value)
+                .ok_or_else(|| format!("Enter a valid {label}."))
+        };
+        self.year = in_range(parse(&self.year_text, "year")?, 1900..=2200, "year")?;
+        self.month = in_range(parse(&self.month_text, "month")?, 1..=12, "month")? as u32;
+        self.day = parse(&self.day_text, "day")?.max(1) as u32;
+        self.hour = in_range(parse(&self.hour_text, "hour")?, 0..=23, "hour")? as u32;
+        self.minute = in_range(parse(&self.minute_text, "minute")?, 0..=59, "minute")? as u32;
+        self.clamp_date();
+        Ok(())
     }
 }
 
@@ -69,6 +127,7 @@ pub struct EnterHoursScreen {
     notes: String,
     break_minutes: i64,
     picker: Option<DateTimePickerState>,
+    completed_edit_field: Option<RecentShiftEditField>,
     confirm_undo: bool,
     completed_edit: Option<CompletedShiftEdit>,
     confirm_delete_shift_id: Option<i64>,
@@ -86,6 +145,7 @@ impl EnterHoursScreen {
             notes: String::new(),
             break_minutes: 0,
             picker: None,
+            completed_edit_field: None,
             confirm_undo: false,
             completed_edit: None,
             confirm_delete_shift_id: None,
@@ -96,6 +156,7 @@ impl EnterHoursScreen {
     pub fn reload(&mut self) {
         self.loaded = false;
         self.picker = None;
+        self.completed_edit_field = None;
         self.confirm_undo = false;
         self.completed_edit = None;
         self.confirm_delete_shift_id = None;
@@ -146,6 +207,7 @@ impl EnterHoursScreen {
         });
         if previous_pa != self.selected_pa_id {
             self.picker = None;
+            self.completed_edit_field = None;
             self.confirm_undo = false;
             self.completed_edit = None;
             self.confirm_delete_shift_id = None;
@@ -549,6 +611,7 @@ impl EnterHoursScreen {
             self.confirm_delete_shift_id = Some(id);
             self.completed_edit = None;
             self.picker = None;
+            self.completed_edit_field = None;
         }
 
         if let Some(id) = self.confirm_delete_shift_id {
@@ -578,30 +641,41 @@ impl EnterHoursScreen {
     }
 
     fn draw_inline_completed_edit(&mut self, ui: &mut egui::Ui, application: &Application) {
-        let (shift_id, date, start, end) = {
-            let edit = self
-                .completed_edit
-                .as_ref()
-                .expect("inline editor checked above");
-            (
-                edit.shift_id,
-                edit.start.format("%d/%m/%Y").to_string(),
-                edit.start.format("%H:%M").to_string(),
-                edit.end.format("%d/%m %H:%M").to_string(),
-            )
-        };
-        let mut choose_start = false;
-        let mut choose_end = false;
+        let shift_id = self
+            .completed_edit
+            .as_ref()
+            .expect("inline editor checked above")
+            .shift_id;
+        let mut chosen_field = None;
         ui.horizontal(|ui| {
-            choose_start |= ui
-                .add_sized([90.0, 34.0], egui::Button::new(date))
-                .clicked();
-            choose_start |= ui
-                .add_sized([62.0, 34.0], egui::Button::new(start))
-                .clicked();
-            choose_end |= ui
-                .add_sized([112.0, 34.0], egui::Button::new(end))
-                .clicked();
+            let edit = self.completed_edit.as_mut().expect("editor remains");
+            let date_response = ui.add_sized(
+                [90.0, 34.0],
+                egui::TextEdit::singleline(&mut edit.date_text),
+            );
+            if (date_response.clicked() || date_response.gained_focus())
+                && self.completed_edit_field != Some(RecentShiftEditField::Date)
+            {
+                chosen_field = Some(RecentShiftEditField::Date);
+            }
+            let start_response = ui.add_sized(
+                [62.0, 34.0],
+                egui::TextEdit::singleline(&mut edit.start_text),
+            );
+            if (start_response.clicked() || start_response.gained_focus())
+                && self.completed_edit_field != Some(RecentShiftEditField::Start)
+            {
+                chosen_field = Some(RecentShiftEditField::Start);
+            }
+            let end_response = ui.add_sized(
+                [112.0, 34.0],
+                egui::TextEdit::singleline(&mut edit.end_text),
+            );
+            if (end_response.clicked() || end_response.gained_focus())
+                && self.completed_edit_field != Some(RecentShiftEditField::End)
+            {
+                chosen_field = Some(RecentShiftEditField::End);
+            }
             ui.add_sized(
                 [68.0, 34.0],
                 egui::DragValue::new(
@@ -624,26 +698,20 @@ impl EnterHoursScreen {
             recent_cell(ui, 54.0, "Editing");
         });
 
-        if choose_start {
-            let value = self.completed_edit.as_ref().expect("editor remains").start;
-            self.picker = Some(DateTimePickerState::new(PickerPurpose::EditStart, value));
-        } else if choose_end {
-            let value = self.completed_edit.as_ref().expect("editor remains").end;
-            self.picker = Some(DateTimePickerState::new(PickerPurpose::EditEnd, value));
+        if let Some(field) = chosen_field {
+            if let Err(error) = self.open_completed_field(field) {
+                self.status_message = error;
+            }
         }
 
         ui.indent(("completed_shift_inline_edit", shift_id), |ui| {
-            if inline_editor_places_notes_beside(ui.available_width()) {
-                ui.horizontal(|ui| {
-                    ui.vertical(|ui| self.draw_inline_picker_or_hint(ui));
-                    ui.add_space(10.0);
-                    ui.vertical(|ui| self.draw_inline_notes(ui, 300.0));
-                });
-            } else {
+            if application.context.config.hours_shift_date_time_spinner {
                 self.draw_inline_picker_or_hint(ui);
-                let notes_width = ui.available_width();
-                self.draw_inline_notes(ui, notes_width);
+            } else {
+                self.handle_hidden_inline_edit_keys(ui);
             }
+            let notes_width = ui.available_width();
+            self.draw_inline_notes(ui, notes_width);
             ui.label("Saving preserves the previous values in immutable audit history.");
             let mut save = false;
             let mut cancel = false;
@@ -658,7 +726,10 @@ impl EnterHoursScreen {
             if cancel {
                 self.cancel_completed_edit();
             } else if save {
-                self.save_completed_edit(application);
+                match self.accept_current_completed_text_field() {
+                    Ok(()) => self.save_completed_edit(application),
+                    Err(error) => self.status_message = error,
+                }
             }
         });
     }
@@ -691,51 +762,112 @@ impl EnterHoursScreen {
 
     fn draw_inline_edit_picker(&mut self, ui: &mut egui::Ui) {
         let mut proposed = None;
+        let mut validation_error = None;
+        let mut accept = false;
+        let mut cancel = false;
         let picker = self.picker.as_mut().expect("inline picker checked above");
         ui.group(|ui| {
             let title = match picker.purpose {
-                PickerPurpose::EditStart => "Correct exact start time",
-                PickerPurpose::EditEnd => "Correct exact end time",
+                PickerPurpose::EditStart => "Edit start — Day | Month | Year | Hour | Minute",
+                PickerPurpose::EditEnd => "Edit end — Day | Month | Year | Hour | Minute",
                 _ => "Correct exact time",
             };
             ui.label(egui::RichText::new(title).heading());
-            ui.label("UK date and 24-hour time. Every change updates the proposed shift.");
             ui.horizontal_wrapped(|ui| {
-                spinner(ui, &mut picker.day, 1..=31, "Day");
-                spinner(ui, &mut picker.month, 1..=12, "Month");
-                spinner(ui, &mut picker.year, 2000..=2200, "Year");
-                spinner(ui, &mut picker.hour, 0..=23, "Hour");
-                spinner(ui, &mut picker.minute, 0..=59, "Minute");
+                if matches!(picker.purpose, PickerPurpose::EditStart | PickerPurpose::EditEnd) {
+                    wheel(ui, &mut picker.day_text, "Day", 58.0);
+                    wheel(ui, &mut picker.month_text, "Month", 58.0);
+                    wheel(ui, &mut picker.year_text, "Year", 76.0);
+                }
+                if matches!(picker.purpose, PickerPurpose::EditStart | PickerPurpose::EditEnd) {
+                    wheel(ui, &mut picker.hour_text, "Hour", 58.0);
+                    wheel(ui, &mut picker.minute_text, "Minute", 58.0);
+                }
             });
-            match picker.value() {
-                Ok(value) => {
-                    proposed = Some((picker.purpose, value));
-                    ui.label(
-                        egui::RichText::new(format_uk_date_time(value))
-                            .strong()
-                            .size(20.0),
-                    );
-                }
-                Err(error) => {
-                    ui.colored_label(ui.visuals().error_fg_color, error);
-                }
+            match picker.accept_typed_values().and_then(|_| picker.value()) {
+                Ok(value) => proposed = Some((picker.purpose, value)),
+                Err(error) => validation_error = Some(error),
             }
+            if let Some(error) = &validation_error {
+                ui.colored_label(ui.visuals().error_fg_color, error);
+            }
+            ui.label("Type a value or use the large −/+ controls. Enter accepts; Escape cancels this field.");
+        });
+
+        ui.input(|input| {
+            accept = input.key_pressed(egui::Key::Enter);
+            cancel = input.key_pressed(egui::Key::Escape);
         });
 
         if let Some((purpose, value)) = proposed {
             if let Some(edit) = &mut self.completed_edit {
-                apply_picker_value_to_completed_edit(edit, purpose, value);
+                let current = match purpose {
+                    PickerPurpose::EditStart => Some(edit.start),
+                    PickerPurpose::EditEnd => Some(edit.end),
+                    PickerPurpose::ClockIn | PickerPurpose::ClockOut => None,
+                };
+                if current.is_some_and(|current| current != value) {
+                    apply_picker_value_to_completed_edit(edit, purpose, value);
+                    edit.refresh_date_time_text();
+                }
+            }
+        }
+        if cancel {
+            let picker = self.picker.take().expect("picker remains");
+            if let Some(edit) = &mut self.completed_edit {
+                apply_picker_value_to_completed_edit(edit, picker.purpose, picker.original);
+                edit.refresh_date_time_text();
+            }
+            self.completed_edit_field = None;
+        } else if accept {
+            if let Some(error) = validation_error {
+                self.status_message = error;
+            } else {
+                match self.accept_current_completed_text_field() {
+                    Ok(()) => {
+                        self.picker = None;
+                        self.completed_edit_field = None;
+                    }
+                    Err(error) => self.status_message = error,
+                }
             }
         }
     }
 
-    fn enter_completed_edit_from_field(
-        &mut self,
-        shift: &DirectShift,
-        field: RecentShiftEditField,
-    ) -> Result<(), String> {
-        self.begin_completed_edit(shift)?;
-        let edit = self.completed_edit.as_ref().expect("editor just created");
+    fn handle_hidden_inline_edit_keys(&mut self, ui: &egui::Ui) {
+        let (accept, cancel) = ui.input(|input| {
+            (
+                input.key_pressed(egui::Key::Enter),
+                input.key_pressed(egui::Key::Escape),
+            )
+        });
+
+        if cancel {
+            if let Some(picker) = self.picker.take() {
+                if let Some(edit) = &mut self.completed_edit {
+                    apply_picker_value_to_completed_edit(edit, picker.purpose, picker.original);
+                    edit.refresh_date_time_text();
+                }
+            }
+            self.completed_edit_field = None;
+        } else if accept {
+            match self.accept_current_completed_text_field() {
+                Ok(()) => {
+                    self.picker = None;
+                    self.completed_edit_field = None;
+                }
+                Err(error) => self.status_message = error,
+            }
+        }
+    }
+
+    fn open_completed_field(&mut self, field: RecentShiftEditField) -> Result<(), String> {
+        self.accept_current_completed_text_field()?;
+        if let Some(picker) = &mut self.picker {
+            picker.accept_typed_values()?;
+            picker.value()?;
+        }
+        let edit = self.completed_edit.as_ref().expect("editor remains");
         self.picker = match field {
             RecentShiftEditField::Date | RecentShiftEditField::Start => Some(
                 DateTimePickerState::new(PickerPurpose::EditStart, edit.start),
@@ -745,20 +877,46 @@ impl EnterHoursScreen {
             }
             RecentShiftEditField::Break | RecentShiftEditField::ActualWorked => None,
         };
+        self.completed_edit_field = Some(field);
         Ok(())
+    }
+
+    fn accept_current_completed_text_field(&mut self) -> Result<(), String> {
+        let Some(field) = self.completed_edit_field else {
+            return Ok(());
+        };
+        let edit = self.completed_edit.as_mut().expect("editor remains");
+        accept_completed_text_field(edit, field)
+    }
+
+    fn enter_completed_edit_from_field(
+        &mut self,
+        shift: &DirectShift,
+        field: RecentShiftEditField,
+    ) -> Result<(), String> {
+        self.begin_completed_edit(shift)?;
+        let edit = self.completed_edit.as_ref().expect("editor just created");
+        let _ = edit;
+        self.open_completed_field(field)
     }
 
     fn begin_completed_edit(&mut self, shift: &DirectShift) -> Result<(), String> {
         match (shift.start(), shift.end()) {
             (Ok(start), Ok(Some(end))) => {
-                self.completed_edit = Some(CompletedShiftEdit {
+                let mut edit = CompletedShiftEdit {
                     shift_id: shift.id,
                     start,
                     end,
                     break_minutes: shift.break_minutes,
                     notes: shift.notes.clone().unwrap_or_default(),
-                });
+                    date_text: String::new(),
+                    start_text: String::new(),
+                    end_text: String::new(),
+                };
+                edit.refresh_date_time_text();
+                self.completed_edit = Some(edit);
                 self.picker = None;
+                self.completed_edit_field = None;
                 self.confirm_delete_shift_id = None;
                 Ok(())
             }
@@ -772,6 +930,7 @@ impl EnterHoursScreen {
     fn cancel_completed_edit(&mut self) {
         self.completed_edit = None;
         self.picker = None;
+        self.completed_edit_field = None;
     }
 
     fn save_completed_edit(&mut self, application: &Application) {
@@ -847,6 +1006,39 @@ fn completed_edit_worked_minutes(edit: &CompletedShiftEdit) -> Result<i64, &'sta
     Ok(worked)
 }
 
+fn accept_completed_text_field(
+    edit: &mut CompletedShiftEdit,
+    field: RecentShiftEditField,
+) -> Result<(), String> {
+    match field {
+        RecentShiftEditField::Date => {
+            let date = NaiveDate::parse_from_str(edit.date_text.trim(), "%d/%m/%Y")
+                .map_err(|_| "Enter a valid date as DD/MM/YYYY.".to_string())?;
+            edit.start = date.and_time(edit.start.time());
+        }
+        RecentShiftEditField::Start => {
+            let time = NaiveTime::parse_from_str(edit.start_text.trim(), "%H:%M")
+                .map_err(|_| "Enter a valid start time as HH:MM.".to_string())?;
+            edit.start = edit.start.date().and_time(time);
+        }
+        RecentShiftEditField::End => {
+            let text = edit.end_text.trim();
+            let (date_text, time_text) = text
+                .split_once(char::is_whitespace)
+                .ok_or_else(|| "Enter a valid end as DD/MM HH:MM.".to_string())?;
+            let date =
+                NaiveDate::parse_from_str(&format!("{date_text}/{}", edit.end.year()), "%d/%m/%Y")
+                    .map_err(|_| "Enter a valid end date as DD/MM.".to_string())?;
+            let time = NaiveTime::parse_from_str(time_text.trim(), "%H:%M")
+                .map_err(|_| "Enter a valid end time as HH:MM.".to_string())?;
+            edit.end = date.and_time(time);
+        }
+        RecentShiftEditField::Break | RecentShiftEditField::ActualWorked => return Ok(()),
+    }
+    edit.refresh_date_time_text();
+    Ok(())
+}
+
 fn apply_picker_value_to_completed_edit(
     edit: &mut CompletedShiftEdit,
     purpose: PickerPurpose,
@@ -881,15 +1073,63 @@ fn recent_cell(ui: &mut egui::Ui, width: f32, text: impl Into<egui::WidgetText>)
     ui.add_sized([width, 30.0], egui::Label::new(text));
 }
 
-fn inline_editor_places_notes_beside(available_width: f32) -> bool {
-    available_width >= 740.0
-}
-
 fn large_button(ui: &mut egui::Ui, label: &str) -> egui::Response {
     ui.add_sized(
         [190.0_f32.min(ui.available_width()), 48.0],
         egui::Button::new(egui::RichText::new(label).size(18.0)),
     )
+}
+
+fn days_in_month(year: i32, month: u32) -> u32 {
+    match month {
+        1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
+        4 | 6 | 9 | 11 => 30,
+        2 if is_gregorian_leap_year(year) => 29,
+        2 => 28,
+        _ => 0,
+    }
+}
+
+fn is_gregorian_leap_year(year: i32) -> bool {
+    year.rem_euclid(4) == 0 && (year.rem_euclid(100) != 0 || year.rem_euclid(400) == 0)
+}
+
+fn wheel(ui: &mut egui::Ui, text: &mut String, label: &str, width: f32) {
+    let (minimum, maximum) = match label {
+        "Day" => (1, 31),
+        "Month" => (1, 12),
+        "Year" => (1900, 2200),
+        "Hour" => (0, 23),
+        "Minute" => (0, 59),
+        _ => (0, i32::MAX),
+    };
+    ui.vertical(|ui| {
+        ui.label(label);
+        ui.horizontal(|ui| {
+            if ui.add_sized([38.0, 38.0], egui::Button::new("−")).clicked() {
+                let value = text.trim().parse::<i32>().unwrap_or(minimum);
+                let next = if value <= minimum { maximum } else { value - 1 };
+                *text = format_wheel_value(label, next);
+            }
+            ui.add_sized(
+                [width, 38.0],
+                egui::TextEdit::singleline(text).horizontal_align(egui::Align::Center),
+            );
+            if ui.add_sized([38.0, 38.0], egui::Button::new("+")).clicked() {
+                let value = text.trim().parse::<i32>().unwrap_or(minimum);
+                let next = if value >= maximum { minimum } else { value + 1 };
+                *text = format_wheel_value(label, next);
+            }
+        });
+    });
+}
+
+fn format_wheel_value(label: &str, value: i32) -> String {
+    if label == "Year" {
+        value.to_string()
+    } else {
+        format!("{value:02}")
+    }
 }
 
 fn spinner<T>(ui: &mut egui::Ui, value: &mut T, range: std::ops::RangeInclusive<T>, label: &str)
@@ -947,14 +1187,14 @@ mod tests {
 
     #[test]
     fn picker_rejects_invalid_calendar_dates() {
-        let picker = DateTimePickerState {
-            purpose: PickerPurpose::ClockOut,
-            year: 2026,
-            month: 2,
-            day: 30,
-            hour: 9,
-            minute: 0,
-        };
+        let mut picker = DateTimePickerState::new(
+            PickerPurpose::ClockOut,
+            NaiveDate::from_ymd_opt(2026, 2, 1)
+                .unwrap()
+                .and_hms_opt(9, 0, 0)
+                .unwrap(),
+        );
+        picker.day = 30;
         assert!(picker.value().is_err());
     }
 
@@ -995,13 +1235,6 @@ mod tests {
     }
 
     #[test]
-    fn inline_editor_uses_side_by_side_notes_only_when_width_allows() {
-        assert!(!inline_editor_places_notes_beside(739.9));
-        assert!(inline_editor_places_notes_beside(740.0));
-        assert!(inline_editor_places_notes_beside(1200.0));
-    }
-
-    #[test]
     fn cancelling_inline_edit_discards_proposed_values_without_touching_source_row() {
         let shift = completed_shift(7, "2026-09-01T08:00", "2026-09-01T10:00", 10);
         let original = shift.clone();
@@ -1034,6 +1267,9 @@ mod tests {
                 .unwrap(),
             break_minutes: 20,
             notes: String::new(),
+            date_text: "01/09/2026".to_string(),
+            start_text: "23:30".to_string(),
+            end_text: "02/09 02:15".to_string(),
         };
         assert_eq!(completed_edit_worked_minutes(&edit), Ok(145));
 
@@ -1063,6 +1299,86 @@ mod tests {
         assert_eq!(edit.end, proposed_end);
         assert_eq!(completed_edit_worked_minutes(edit), Ok(952));
         assert_eq!(shift, original);
+    }
+
+    #[test]
+    fn gregorian_month_lengths_include_century_and_four_hundred_year_rules() {
+        assert_eq!(days_in_month(2026, 2), 28);
+        assert_eq!(days_in_month(2028, 2), 29);
+        assert_eq!(days_in_month(1900, 2), 28);
+        assert_eq!(days_in_month(2000, 2), 29);
+        assert_eq!(days_in_month(2026, 4), 30);
+        assert_eq!(days_in_month(2026, 1), 31);
+    }
+
+    #[test]
+    fn typed_month_and_year_changes_clamp_invalid_days_immediately() {
+        let initial = NaiveDate::from_ymd_opt(2026, 1, 31)
+            .unwrap()
+            .and_hms_opt(8, 7, 0)
+            .unwrap();
+        let mut picker = DateTimePickerState::new(PickerPurpose::EditStart, initial);
+        picker.month_text = "2".into();
+        picker.accept_typed_values().unwrap();
+        assert_eq!(
+            picker.value().unwrap().date(),
+            NaiveDate::from_ymd_opt(2026, 2, 28).unwrap()
+        );
+
+        let leap = NaiveDate::from_ymd_opt(2028, 2, 29)
+            .unwrap()
+            .and_hms_opt(8, 7, 0)
+            .unwrap();
+        let mut picker = DateTimePickerState::new(PickerPurpose::EditStart, leap);
+        picker.year_text = "2027".into();
+        picker.accept_typed_values().unwrap();
+        assert_eq!(
+            picker.value().unwrap().date(),
+            NaiveDate::from_ymd_opt(2027, 2, 28).unwrap()
+        );
+    }
+
+    #[test]
+    fn directly_typed_date_and_start_use_strict_gregorian_validation() {
+        let shift = completed_shift(11, "2028-02-29T08:15", "2028-02-29T10:00", 0);
+        let mut screen = EnterHoursScreen::new();
+        screen.begin_completed_edit(&shift).unwrap();
+        let edit = screen.completed_edit.as_mut().unwrap();
+
+        edit.date_text = "28/02/2027".to_string();
+        accept_completed_text_field(edit, RecentShiftEditField::Date).unwrap();
+        edit.start_text = "23:59".to_string();
+        accept_completed_text_field(edit, RecentShiftEditField::Start).unwrap();
+        assert_eq!(
+            edit.start.format("%d/%m/%Y %H:%M").to_string(),
+            "28/02/2027 23:59"
+        );
+
+        let unchanged = edit.start;
+        edit.date_text = "29/02/2027".to_string();
+        assert!(accept_completed_text_field(edit, RecentShiftEditField::Date).is_err());
+        assert_eq!(edit.start, unchanged);
+    }
+
+    #[test]
+    fn directly_typed_end_preserves_year_and_supports_overnight_shifts() {
+        let shift = completed_shift(12, "2026-12-31T23:30", "2027-01-01T01:00", 0);
+        let mut screen = EnterHoursScreen::new();
+        screen.begin_completed_edit(&shift).unwrap();
+        let edit = screen.completed_edit.as_mut().unwrap();
+
+        edit.end_text = "02/01 02:45".to_string();
+        accept_completed_text_field(edit, RecentShiftEditField::End).unwrap();
+        assert_eq!(
+            edit.end.format("%d/%m/%Y %H:%M").to_string(),
+            "02/01/2027 02:45"
+        );
+        assert_eq!(completed_edit_worked_minutes(edit), Ok(1635));
+
+        let unchanged = edit.end;
+        edit.end_text = "31/04 02:45".to_string();
+        assert!(accept_completed_text_field(edit, RecentShiftEditField::End).is_err());
+        assert_eq!(edit.end, unchanged);
     }
 
     #[test]

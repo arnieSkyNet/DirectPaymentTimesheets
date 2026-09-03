@@ -9,6 +9,9 @@ pub struct AppConfig {
     #[serde(default)]
     pub theme: ApplicationTheme,
 
+    #[serde(default)]
+    pub hours_shift_date_time_spinner: bool,
+
     pub folders: FolderConfig,
 
     #[serde(default)]
@@ -248,6 +251,7 @@ impl Default for AppConfig {
     fn default() -> Self {
         Self {
             theme: ApplicationTheme::default(),
+            hours_shift_date_time_spinner: false,
             folders: FolderConfig {
                 csv_import: default_csv_import_folder(),
                 pdf_output: default_pdf_output_folder(),
@@ -415,6 +419,32 @@ mod tests {
         let config: AppConfig = value.try_into().unwrap();
 
         assert_eq!(config.theme, ApplicationTheme::Dark);
+    }
+
+    #[test]
+    fn config_without_hours_shift_date_time_spinner_defaults_to_off() {
+        let mut value = toml::Value::try_from(AppConfig::default()).unwrap();
+        value
+            .as_table_mut()
+            .unwrap()
+            .remove("hours_shift_date_time_spinner");
+
+        let config: AppConfig = value.try_into().unwrap();
+
+        assert!(!config.hours_shift_date_time_spinner);
+    }
+
+    #[test]
+    fn hours_shift_date_time_spinner_round_trips_through_config_persistence() {
+        let directory = tempfile::TempDir::new().unwrap();
+        let path = directory.path().join("config.toml");
+        let mut config = AppConfig::default();
+        config.hours_shift_date_time_spinner = true;
+
+        config.save(&path).unwrap();
+        let loaded = AppConfig::load(&path).unwrap();
+
+        assert!(loaded.hours_shift_date_time_spinner);
     }
 
     #[test]

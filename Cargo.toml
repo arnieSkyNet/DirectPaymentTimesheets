@@ -1,6 +1,6 @@
 [package]
 name = "direct_payment_timesheets"
-version = "0.0.10"
+version = "0.0.11"
 edition = "2021"
 license = "GPL-3.0-or-later"
 
