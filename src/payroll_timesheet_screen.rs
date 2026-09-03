@@ -533,6 +533,15 @@ impl PayrollTimesheetScreen {
             } else {
                 None
             };
+            let historical_backfill = application
+                .payroll_worked_item_repository
+                .get_manual_adjustments(record.id)?
+                .iter()
+                .any(|adjustment| {
+                    crate::historical_payroll_backfill::is_backfill_reason(
+                        adjustment.reason.as_deref(),
+                    )
+                });
             let previous_context = if let Some(previous_record) = &previous_record {
                 let previous_weeks = application
                     .payroll_timesheet_repository
@@ -550,6 +559,15 @@ impl PayrollTimesheetScreen {
                                 .unwrap_or(0),
                         },
                     )
+            } else if historical_backfill && record.previous_cycle_hours.is_some() {
+                Some(crate::pay_rate_allocation::PreviousCycleContext {
+                    payroll_timesheet_id: record.id,
+                    week_three_start: week_dates[0],
+                    legacy_adjustment_minutes: record
+                        .previous_cycle_hours
+                        .map(|hours| (hours * 60.0).round() as i64)
+                        .unwrap_or(0),
+                })
             } else {
                 None
             };

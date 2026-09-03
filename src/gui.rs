@@ -1109,13 +1109,25 @@ impl DirectPaymentApp {
                 .width(540.0)
                 .selected_text(selected_text)
                 .show_ui(ui, |ui| {
-                    for schedule in &self.operational_payroll_schedules {
-                        ui.selectable_value(
-                            &mut selected_key,
-                            Some(operational_period_key(schedule)),
-                            payroll_schedule_label(schedule),
-                        );
-                    }
+                    let mut scroll_style = egui::style::ScrollStyle::solid();
+                    scroll_style.bar_width = 16.0;
+                    ui.spacing_mut().scroll = scroll_style;
+
+                    egui::ScrollArea::vertical()
+                        .id_salt("operational_payroll_period_scroll")
+                        .max_height(300.0)
+                        .scroll_bar_visibility(
+                            egui::scroll_area::ScrollBarVisibility::AlwaysVisible,
+                        )
+                        .show(ui, |ui| {
+                            for schedule in &self.operational_payroll_schedules {
+                                ui.selectable_value(
+                                    &mut selected_key,
+                                    Some(operational_period_key(schedule)),
+                                    payroll_schedule_label(schedule),
+                                );
+                            }
+                        });
                 });
 
             if selected_key != self.operational_payroll_period.selected {
@@ -2286,6 +2298,16 @@ impl DirectPaymentApp {
             } else {
                 None
             };
+            let historical_backfill = self
+                .application
+                .payroll_worked_item_repository
+                .get_manual_adjustments(payroll_timesheet.id)?
+                .iter()
+                .any(|adjustment| {
+                    crate::historical_payroll_backfill::is_backfill_reason(
+                        adjustment.reason.as_deref(),
+                    )
+                });
             let previous_context = if let Some(previous_record) = &previous_record {
                 let previous_weeks = self
                     .application
@@ -2302,6 +2324,15 @@ impl DirectPaymentApp {
                                 .unwrap_or(0),
                         }
                     })
+                })
+            } else if historical_backfill && payroll_timesheet.previous_cycle_hours.is_some() {
+                Some(crate::pay_rate_allocation::PreviousCycleContext {
+                    payroll_timesheet_id: payroll_timesheet.id,
+                    week_three_start: week_dates[0],
+                    legacy_adjustment_minutes: payroll_timesheet
+                        .previous_cycle_hours
+                        .map(|hours| (hours * 60.0).round() as i64)
+                        .unwrap_or(0),
                 })
             } else {
                 None

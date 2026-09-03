@@ -17,6 +17,7 @@ mod environment;
 mod error;
 mod folder_opener;
 mod gui;
+mod historical_payroll_backfill;
 mod import_service;
 mod models;
 mod paths;
