@@ -209,10 +209,14 @@ pub fn reconcile_payroll_hours(
         }
     }
 
+    let mut excludes_previous_cycle_from_week_totals = false;
     for adjustment in worked_items
         .get_manual_adjustments(current_payroll_timesheet_id)
         .map_err(repository_error)?
     {
+        let is_historical_backfill =
+            crate::historical_payroll_backfill::is_backfill_reason(adjustment.reason.as_deref());
+        excludes_previous_cycle_from_week_totals |= is_historical_backfill;
         if adjustment.adjustment_minutes == 0 || !(1..=4).contains(&adjustment.week_number) {
             continue;
         }
@@ -224,6 +228,34 @@ pub fn reconcile_payroll_hours(
             week_dates[index] + chrono::Duration::days(6),
             adjustment.adjustment_minutes,
         )?;
+        let Some(rate) = rate else {
+            if !is_historical_backfill {
+                return Err(no_applicable_rate_for_week(
+                    week_dates[index],
+                    week_dates[index] + chrono::Duration::days(6),
+                ));
+            }
+            weeks[index].push(PayRatePortion {
+                worked_minutes: adjustment.adjustment_minutes,
+                total_hourly_rate: None,
+                effective_date: None,
+                rate_id: None,
+                is_previous_cycle: false,
+                is_opaque_legacy: true,
+            });
+            snapshot_items.push(WorkedItemSnapshot {
+                week_number: adjustment.week_number,
+                source_type: "manual_adjustment".to_string(),
+                timesheet_id: None,
+                work_date: None,
+                worked_minutes: adjustment.adjustment_minutes,
+                pay_rate_id: None,
+                pay_rate_effective_date: None,
+                total_hourly_rate: None,
+                reason: adjustment.reason,
+            });
+            continue;
+        };
         add_portion(
             &mut weeks[index],
             adjustment.adjustment_minutes,
@@ -241,18 +273,34 @@ pub fn reconcile_payroll_hours(
         ));
     }
 
-    let week_totals_minutes = std::array::from_fn(|index| {
-        weeks[index]
-            .iter()
-            .map(|portion| portion.worked_minutes)
-            .sum()
-    });
+    let week_totals_minutes = current_cycle_week_totals(
+        &weeks,
+        previous_cycle_minutes,
+        excludes_previous_cycle_from_week_totals,
+    );
     Ok(ReconciledPayrollHours {
         weeks,
         week_totals_minutes,
         previous_cycle_minutes,
         snapshot_items,
     })
+}
+
+fn current_cycle_week_totals(
+    weeks: &[Vec<PayRatePortion>; 4],
+    previous_cycle_minutes: i64,
+    excludes_previous_cycle: bool,
+) -> [i64; 4] {
+    let mut totals = std::array::from_fn(|index| {
+        weeks[index]
+            .iter()
+            .map(|portion| portion.worked_minutes)
+            .sum()
+    });
+    if excludes_previous_cycle {
+        totals[0] -= previous_cycle_minutes;
+    }
+    totals
 }
 
 fn add_raw_item(
@@ -348,7 +396,7 @@ fn select_manual_adjustment_rate(
     week_start: NaiveDate,
     week_end: NaiveDate,
     adjustment_minutes: i64,
-) -> Result<crate::pay_rate_repository::PersonalAssistantPayRate, PayRateAllocationError> {
+) -> Result<Option<crate::pay_rate_repository::PersonalAssistantPayRate>, PayRateAllocationError> {
     let rates = pay_rates
         .get_applicable_during_period(personal_assistant_id, week_start, week_end)
         .map_err(repository_error)?;
@@ -361,13 +409,18 @@ fn select_manual_adjustment_rate(
     } else {
         rates.iter().min_by_key(comparison)
     };
-    selected.cloned().ok_or_else(|| {
-        PayRateAllocationError(format!(
-            "No pay rate is applicable during payroll week {} to {}.",
-            week_start.format("%d/%m/%Y"),
-            week_end.format("%d/%m/%Y")
-        ))
-    })
+    Ok(selected.cloned())
+}
+
+fn no_applicable_rate_for_week(
+    week_start: NaiveDate,
+    week_end: NaiveDate,
+) -> PayRateAllocationError {
+    PayRateAllocationError(format!(
+        "No pay rate is applicable during payroll week {} to {}.",
+        week_start.format("%d/%m/%Y"),
+        week_end.format("%d/%m/%Y")
+    ))
 }
 
 fn week_index_for_date(date: NaiveDate, week_dates: &[NaiveDate; 4]) -> Option<usize> {
@@ -453,7 +506,7 @@ fn format_hundredths(hundredths: i64) -> String {
     }
 }
 
-fn parse_timesheet_date(value: &str) -> Option<NaiveDate> {
+pub(crate) fn parse_timesheet_date(value: &str) -> Option<NaiveDate> {
     let value = value.trim();
     NaiveDate::parse_from_str(value, "%d/%m/%Y")
         .or_else(|_| NaiveDate::parse_from_str(value, "%d-%m-%Y"))
@@ -821,6 +874,154 @@ mod tests {
 
         assert_eq!(result.weeks[0][0].total_hourly_rate, Some(12.21));
         assert_eq!(result.weeks[1][0].total_hourly_rate, Some(12.21));
+    }
+
+    #[test]
+    fn verified_historical_previous_cycle_hours_remain_information_only() {
+        let (_file, pay_rates, worked_items) = shared_repositories(&[]);
+        worked_items
+            .set_manual_adjustment(
+                82,
+                &ManualHoursAdjustment {
+                    week_number: 1,
+                    adjustment_minutes: 60,
+                    reason: Some("Verified historical payroll backfill (2026-09-04)".to_string()),
+                },
+                "2026-09-04",
+            )
+            .unwrap();
+        let weeks = [
+            date("2026-04-20"),
+            date("2026-04-27"),
+            date("2026-05-04"),
+            date("2026-05-11"),
+        ];
+        let previous = PreviousCycleContext {
+            payroll_timesheet_id: 81,
+            week_three_start: date("2026-04-06"),
+            legacy_adjustment_minutes: 120,
+        };
+
+        let result = reconcile_payroll_hours(
+            &pay_rates,
+            &worked_items,
+            &[],
+            1,
+            82,
+            &weeks,
+            Some(&previous),
+        )
+        .unwrap();
+
+        assert_eq!(result.week_totals_minutes, [60, 0, 0, 0]);
+        assert_eq!(result.previous_cycle_minutes, 120);
+        assert_eq!(result.weeks[0][1].total_hourly_rate, None);
+        assert_eq!(result.snapshot_items[1].total_hourly_rate, None);
+    }
+
+    #[test]
+    fn ordinary_manual_adjustments_still_require_an_applicable_pay_rate() {
+        let (_file, pay_rates, worked_items) = shared_repositories(&[]);
+        worked_items
+            .set_manual_adjustment(
+                83,
+                &ManualHoursAdjustment {
+                    week_number: 1,
+                    adjustment_minutes: 60,
+                    reason: Some("Ordinary correction".to_string()),
+                },
+                "2026-09-04",
+            )
+            .unwrap();
+        let weeks = [
+            date("2026-03-23"),
+            date("2026-03-30"),
+            date("2026-04-06"),
+            date("2026-04-13"),
+        ];
+
+        let error = reconcile_payroll_hours(&pay_rates, &worked_items, &[], 1, 83, &weeks, None)
+            .unwrap_err();
+
+        assert_eq!(
+            error.to_string(),
+            "No pay rate is applicable during payroll week 23/03/2026 to 29/03/2026."
+        );
+    }
+
+    #[test]
+    fn verified_week_two_six_and_ten_figures_reconcile_without_historical_rates() {
+        let (_file, pay_rates, worked_items) = shared_repositories(&[]);
+        let cases = [
+            (201, date("2026-03-23"), [165, 225, 0, 315]),
+            (202, date("2026-04-20"), [75, 255, 0, 0]),
+            (203, date("2026-05-18"), [0, 135, 285, 345]),
+            (204, date("2026-03-23"), [615, 735, 525, 645]),
+            (205, date("2026-04-20"), [705, 555, 825, 465]),
+            (206, date("2026-05-18"), [585, 765, 675, 435]),
+            (207, date("2026-03-23"), [195, 330, 270, 210]),
+            (208, date("2026-04-20"), [360, 180, 240, 300]),
+            (209, date("2026-05-18"), [405, 150, 390, 120]),
+        ];
+
+        for (timesheet_id, first_week, expected) in cases {
+            for (index, minutes) in expected.iter().enumerate() {
+                worked_items
+                    .set_manual_adjustment(
+                        timesheet_id,
+                        &ManualHoursAdjustment {
+                            week_number: index as i64 + 1,
+                            adjustment_minutes: *minutes,
+                            reason: Some(
+                                "Verified historical payroll backfill (2026-09-04)".to_string(),
+                            ),
+                        },
+                        "2026-09-04",
+                    )
+                    .unwrap();
+            }
+            let weeks =
+                std::array::from_fn(|index| first_week + chrono::Duration::days(index as i64 * 7));
+            let result = reconcile_payroll_hours(
+                &pay_rates,
+                &worked_items,
+                &[],
+                1,
+                timesheet_id,
+                &weeks,
+                None,
+            )
+            .unwrap();
+            assert_eq!(result.week_totals_minutes, expected);
+        }
+    }
+
+    #[test]
+    fn verified_historical_adjustments_still_use_a_recorded_rate_when_available() {
+        let (_file, pay_rates, worked_items) = shared_repositories(&[("01/04/2026", 12.71, 0.0)]);
+        worked_items
+            .set_manual_adjustment(
+                210,
+                &ManualHoursAdjustment {
+                    week_number: 1,
+                    adjustment_minutes: 60,
+                    reason: Some("Verified historical payroll backfill (2026-09-04)".to_string()),
+                },
+                "2026-09-04",
+            )
+            .unwrap();
+        let weeks = [
+            date("2026-06-15"),
+            date("2026-06-22"),
+            date("2026-06-29"),
+            date("2026-07-06"),
+        ];
+
+        let result =
+            reconcile_payroll_hours(&pay_rates, &worked_items, &[], 1, 210, &weeks, None).unwrap();
+
+        assert_eq!(result.week_totals_minutes, [60, 0, 0, 0]);
+        assert_eq!(result.weeks[0][0].total_hourly_rate, Some(12.71));
     }
 
     #[test]

@@ -24,6 +24,7 @@ pub fn run() -> Result<(), Box<dyn Error>> {
 
 fn initialise_database(_app: &Application) -> Result<(), Box<dyn Error>> {
     database::initialise_database(&_app.context.environment.database_path)?;
+    crate::historical_payroll_backfill::apply(&_app.context.environment.database_path)?;
 
     Ok(())
 }
