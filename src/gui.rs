@@ -2434,7 +2434,7 @@ impl DirectPaymentApp {
                     .application
                     .contracted_hours_repository
                     .get_for_personal_assistant_as_of(assistant.id, week_date)?
-                    .map(|hours| hours.contracted_hours)
+                    .map(|hours| hours.summary_value().to_string())
                     .unwrap_or_else(|| "Unavailable".to_string()))
             };
             let contracted_hours_by_week = [

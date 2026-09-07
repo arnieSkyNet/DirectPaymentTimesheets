@@ -2,13 +2,13 @@
 
 ## Scope and versioning
 
-This is the implemented SQLite schema at version 23. It is derived from `create_schema` and migrations in `src/database.rs`; those migrations are authoritative.
+This is the implemented SQLite schema at version 24. It is derived from `create_schema` and migrations in `src/database.rs`; those migrations are authoritative.
 
-`schema_version` contains the current integer version. A new database begins at version 1 and receives each ordered migration through `CURRENT_SCHEMA_VERSION` 23. Existing databases are upgraded in place. Migration 23 removes the short-lived revision-only tables introduced by migration 22 while retaining the operational legacy snapshot tables.
+`schema_version` contains the current integer version. A new database begins at version 1 and receives each ordered migration through `CURRENT_SCHEMA_VERSION` 24. Existing databases are upgraded in place. Migration 23 removes the short-lived revision-only tables introduced by migration 22 while retaining the operational legacy snapshot tables. Migration 24 adds an explicit contracted/variable hours basis to effective-dated Personal Assistant contracted-hours history while preserving existing records as contracted.
 
 During unreleased schema-20 development, an earlier local database shape contained `direct_shifts` without soft-deletion columns or the audit table. Startup therefore performs an idempotent schema-20 compatibility check after normal migrations. When that exact incomplete shape is found, it transactionally rebuilds `direct_shifts` into the final constrained form while preserving IDs and row values, then creates the audit table/indexes. It does not fabricate historical audit events, and repeated startup does not duplicate existing audit rows.
 
-SQLite foreign-key constraints are not declared in schema 23. Relationships described below are logical relationships enforced by repository/application code and stored IDs/business keys.
+SQLite foreign-key constraints are not declared in schema 24. Relationships described below are logical relationships enforced by repository/application code and stored IDs/business keys.
 
 ## `schema_version`
 
