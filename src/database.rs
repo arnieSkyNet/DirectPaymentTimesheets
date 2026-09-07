@@ -2,7 +2,7 @@ use std::path::Path;
 
 use rusqlite::{Connection, Result};
 
-pub const CURRENT_SCHEMA_VERSION: i64 = 25;
+pub const CURRENT_SCHEMA_VERSION: i64 = 26;
 
 pub fn initialise_database(database_path: &Path) -> Result<()> {
     let connection = Connection::open(database_path)?;
@@ -193,6 +193,10 @@ fn apply_migrations(connection: &Connection) -> Result<()> {
     }
     if current_version < 25 {
         migrate_to_version_25(connection)?;
+        current_version = 25;
+    }
+    if current_version < 26 {
+        migrate_to_version_26(connection)?;
     }
 
     Ok(())
@@ -940,6 +944,18 @@ fn migrate_to_version_25(connection: &Connection) -> Result<()> {
     transaction.commit()
 }
 
+fn migrate_to_version_26(connection: &Connection) -> Result<()> {
+    let transaction = connection.unchecked_transaction()?;
+    transaction.execute_batch("CREATE TABLE annual_leave_settings (
+        id INTEGER PRIMARY KEY CHECK (id = 1),
+        contracted_effective_from TEXT NOT NULL,
+        statutory_weeks REAL NOT NULL CHECK (statutory_weeks >= 0 AND statutory_weeks <= 52),
+        variable_effective_from TEXT NOT NULL,
+        accrual_percentage REAL NOT NULL CHECK (accrual_percentage >= 0 AND accrual_percentage <= 100)
+    ); UPDATE schema_version SET version = 26;")?;
+    transaction.commit()
+}
+
 fn repair_unreleased_schema_20(connection: &Connection) -> Result<()> {
     let version: i64 =
         connection.query_row("SELECT version FROM schema_version LIMIT 1", [], |row| {
@@ -1082,7 +1098,9 @@ mod tests {
 
     fn drop_schema_22(connection: &Connection) {
         connection
-            .execute("DROP TABLE payroll_timesheet_annual_leave", [])
+            .execute_batch(
+                "DROP TABLE annual_leave_settings; DROP TABLE payroll_timesheet_annual_leave",
+            )
             .unwrap();
         connection
             .execute(
@@ -1102,12 +1120,103 @@ mod tests {
     }
 
     #[test]
+    fn migration_25_to_26_preserves_existing_data_and_creates_empty_settings() {
+        let connection = Connection::open_in_memory().unwrap();
+        create_schema(&connection).unwrap();
+        connection
+            .execute_batch(
+                "DROP TABLE annual_leave_settings;
+            UPDATE schema_version SET version = 25;
+            INSERT INTO payroll_timesheet_annual_leave
+              (id, payroll_timesheet_id, week_number, leave_date, hours, created_at, updated_at)
+              VALUES (7, 1, 1, '18/09/2026', 7.25, 'created', 'updated');
+            INSERT INTO personal_assistant_contracted_hours
+              (id, personal_assistant_id, effective_date, contracted_hours, created_at, hours_basis)
+              VALUES (9, 2, '01/04/2026', '', 'original', 'variable');",
+            )
+            .unwrap();
+        create_schema(&connection).unwrap();
+        create_schema(&connection).unwrap();
+        assert_eq!(
+            connection
+                .query_row("SELECT version FROM schema_version", [], |row| row
+                    .get::<_, i64>(0))
+                .unwrap(),
+            26
+        );
+        assert_eq!(
+            connection
+                .query_row("SELECT COUNT(*) FROM annual_leave_settings", [], |row| row
+                    .get::<_, i64>(
+                    0
+                ))
+                .unwrap(),
+            0
+        );
+        let leave: (i64, i64, String, f64, String, String) = connection.query_row(
+            "SELECT payroll_timesheet_id, week_number, leave_date, hours, created_at, updated_at FROM payroll_timesheet_annual_leave WHERE id=7", [],
+            |row| Ok((row.get(0)?,row.get(1)?,row.get(2)?,row.get(3)?,row.get(4)?,row.get(5)?))).unwrap();
+        assert_eq!(
+            leave,
+            (
+                1,
+                1,
+                "18/09/2026".into(),
+                7.25,
+                "created".into(),
+                "updated".into()
+            )
+        );
+        let hours: (String, String, String) = connection.query_row("SELECT contracted_hours, hours_basis, created_at FROM personal_assistant_contracted_hours WHERE id=9", [], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?))).unwrap();
+        assert_eq!(hours, ("".into(), "variable".into(), "original".into()));
+    }
+
+    #[test]
+    fn schema_26_settings_constraints_and_transactional_failure() {
+        let connection = Connection::open_in_memory().unwrap();
+        create_schema(&connection).unwrap();
+        let insert = "INSERT INTO annual_leave_settings VALUES (1, '01/04', ?1, '01/04', ?2)";
+        for (weeks, percentage) in [
+            (-1.0, 12.07),
+            (53.0, 12.07),
+            (5.6, -1.0),
+            (5.6, 101.0),
+            (f64::NAN, 12.07),
+            (5.6, f64::INFINITY),
+        ] {
+            assert!(connection
+                .execute(insert, rusqlite::params![weeks, percentage])
+                .is_err());
+        }
+        connection
+            .execute(insert, rusqlite::params![5.6, 12.07])
+            .unwrap();
+        assert!(connection
+            .execute(insert, rusqlite::params![5.6, 12.07])
+            .is_err());
+        assert!(connection
+            .execute("UPDATE annual_leave_settings SET id=2", [])
+            .is_err());
+        connection.execute_batch("DROP TABLE annual_leave_settings; UPDATE schema_version SET version=25;
+            CREATE TRIGGER refuse_schema_update BEFORE UPDATE ON schema_version BEGIN SELECT RAISE(ABORT, 'blocked'); END;").unwrap();
+        assert!(migrate_to_version_26(&connection).is_err());
+        assert!(!table_exists(&connection, "annual_leave_settings").unwrap());
+        assert_eq!(
+            connection
+                .query_row("SELECT version FROM schema_version", [], |row| row
+                    .get::<_, i64>(0))
+                .unwrap(),
+            25
+        );
+    }
+
+    #[test]
     fn migration_24_to_25_preserves_undated_totals_without_backfill() {
         let connection = Connection::open_in_memory().unwrap();
         create_schema(&connection).unwrap();
         connection
             .execute_batch(
-                "DROP TABLE payroll_timesheet_annual_leave;
+                "DROP TABLE annual_leave_settings; DROP TABLE payroll_timesheet_annual_leave;
              UPDATE schema_version SET version = 24;
              INSERT INTO payroll_timesheet_weeks
              (payroll_timesheet_id, week_number, week_commencing, annual_leave_hours)
@@ -1121,7 +1230,7 @@ mod tests {
                 .query_row("SELECT version FROM schema_version", [], |row| row
                     .get::<_, i64>(0))
                 .unwrap(),
-            25
+            26
         );
         assert_eq!(
             connection
@@ -1179,7 +1288,7 @@ mod tests {
         create_schema(&connection).unwrap();
         connection
             .execute_batch(
-                "DROP TABLE payroll_timesheet_annual_leave;
+                "DROP TABLE annual_leave_settings; DROP TABLE payroll_timesheet_annual_leave;
              ALTER TABLE personal_assistant_contracted_hours DROP COLUMN hours_basis;
              UPDATE schema_version SET version = 23;
              INSERT INTO personal_assistant_contracted_hours
@@ -1243,7 +1352,7 @@ mod tests {
                 .query_row("SELECT version FROM schema_version", [], |row| row
                     .get::<_, i64>(0))
                 .unwrap(),
-            25
+            26
         );
     }
 
@@ -1278,7 +1387,7 @@ mod tests {
                 .query_row("SELECT version FROM schema_version", [], |row| row
                     .get::<_, i64>(0))
                 .unwrap(),
-            25
+            26
         );
     }
 
@@ -1333,7 +1442,7 @@ mod tests {
             .unwrap();
 
         assert_eq!(email_type, "timesheet");
-        assert_eq!(version, 25);
+        assert_eq!(version, 26);
     }
 
     #[test]
@@ -1362,7 +1471,7 @@ mod tests {
             .unwrap();
 
         assert!(duplicate.is_err());
-        assert_eq!(version, 25);
+        assert_eq!(version, 26);
     }
 
     #[test]
@@ -1413,7 +1522,7 @@ mod tests {
                 .query_row("SELECT version FROM schema_version", [], |row| row
                     .get::<_, i64>(0))
                 .unwrap(),
-            25
+            26
         );
     }
 
@@ -1441,7 +1550,7 @@ mod tests {
                 .query_row("SELECT version FROM schema_version", [], |row| row
                     .get::<_, i64>(0))
                 .unwrap(),
-            25
+            26
         );
     }
 
@@ -1807,7 +1916,9 @@ mod tests {
             )
             .unwrap();
         connection
-            .execute("DROP TABLE payroll_timesheet_annual_leave", [])
+            .execute_batch(
+                "DROP TABLE annual_leave_settings; DROP TABLE payroll_timesheet_annual_leave",
+            )
             .unwrap();
         migrate_to_version_22(&connection).unwrap();
         assert!(table_exists(&connection, "payroll_timesheet_revisions").unwrap());
@@ -1845,7 +1956,7 @@ mod tests {
                 .query_row("SELECT version FROM schema_version", [], |row| row
                     .get::<_, i64>(0))
                 .unwrap(),
-            25
+            26
         );
     }
 
@@ -1858,7 +1969,7 @@ mod tests {
                 .query_row("SELECT version FROM schema_version", [], |row| row
                     .get::<_, i64>(0))
                 .unwrap(),
-            25
+            26
         );
         assert!(!table_exists(&connection, "payroll_timesheet_revisions").unwrap());
         assert!(table_exists(&connection, "timesheet_correction_events").unwrap());
