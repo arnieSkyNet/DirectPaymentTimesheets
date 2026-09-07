@@ -71,6 +71,7 @@ pub struct PayrollTimesheetScreen {
     snapshot_states: HashMap<i64, SnapshotState>,
     preparation_baselines: HashMap<i64, PreparationBaseline>,
     numeric_editor_texts: HashMap<NumericEditorKey, String>,
+    assistant_feature_flags: HashMap<i64, (bool, bool)>,
     status_message: String,
 }
 
@@ -89,6 +90,7 @@ impl PayrollTimesheetScreen {
             snapshot_states: HashMap::new(),
             preparation_baselines: HashMap::new(),
             numeric_editor_texts: HashMap::new(),
+            assistant_feature_flags: HashMap::new(),
             status_message: "Payroll Timesheets not loaded.".to_string(),
         }
     }
@@ -105,6 +107,7 @@ impl PayrollTimesheetScreen {
         self.snapshot_states.clear();
         self.preparation_baselines.clear();
         self.numeric_editor_texts.clear();
+        self.assistant_feature_flags.clear();
     }
 
     pub fn show(
@@ -147,14 +150,19 @@ impl PayrollTimesheetScreen {
         }
 
         for record_index in 0..self.weeks.len() {
-            let (records, public_holidays, numeric_editor_texts) = (
+            let (records, public_holidays, numeric_editor_texts, assistant_feature_flags) = (
                 &mut self.weeks,
                 &mut self.public_holidays,
                 &mut self.numeric_editor_texts,
+                &self.assistant_feature_flags,
             );
 
             let (record, weeks, assistant_name) = &mut records[record_index];
             let holidays = &mut public_holidays[record_index];
+            let (sick_pay_enabled, mileage_enabled) = assistant_feature_flags
+                .get(&record.personal_assistant_id)
+                .copied()
+                .unwrap_or((false, false));
             let snapshot_state = self.snapshot_states.get(&record.id).copied();
             let read_only = matches!(
                 snapshot_state,
@@ -221,12 +229,16 @@ impl PayrollTimesheetScreen {
                                 NumericEditorKey::AnnualLeave(week.id),
                                 &mut week.annual_leave_hours,
                             );
-                            edit_number(
-                                ui,
-                                numeric_editor_texts,
-                                NumericEditorKey::SickLeave(week.id),
-                                &mut week.sick_leave_hours,
-                            );
+                            if sick_pay_enabled {
+                                edit_number(
+                                    ui,
+                                    numeric_editor_texts,
+                                    NumericEditorKey::SickLeave(week.id),
+                                    &mut week.sick_leave_hours,
+                                );
+                            } else {
+                                ui.label("");
+                            }
 
                             ui.vertical(|ui| {
                                 let week_number = week.week_number;
@@ -249,12 +261,16 @@ impl PayrollTimesheetScreen {
                                 }
                             });
 
-                            edit_number(
-                                ui,
-                                numeric_editor_texts,
-                                NumericEditorKey::TravelMiles(week.id),
-                                &mut week.travel_miles,
-                            );
+                            if mileage_enabled {
+                                edit_number(
+                                    ui,
+                                    numeric_editor_texts,
+                                    NumericEditorKey::TravelMiles(week.id),
+                                    &mut week.travel_miles,
+                                );
+                            } else {
+                                ui.label("");
+                            }
 
                             ui.end_row();
                         }
@@ -406,6 +422,7 @@ impl PayrollTimesheetScreen {
         self.snapshot_states.clear();
         self.preparation_baselines.clear();
         self.numeric_editor_texts.clear();
+        self.assistant_feature_flags.clear();
 
         for assistant in assistants {
             let is_active = match &assistant.employment_status {
@@ -416,6 +433,11 @@ impl PayrollTimesheetScreen {
             if !is_active && !existing_personal_assistant_ids.contains(&assistant.id) {
                 continue;
             }
+
+            self.assistant_feature_flags.insert(
+                assistant.id,
+                (assistant.sick_pay_enabled, assistant.mileage_enabled),
+            );
 
             let assistant_name = format!("{} {}", assistant.first_name, assistant.surname);
 
