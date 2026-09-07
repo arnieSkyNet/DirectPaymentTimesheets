@@ -38,6 +38,91 @@ pub struct PayrollTimesheetPublicHoliday {
     pub hours: f64,
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub struct PayrollTimesheetAnnualLeave {
+    pub id: i64,
+    pub payroll_timesheet_id: i64,
+    pub week_number: i64,
+    pub leave_date: String,
+    pub hours: f64,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+pub fn parse_leave_date(value: &str) -> Option<chrono::NaiveDate> {
+    ["%d/%m/%y", "%d-%m-%y", "%d/%m/%Y", "%d-%m-%Y", "%Y-%m-%d"]
+        .iter()
+        .find_map(|format| chrono::NaiveDate::parse_from_str(value.trim(), format).ok())
+}
+
+// Canonical UK dates match the existing preparation/public-holiday convention.
+// Existing detail rows also mark a week as dated when its last row is removed.
+pub fn derive_annual_leave(
+    record_id: i64,
+    weeks: &mut [PayrollTimesheetWeek],
+    rows: &[PayrollTimesheetAnnualLeave],
+    previous: &[PayrollTimesheetAnnualLeave],
+) -> Result<Vec<PayrollTimesheetAnnualLeave>> {
+    let invalid = |message: &str| rusqlite::Error::InvalidParameterName(message.into());
+    let mut seen = std::collections::HashSet::new();
+    let mut normalised = rows.to_vec();
+    for row in &mut normalised {
+        if row.payroll_timesheet_id != record_id {
+            return Err(invalid(
+                "Annual leave belongs to another payroll timesheet.",
+            ));
+        }
+        let week = weeks
+            .iter()
+            .find(|week| {
+                week.week_number == row.week_number && week.payroll_timesheet_id == record_id
+            })
+            .ok_or_else(|| invalid("Annual leave has an invalid payroll week."))?;
+        if !(1..=4).contains(&row.week_number) {
+            return Err(invalid("Annual leave week must be 1 to 4."));
+        }
+        let start = parse_leave_date(&week.week_commencing)
+            .ok_or_else(|| invalid("Invalid payroll week date."))?;
+        let date = parse_leave_date(&row.leave_date)
+            .ok_or_else(|| invalid(&format!("Enter a valid annual-leave date (DD/MM/YYYY); received '{}' for week commencing {}.", row.leave_date.trim(), start.format("%d/%m/%Y"))))?;
+        if date < start || date.signed_duration_since(start).num_days() >= 7 {
+            return Err(invalid(&format!(
+                "Annual-leave date {} is outside the week commencing {}.",
+                row.leave_date.trim(),
+                start.format("%d/%m/%Y")
+            )));
+        }
+        if !row.hours.is_finite() || row.hours < 0.0 {
+            return Err(invalid(
+                "Annual-leave hours must be finite and non-negative.",
+            ));
+        }
+        if !seen.insert((row.week_number, date)) {
+            return Err(invalid("Duplicate annual-leave date in the same week."));
+        }
+        row.leave_date = date.format("%d/%m/%Y").to_string();
+    }
+    for week in weeks {
+        if rows
+            .iter()
+            .chain(previous)
+            .any(|row| row.week_number == week.week_number)
+        {
+            let total: f64 = rows
+                .iter()
+                .filter(|row| row.week_number == week.week_number)
+                .map(|row| row.hours)
+                .sum();
+            if !total.is_finite() {
+                return Err(invalid("Annual-leave total is not finite."));
+            }
+            week.annual_leave_hours = total;
+        }
+    }
+    normalised.sort_by_key(|row| (row.week_number, parse_leave_date(&row.leave_date)));
+    Ok(normalised)
+}
+
 pub struct PayrollTimesheetRepository {
     connection: Connection,
 }
@@ -357,11 +442,37 @@ impl PayrollTimesheetRepository {
         Ok(self.connection.last_insert_rowid())
     }
 
+    pub fn get_annual_leave(
+        &self,
+        payroll_timesheet_id: i64,
+    ) -> Result<Vec<PayrollTimesheetAnnualLeave>> {
+        let mut statement = self.connection.prepare(
+            "SELECT id, payroll_timesheet_id, week_number, leave_date, hours, created_at, updated_at
+             FROM payroll_timesheet_annual_leave WHERE payroll_timesheet_id = ?1
+             ORDER BY week_number, substr(leave_date, 7, 4), substr(leave_date, 4, 2), substr(leave_date, 1, 2), id"
+        )?;
+        let rows = statement
+            .query_map([payroll_timesheet_id], |row| {
+                Ok(PayrollTimesheetAnnualLeave {
+                    id: row.get(0)?,
+                    payroll_timesheet_id: row.get(1)?,
+                    week_number: row.get(2)?,
+                    leave_date: row.get(3)?,
+                    hours: row.get(4)?,
+                    created_at: row.get(5)?,
+                    updated_at: row.get(6)?,
+                })
+            })?
+            .collect();
+        rows
+    }
+
     pub fn save_preparation_atomically(
         &self,
         record: &PayrollTimesheet,
         weeks: &[PayrollTimesheetWeek],
         holidays: &[PayrollTimesheetPublicHoliday],
+        annual_leave: &[PayrollTimesheetAnnualLeave],
         adjustments: &[ManualHoursAdjustment],
         updated_at: &str,
     ) -> Result<bool> {
@@ -389,6 +500,31 @@ impl PayrollTimesheetRepository {
                     .to_string(),
             ));
         }
+
+        let stored_weeks = self.get_weeks(record.id)?;
+        let previous_leave = self.get_annual_leave(record.id)?;
+        if stored_weeks.len() != 4
+            || weeks.iter().any(|week| {
+                !stored_weeks.iter().any(|stored| {
+                    stored.id == week.id
+                        && stored.week_number == week.week_number
+                        && stored.week_commencing == week.week_commencing
+                })
+            })
+            || weeks
+                .iter()
+                .map(|week| week.week_number)
+                .collect::<std::collections::HashSet<_>>()
+                .len()
+                != 4
+        {
+            return Err(rusqlite::Error::InvalidParameterName(
+                "Preparation weeks do not match stored payroll weeks.".into(),
+            ));
+        }
+        let mut weeks = weeks.to_vec();
+        let annual_leave =
+            derive_annual_leave(record.id, &mut weeks, annual_leave, &previous_leave)?;
 
         let candidate_invalidated = state.as_deref() == Some("candidate");
         if candidate_invalidated {
@@ -481,6 +617,35 @@ impl PayrollTimesheetRepository {
             if changed != 1 {
                 return Err(rusqlite::Error::QueryReturnedNoRows);
             }
+        }
+
+        // Detail persistence shares the weekly update and invalidation transaction.
+        for old in &previous_leave {
+            if !annual_leave
+                .iter()
+                .any(|row| row.week_number == old.week_number && row.leave_date == old.leave_date)
+            {
+                transaction.execute(
+                    "DELETE FROM payroll_timesheet_annual_leave WHERE id = ?1",
+                    [old.id],
+                )?;
+            }
+        }
+        for row in &annual_leave {
+            transaction.execute(
+                "INSERT INTO payroll_timesheet_annual_leave
+                 (payroll_timesheet_id, week_number, leave_date, hours, created_at, updated_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?5)
+                 ON CONFLICT(payroll_timesheet_id, week_number, leave_date) DO UPDATE SET
+                    hours = excluded.hours, updated_at = excluded.updated_at",
+                params![
+                    record.id,
+                    row.week_number,
+                    row.leave_date,
+                    row.hours,
+                    updated_at
+                ],
+            )?;
         }
 
         transaction.commit()?;
