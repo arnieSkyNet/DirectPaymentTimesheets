@@ -6,7 +6,8 @@ use crate::app::Application;
 use crate::config::ApplicationTheme;
 use crate::payroll_schedule_repository::PayrollSchedule;
 use crate::payroll_timesheet_repository::{
-    PayrollTimesheet, PayrollTimesheetPublicHoliday, PayrollTimesheetWeek,
+    derive_annual_leave, PayrollTimesheet, PayrollTimesheetAnnualLeave,
+    PayrollTimesheetPublicHoliday, PayrollTimesheetWeek,
 };
 use crate::payroll_worked_item_repository::{ManualHoursAdjustment, SnapshotState};
 
@@ -35,12 +36,15 @@ struct PreparationBaseline {
     weeks: Vec<PayrollTimesheetWeek>,
     public_holidays: Vec<PayrollTimesheetPublicHoliday>,
     manual_adjustments: Vec<ManualHoursAdjustment>,
+    annual_leave: Vec<PayrollTimesheetAnnualLeave>,
 }
 
 struct SaveResult {
     changed: bool,
     candidate_invalidated: bool,
     public_holiday_totals: [f64; 4],
+    annual_leave_totals: [f64; 4],
+    normalised_annual_leave: Vec<PayrollTimesheetAnnualLeave>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -67,12 +71,14 @@ pub struct PayrollTimesheetScreen {
     records: Vec<PayrollTimesheet>,
     weeks: Vec<(PayrollTimesheet, Vec<PayrollTimesheetWeek>, String)>,
     public_holidays: Vec<Vec<PayrollTimesheetPublicHoliday>>,
+    annual_leave: HashMap<i64, Vec<PayrollTimesheetAnnualLeave>>,
     worked_hours_baselines: HashMap<(i64, i64), i64>,
     snapshot_states: HashMap<i64, SnapshotState>,
     preparation_baselines: HashMap<i64, PreparationBaseline>,
     numeric_editor_texts: HashMap<NumericEditorKey, String>,
     assistant_feature_flags: HashMap<i64, (bool, bool)>,
     status_message: String,
+    save_errors: HashMap<i64, String>,
 }
 
 impl PayrollTimesheetScreen {
@@ -86,12 +92,14 @@ impl PayrollTimesheetScreen {
             records: Vec::new(),
             weeks: Vec::new(),
             public_holidays: Vec::new(),
+            annual_leave: HashMap::new(),
             worked_hours_baselines: HashMap::new(),
             snapshot_states: HashMap::new(),
             preparation_baselines: HashMap::new(),
             numeric_editor_texts: HashMap::new(),
             assistant_feature_flags: HashMap::new(),
             status_message: "Payroll Timesheets not loaded.".to_string(),
+            save_errors: HashMap::new(),
         }
     }
 
@@ -103,6 +111,8 @@ impl PayrollTimesheetScreen {
         self.records.clear();
         self.weeks.clear();
         self.public_holidays.clear();
+        self.annual_leave.clear();
+        self.save_errors.clear();
         self.worked_hours_baselines.clear();
         self.snapshot_states.clear();
         self.preparation_baselines.clear();
@@ -159,6 +169,8 @@ impl PayrollTimesheetScreen {
 
             let (record, weeks, assistant_name) = &mut records[record_index];
             let holidays = &mut public_holidays[record_index];
+            let annual_leave = self.annual_leave.entry(record.id).or_default();
+            let leave_baseline = self.preparation_baselines.get(&record.id).cloned();
             let (sick_pay_enabled, mileage_enabled) = assistant_feature_flags
                 .get(&record.personal_assistant_id)
                 .copied()
@@ -223,12 +235,9 @@ impl PayrollTimesheetScreen {
                                 NumericEditorKey::Worked(week.id),
                                 &mut week.worked_hours,
                             );
-                            edit_number(
-                                ui,
-                                numeric_editor_texts,
-                                NumericEditorKey::AnnualLeave(week.id),
-                                &mut week.annual_leave_hours,
-                            );
+                            ui.vertical(|ui| {
+                                edit_annual_leave(ui, numeric_editor_texts, week, annual_leave, leave_baseline.as_ref());
+                            });
                             if sick_pay_enabled {
                                 edit_number(
                                     ui,
@@ -286,17 +295,21 @@ impl PayrollTimesheetScreen {
                     record,
                     weeks,
                     holidays,
+                    annual_leave,
                     &self.worked_hours_baselines,
                     self.preparation_baselines.get(&record.id),
                 );
 
                 match result {
                     Ok(result) => {
+                        self.save_errors.remove(&record.id);
+                        *annual_leave = result.normalised_annual_leave;
                         if result.candidate_invalidated {
                             self.snapshot_states.remove(&record.id);
                         }
                         for (index, week) in weeks.iter_mut().enumerate() {
                             week.public_holiday_hours = result.public_holiday_totals[index];
+                            week.annual_leave_hours = result.annual_leave_totals[index];
                         }
                         self.preparation_baselines.insert(
                             record.id,
@@ -306,6 +319,7 @@ impl PayrollTimesheetScreen {
                                     weeks: weeks.clone(),
                                     public_holidays: holidays.clone(),
                                     manual_adjustments: Vec::new(),
+                                    annual_leave: annual_leave.clone(),
                                 }),
                         );
                         self.status_message = if result.candidate_invalidated {
@@ -321,11 +335,15 @@ impl PayrollTimesheetScreen {
                     }
 
                     Err(error) => {
-                        self.status_message = format!("Save failed: {}", error);
+                        self.status_message = preparation_save_error(error.as_ref());
+                        self.save_errors.insert(record.id, self.status_message.clone());
                     }
                 }
             }
 
+            if let Some(error) = self.save_errors.get(&record.id) {
+                ui.colored_label(ui.visuals().error_fg_color, error);
+            }
             ui.separator();
                 });
         }
@@ -418,6 +436,8 @@ impl PayrollTimesheetScreen {
         self.records.clear();
         self.weeks.clear();
         self.public_holidays.clear();
+        self.annual_leave.clear();
+        self.save_errors.clear();
         self.worked_hours_baselines.clear();
         self.snapshot_states.clear();
         self.preparation_baselines.clear();
@@ -510,6 +530,12 @@ impl PayrollTimesheetScreen {
                 self.preparation_baselines.insert(
                     record.id,
                     preparation_baseline(application, &record, &weeks, &holidays)?,
+                );
+                self.annual_leave.insert(
+                    record.id,
+                    application
+                        .payroll_timesheet_repository
+                        .get_annual_leave(record.id)?,
                 );
                 self.records.push(record.clone());
                 self.weeks.push((record, weeks, assistant_name));
@@ -690,6 +716,12 @@ impl PayrollTimesheetScreen {
                 preparation_baseline(application, &record, &weeks, &holidays)?,
             );
 
+            self.annual_leave.insert(
+                record.id,
+                application
+                    .payroll_timesheet_repository
+                    .get_annual_leave(record.id)?,
+            );
             self.records.push(record.clone());
 
             self.weeks.push((record, weeks, assistant_name));
@@ -713,6 +745,9 @@ fn preparation_baseline(
         previous_cycle_hours: record.previous_cycle_hours,
         weeks: weeks.to_vec(),
         public_holidays: public_holidays.to_vec(),
+        annual_leave: application
+            .payroll_timesheet_repository
+            .get_annual_leave(record.id)?,
         manual_adjustments: application
             .payroll_worked_item_repository
             .get_manual_adjustments(record.id)?,
@@ -726,6 +761,7 @@ fn save_preparation_record(
     record: &PayrollTimesheet,
     weeks: &[PayrollTimesheetWeek],
     public_holidays: &[PayrollTimesheetPublicHoliday],
+    annual_leave: &[PayrollTimesheetAnnualLeave],
     worked_hours_baselines: &HashMap<(i64, i64), i64>,
     baseline: Option<&PreparationBaseline>,
 ) -> Result<SaveResult, Box<dyn std::error::Error>> {
@@ -762,6 +798,11 @@ fn save_preparation_record(
     }
 
     let mut weeks = weeks.to_vec();
+    let previous_leave = application
+        .payroll_timesheet_repository
+        .get_annual_leave(record.id)?;
+    let annual_leave = derive_annual_leave(record.id, &mut weeks, annual_leave, &previous_leave)?;
+    let annual_leave_totals = std::array::from_fn(|index| weeks[index].annual_leave_hours);
     derive_public_holiday_aggregates(&mut weeks, public_holidays)?;
     validate_public_holiday_values(&weeks, public_holidays)?;
     let public_holiday_totals = std::array::from_fn(|index| weeks[index].public_holiday_hours);
@@ -798,6 +839,7 @@ fn save_preparation_record(
         !optional_hours_equal(baseline.previous_cycle_hours, record.previous_cycle_hours)
             || !weeks_equal(&baseline.weeks, &weeks)
             || !public_holidays_equal(&baseline.public_holidays, public_holidays)
+            || !annual_leave_equal(&baseline.annual_leave, &annual_leave)
             || baseline.manual_adjustments != desired_persisted_adjustments
     });
     if !changed {
@@ -805,19 +847,149 @@ fn save_preparation_record(
             changed: false,
             candidate_invalidated: false,
             public_holiday_totals,
+            annual_leave_totals,
+            normalised_annual_leave: annual_leave,
         });
     }
 
     let now = chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
     let candidate_invalidated = application
         .payroll_timesheet_repository
-        .save_preparation_atomically(record, &weeks, public_holidays, &desired_adjustments, &now)?;
+        .save_preparation_atomically(
+            record,
+            &weeks,
+            public_holidays,
+            &annual_leave,
+            &desired_adjustments,
+            &now,
+        )?;
 
     Ok(SaveResult {
         changed: true,
         candidate_invalidated,
         public_holiday_totals,
+        annual_leave_totals,
+        normalised_annual_leave: annual_leave,
     })
+}
+
+fn preparation_save_error(error: &(dyn std::error::Error + 'static)) -> String {
+    // Repository validation uses this existing error variant; omit its SQL
+    // parameter prefix in the user-facing message while preserving other errors.
+    if let Some(rusqlite::Error::InvalidParameterName(message)) =
+        error.downcast_ref::<rusqlite::Error>()
+    {
+        format!("Save failed: {message}")
+    } else {
+        format!("Save failed: {error}")
+    }
+}
+
+fn annual_leave_equal(
+    left: &[PayrollTimesheetAnnualLeave],
+    right: &[PayrollTimesheetAnnualLeave],
+) -> bool {
+    let keys = |rows: &[PayrollTimesheetAnnualLeave]| {
+        let mut values = rows
+            .iter()
+            .map(|row| {
+                (
+                    row.payroll_timesheet_id,
+                    row.week_number,
+                    crate::payroll_timesheet_repository::parse_leave_date(&row.leave_date),
+                    row.hours.to_bits(),
+                )
+            })
+            .collect::<Vec<_>>();
+        values.sort();
+        values
+    };
+    keys(left) == keys(right)
+}
+
+fn new_annual_leave(week: &PayrollTimesheetWeek, hours: f64) -> PayrollTimesheetAnnualLeave {
+    PayrollTimesheetAnnualLeave {
+        id: 0,
+        payroll_timesheet_id: week.payroll_timesheet_id,
+        week_number: week.week_number,
+        leave_date: String::new(),
+        hours,
+        created_at: String::new(),
+        updated_at: String::new(),
+    }
+}
+
+fn edit_annual_leave(
+    ui: &mut egui::Ui,
+    editor_texts: &mut HashMap<NumericEditorKey, String>,
+    week: &mut PayrollTimesheetWeek,
+    rows: &mut Vec<PayrollTimesheetAnnualLeave>,
+    baseline: Option<&PreparationBaseline>,
+) {
+    let has_rows = rows.iter().any(|row| row.week_number == week.week_number);
+    let legacy = baseline.is_some_and(|baseline| {
+        baseline
+            .weeks
+            .iter()
+            .any(|old| old.week_number == week.week_number && old.annual_leave_hours > 0.0)
+            && !baseline
+                .annual_leave
+                .iter()
+                .any(|row| row.week_number == week.week_number)
+    });
+    if !has_rows {
+        let response = edit_preparation_number(
+            ui,
+            editor_texts,
+            NumericEditorKey::AnnualLeave(week.id),
+            &mut week.annual_leave_hours,
+        );
+        if legacy {
+            ui.add(egui::Label::new("Legacy undated leave").wrap_mode(egui::TextWrapMode::Extend));
+        } else if week.annual_leave_hours != 0.0 && !response.has_focus() {
+            // Let the user finish typing decimals before replacing the editor.
+            rows.push(new_annual_leave(week, week.annual_leave_hours));
+            editor_texts.remove(&NumericEditorKey::AnnualLeave(week.id));
+        }
+    }
+    if rows.iter().any(|row| row.week_number == week.week_number) {
+        editor_texts.remove(&NumericEditorKey::AnnualLeave(week.id));
+        let mut remove = None;
+        for (index, row) in rows
+            .iter_mut()
+            .enumerate()
+            .filter(|(_, row)| row.week_number == week.week_number)
+        {
+            ui.push_id((week.id, index), |ui| {
+                ui.horizontal(|ui| {
+                    ui.add(
+                        egui::TextEdit::singleline(&mut row.leave_date)
+                            .desired_width(85.0)
+                            .hint_text("DD/MM/YYYY"),
+                    );
+                    ui.add(egui::DragValue::new(&mut row.hours).speed(0.25));
+                    if ui.button("Remove").clicked() {
+                        remove = Some(index);
+                    }
+                });
+            });
+        }
+        if let Some(index) = remove {
+            rows.remove(index);
+        }
+        if ui.button("Add another date").clicked() {
+            rows.push(new_annual_leave(week, 0.0));
+        }
+        week.annual_leave_hours = rows
+            .iter()
+            .filter(|row| row.week_number == week.week_number)
+            .map(|row| row.hours)
+            .sum();
+        ui.label(format!(
+            "Total: {}",
+            format_decimal_hours(week.annual_leave_hours)
+        ));
+    }
 }
 
 fn optional_hours_equal(left: Option<f64>, right: Option<f64>) -> bool {
@@ -973,7 +1145,7 @@ fn edit_preparation_number(
     editor_texts: &mut HashMap<NumericEditorKey, String>,
     key: NumericEditorKey,
     value: &mut f64,
-) {
+) -> egui::Response {
     let text = editor_texts
         .entry(key)
         .or_insert_with(|| numeric_editor_text(*value));
@@ -985,6 +1157,7 @@ fn edit_preparation_number(
     if response.lost_focus() {
         commit_numeric_text(text, value);
     }
+    response
 }
 
 fn update_numeric_value(text: &str, value: &mut f64) {
@@ -1494,9 +1667,322 @@ mod tests {
             record,
             weeks,
             &screen.public_holidays[0],
+            screen
+                .annual_leave
+                .get(&record.id)
+                .map(Vec::as_slice)
+                .unwrap_or(&[]),
             &screen.worked_hours_baselines,
             screen.preparation_baselines.get(&record.id),
         )
+    }
+
+    fn set_dated_leave(
+        screen: &mut PayrollTimesheetScreen,
+        week_index: usize,
+        offset: i64,
+        hours: f64,
+    ) {
+        let week = &screen.weeks[0].1[week_index];
+        let mut row = new_annual_leave(week, hours);
+        row.leave_date = format_date(
+            parse_date(&week.week_commencing).unwrap() + chrono::Duration::days(offset),
+        );
+        screen
+            .annual_leave
+            .entry(week.payroll_timesheet_id)
+            .or_default()
+            .push(row);
+    }
+
+    #[test]
+    fn out_of_week_error_identifies_entered_date_and_week() {
+        let (_directory, _application, _schedule, screen) = load_active_record();
+        let mut weeks = screen.weeks[0].1.clone();
+        weeks[0].week_commencing = "14/09/2026".into();
+        let mut row = new_annual_leave(&weeks[0], 2.0);
+        row.leave_date = "22/09/2026".into();
+        let error = derive_annual_leave(weeks[0].payroll_timesheet_id, &mut weeks, &[row], &[])
+            .unwrap_err();
+        assert_eq!(
+            preparation_save_error(&error),
+            "Save failed: Annual-leave date 22/09/2026 is outside the week commencing 14/09/2026."
+        );
+    }
+
+    #[test]
+    fn flexible_leave_dates_normalise_for_storage_and_successful_save_display() {
+        use crate::payroll_timesheet_repository::parse_leave_date;
+        for input in [
+            "18/9/26",
+            "18/09/2026",
+            "18-9-26",
+            "18-09-2026",
+            "2026-09-18",
+        ] {
+            assert_eq!(
+                parse_leave_date(input)
+                    .unwrap()
+                    .format("%d/%m/%Y")
+                    .to_string(),
+                "18/09/2026"
+            );
+        }
+        let (_directory, application, schedule, mut screen) = load_active_record();
+        let id = screen.weeks[0].0.id;
+        set_dated_leave(&mut screen, 0, 0, 2.0);
+        let expected = screen.annual_leave[&id][0].leave_date.clone();
+        screen.annual_leave.get_mut(&id).unwrap()[0].leave_date = parse_leave_date(&expected)
+            .unwrap()
+            .format("%-d/%-m/%y")
+            .to_string();
+        let result = save_current_row(&application, &schedule, &screen).unwrap();
+        assert_eq!(result.normalised_annual_leave[0].leave_date, expected);
+        assert_eq!(
+            application
+                .payroll_timesheet_repository
+                .get_annual_leave(id)
+                .unwrap()[0]
+                .leave_date,
+            expected
+        );
+        screen.reload();
+        screen.load(&application, &schedule, "period").unwrap();
+        screen.annual_leave.get_mut(&id).unwrap()[0].leave_date = parse_leave_date(&expected)
+            .unwrap()
+            .format("%-d/%-m/%y")
+            .to_string();
+        let result = save_current_row(&application, &schedule, &screen).unwrap();
+        assert!(!result.changed);
+        assert_eq!(result.normalised_annual_leave[0].leave_date, expected);
+    }
+
+    #[test]
+    fn new_dated_detail_carries_hours_but_never_invents_a_date() {
+        let (_directory, _application, _schedule, screen) = load_active_record();
+        let week = &screen.weeks[0].1[0];
+        let row = new_annual_leave(week, 7.25);
+        assert_eq!(row.hours, 7.25);
+        assert_eq!(row.payroll_timesheet_id, week.payroll_timesheet_id);
+        assert_eq!(row.week_number, week.week_number);
+        assert!(row.leave_date.is_empty());
+    }
+
+    #[test]
+    fn dated_leave_sums_loads_in_order_and_last_removal_returns_zero() {
+        let (_directory, application, schedule, mut screen) = load_active_record();
+        let id = screen.weeks[0].0.id;
+        set_dated_leave(&mut screen, 0, 5, 2.5);
+        screen.weeks[0].1[0].annual_leave_hours = 999.0; // Dated rows override a conflicting total.
+        let result = save_current_row(&application, &schedule, &screen).unwrap();
+        assert_eq!(result.annual_leave_totals[0], 2.5);
+        set_dated_leave(&mut screen, 1, 0, 1.0);
+        set_dated_leave(&mut screen, 0, 1, 3.0);
+        save_current_row(&application, &schedule, &screen).unwrap();
+        let rows = application
+            .payroll_timesheet_repository
+            .get_annual_leave(id)
+            .unwrap();
+        assert_eq!(
+            rows.iter().map(|row| row.week_number).collect::<Vec<_>>(),
+            vec![1, 1, 2]
+        );
+        assert!(parse_date(&rows[0].leave_date) < parse_date(&rows[1].leave_date));
+        assert!(!rows[0].created_at.is_empty());
+        assert_eq!(
+            application
+                .payroll_timesheet_repository
+                .get_weeks(id)
+                .unwrap()[0]
+                .annual_leave_hours,
+            5.5
+        );
+        screen.reload();
+        screen.load(&application, &schedule, "period").unwrap();
+        assert!(
+            !save_current_row(&application, &schedule, &screen)
+                .unwrap()
+                .changed
+        );
+        screen
+            .annual_leave
+            .get_mut(&id)
+            .unwrap()
+            .retain(|row| row.week_number != 1);
+        assert!(
+            save_current_row(&application, &schedule, &screen)
+                .unwrap()
+                .changed
+        );
+        assert_eq!(
+            application
+                .payroll_timesheet_repository
+                .get_weeks(id)
+                .unwrap()[0]
+                .annual_leave_hours,
+            0.0
+        );
+    }
+
+    #[test]
+    fn dated_leave_validation_rejects_bad_dates_hours_ownership_and_duplicates() {
+        let (_directory, application, schedule, mut screen) = load_active_record();
+        let id = screen.weeks[0].0.id;
+        for offset in [-1, 7] {
+            set_dated_leave(&mut screen, 0, offset, 1.0);
+            assert!(save_current_row(&application, &schedule, &screen).is_err());
+            screen.annual_leave.get_mut(&id).unwrap().clear();
+        }
+        for hours in [-1.0, f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            set_dated_leave(&mut screen, 0, 0, hours);
+            assert!(save_current_row(&application, &schedule, &screen).is_err());
+            screen.annual_leave.get_mut(&id).unwrap().clear();
+        }
+        set_dated_leave(&mut screen, 0, 0, 1.0);
+        let valid = screen.annual_leave[&id][0].clone();
+        for bad_date in ["", "31/02/2026", "not a date"] {
+            screen.annual_leave.get_mut(&id).unwrap()[0].leave_date = bad_date.into();
+            assert!(save_current_row(&application, &schedule, &screen).is_err());
+        }
+        screen.annual_leave.insert(id, vec![valid.clone()]);
+        screen.annual_leave.get_mut(&id).unwrap()[0].payroll_timesheet_id = -1;
+        assert!(save_current_row(&application, &schedule, &screen).is_err());
+        screen.annual_leave.insert(id, vec![valid.clone()]);
+        screen.annual_leave.get_mut(&id).unwrap()[0].week_number = 5;
+        assert!(save_current_row(&application, &schedule, &screen).is_err());
+        let mut duplicate = valid.clone();
+        duplicate.leave_date = parse_date(&valid.leave_date)
+            .unwrap()
+            .format("%Y-%m-%d")
+            .to_string();
+        screen.annual_leave.insert(id, vec![valid, duplicate]);
+        assert!(save_current_row(&application, &schedule, &screen).is_err());
+        assert!(application
+            .payroll_timesheet_repository
+            .get_annual_leave(id)
+            .unwrap()
+            .is_empty());
+    }
+
+    #[test]
+    fn legacy_undated_leave_survives_load_and_unrelated_save() {
+        let (_directory, application, schedule, mut screen) = load_active_record();
+        let id = screen.weeks[0].0.id;
+        setup_connection(&application).execute("UPDATE payroll_timesheet_weeks SET annual_leave_hours = 7.25 WHERE payroll_timesheet_id = ?1 AND week_number = 1", [id]).unwrap();
+        screen.reload();
+        screen.load(&application, &schedule, "period").unwrap();
+        assert!(
+            !save_current_row(&application, &schedule, &screen)
+                .unwrap()
+                .changed
+        );
+        screen.weeks[0].1[0].worked_hours = 1.0;
+        save_current_row(&application, &schedule, &screen).unwrap();
+        assert_eq!(
+            application
+                .payroll_timesheet_repository
+                .get_weeks(id)
+                .unwrap()[0]
+                .annual_leave_hours,
+            7.25
+        );
+        assert!(application
+            .payroll_timesheet_repository
+            .get_annual_leave(id)
+            .unwrap()
+            .is_empty());
+    }
+
+    #[test]
+    fn dated_date_only_change_invalidates_candidate_and_protected_states_refuse_saves() {
+        let (_directory, application, schedule, mut screen) = load_active_record();
+        let id = screen.weeks[0].0.id;
+        set_dated_leave(&mut screen, 0, 0, 2.0);
+        save_current_row(&application, &schedule, &screen).unwrap();
+        screen.reload();
+        screen.load(&application, &schedule, "period").unwrap();
+        create_candidate(&application, &screen);
+        let new_date = format_date(
+            parse_date(&screen.weeks[0].1[0].week_commencing).unwrap() + chrono::Duration::days(1),
+        );
+        screen.annual_leave.get_mut(&id).unwrap()[0].leave_date = new_date;
+        let result = save_current_row(&application, &schedule, &screen).unwrap();
+        assert!(result.changed && result.candidate_invalidated);
+        create_candidate(&application, &screen);
+        for state in ["submitted", "indeterminate"] {
+            setup_connection(&application).execute("UPDATE payroll_timesheet_snapshot_states SET state = ?1 WHERE payroll_timesheet_id = ?2", rusqlite::params![state, id]).unwrap();
+            screen.annual_leave.get_mut(&id).unwrap()[0].hours = 9.0;
+            assert!(save_current_row(&application, &schedule, &screen).is_err());
+            let adjustments = screen.weeks[0]
+                .1
+                .iter()
+                .map(|week| ManualHoursAdjustment {
+                    week_number: week.week_number,
+                    adjustment_minutes: 0,
+                    reason: None,
+                })
+                .collect::<Vec<_>>();
+            assert!(application
+                .payroll_timesheet_repository
+                .save_preparation_atomically(
+                    &screen.weeks[0].0,
+                    &screen.weeks[0].1,
+                    &screen.public_holidays[0],
+                    &screen.annual_leave[&id],
+                    &adjustments,
+                    "now"
+                )
+                .is_err());
+            assert_eq!(
+                application
+                    .payroll_timesheet_repository
+                    .get_annual_leave(id)
+                    .unwrap()[0]
+                    .hours,
+                2.0
+            );
+        }
+    }
+
+    #[test]
+    fn failed_dated_leave_write_rolls_back_weekly_fields_adjustments_and_candidate() {
+        let (_directory, application, schedule, mut screen) = load_active_record();
+        let id = screen.weeks[0].0.id;
+        create_candidate(&application, &screen);
+        setup_connection(&application)
+            .execute_batch(
+                "CREATE TRIGGER refuse_annual_leave BEFORE INSERT ON payroll_timesheet_annual_leave
+             BEGIN SELECT RAISE(ABORT, 'dated leave failed'); END;",
+            )
+            .unwrap();
+        set_dated_leave(&mut screen, 0, 0, 2.0);
+        screen.weeks[0].1[0].worked_hours = 1.0;
+        assert!(save_current_row(&application, &schedule, &screen).is_err());
+        let week = &application
+            .payroll_timesheet_repository
+            .get_weeks(id)
+            .unwrap()[0];
+        assert_eq!(week.worked_hours, 0.0);
+        assert_eq!(week.annual_leave_hours, 0.0);
+        assert!(application
+            .payroll_timesheet_repository
+            .get_annual_leave(id)
+            .unwrap()
+            .is_empty());
+        assert!(application
+            .payroll_worked_item_repository
+            .get_manual_adjustments(id)
+            .unwrap()
+            .is_empty());
+        assert_eq!(
+            application
+                .payroll_worked_item_repository
+                .snapshot_metadata(id)
+                .unwrap()
+                .unwrap()
+                .state,
+            SnapshotState::Candidate
+        );
     }
 
     #[test]

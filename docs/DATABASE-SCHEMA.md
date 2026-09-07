@@ -2,13 +2,13 @@
 
 ## Scope and versioning
 
-This is the implemented SQLite schema at version 24. It is derived from `create_schema` and migrations in `src/database.rs`; those migrations are authoritative.
+This is the implemented SQLite schema at version 25. It is derived from `create_schema` and migrations in `src/database.rs`; those migrations are authoritative.
 
-`schema_version` contains the current integer version. A new database begins at version 1 and receives each ordered migration through `CURRENT_SCHEMA_VERSION` 24. Existing databases are upgraded in place. Migration 23 removes the short-lived revision-only tables introduced by migration 22 while retaining the operational legacy snapshot tables. Migration 24 adds an explicit contracted/variable hours basis to effective-dated Personal Assistant contracted-hours history while preserving existing records as contracted.
+`schema_version` contains the current integer version. A new database begins at version 1 and receives each ordered migration through `CURRENT_SCHEMA_VERSION` 25. Existing databases are upgraded in place. Migration 23 removes the short-lived revision-only tables introduced by migration 22 while retaining the operational legacy snapshot tables. Migration 24 adds an explicit contracted/variable hours basis to effective-dated Personal Assistant contracted-hours history while preserving existing records as contracted.
 
 During unreleased schema-20 development, an earlier local database shape contained `direct_shifts` without soft-deletion columns or the audit table. Startup therefore performs an idempotent schema-20 compatibility check after normal migrations. When that exact incomplete shape is found, it transactionally rebuilds `direct_shifts` into the final constrained form while preserving IDs and row values, then creates the audit table/indexes. It does not fabricate historical audit events, and repeated startup does not duplicate existing audit rows.
 
-SQLite foreign-key constraints are not declared in schema 24. Relationships described below are logical relationships enforced by repository/application code and stored IDs/business keys.
+SQLite foreign-key constraints are not declared in schema 25. Relationships described below are logical relationships enforced by repository/application code and stored IDs/business keys.
 
 ## `schema_version`
 
@@ -327,3 +327,9 @@ Declared uniqueness beyond primary keys:
 - one occurrence of a non-null source TimesheetEntry ID per legacy payroll-timesheet snapshot.
 
 Schema 23 also declares the direct-shift running/recent indexes, direct-shift value checks and correction-history index described above. No foreign keys or cascading deletes are declared. Repository and service validation supplies the remaining business rules.
+
+### `payroll_timesheet_annual_leave` (schema 25)
+
+Dated annual leave is a child of the preparation record. Columns: `id INTEGER PRIMARY KEY`, `payroll_timesheet_id INTEGER NOT NULL`, `week_number INTEGER NOT NULL` (1–4), `leave_date TEXT NOT NULL` (`DD/MM/YYYY`), `hours REAL NOT NULL` (finite, non-negative), `created_at TEXT NOT NULL`, and `updated_at TEXT NOT NULL`. The combination `(payroll_timesheet_id, week_number, leave_date)` is unique. Repository validation checks the date against the actual stored seven-day payroll week and normalises supported input dates before saving.
+
+Migration 24 → 25 creates this table transactionally without backfilling dates or changing existing `payroll_timesheet_weeks.annual_leave_hours`. Non-zero weekly totals without child rows remain legacy undated leave. Dated weeks use the sum of child hours; removing all their rows sets the weekly aggregate to zero. Detail rows and weekly totals save in the existing preparation transaction, including candidate invalidation and submitted/indeterminate protection. PDFs continue to use only the weekly aggregate. Entitlement, accrual and statistics are not implemented.
