@@ -1,8 +1,9 @@
 [package]
 name = "direct_payment_timesheets"
-version = "0.0.11"
+version = "0.0.12"
 edition = "2021"
 license = "GPL-3.0-or-later"
+repository = "https://github.com/ArnieSkyNet/DirectPaymentTimesheets"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
@@ -21,6 +22,9 @@ printpdf = { version = "0.8", features = ["png"] }
 lettre = { version = "0.11", default-features = false, features = ["builder", "smtp-transport", "hostname", "pool", "tokio1-native-tls"] }
 zip = "2.2"
 sha2 = "0.10"
+
+ureq = { version = "3", features = ["json"] }
+semver = "1"
 
 [dev-dependencies]
 tempfile = "3"

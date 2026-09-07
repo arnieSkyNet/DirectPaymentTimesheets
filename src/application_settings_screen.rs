@@ -79,16 +79,47 @@ impl ApplicationSettingsScreen {
             ui.label("Application Theme");
 
             let previous_theme = self.theme;
-            egui::ComboBox::from_id_salt("application_theme")
+            crate::gui_controls::combo_box("application_theme")
                 .selected_text(theme_label(self.theme))
                 .show_ui(ui, |ui| {
-                    ui.selectable_value(&mut self.theme, ApplicationTheme::System, "System");
-                    ui.selectable_value(&mut self.theme, ApplicationTheme::Light, "Light");
-                    ui.selectable_value(&mut self.theme, ApplicationTheme::SoftLight, "Soft Light");
-                    ui.selectable_value(&mut self.theme, ApplicationTheme::Dark, "Dark");
-                    ui.selectable_value(&mut self.theme, ApplicationTheme::SoftDark, "Soft Dark");
-                    ui.selectable_value(&mut self.theme, ApplicationTheme::Blue, "Blue");
-                    ui.selectable_value(
+                    crate::gui_controls::combo_value(
+                        ui,
+                        &mut self.theme,
+                        ApplicationTheme::System,
+                        "System",
+                    );
+                    crate::gui_controls::combo_value(
+                        ui,
+                        &mut self.theme,
+                        ApplicationTheme::Light,
+                        "Light",
+                    );
+                    crate::gui_controls::combo_value(
+                        ui,
+                        &mut self.theme,
+                        ApplicationTheme::SoftLight,
+                        "Soft Light",
+                    );
+                    crate::gui_controls::combo_value(
+                        ui,
+                        &mut self.theme,
+                        ApplicationTheme::Dark,
+                        "Dark",
+                    );
+                    crate::gui_controls::combo_value(
+                        ui,
+                        &mut self.theme,
+                        ApplicationTheme::SoftDark,
+                        "Soft Dark",
+                    );
+                    crate::gui_controls::combo_value(
+                        ui,
+                        &mut self.theme,
+                        ApplicationTheme::Blue,
+                        "Blue",
+                    );
+                    crate::gui_controls::combo_value(
+                        ui,
                         &mut self.theme,
                         ApplicationTheme::AccessibleHighContrast,
                         "Accessible High Contrast",

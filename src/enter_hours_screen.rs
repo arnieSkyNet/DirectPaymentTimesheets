@@ -192,12 +192,13 @@ impl EnterHoursScreen {
                     .strong()
                     .size(18.0),
             );
-            egui::ComboBox::from_id_salt("direct_shift_pa")
+            crate::gui_controls::combo_box("direct_shift_pa")
                 .width(280.0)
                 .selected_text(egui::RichText::new(selected_name).size(18.0))
                 .show_ui(ui, |ui| {
                     for assistant in &self.assistants {
-                        ui.selectable_value(
+                        crate::gui_controls::combo_value(
+                            ui,
                             &mut self.selected_pa_id,
                             Some(assistant.id),
                             assistant_name(assistant),
