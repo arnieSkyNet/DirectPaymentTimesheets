@@ -30,7 +30,12 @@ fn initialise_database(_app: &Application) -> Result<(), Box<dyn Error>> {
 }
 
 fn launch_gui(app: Application) -> Result<(), Box<dyn Error>> {
-    let options = eframe::NativeOptions::default();
+    let options = eframe::NativeOptions {
+        viewport: egui::ViewportBuilder::default()
+            .with_inner_size([1000.0, 800.0])
+            .with_clamp_size_to_monitor_size(true),
+        ..Default::default()
+    };
 
     eframe::run_native(
         "Direct Payments Timesheets",
@@ -43,4 +48,34 @@ fn launch_gui(app: Application) -> Result<(), Box<dyn Error>> {
     .map_err(|error| -> Box<dyn Error> { Box::new(error) })?;
 
     Ok(())
+}
+
+// egui exposes monitor dimensions, not the desktop work area. Leave room for
+// decorations and desktop panels; apply only once before normal interaction.
+pub(crate) fn initial_window_size(monitor: Option<egui::Vec2>) -> Option<egui::Vec2> {
+    let monitor = monitor?;
+    if !monitor.is_finite() || monitor.x <= 0.0 || monitor.y <= 0.0 {
+        return None;
+    }
+    Some(egui::vec2(
+        1000.0_f32.min(monitor.x * 0.9),
+        monitor.y * 0.85,
+    ))
+}
+
+#[cfg(test)]
+mod window_tests {
+    #[test]
+    fn initial_size_leaves_monitor_margin_and_handles_missing_dimensions() {
+        assert_eq!(super::initial_window_size(None), None);
+        assert_eq!(
+            super::initial_window_size(Some(egui::vec2(0.0, 768.0))),
+            None
+        );
+        for monitor in [egui::vec2(1024.0, 768.0), egui::vec2(1920.0, 1080.0)] {
+            let size = super::initial_window_size(Some(monitor)).unwrap();
+            assert!(size.x < monitor.x && size.y < monitor.y);
+            assert_eq!(size.y, monitor.y * 0.85);
+        }
+    }
 }

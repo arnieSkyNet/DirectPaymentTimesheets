@@ -17,6 +17,7 @@ mod environment;
 mod error;
 mod folder_opener;
 mod gui;
+mod gui_controls;
 mod historical_payroll_backfill;
 mod import_service;
 mod models;
@@ -39,6 +40,7 @@ mod personal_assistant_repository;
 mod personal_assistant_screen;
 mod repository;
 mod theme;
+mod update_check;
 
 fn main() {
     if let Err(error) = application::run() {

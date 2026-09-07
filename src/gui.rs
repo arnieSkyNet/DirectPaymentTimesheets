@@ -61,6 +61,7 @@ struct DashboardWorkflowActions {
     enter_hours: bool,
     import_hours_csv: bool,
     view_imported_hours: bool,
+    prepare_timesheets: bool,
     generate_timesheets: bool,
     email_timesheets: bool,
     import_payroll_return: bool,
@@ -165,6 +166,10 @@ impl OperationalPayrollPeriodState {
 pub struct DirectPaymentApp {
     application: Application,
     version: String,
+    about_open: bool,
+    about_schema_version: String,
+    update_check: crate::update_check::UpdateCheck,
+    initial_size_pending: bool,
     status_message: String,
     file_status: Option<(String, Vec<std::path::PathBuf>)>,
     last_import: Option<ImportSummary>,
@@ -201,6 +206,10 @@ impl DirectPaymentApp {
             initial_operational_payroll_period(&application);
         Self {
             version: application.context.version.clone(),
+            about_open: false,
+            about_schema_version: String::new(),
+            update_check: Default::default(),
+            initial_size_pending: true,
             application,
             status_message: "Application ready.".to_string(),
             file_status: None,
@@ -236,6 +245,20 @@ impl DirectPaymentApp {
 
 impl eframe::App for DirectPaymentApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        if self.initial_size_pending {
+            self.initial_size_pending = false;
+            let initial_size = ctx.input(|input| {
+                if input.viewport().maximized == Some(true) {
+                    None
+                } else {
+                    crate::application::initial_window_size(input.viewport().monitor_size)
+                }
+            });
+            if let Some(size) = initial_size {
+                ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(size));
+            }
+        }
+        self.draw_about(ctx);
         if let Some(message) = &self.restart_required_message {
             egui::CentralPanel::default().show(ctx, |ui| {
                 ui.heading("Restart Required");
@@ -254,7 +277,7 @@ impl eframe::App for DirectPaymentApp {
         }
 
         egui::TopBottomPanel::top("header").show(ctx, |ui| {
-            ui.horizontal(|ui| {
+            ui.horizontal_wrapped(|ui| {
                 ui.heading(format!("DirectPaymentTimesheets v{}", self.version));
                 ui.label(
                     egui::RichText::new(format!(
@@ -272,6 +295,24 @@ impl eframe::App for DirectPaymentApp {
                     self.active_screen = ActiveScreen::EmailSettings;
                 }
 
+                if ui.button("About").clicked() {
+                    // Only read metadata when opening About; never migrate or write.
+                    self.about_schema_version = rusqlite::Connection::open_with_flags(
+                        &self.application.context.environment.database_path,
+                        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+                    )
+                    .and_then(|connection| {
+                        connection.query_row(
+                            "SELECT version FROM schema_version LIMIT 1",
+                            [],
+                            |row| row.get::<_, i64>(0),
+                        )
+                    })
+                    .map(|version| version.to_string())
+                    .unwrap_or_else(|_| "unavailable".into());
+                    self.about_open = true;
+                }
+
                 ui.add_space(10.0);
                 if ui.button("Exit").clicked() {
                     ctx.send_viewport_cmd(egui::ViewportCommand::Close);
@@ -280,7 +321,7 @@ impl eframe::App for DirectPaymentApp {
         });
 
         egui::TopBottomPanel::bottom("navigation").show(ctx, |ui| {
-            ui.horizontal(|ui| {
+            ui.horizontal_wrapped(|ui| {
                 if ui.button("Dashboard").clicked() {
                     self.active_screen = ActiveScreen::Dashboard;
                 }
@@ -295,11 +336,6 @@ impl eframe::App for DirectPaymentApp {
 
                 if ui.button("Payroll Settings").clicked() {
                     self.active_screen = ActiveScreen::PayrollSettings;
-                }
-
-                if ui.button("Payroll Timesheet Preparation").clicked() {
-                    self.payroll_timesheet_screen.reload();
-                    self.active_screen = ActiveScreen::PayrollTimesheet;
                 }
 
                 if ui.button("Exit").clicked() {
@@ -320,7 +356,10 @@ impl eframe::App for DirectPaymentApp {
             }
 
             ActiveScreen::Employer => {
-                if self.employer_screen.show(ui, &self.application) {
+                if egui::ScrollArea::vertical()
+                    .show(ui, |ui| self.employer_screen.show(ui, &self.application))
+                    .inner
+                {
                     self.active_screen = ActiveScreen::EmailSettings;
                 }
             }
@@ -332,7 +371,12 @@ impl eframe::App for DirectPaymentApp {
             }
 
             ActiveScreen::PayrollSettings => {
-                if self.payroll_settings_screen.show(ui, &mut self.application) {
+                if egui::ScrollArea::vertical()
+                    .show(ui, |ui| {
+                        self.payroll_settings_screen.show(ui, &mut self.application)
+                    })
+                    .inner
+                {
                     self.active_screen = ActiveScreen::EmailSettings;
                 }
             }
@@ -389,6 +433,41 @@ impl eframe::App for DirectPaymentApp {
 }
 
 impl DirectPaymentApp {
+    fn draw_about(&mut self, ctx: &egui::Context) {
+        self.update_check.poll();
+        egui::Window::new("About DirectPaymentTimesheets")
+            .open(&mut self.about_open)
+            .collapsible(false)
+            .default_width(460.0)
+            .vscroll(true)
+            .show(ctx, |ui| {
+                ui.heading("DirectPaymentTimesheets");
+                ui.label(format!("Application version: {}", self.version));
+                ui.label(format!(
+                    "Database schema version: {}",
+                    self.about_schema_version
+                ));
+                ui.label("Development: ArnieSkyNet / DirectPaymentTimesheets project on GitHub.");
+                ui.label(format!("License: {}", env!("CARGO_PKG_LICENSE")));
+                ui.separator();
+                ui.label(crate::update_check::InstallationKind::current().guidance());
+                if ui
+                    .add_enabled(
+                        !self.update_check.running(),
+                        egui::Button::new("Check for updates"),
+                    )
+                    .clicked()
+                {
+                    self.update_check.start(ctx.clone());
+                }
+                if let Some(status) = &self.update_check.status {
+                    ui.label(status);
+                }
+                ui.hyperlink_to("GitHub releases", crate::update_check::RELEASES_URL);
+                ui.hyperlink_to("Project source and tags", crate::update_check::SOURCE_URL);
+            });
+    }
+
     fn clear_pending_email_batch(&mut self) {
         self.pending_email_batch = None;
         self.additional_notes_by_personal_assistant.clear();
@@ -571,15 +650,17 @@ impl DirectPaymentApp {
         let email = &mut self.application.context.config.email;
         ui.horizontal(|ui| {
             ui.label("Email transport");
-            egui::ComboBox::from_id_salt("email_transport")
+            crate::gui_controls::combo_box("email_transport")
                 .selected_text(&email.smtp_transport)
                 .show_ui(ui, |ui| {
-                    ui.selectable_value(
+                    crate::gui_controls::combo_value(
+                        ui,
                         &mut email.smtp_transport,
                         "Local SMTP Server".to_string(),
                         "Local SMTP Server",
                     );
-                    ui.selectable_value(
+                    crate::gui_controls::combo_value(
+                        ui,
                         &mut email.smtp_transport,
                         "SMTP Server".to_string(),
                         "SMTP Server",
@@ -663,7 +744,7 @@ impl DirectPaymentApp {
                 .unwrap_or_else(|| subject.chars().count());
             let mut placeholder_to_insert = None;
 
-            egui::ComboBox::from_id_salt("email_subject_insert_field")
+            crate::gui_controls::combo_box("email_subject_insert_field")
                 .selected_text("Insert Field")
                 .show_ui(ui, |ui| {
                     if ui.button("Personal Assistant Name").clicked() {
@@ -814,11 +895,12 @@ impl DirectPaymentApp {
             .unwrap_or_default();
 
         ui.horizontal(|ui| {
-            egui::ComboBox::from_id_salt("test_timesheet_personal_assistant")
+            crate::gui_controls::combo_box("test_timesheet_personal_assistant")
                 .selected_text(selected_name)
                 .show_ui(ui, |ui| {
                     for assistant in &assistants {
-                        ui.selectable_value(
+                        crate::gui_controls::combo_value(
+                            ui,
                             &mut self.preview_personal_assistant_id,
                             Some(assistant.id),
                             format!("{} {}", assistant.first_name, assistant.surname),
@@ -1105,29 +1187,19 @@ impl DirectPaymentApp {
                 .unwrap_or_else(|| "Select a payroll period".to_string());
             let mut selected_key = self.operational_payroll_period.selected.clone();
 
-            egui::ComboBox::from_id_salt("operational_payroll_period")
+            crate::gui_controls::combo_box("operational_payroll_period")
+                .height(220.0)
                 .width(540.0)
                 .selected_text(selected_text)
                 .show_ui(ui, |ui| {
-                    let mut scroll_style = egui::style::ScrollStyle::solid();
-                    scroll_style.bar_width = 16.0;
-                    ui.spacing_mut().scroll = scroll_style;
-
-                    egui::ScrollArea::vertical()
-                        .id_salt("operational_payroll_period_scroll")
-                        .max_height(300.0)
-                        .scroll_bar_visibility(
-                            egui::scroll_area::ScrollBarVisibility::AlwaysVisible,
-                        )
-                        .show(ui, |ui| {
-                            for schedule in &self.operational_payroll_schedules {
-                                ui.selectable_value(
-                                    &mut selected_key,
-                                    Some(operational_period_key(schedule)),
-                                    payroll_schedule_label(schedule),
-                                );
-                            }
-                        });
+                    for schedule in &self.operational_payroll_schedules {
+                        crate::gui_controls::combo_value(
+                            ui,
+                            &mut selected_key,
+                            Some(operational_period_key(schedule)),
+                            payroll_schedule_label(schedule),
+                        );
+                    }
                 });
 
             if selected_key != self.operational_payroll_period.selected {
@@ -1235,12 +1307,13 @@ impl DirectPaymentApp {
                 .map(payroll_schedule_label)
                 .unwrap_or_else(|| "Select a payroll period".to_string());
 
-                egui::ComboBox::from_id_salt("payroll_return_schedule_selection")
+                crate::gui_controls::combo_box("payroll_return_schedule_selection")
                     .width(540.0)
                     .selected_text(selected_text)
                     .show_ui(ui, |ui| {
                         for schedule in &pending.schedules {
-                            ui.selectable_value(
+                            crate::gui_controls::combo_value(
+                                ui,
                                 &mut pending.selected_schedule_id,
                                 schedule.id,
                                 payroll_schedule_label(schedule),
@@ -1446,6 +1519,11 @@ impl DirectPaymentApp {
                         }
                     }
                 }
+                if actions.prepare_timesheets {
+                    self.payroll_timesheet_screen.reload();
+                    self.active_screen = ActiveScreen::PayrollTimesheet;
+                }
+
                 if actions.generate_timesheets {
                     match self.generate_payroll_timesheets() {
                         Ok(count) => {
@@ -1628,11 +1706,12 @@ impl DirectPaymentApp {
             .unwrap_or_default();
 
         ui.horizontal(|ui| {
-            egui::ComboBox::from_id_salt("email_preview_personal_assistant")
+            crate::gui_controls::combo_box("email_preview_personal_assistant")
                 .selected_text(selected_name)
                 .show_ui(ui, |ui| {
                     for assistant in &assistants {
-                        ui.selectable_value(
+                        crate::gui_controls::combo_value(
+                            ui,
                             &mut self.preview_personal_assistant_id,
                             Some(assistant.id),
                             format!("{} {}", assistant.first_name, assistant.surname),
@@ -2897,7 +2976,7 @@ fn navigate_to_enter_hours(active_screen: &mut ActiveScreen) {
     *active_screen = ActiveScreen::EnterHours;
 }
 
-const WORKFLOW_COLUMN_WIDTHS: [f32; 3] = [225.0, 165.0, 165.0];
+const WORKFLOW_COLUMN_WIDTHS: [f32; 3] = [225.0, 225.0, 185.0];
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum DashboardWorkflowLayout {
@@ -2932,9 +3011,11 @@ fn draw_dashboard_workflow_actions(ui: &mut egui::Ui) -> DashboardWorkflowAction
                     actions.view_imported_hours = workflow_button(ui, 2, "View Imported Hours");
                     ui.end_row();
 
+                    actions.prepare_timesheets =
+                        workflow_button(ui, 0, "Payroll Timesheet Preparation");
                     actions.generate_timesheets =
-                        workflow_button(ui, 0, "Generate Payroll Timesheets");
-                    actions.email_timesheets = workflow_button(ui, 1, "Email Timesheets");
+                        workflow_button(ui, 1, "Generate Payroll Timesheets");
+                    actions.email_timesheets = workflow_button(ui, 2, "Email Payroll Timesheets");
                     ui.end_row();
 
                     actions.import_payroll_return =
@@ -2957,9 +3038,12 @@ fn draw_dashboard_workflow_actions(ui: &mut egui::Ui) -> DashboardWorkflowAction
                     sized_workflow_button(ui, widths[2], "View Imported Hours");
             });
             ui.horizontal_wrapped(|ui| {
+                actions.prepare_timesheets =
+                    sized_workflow_button(ui, widths[0], "Payroll Timesheet Preparation");
                 actions.generate_timesheets =
-                    sized_workflow_button(ui, widths[0], "Generate Payroll Timesheets");
-                actions.email_timesheets = sized_workflow_button(ui, widths[1], "Email Timesheets");
+                    sized_workflow_button(ui, widths[1], "Generate Payroll Timesheets");
+                actions.email_timesheets =
+                    sized_workflow_button(ui, widths[2], "Email Payroll Timesheets");
             });
             ui.horizontal_wrapped(|ui| {
                 actions.import_payroll_return =
@@ -3054,6 +3138,11 @@ fn format_date(date: chrono::NaiveDate) -> String {
     date.format("%d/%m/%Y").to_string()
 }
 
+// Names need the most room; timestamps include strings such as
+// "30 January 2026 at 09:00:00" and retain their existing presentation.
+// Monetary columns stay compact, with a little more room for total amounts.
+const TIMESHEET_COLUMN_WIDTHS: [f32; 6] = [240.0, 210.0, 210.0, 85.0, 65.0, 80.0];
+
 fn draw_timesheets(
     ui: &mut egui::Ui,
     timesheets: &[TimesheetEntry],
@@ -3069,6 +3158,7 @@ fn draw_timesheets(
     }
 
     egui::Grid::new("timesheet_grid")
+        .num_columns(6)
         .striped(true)
         .show(ui, |ui| {
             timesheet_sort_heading(ui, sort_state, TimesheetSortColumn::PaName, "PA Name");
@@ -3080,12 +3170,31 @@ fn draw_timesheets(
             ui.end_row();
 
             for entry in sorted_timesheets(timesheets, *sort_state) {
-                ui.label(&entry.pa_name);
-                ui.label(&entry.start_time);
-                ui.label(&entry.end_time);
-                ui.label(format_worked_time(entry.worked_minutes));
-                ui.label(format!("£{:.2}", entry.hourly_rate));
-                ui.label(format!("£{:.2}", entry.amount));
+                for (text, width) in [
+                    entry.pa_name.clone(),
+                    entry.start_time.clone(),
+                    entry.end_time.clone(),
+                    format_worked_time(entry.worked_minutes),
+                    format!("£{:.2}", entry.hourly_rate),
+                    format!("£{:.2}", entry.amount),
+                ]
+                .into_iter()
+                .zip(TIMESHEET_COLUMN_WIDTHS)
+                {
+                    // add_sized uses a centered-and-justified layout. Use an
+                    // explicit left-to-right cell instead, with the same text
+                    // inset as the header button.
+                    let padding = ui.spacing().button_padding.x;
+                    ui.allocate_ui_with_layout(
+                        egui::vec2(width, ui.spacing().interact_size.y),
+                        egui::Layout::left_to_right(egui::Align::Center),
+                        |ui| {
+                            ui.spacing_mut().item_spacing.x = 0.0;
+                            ui.add_space(padding);
+                            ui.add(egui::Label::new(text).wrap());
+                        },
+                    );
+                }
                 ui.end_row();
             }
         });
@@ -3105,7 +3214,20 @@ fn timesheet_sort_heading(
     } else {
         ""
     };
-    if ui.small_button(format!("{label}{indicator}")).clicked() {
+    if ui
+        .add_sized(
+            [
+                TIMESHEET_COLUMN_WIDTHS[column as usize],
+                ui.spacing().interact_size.y,
+            ],
+            // The trailing growing atom consumes spare width to the right of
+            // the text, retaining the native full-cell button interaction and
+            // theme feedback without centering the caption.
+            egui::Button::new((format!("{label}{indicator}"), egui::Atom::grow()))
+                .wrap_mode(egui::TextWrapMode::Extend),
+        )
+        .clicked()
+    {
         sort_state.select(column);
     }
 }
@@ -3349,11 +3471,16 @@ fn draw_payroll_schedule_year_selector(
 
     ui.horizontal(|ui| {
         ui.label("Payroll year:");
-        egui::ComboBox::from_id_salt("view_payroll_schedule_year")
+        crate::gui_controls::combo_box("view_payroll_schedule_year")
             .selected_text(&selected)
             .show_ui(ui, |ui| {
                 for payroll_year in payroll_years {
-                    ui.selectable_value(&mut selected, payroll_year.clone(), payroll_year);
+                    crate::gui_controls::combo_value(
+                        ui,
+                        &mut selected,
+                        payroll_year.clone(),
+                        payroll_year,
+                    );
                 }
             });
     });

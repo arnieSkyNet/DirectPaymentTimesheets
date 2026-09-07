@@ -32,6 +32,26 @@ pub fn apply_theme(ctx: &egui::Context, theme: ApplicationTheme) {
             apply_custom_theme(ctx, Theme::Dark, accessible_high_contrast_visuals());
         }
     }
+
+    for variant in [Theme::Light, Theme::Dark] {
+        ctx.style_mut_of(variant, |style| {
+            style.spacing.scroll = accessible_scroll_style();
+        });
+    }
+}
+
+fn accessible_scroll_style() -> egui::style::ScrollStyle {
+    egui::style::ScrollStyle {
+        bar_width: 16.0,
+        handle_min_length: 24.0,
+        dormant_background_opacity: 1.0,
+        active_background_opacity: 1.0,
+        interact_background_opacity: 1.0,
+        dormant_handle_opacity: 1.0,
+        active_handle_opacity: 1.0,
+        interact_handle_opacity: 1.0,
+        ..egui::style::ScrollStyle::solid()
+    }
 }
 
 fn apply_custom_theme(ctx: &egui::Context, base_theme: Theme, visuals: Visuals) {
@@ -145,5 +165,34 @@ fn widget_visuals(
         fg_stroke: Stroke::new(stroke_width, foreground),
         expansion,
         ..Visuals::dark().widgets.inactive
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn all_themes_keep_solid_accessible_scrollbars_after_switching() {
+        let ctx = egui::Context::default();
+        for theme in [
+            ApplicationTheme::AccessibleHighContrast,
+            ApplicationTheme::SoftLight,
+            ApplicationTheme::SoftDark,
+            ApplicationTheme::Blue,
+            ApplicationTheme::System,
+            ApplicationTheme::Light,
+            ApplicationTheme::Dark,
+        ] {
+            apply_theme(&ctx, theme);
+            for variant in [Theme::Light, Theme::Dark] {
+                let style = ctx.style_of(variant);
+                let scroll = &style.spacing.scroll;
+                assert!(!scroll.floating);
+                assert_eq!(scroll.bar_width, 16.0);
+                assert_eq!(scroll.dormant_handle_opacity, 1.0);
+                assert_eq!(scroll.dormant_background_opacity, 1.0);
+            }
+        }
     }
 }

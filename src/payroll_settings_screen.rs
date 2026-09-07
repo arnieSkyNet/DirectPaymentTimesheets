@@ -147,7 +147,7 @@ impl PayrollSettingsScreen {
             ui.vertical(|ui| {
                 ui.label("Payroll Frequency");
 
-                egui::ComboBox::from_id_salt("payroll_frequency")
+                crate::gui_controls::combo_box("payroll_frequency")
                     .selected_text(&self.frequency)
                     .show_ui(ui, |ui| {
                         for option in [
@@ -158,7 +158,12 @@ impl PayrollSettingsScreen {
                             "Every Four Weeks",
                             "Quarterly",
                         ] {
-                            ui.selectable_value(&mut self.frequency, option.to_string(), option);
+                            crate::gui_controls::combo_value(
+                                ui,
+                                &mut self.frequency,
+                                option.to_string(),
+                                option,
+                            );
                         }
                     });
             });
@@ -168,7 +173,7 @@ impl PayrollSettingsScreen {
             ui.vertical(|ui| {
                 ui.label("Rounding Minutes");
 
-                egui::ComboBox::from_id_salt("rounding_minutes")
+                crate::gui_controls::combo_box("rounding_minutes")
                     .selected_text(format!(
                         "{} Minutes {}",
                         self.rounding_minutes, self.rounding_direction
@@ -196,6 +201,7 @@ impl PayrollSettingsScreen {
                                 )
                                 .clicked()
                             {
+                                ui.close();
                                 self.rounding_minutes = minutes;
                                 self.rounding_direction = direction.to_string();
                             }
@@ -208,7 +214,7 @@ impl PayrollSettingsScreen {
             ui.vertical(|ui| {
                 ui.label("Start of Workweek");
 
-                egui::ComboBox::from_id_salt("workweek_start")
+                crate::gui_controls::combo_box("workweek_start")
                     .selected_text(&self.start_of_workweek)
                     .show_ui(ui, |ui| {
                         for day in [
@@ -220,7 +226,12 @@ impl PayrollSettingsScreen {
                             "Friday",
                             "Saturday",
                         ] {
-                            ui.selectable_value(&mut self.start_of_workweek, day.to_string(), day);
+                            crate::gui_controls::combo_value(
+                                ui,
+                                &mut self.start_of_workweek,
+                                day.to_string(),
+                                day,
+                            );
                         }
                     });
             });
