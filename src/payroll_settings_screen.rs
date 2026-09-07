@@ -1,3 +1,4 @@
+use crate::annual_leave_settings_repository::AnnualLeaveSettings as StoredAnnualLeaveSettings;
 use eframe::egui;
 
 use crate::app::Application;
@@ -7,6 +8,7 @@ use chrono::Local;
 
 pub struct PayrollSettingsScreen {
     loaded: bool,
+    annual_leave: AnnualLeaveSettings,
 
     frequency: String,
     rounding_minutes: i64,
@@ -31,6 +33,7 @@ impl PayrollSettingsScreen {
     pub fn new() -> Self {
         Self {
             loaded: false,
+            annual_leave: AnnualLeaveSettings::default(),
 
             frequency: "Every Four Weeks".to_string(),
             rounding_minutes: 15,
@@ -240,6 +243,7 @@ impl PayrollSettingsScreen {
         ui.separator();
 
         ui.checkbox(&mut self.overtime_enabled, "Enable overtime calculations");
+        self.annual_leave.show(ui);
 
         ui.separator();
 
@@ -262,6 +266,7 @@ impl PayrollSettingsScreen {
     fn load(&mut self, application: &Application) {
         let payroll = &application.context.config.payroll;
 
+        self.annual_leave.load(application);
         self.frequency = payroll.frequency.clone();
         self.rounding_minutes = payroll.rounding_minutes;
         self.rounding_direction = payroll.rounding_direction.clone();
@@ -280,6 +285,22 @@ impl PayrollSettingsScreen {
     }
 
     fn save(&mut self, application: &mut Application) {
+        self.save_settings(application);
+        self.annual_leave.status = self.status_message.clone();
+    }
+
+    fn save_settings(&mut self, application: &mut Application) {
+        // Validate all annual-leave inputs before any existing payroll writes.
+        let annual_leave = match self.annual_leave.draft() {
+            Ok(settings) => settings,
+            Err(error) => {
+                self.status_message = format!(
+                    "Payroll Settings save failed: {}",
+                    annual_leave_error(error)
+                );
+                return;
+            }
+        };
         let payroll = &mut application.context.config.payroll;
 
         payroll.frequency = self.frequency.clone();
@@ -313,13 +334,23 @@ impl PayrollSettingsScreen {
             return;
         }
 
-        match application.save_config() {
-            Ok(()) => {
-                self.status_message = "Payroll settings saved.".to_string();
-            }
+        if let Err(error) = application.save_config() {
+            self.status_message = format!(
+                "Failed saving payroll settings: {error}. Annual-leave settings were not saved."
+            );
+            return;
+        }
 
+        match application
+            .annual_leave_settings_repository
+            .save(&annual_leave)
+        {
+            Ok(settings) => {
+                self.annual_leave.fill(&settings);
+                self.status_message = "Payroll settings saved.".into();
+            }
             Err(error) => {
-                self.status_message = format!("Failed saving payroll settings: {}", error);
+                self.status_message = format!("Payroll Settings save incomplete: other payroll settings were saved, but annual-leave settings failed: {}", annual_leave_error(error));
             }
         }
     }
@@ -376,5 +407,160 @@ fn optional_value(value: &str) -> Option<String> {
         None
     } else {
         Some(value.to_string())
+    }
+}
+
+fn annual_leave_error(error: rusqlite::Error) -> String {
+    match error {
+        rusqlite::Error::InvalidParameterName(message) => message,
+        other => other.to_string(),
+    }
+}
+
+#[derive(Default)]
+struct AnnualLeaveSettings {
+    contracted_from: String,
+    weeks: String,
+    variable_from: String,
+    percentage: String,
+    status: String,
+}
+impl AnnualLeaveSettings {
+    fn fill(&mut self, settings: &StoredAnnualLeaveSettings) {
+        self.contracted_from = settings.contracted_effective_from.clone();
+        self.weeks = settings.statutory_weeks.to_string();
+        self.variable_from = settings.variable_effective_from.clone();
+        self.percentage = settings.accrual_percentage.to_string();
+    }
+    fn load(&mut self, application: &Application) {
+        match application.annual_leave_settings_repository.get() {
+            Ok(settings) => self.fill(&settings),
+            Err(error) => self.status = format!("Unable to load Annual Leave Settings: {error}"),
+        }
+    }
+    fn draft(&self) -> rusqlite::Result<StoredAnnualLeaveSettings> {
+        let parse = |text: &str, label: &str| {
+            text.trim().parse::<f64>().map_err(|_| {
+                rusqlite::Error::InvalidParameterName(format!("{label} must be a number."))
+            })
+        };
+        StoredAnnualLeaveSettings {
+            contracted_effective_from: self.contracted_from.clone(),
+            statutory_weeks: parse(&self.weeks, "Statutory weeks")?,
+            variable_effective_from: self.variable_from.clone(),
+            accrual_percentage: parse(&self.percentage, "Accrual percentage")?,
+        }
+        .validated()
+    }
+    fn show(&mut self, ui: &mut egui::Ui) {
+        ui.separator();
+        ui.heading("Annual Leave");
+        ui.group(|ui| {
+            ui.label("Contracted-hours annual leave");
+            ui.horizontal_wrapped(|ui| {
+                ui.label("Effective from (DD/MM)");
+                ui.add(egui::TextEdit::singleline(&mut self.contracted_from).desired_width(70.0));
+                ui.label("Statutory annual-leave weeks");
+                ui.add(egui::TextEdit::singleline(&mut self.weeks).desired_width(70.0));
+            });
+        });
+        ui.group(|ui| {
+            ui.label("Variable-hours annual leave");
+            ui.horizontal_wrapped(|ui| {
+                ui.label("Effective from (DD/MM)");
+                ui.add(egui::TextEdit::singleline(&mut self.variable_from).desired_width(70.0));
+                ui.label("Accrual percentage");
+                ui.add(egui::TextEdit::singleline(&mut self.percentage).desired_width(70.0));
+            });
+        });
+        if !self.status.is_empty() {
+            ui.label(&self.status);
+        }
+    }
+}
+#[cfg(test)]
+mod annual_leave_settings_tests {
+    use super::*;
+    #[test]
+    fn shared_save_reports_success_and_failures_without_false_success() {
+        for scenario in ["success", "invalid", "config_failure", "annual_failure"] {
+            let (directory, mut application) =
+                crate::payroll_timesheet_screen::tests::test_application();
+            // Keep all config-save filesystem effects inside this test directory.
+            let folders = &mut application.context.config.folders;
+            folders.csv_import = directory.path().join("csv");
+            folders.pdf_output = directory.path().join("pdf");
+            folders.email_archive = directory.path().join("email");
+            folders.payslip_folder = directory.path().join("payslips");
+            folders.payroll_information_folder = directory.path().join("information");
+            let mut screen = PayrollSettingsScreen::new();
+            screen.load(&application);
+            screen.annual_leave.contracted_from = "1/1".into();
+            screen.annual_leave.weeks = "6".into();
+            screen.annual_leave.variable_from = "1/9".into();
+            screen.annual_leave.percentage = "13".into();
+            let connection =
+                rusqlite::Connection::open(&application.context.environment.database_path).unwrap();
+            match scenario {
+                "invalid" => screen.annual_leave.variable_from = "31/02".into(),
+                "config_failure" => std::fs::create_dir(directory.path().join("config.toml")).unwrap(),
+                "annual_failure" => connection.execute_batch("CREATE TRIGGER refuse_annual_settings BEFORE INSERT ON annual_leave_settings BEGIN SELECT RAISE(ABORT, 'annual failure'); END;").unwrap(),
+                _ => {}
+            }
+            screen.save(&mut application);
+            assert_eq!(screen.annual_leave.status, screen.status_message);
+            if scenario == "success" {
+                assert_eq!(screen.status_message, "Payroll settings saved.");
+                let saved = application.annual_leave_settings_repository.get().unwrap();
+                assert_eq!(saved.contracted_effective_from, "01/01");
+                assert_eq!(saved.variable_effective_from, "01/09");
+                assert_eq!(
+                    (saved.statutory_weeks, saved.accrual_percentage),
+                    (6.0, 13.0)
+                );
+                assert!(directory.path().join("config.toml").is_file());
+            } else {
+                assert_ne!(screen.status_message, "Payroll settings saved.");
+                assert_eq!(
+                    application.annual_leave_settings_repository.get().unwrap(),
+                    StoredAnnualLeaveSettings::default()
+                );
+                assert_eq!(
+                    connection
+                        .query_row("SELECT COUNT(*) FROM annual_leave_settings", [], |row| row
+                            .get::<_, i64>(
+                            0
+                        ))
+                        .unwrap(),
+                    0
+                );
+                if scenario == "invalid" {
+                    assert!(!directory.path().join("config.toml").exists());
+                }
+                if scenario == "annual_failure" {
+                    assert!(screen.status_message.contains("save incomplete"));
+                    assert!(screen
+                        .status_message
+                        .contains("other payroll settings were saved"));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn editor_defaults_and_independent_recurring_values() {
+        let mut editor = AnnualLeaveSettings::default();
+        editor.fill(&StoredAnnualLeaveSettings::default());
+        assert_eq!(editor.contracted_from, "01/04");
+        assert_eq!(editor.variable_from, "01/04");
+        assert_eq!(editor.weeks, "5.6");
+        assert_eq!(editor.percentage, "12.07");
+        editor.contracted_from = "1/1".into();
+        editor.variable_from = "15/9".into();
+        let settings = editor.draft().unwrap();
+        assert_eq!(settings.contracted_effective_from, "01/01");
+        assert_eq!(settings.variable_effective_from, "15/09");
+        editor.variable_from = "15/09/2026".into();
+        assert!(editor.draft().is_err());
     }
 }

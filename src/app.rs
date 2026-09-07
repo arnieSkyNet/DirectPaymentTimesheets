@@ -17,6 +17,8 @@ use crate::personal_assistant_repository::PersonalAssistantRepository;
 use crate::repository::TimesheetRepository;
 
 pub struct Application {
+    pub annual_leave_settings_repository:
+        crate::annual_leave_settings_repository::AnnualLeaveSettingsRepository,
     pub context: AppContext,
     pub repository: TimesheetRepository,
     pub employer_repository: EmployerRepository,
@@ -67,6 +69,10 @@ impl Application {
             PayrollTimesheetEmailRepository::new(Connection::open(database_path)?);
 
         Ok(Self {
+            annual_leave_settings_repository:
+                crate::annual_leave_settings_repository::AnnualLeaveSettingsRepository::new(
+                    Connection::open(database_path)?,
+                ),
             context,
             repository,
             employer_repository,

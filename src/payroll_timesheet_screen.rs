@@ -1518,7 +1518,7 @@ fn extract_timesheet_date(value: &str) -> Option<chrono::NaiveDate> {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::app::Application;
     use crate::config::AppConfig;
@@ -1527,7 +1527,7 @@ mod tests {
     use rusqlite::{params, Connection};
     use tempfile::TempDir;
 
-    fn test_application() -> (TempDir, Application) {
+    pub(crate) fn test_application() -> (TempDir, Application) {
         let directory = TempDir::new().unwrap();
         let database_path = directory.path().join("test.sqlite");
         let connection = Connection::open(&database_path).unwrap();
@@ -1545,6 +1545,10 @@ mod tests {
             cache_dir: directory.path().join("cache"),
         };
         let application = Application {
+            annual_leave_settings_repository:
+                crate::annual_leave_settings_repository::AnnualLeaveSettingsRepository::new(
+                    Connection::open(&database_path).unwrap(),
+                ),
             context: AppContext {
                 environment,
                 config: AppConfig::default(),

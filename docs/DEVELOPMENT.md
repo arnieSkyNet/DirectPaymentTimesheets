@@ -4,7 +4,7 @@
 
 This is a local Rust/egui/SQLite application. Prefer small, evidence-led changes that preserve payroll history and existing provider output. Inspect the current source, schema and tests before changing behaviour; documentation and conversation history are secondary evidence.
 
-Current package version is `0.0.12`; current SQLite schema version is 25. Do not change either unless a task explicitly requires it.
+Current package version is `0.0.12`; current SQLite schema version is 26. Do not change either unless a task explicitly requires it.
 
 ## Local setup
 
@@ -176,3 +176,5 @@ The persisted payroll frequency, rounding, workweek and overtime settings are no
 ## Current boundaries
 
 Do not document or build these as if already present: overtime calculations, arbitrary/scheduled/cloud restore, backup retention, P60-specific Payroll Return handling, multi-user/authentication, or a general payroll calculation engine. Keep future-work descriptions explicit and separate from implemented behaviour.
+
+Annual-leave settings foundation: schema 26 uses a singleton `annual_leave_settings` SQLite row for two recurring DD/MM boundaries, statutory weeks and accrual percentage. Missing settings load defaults 01/04, 5.6, 01/04, 12.07 without persistence. Save Payroll Settings writes all four together. There is no separate config leave-year start or effective-dated rule history. Annual periods will end inclusively the day before the next recurrence of their boundary; no entitlement or statistics calculations are implemented. Earlier development-only schema-26 databases require manual reset, not production repair logic.

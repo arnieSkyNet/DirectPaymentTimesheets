@@ -2,13 +2,13 @@
 
 ## Scope and versioning
 
-This is the implemented SQLite schema at version 25. It is derived from `create_schema` and migrations in `src/database.rs`; those migrations are authoritative.
+This is the implemented SQLite schema at version 26. It is derived from `create_schema` and migrations in `src/database.rs`; those migrations are authoritative.
 
-`schema_version` contains the current integer version. A new database begins at version 1 and receives each ordered migration through `CURRENT_SCHEMA_VERSION` 25. Existing databases are upgraded in place. Migration 23 removes the short-lived revision-only tables introduced by migration 22 while retaining the operational legacy snapshot tables. Migration 24 adds an explicit contracted/variable hours basis to effective-dated Personal Assistant contracted-hours history while preserving existing records as contracted.
+`schema_version` contains the current integer version. A new database begins at version 1 and receives each ordered migration through `CURRENT_SCHEMA_VERSION` 26. Existing databases are upgraded in place. Migration 23 removes the short-lived revision-only tables introduced by migration 22 while retaining the operational legacy snapshot tables. Migration 24 adds an explicit contracted/variable hours basis to effective-dated Personal Assistant contracted-hours history while preserving existing records as contracted.
 
 During unreleased schema-20 development, an earlier local database shape contained `direct_shifts` without soft-deletion columns or the audit table. Startup therefore performs an idempotent schema-20 compatibility check after normal migrations. When that exact incomplete shape is found, it transactionally rebuilds `direct_shifts` into the final constrained form while preserving IDs and row values, then creates the audit table/indexes. It does not fabricate historical audit events, and repeated startup does not duplicate existing audit rows.
 
-SQLite foreign-key constraints are not declared in schema 25. Relationships described below are logical relationships enforced by repository/application code and stored IDs/business keys.
+SQLite foreign-key constraints are not declared in schema 26. Relationships described below are logical relationships enforced by repository/application code and stored IDs/business keys.
 
 ## `schema_version`
 
@@ -333,3 +333,11 @@ Schema 23 also declares the direct-shift running/recent indexes, direct-shift va
 Dated annual leave is a child of the preparation record. Columns: `id INTEGER PRIMARY KEY`, `payroll_timesheet_id INTEGER NOT NULL`, `week_number INTEGER NOT NULL` (1–4), `leave_date TEXT NOT NULL` (`DD/MM/YYYY`), `hours REAL NOT NULL` (finite, non-negative), `created_at TEXT NOT NULL`, and `updated_at TEXT NOT NULL`. The combination `(payroll_timesheet_id, week_number, leave_date)` is unique. Repository validation checks the date against the actual stored seven-day payroll week and normalises supported input dates before saving.
 
 Migration 24 → 25 creates this table transactionally without backfilling dates or changing existing `payroll_timesheet_weeks.annual_leave_hours`. Non-zero weekly totals without child rows remain legacy undated leave. Dated weeks use the sum of child hours; removing all their rows sets the weekly aggregate to zero. Detail rows and weekly totals save in the existing preparation transaction, including candidate invalidation and submitted/indeterminate protection. PDFs continue to use only the weekly aggregate. Entitlement, accrual and statistics are not implemented.
+
+### `annual_leave_settings` (schema 26)
+
+The corrected uncommitted migration 25 → 26 transactionally creates an empty singleton settings table, preserving all schema-25 data. `id INTEGER PRIMARY KEY CHECK (id = 1)` identifies the sole settings row. Its four values are `contracted_effective_from TEXT NOT NULL`, `statutory_weeks REAL NOT NULL` (finite, 0–52), `variable_effective_from TEXT NOT NULL`, and `accrual_percentage REAL NOT NULL` (finite, 0–100).
+
+Both effective-from values are recurring `DD/MM` boundaries, not year-specific dates. Repository validation normalises day/month input and requires a date that exists every year (29 February is rejected). Different valid boundaries are permitted for the two groups. A future annual period starts at the applicable boundary and ends inclusively the day before that boundary in the following year: `01/04` means, for example, 01/04/2026 through 31/03/2027. No period/entitlement calculations are implemented here.
+
+An absent row loads defaults of `01/04`, 5.6 weeks, `01/04`, and 12.07 percent without writing to the database. Save Payroll Settings validates these inputs before any payroll writes, then saves the four values in one atomic SQLite statement after the existing payroll-settings save. The config/provider and annual-leave writes are not a shared transaction; failures are reported explicitly, including when the other payroll settings have already saved. There is no separate leave-year-start config field, rule creation, history, editing/deletion workflow, or confirmation machinery. No compatibility repair for earlier development-only schema-26 layouts is included; local development databases may be reset manually.

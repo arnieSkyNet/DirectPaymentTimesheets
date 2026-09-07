@@ -2,7 +2,7 @@
 
 DirectPaymentTimesheets is a local desktop application for administering UK Direct Payment Personal Assistant timesheets and the four-week payroll-provider workflow. It imports externally recorded work, prepares payroll timesheets, generates the provider PDF, sends timesheets and payslips, imports Payroll Returns, and preserves the evidence represented by submitted payroll.
 
-The current pre-release is version `0.0.12` with SQLite schema version 25. It is a working application under active development, not an installer-packaged or general-purpose payroll product.
+The current pre-release is version `0.0.12` with SQLite schema version 26. It is a working application under active development, not an installer-packaged or general-purpose payroll product.
 
 ## Technology
 
@@ -182,3 +182,5 @@ User-facing labels use Payroll Week, the four-week date range and pay date. Inte
 DirectPaymentTimesheets is free software licensed under the [GNU General Public License version 3 or later](LICENSE), identified by the SPDX expression `GPL-3.0-or-later`. You may redistribute and modify the source under that licence. Charging for copies or genuine services is permitted, but recipients retain the GPL freedoms and distributed modified versions remain subject to the GPL's requirements.
 
 Third-party dependencies and bundled font components remain subject to their respective terms; see [THIRD_PARTY_LICENSES.md](THIRD_PARTY_LICENSES.md).
+
+Payroll Settings includes two annual-leave settings groups: contracted-hours annual leave (recurring DD/MM boundary and statutory weeks) and variable-hours annual leave (recurring DD/MM boundary and accrual percentage). Save Payroll Settings saves all four together. These are settings foundations only; annual-leave entitlement and statistics are not calculated.
