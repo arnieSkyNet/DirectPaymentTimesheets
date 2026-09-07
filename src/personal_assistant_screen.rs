@@ -1,3 +1,4 @@
+use crate::contracted_hours_repository::HoursBasis;
 use eframe::egui;
 
 use crate::app::Application;
@@ -19,6 +20,7 @@ pub struct PersonalAssistantScreen {
     contracted_hours: Vec<crate::contracted_hours_repository::ContractedHoursEntry>,
     new_hours_effective_date: String,
     new_contracted_hours: String,
+    new_hours_basis: HoursBasis,
     editing_contracted_hours_id: Option<i64>,
     confirm_delete: bool,
     loaded: bool,
@@ -41,6 +43,7 @@ impl PersonalAssistantScreen {
             contracted_hours: Vec::new(),
             new_hours_effective_date: String::new(),
             new_contracted_hours: String::new(),
+            new_hours_basis: HoursBasis::Contracted,
             editing_contracted_hours_id: None,
 
             confirm_delete: false,
@@ -347,8 +350,9 @@ impl PersonalAssistantScreen {
                         for hours in self.contracted_hours.clone() {
                             ui.horizontal(|ui| {
                                 ui.label(format!(
-                                    "{}  {}",
-                                    hours.effective_date, hours.contracted_hours
+                                    "{}  {}  {}",
+                                    hours.effective_date, hours.hours_basis.label(),
+                                    if hours.hours_basis == HoursBasis::Contracted { &hours.contracted_hours } else { "" }
                                 ));
 
                                 if ui.button("Edit").clicked() {
@@ -357,6 +361,7 @@ impl PersonalAssistantScreen {
                                     self.new_hours_effective_date = hours.effective_date.clone();
 
                                     self.new_contracted_hours = hours.contracted_hours.clone();
+                                    self.new_hours_basis = hours.hours_basis;
                                 }
 
                                 if ui.button("Delete").clicked() {
@@ -382,14 +387,22 @@ impl PersonalAssistantScreen {
 
                         ui.separator();
 
-                        ui.horizontal(|ui| {
+                        ui.horizontal_wrapped(|ui| {
                             ui.label("Effective Date");
 
                             ui.text_edit_singleline(&mut self.new_hours_effective_date);
 
-                            ui.label("Contracted Hours");
-
-                            ui.text_edit_singleline(&mut self.new_contracted_hours);
+                            crate::gui_controls::combo_box("contracted_hours_basis")
+                                .selected_text(self.new_hours_basis.label())
+                                .show_ui(ui, |ui| {
+                                    for basis in [HoursBasis::Contracted, HoursBasis::Variable] {
+                                        crate::gui_controls::combo_value(ui, &mut self.new_hours_basis, basis, basis.label());
+                                    }
+                                });
+                            ui.label("Contracted Hours (required for Contracted)");
+                            ui.add_enabled(self.new_hours_basis == HoursBasis::Contracted,
+                                egui::TextEdit::singleline(&mut self.new_contracted_hours));
+                            if self.new_hours_basis == HoursBasis::Variable { ui.label("Not applicable"); }
                         });
 
                         if ui.button("Save Contracted Hours").clicked() {
@@ -398,6 +411,7 @@ impl PersonalAssistantScreen {
                                 personal_assistant_id: assistant.id,
                                 effective_date: self.new_hours_effective_date.clone(),
                                 contracted_hours: self.new_contracted_hours.clone(),
+                                hours_basis: self.new_hours_basis,
                                 created_at: chrono::Local::now().format("%Y-%m-%d").to_string(),
                             };
 
@@ -416,6 +430,7 @@ impl PersonalAssistantScreen {
 
                                     self.new_hours_effective_date.clear();
                                     self.new_contracted_hours.clear();
+                                    self.new_hours_basis = HoursBasis::Contracted;
                                     self.editing_contracted_hours_id = None;
 
                                     self.status_message = "Contracted hours saved.".to_string();

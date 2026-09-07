@@ -2,7 +2,7 @@ use std::path::Path;
 
 use rusqlite::{Connection, Result};
 
-pub const CURRENT_SCHEMA_VERSION: i64 = 23;
+pub const CURRENT_SCHEMA_VERSION: i64 = 24;
 
 pub fn initialise_database(database_path: &Path) -> Result<()> {
     let connection = Connection::open(database_path)?;
@@ -184,6 +184,11 @@ fn apply_migrations(connection: &Connection) -> Result<()> {
 
     if current_version < 23 {
         migrate_to_version_23(connection)?;
+        current_version = 23;
+    }
+
+    if current_version < 24 {
+        migrate_to_version_24(connection)?;
     }
 
     Ok(())
@@ -902,6 +907,17 @@ fn migrate_to_version_23(connection: &Connection) -> Result<()> {
     Ok(())
 }
 
+fn migrate_to_version_24(connection: &Connection) -> Result<()> {
+    let transaction = connection.unchecked_transaction()?;
+    transaction.execute_batch(
+        "ALTER TABLE personal_assistant_contracted_hours
+         ADD COLUMN hours_basis TEXT NOT NULL DEFAULT 'contracted'
+         CHECK (hours_basis IN ('contracted', 'variable'));
+         UPDATE schema_version SET version = 24;",
+    )?;
+    transaction.commit()
+}
+
 fn repair_unreleased_schema_20(connection: &Connection) -> Result<()> {
     let version: i64 =
         connection.query_row("SELECT version FROM schema_version LIMIT 1", [], |row| {
@@ -1044,6 +1060,12 @@ mod tests {
 
     fn drop_schema_22(connection: &Connection) {
         connection
+            .execute(
+                "ALTER TABLE personal_assistant_contracted_hours DROP COLUMN hours_basis",
+                [],
+            )
+            .unwrap();
+        connection
             .execute_batch(
                 "DROP TABLE IF EXISTS payroll_timesheet_revision_delivery_attempts;
                  DROP TABLE IF EXISTS payroll_timesheet_revision_public_holidays;
@@ -1052,6 +1074,114 @@ mod tests {
                  DROP TABLE IF EXISTS payroll_timesheet_revisions;",
             )
             .unwrap();
+    }
+
+    #[test]
+    fn migration_23_to_24_preserves_history_and_defaults_to_contracted() {
+        let connection = Connection::open_in_memory().unwrap();
+        create_schema(&connection).unwrap();
+        connection
+            .execute_batch(
+                "ALTER TABLE personal_assistant_contracted_hours DROP COLUMN hours_basis;
+             UPDATE schema_version SET version = 23;
+             INSERT INTO personal_assistant_contracted_hours
+                 (id, personal_assistant_id, effective_date, contracted_hours, created_at)
+             VALUES (7, 1, '01/04/2026', '16.50', 'original'),
+                    (9, 1, '01/04/2026', 'legacy text', 'later'),
+                    (12, 2, '01/05/2026', '', 'empty');",
+            )
+            .unwrap();
+        create_schema(&connection).unwrap();
+        create_schema(&connection).unwrap(); // Already-current schema is unchanged.
+        let mut statement = connection.prepare(
+            "SELECT id, personal_assistant_id, effective_date, contracted_hours, created_at, hours_basis
+             FROM personal_assistant_contracted_hours ORDER BY id"
+        ).unwrap();
+        let rows: Vec<(i64, i64, String, String, String, String)> = statement
+            .query_map([], |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                    row.get(5)?,
+                ))
+            })
+            .unwrap()
+            .collect::<Result<_>>()
+            .unwrap();
+        assert_eq!(
+            rows,
+            vec![
+                (
+                    7,
+                    1,
+                    "01/04/2026".into(),
+                    "16.50".into(),
+                    "original".into(),
+                    "contracted".into()
+                ),
+                (
+                    9,
+                    1,
+                    "01/04/2026".into(),
+                    "legacy text".into(),
+                    "later".into(),
+                    "contracted".into()
+                ),
+                (
+                    12,
+                    2,
+                    "01/05/2026".into(),
+                    "".into(),
+                    "empty".into(),
+                    "contracted".into()
+                ),
+            ]
+        );
+        assert_eq!(
+            connection
+                .query_row("SELECT version FROM schema_version", [], |row| row
+                    .get::<_, i64>(0))
+                .unwrap(),
+            24
+        );
+    }
+
+    #[test]
+    fn fresh_schema_24_accepts_only_explicit_supported_bases() {
+        let connection = Connection::open_in_memory().unwrap();
+        create_schema(&connection).unwrap();
+        for basis in ["contracted", "variable"] {
+            connection
+                .execute(
+                    "INSERT INTO personal_assistant_contracted_hours
+                (personal_assistant_id, effective_date, contracted_hours, created_at, hours_basis)
+                VALUES (1, '01/04/2026', '', 'created', ?1)",
+                    [basis],
+                )
+                .unwrap();
+        }
+        assert!(connection
+            .execute(
+                "UPDATE personal_assistant_contracted_hours SET hours_basis = 'unknown'",
+                []
+            )
+            .is_err());
+        assert!(connection
+            .execute(
+                "UPDATE personal_assistant_contracted_hours SET hours_basis = NULL",
+                []
+            )
+            .is_err());
+        assert_eq!(
+            connection
+                .query_row("SELECT version FROM schema_version", [], |row| row
+                    .get::<_, i64>(0))
+                .unwrap(),
+            24
+        );
     }
 
     #[test]
@@ -1105,7 +1235,7 @@ mod tests {
             .unwrap();
 
         assert_eq!(email_type, "timesheet");
-        assert_eq!(version, 23);
+        assert_eq!(version, 24);
     }
 
     #[test]
@@ -1134,7 +1264,7 @@ mod tests {
             .unwrap();
 
         assert!(duplicate.is_err());
-        assert_eq!(version, 23);
+        assert_eq!(version, 24);
     }
 
     #[test]
@@ -1185,7 +1315,7 @@ mod tests {
                 .query_row("SELECT version FROM schema_version", [], |row| row
                     .get::<_, i64>(0))
                 .unwrap(),
-            23
+            24
         );
     }
 
@@ -1213,7 +1343,7 @@ mod tests {
                 .query_row("SELECT version FROM schema_version", [], |row| row
                     .get::<_, i64>(0))
                 .unwrap(),
-            23
+            24
         );
     }
 
@@ -1572,6 +1702,12 @@ mod tests {
                 [],
             )
             .unwrap();
+        connection
+            .execute(
+                "ALTER TABLE personal_assistant_contracted_hours DROP COLUMN hours_basis",
+                [],
+            )
+            .unwrap();
         migrate_to_version_22(&connection).unwrap();
         assert!(table_exists(&connection, "payroll_timesheet_revisions").unwrap());
 
@@ -1608,12 +1744,12 @@ mod tests {
                 .query_row("SELECT version FROM schema_version", [], |row| row
                     .get::<_, i64>(0))
                 .unwrap(),
-            23
+            24
         );
     }
 
     #[test]
-    fn fresh_schema_23_never_retains_revision_tables() {
+    fn fresh_schema_24_never_retains_revision_tables() {
         let connection = Connection::open_in_memory().unwrap();
         create_schema(&connection).unwrap();
         assert_eq!(
@@ -1621,7 +1757,7 @@ mod tests {
                 .query_row("SELECT version FROM schema_version", [], |row| row
                     .get::<_, i64>(0))
                 .unwrap(),
-            23
+            24
         );
         assert!(!table_exists(&connection, "payroll_timesheet_revisions").unwrap());
         assert!(table_exists(&connection, "timesheet_correction_events").unwrap());
