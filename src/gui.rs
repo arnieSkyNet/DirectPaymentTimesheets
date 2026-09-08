@@ -485,18 +485,9 @@ impl DirectPaymentApp {
         self.additional_notes_by_personal_assistant.clear();
         self.note_enabled_personal_assistant_ids.clear();
         let selected_personal_assistant_ids = self
-            .application
-            .personal_assistant_repository
-            .get_all()
+            .selected_period_assistants()
             .unwrap_or_default()
             .into_iter()
-            .filter(|assistant| {
-                assistant
-                    .employment_status
-                    .as_deref()
-                    .map(|status| status.trim().eq_ignore_ascii_case("active"))
-                    .unwrap_or(true)
-            })
             .map(|assistant| assistant.id)
             .collect();
         self.pending_email_batch = Some(PendingEmailBatch {
@@ -537,11 +528,7 @@ impl DirectPaymentApp {
         if let Some(ids) = ids {
             ui.separator();
             ui.label("Additional notes by Personal Assistant");
-            let assistants = self
-                .application
-                .personal_assistant_repository
-                .get_all()
-                .unwrap_or_default();
+            let assistants = self.selected_period_assistants().unwrap_or_default();
             for assistant in assistants
                 .into_iter()
                 .filter(|assistant| ids.contains(&assistant.id))
@@ -859,17 +846,8 @@ impl DirectPaymentApp {
         ui.heading("Test Timesheet Email");
         ui.label("Test delivery uses only the configured test recipients.");
 
-        let assistants = match self.application.personal_assistant_repository.get_all() {
-            Ok(assistants) => assistants
-                .into_iter()
-                .filter(|assistant| {
-                    assistant
-                        .employment_status
-                        .as_deref()
-                        .map(|status| status.trim().eq_ignore_ascii_case("active"))
-                        .unwrap_or(true)
-                })
-                .collect::<Vec<_>>(),
+        let assistants = match self.selected_period_assistants() {
+            Ok(assistants) => assistants.into_iter().collect::<Vec<_>>(),
             Err(error) => {
                 ui.label(format!("Unable to load Personal Assistants: {}", error));
                 return;
@@ -937,9 +915,7 @@ impl DirectPaymentApp {
                 .preview_personal_assistant_id
                 .ok_or("Select a Personal Assistant to test an email.")?;
             let assistant = self
-                .application
-                .personal_assistant_repository
-                .get_all()?
+                .selected_period_assistants()?
                 .into_iter()
                 .find(|assistant| assistant.id == personal_assistant_id)
                 .ok_or("Selected Personal Assistant was not found.")?;
@@ -1026,9 +1002,7 @@ impl DirectPaymentApp {
                 .preview_personal_assistant_id
                 .ok_or("Select a Personal Assistant to test an email.")?;
             let assistant = self
-                .application
-                .personal_assistant_repository
-                .get_all()?
+                .selected_period_assistants()?
                 .into_iter()
                 .find(|assistant| assistant.id == personal_assistant_id)
                 .ok_or("Selected Personal Assistant was not found.")?;
@@ -1082,6 +1056,36 @@ impl DirectPaymentApp {
             Ok(()) => self.status_message = "Test payslip email sent.".to_string(),
             Err(error) => self.status_message = format!("Test payslip email failed: {}", error),
         }
+    }
+
+    fn selected_period_assistants(
+        &self,
+    ) -> Result<Vec<crate::models::PersonalAssistant>, Box<dyn std::error::Error>> {
+        let schedule = self.selected_operational_payroll_schedule()?;
+        let start = parse_date_checked(&schedule.first_week_commencing)
+            .ok_or("Invalid payroll period start date.")?;
+        let records = self
+            .application
+            .payroll_timesheet_repository
+            .get_all_for_cycle(&schedule.payroll_year, schedule.cycle_number)?;
+        self.application
+            .personal_assistant_repository
+            .get_all()?
+            .into_iter()
+            .filter_map(|assistant| {
+                match assistant.eligible_for_period(
+                    start,
+                    start + chrono::Duration::days(27),
+                    records
+                        .iter()
+                        .any(|record| record.personal_assistant_id == assistant.id),
+                ) {
+                    Ok(true) => Some(Ok(assistant)),
+                    Ok(false) => None,
+                    Err(error) => Some(Err(error.into())),
+                }
+            })
+            .collect()
     }
 
     fn selected_operational_payroll_schedule(
@@ -1670,17 +1674,8 @@ impl DirectPaymentApp {
         ui.heading("Email Preview");
         ui.label("Previews never send an email or update the sent status.");
 
-        let assistants = match self.application.personal_assistant_repository.get_all() {
-            Ok(assistants) => assistants
-                .into_iter()
-                .filter(|assistant| {
-                    assistant
-                        .employment_status
-                        .as_deref()
-                        .map(|status| status.trim().eq_ignore_ascii_case("active"))
-                        .unwrap_or(true)
-                })
-                .collect::<Vec<_>>(),
+        let assistants = match self.selected_period_assistants() {
+            Ok(assistants) => assistants.into_iter().collect::<Vec<_>>(),
             Err(error) => {
                 ui.label(format!("Unable to load Personal Assistants: {}", error));
                 return;
@@ -1751,9 +1746,7 @@ impl DirectPaymentApp {
                 .ok_or("Select a Personal Assistant to preview an email.")?;
 
             let assistant = self
-                .application
-                .personal_assistant_repository
-                .get_all()?
+                .selected_period_assistants()?
                 .into_iter()
                 .find(|assistant| assistant.id == personal_assistant_id)
                 .ok_or("Selected Personal Assistant was not found.")?;
@@ -1883,7 +1876,7 @@ impl DirectPaymentApp {
 
         let payroll_year = schedule.payroll_year.clone();
 
-        let assistants = self.application.personal_assistant_repository.get_all()?;
+        let assistants = self.selected_period_assistants()?;
 
         let payslip_folder =
             crate::paths::expand_path(&self.application.context.config.folders.payslip_folder);
@@ -1891,15 +1884,6 @@ impl DirectPaymentApp {
         let mut sent = 0usize;
 
         for assistant in &assistants {
-            let is_active = match &assistant.employment_status {
-                Some(status) => status.trim().eq_ignore_ascii_case("active"),
-                None => true,
-            };
-
-            if !is_active {
-                continue;
-            }
-
             let personal_assistant_name = format!("{} {}", assistant.first_name, assistant.surname);
 
             let existing_status = self
@@ -1974,10 +1958,6 @@ impl DirectPaymentApp {
 
         let required = assistants
             .iter()
-            .filter(|assistant| match &assistant.employment_status {
-                Some(status) => status.trim().eq_ignore_ascii_case("active"),
-                None => true,
-            })
             .map(
                 |assistant| crate::payslip_delivery_service::PayslipDeliveryIdentity {
                     personal_assistant_id: assistant.id,
@@ -2029,7 +2009,7 @@ impl DirectPaymentApp {
 
         let payroll_year = schedule.payroll_year.clone();
 
-        let assistants = self.application.personal_assistant_repository.get_all()?;
+        let assistants = self.selected_period_assistants()?;
 
         let pdf_output_folder =
             crate::paths::expand_path(&self.application.context.config.folders.pdf_output);
@@ -2037,15 +2017,6 @@ impl DirectPaymentApp {
         let mut sent = 0usize;
 
         for assistant in &assistants {
-            let is_active = match &assistant.employment_status {
-                Some(status) => status.trim().eq_ignore_ascii_case("active"),
-                None => true,
-            };
-
-            if !is_active {
-                continue;
-            }
-
             let personal_assistant_name = format!("{} {}", assistant.first_name, assistant.surname);
 
             let existing_status = self
@@ -2143,7 +2114,7 @@ impl DirectPaymentApp {
         };
         let payroll_year = current_schedule.payroll_year.clone();
 
-        let assistants = match self.application.personal_assistant_repository.get_all() {
+        let assistants = match self.selected_period_assistants() {
             Ok(assistants) => assistants,
             Err(error) => {
                 ui.label(format!("Unable to load Personal Assistants: {}", error));
@@ -2161,15 +2132,6 @@ impl DirectPaymentApp {
                 ui.end_row();
 
                 for assistant in &assistants {
-                    let is_active = match &assistant.employment_status {
-                        Some(status) => status.trim().eq_ignore_ascii_case("active"),
-                        None => true,
-                    };
-
-                    if !is_active {
-                        continue;
-                    }
-
                     let name = format!("{} {}", assistant.first_name, assistant.surname);
 
                     let status = self
@@ -2229,13 +2191,6 @@ impl DirectPaymentApp {
                 ui.end_row();
 
                 for assistant in assistants {
-                    let is_active = assistant
-                        .employment_status
-                        .as_deref()
-                        .is_none_or(|status| status.trim().eq_ignore_ascii_case("active"));
-                    if !is_active {
-                        continue;
-                    }
                     let name = format!("{} {}", assistant.first_name, assistant.surname);
                     let status = self
                         .application
@@ -2315,7 +2270,7 @@ impl DirectPaymentApp {
             format_date(week_dates[3]),
         ];
 
-        let assistants = self.application.personal_assistant_repository.get_all()?;
+        let assistants = self.selected_period_assistants()?;
         let existing_payroll_timesheets = self
             .application
             .payroll_timesheet_repository
@@ -2332,10 +2287,11 @@ impl DirectPaymentApp {
         let mut generated = 0usize;
 
         for assistant in &assistants {
-            if !personal_assistant_is_eligible_for_generation(
-                assistant.employment_status.as_deref(),
+            if !assistant.eligible_for_period(
+                week_dates[0],
+                week_dates[3] + chrono::Duration::days(6),
                 existing_personal_assistant_ids.contains(&assistant.id),
-            ) {
+            )? {
                 continue;
             }
 
@@ -2623,6 +2579,7 @@ fn operational_period_key(schedule: &PayrollSchedule) -> OperationalPayrollPerio
     }
 }
 
+#[cfg(test)]
 fn personal_assistant_is_eligible_for_generation(
     employment_status: Option<&str>,
     has_selected_period_record: bool,

@@ -19,6 +19,7 @@ impl PersonalAssistantRepository {
     }
 
     pub fn insert(&self, assistant: &PersonalAssistant) -> Result<()> {
+        let leaving_date = validated_leaving_date(assistant)?;
         self.connection.execute(
             "
             INSERT INTO personal_assistants (
@@ -34,9 +35,9 @@ impl PersonalAssistantRepository {
                 sick_pay_enabled,
                 mileage_enabled,
                 start_date,
-                signature
+                signature, leaving_date
             )
-            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)
             ",
             params![
                 &assistant.first_name,
@@ -52,6 +53,7 @@ impl PersonalAssistantRepository {
                 assistant.mileage_enabled,
                 &assistant.start_date,
                 &assistant.signature,
+                leaving_date,
             ],
         )?;
 
@@ -59,67 +61,69 @@ impl PersonalAssistantRepository {
     }
 
     pub fn update(&self, assistant: &PersonalAssistant) -> Result<()> {
+        let leaving_date = validated_leaving_date(assistant)?;
         self.connection.execute(
-                                                                                                                                        "
-                                                                                                                                                    UPDATE personal_assistants
-                                                                                                                                                                SET
-                                                                                                                                                                                first_name = ?1,
-                                                                                                                                                                                                surname = ?2,
-                                                                                                                                                                                                                date_of_birth = ?3,
-                                                                                                                                                                                                                                national_insurance_number = ?4,
-                                                                                                                                                                                                                                                address = ?5,
-                                                                                                                                                                                                                                                                postcode = ?6,
-                                                                                                                                                                                                                                                                                telephone = ?7,
-                                                                                                                                                                                                                                                                                                email = ?8,
-                                                                                                                                                                                                                                                                                                                employment_status = ?9,
-                                                                                                                                                                                                                                                                                                                                sick_pay_enabled = ?10,
-                                                                                                                                                                                                                                                                                                                                                mileage_enabled = ?11,
-                                                                                                                                                                                                                                                                                                                                                                start_date = ?12,
-                                                                                                                                                                                                                                                                                                                                                                                signature = ?13
-                                                                                                                                                                                                                                                                                                                                                                                            WHERE id = ?14
-                                                                                                                                                                                                                                                                                                                                                                                                        ",
-                                                                                                                                                                                                                                                                                                                                                                                                                    params![
-                                                                                                                                                                                                                                                                                                                                                                                                                                        &assistant.first_name,
-                                                                                                                                                                                                                                                                                                                                                                                                                                                        &assistant.surname,
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                        &assistant.date_of_birth,
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        &assistant.national_insurance_number,
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        &assistant.address,
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        &assistant.postcode,
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        &assistant.telephone,
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        &assistant.email,
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        &assistant.employment_status,
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        assistant.sick_pay_enabled,
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        assistant.mileage_enabled,
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        &assistant.start_date,
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        &assistant.signature,
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        assistant.id,
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    ],
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            )?;
+            "
+UPDATE personal_assistants
+SET
+first_name = ?1,
+surname = ?2,
+date_of_birth = ?3,
+national_insurance_number = ?4,
+address = ?5,
+postcode = ?6,
+telephone = ?7,
+email = ?8,
+employment_status = ?9,
+sick_pay_enabled = ?10,
+mileage_enabled = ?11,
+start_date = ?12,
+signature = ?13, leaving_date = ?15
+WHERE id = ?14
+",
+            params![
+                &assistant.first_name,
+                &assistant.surname,
+                &assistant.date_of_birth,
+                &assistant.national_insurance_number,
+                &assistant.address,
+                &assistant.postcode,
+                &assistant.telephone,
+                &assistant.email,
+                &assistant.employment_status,
+                assistant.sick_pay_enabled,
+                assistant.mileage_enabled,
+                &assistant.start_date,
+                &assistant.signature,
+                assistant.id,
+                leaving_date,
+            ],
+        )?;
 
         Ok(())
     }
 
     pub fn get_all(&self) -> Result<Vec<PersonalAssistant>> {
         let mut statement = self.connection.prepare(
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    "
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                SELECT
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                id,
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                first_name,
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                surname,
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                date_of_birth,
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                national_insurance_number,
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                address,
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                postcode,
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                telephone,
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                email,
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                employment_status,
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                sick_pay_enabled,
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                mileage_enabled,
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                start_date,
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                signature
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            FROM personal_assistants
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        ",
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                )?;
+            "
+SELECT
+id,
+first_name,
+surname,
+date_of_birth,
+national_insurance_number,
+address,
+postcode,
+telephone,
+email,
+employment_status,
+sick_pay_enabled,
+mileage_enabled,
+start_date,
+signature, leaving_date
+FROM personal_assistants
+",
+        )?;
 
         let assistants = statement.query_map([], |row| {
             Ok(PersonalAssistant {
@@ -136,6 +140,7 @@ impl PersonalAssistantRepository {
                 sick_pay_enabled: row.get::<_, i64>(10)? != 0,
                 mileage_enabled: row.get::<_, i64>(11)? != 0,
                 start_date: row.get(12)?,
+                leaving_date: row.get(14)?,
                 signature: row.get(13)?,
             })
         })?;
@@ -231,6 +236,38 @@ impl PersonalAssistantRepository {
     }
 }
 
+fn validated_leaving_date(assistant: &PersonalAssistant) -> Result<Option<String>> {
+    let Some(value) = assistant
+        .leaving_date
+        .as_deref()
+        .filter(|value| !value.trim().is_empty())
+    else {
+        return Ok(None);
+    };
+    let leaving = crate::models::parse_employment_date(value).ok_or_else(|| {
+        rusqlite::Error::InvalidParameterName(
+            "Leaving date must be a real date (DD/MM/YYYY).".into(),
+        )
+    })?;
+    if let Some(start) = assistant
+        .start_date
+        .as_deref()
+        .filter(|value| !value.trim().is_empty())
+    {
+        let start = crate::models::parse_employment_date(start).ok_or_else(|| {
+            rusqlite::Error::InvalidParameterName(
+                "Start date must be valid before setting a Leaving date.".into(),
+            )
+        })?;
+        if leaving < start {
+            return Err(rusqlite::Error::InvalidParameterName(
+                "Leaving date cannot be before Start date.".into(),
+            ));
+        }
+    }
+    Ok(Some(leaving.format("%d/%m/%Y").to_string()))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -257,6 +294,7 @@ mod tests {
             sick_pay_enabled: true,
             mileage_enabled: true,
             start_date: Some("03/04/2025".to_string()),
+            leaving_date: None,
             signature: Some("/example/signatures/alex.png".to_string()),
         }
     }
@@ -264,6 +302,88 @@ mod tests {
     fn insert_test_assistant(repository: &PersonalAssistantRepository) -> i64 {
         repository.insert(&test_assistant()).unwrap();
         repository.get_all().unwrap()[0].id
+    }
+
+    #[test]
+    fn leaving_date_saves_with_numeric_and_human_readable_start_dates() {
+        for start in ["17/05/2024", "17 May 2024"] {
+            let repository = test_repository();
+            let mut assistant = test_assistant();
+            assistant.start_date = Some(start.into());
+            repository.insert(&assistant).unwrap();
+            let mut saved = repository.get_all().unwrap().remove(0);
+            saved.leaving_date = Some("30/09/2026".into());
+            repository.update(&saved).unwrap();
+            let mut reloaded = repository.get_all().unwrap().remove(0);
+            assert_eq!(reloaded.start_date.as_deref(), Some(start));
+            assert_eq!(reloaded.leaving_date.as_deref(), Some("30/09/2026"));
+            reloaded.leaving_date = Some("16 May 2024".into());
+            assert!(repository.update(&reloaded).is_err());
+            for blank in [Some("   ".into()), None] {
+                reloaded.leaving_date = blank;
+                repository.update(&reloaded).unwrap();
+                assert!(repository.get_all().unwrap()[0].leaving_date.is_none());
+            }
+        }
+    }
+
+    #[test]
+    fn leaving_date_round_trip_validation_and_status_preservation() {
+        let connection = Connection::open_in_memory().unwrap();
+        crate::database::create_schema(&connection).unwrap();
+        let repository = PersonalAssistantRepository::new(connection);
+        let mut assistant = test_assistant();
+        assistant.leaving_date = Some("18/9/30".into());
+        repository.insert(&assistant).unwrap();
+        let mut saved = repository.get_all().unwrap().remove(0);
+        assert_eq!(saved.leaving_date.as_deref(), Some("18/09/2030"));
+        assert_eq!(saved.employment_status.as_deref(), Some("Active"));
+        for value in ["31/02/2030", "02/04/2025"] {
+            saved.leaving_date = Some(value.into());
+            assert!(repository.update(&saved).is_err());
+        }
+        saved.leaving_date = Some("03/04/2025".into());
+        repository.update(&saved).unwrap();
+        assert_eq!(
+            repository.get_all().unwrap()[0]
+                .employment_status
+                .as_deref(),
+            Some("Active")
+        );
+        saved.leaving_date = Some("".into());
+        repository.update(&saved).unwrap();
+        assert!(repository.get_all().unwrap()[0].leaving_date.is_none());
+    }
+
+    #[test]
+    fn employment_overlap_is_inclusive_and_historical_records_remain_eligible() {
+        let date = |value| crate::models::parse_employment_date(value).unwrap();
+        let mut assistant = test_assistant();
+        assistant.start_date = Some("14/09/2026".into());
+        assistant.leaving_date = Some("30/09/2026".into());
+        for (start, end, expected) in [
+            ("01/09/2026", "13/09/2026", false),
+            ("01/09/2026", "14/09/2026", true),
+            ("30/09/2026", "27/10/2026", true),
+            ("01/10/2026", "28/10/2026", false),
+        ] {
+            assert_eq!(
+                assistant
+                    .eligible_for_period(date(start), date(end), false)
+                    .unwrap(),
+                expected
+            );
+            assert!(assistant
+                .eligible_for_period(date(start), date(end), true)
+                .unwrap());
+        }
+        assistant.employment_status = Some("Inactive".into());
+        assert!(!assistant
+            .eligible_for_period(date("14/09/2026"), date("30/09/2026"), false)
+            .unwrap());
+        assert!(assistant
+            .eligible_for_period(date("01/10/2026"), date("28/10/2026"), true)
+            .unwrap());
     }
 
     #[test]

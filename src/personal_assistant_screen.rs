@@ -24,6 +24,7 @@ pub struct PersonalAssistantScreen {
     editing_contracted_hours_id: Option<i64>,
     confirm_delete: bool,
     loaded: bool,
+    refresh_after_save: bool,
     status_message: String,
 }
 
@@ -49,6 +50,7 @@ impl PersonalAssistantScreen {
             confirm_delete: false,
 
             loaded: false,
+            refresh_after_save: false,
             status_message: "Personal Assistants not loaded.".to_string(),
         }
     }
@@ -158,6 +160,7 @@ impl PersonalAssistantScreen {
                 sick_pay_enabled: false,
                 mileage_enabled: false,
                 start_date: None,
+                leaving_date: None,
                 signature: None,
             });
 
@@ -277,7 +280,9 @@ impl PersonalAssistantScreen {
 
                         ui.checkbox(&mut assistant.sick_pay_enabled, "Enable sickness");
                         ui.checkbox(&mut assistant.mileage_enabled, "Enable mileage");
+                    });
 
+                    ui.horizontal(|ui| {
                         ui.label("Start date");
 
                         if assistant.start_date.is_none() {
@@ -285,8 +290,10 @@ impl PersonalAssistantScreen {
                         }
 
                         if let Some(start_date) = &mut assistant.start_date {
-                            ui.text_edit_singleline(start_date);
+                            ui.add(egui::TextEdit::singleline(start_date).desired_width(150.0));
                         }
+                        ui.label("Leaving date (optional)");
+                        ui.add(egui::TextEdit::singleline(assistant.leaving_date.get_or_insert_with(String::new)).desired_width(150.0));
                     });
 
                     ui.separator();
@@ -301,7 +308,11 @@ impl PersonalAssistantScreen {
 
                             match result {
                                 Ok(()) => {
+                                    assistant.leaving_date = assistant.leaving_date.as_deref()
+                                        .and_then(crate::models::parse_employment_date)
+                                        .map(|date| date.format("%d/%m/%Y").to_string());
                                     self.status_message = "Personal Assistant saved.".to_string();
+                                    self.refresh_after_save = true;
                                     self.loaded = false;
                                 }
 
@@ -559,10 +570,16 @@ impl PersonalAssistantScreen {
     }
 
     fn load(&mut self, application: &Application) {
+        let refresh_after_save = std::mem::take(&mut self.refresh_after_save);
         match application.personal_assistant_repository.get_all() {
             Ok(assistants) => {
                 self.assistants = assistants;
-                self.status_message = "Personal Assistants loaded.".to_string();
+                self.status_message = if refresh_after_save {
+                    "Personal Assistant saved."
+                } else {
+                    "Personal Assistants loaded."
+                }
+                .to_string();
             }
 
             Err(error) => {
@@ -597,4 +614,34 @@ fn historical_records_message(assistant_name: &str) -> String {
         "{} cannot be permanently deleted because historical payroll or timesheet data exists. Change their employment status to inactive/no longer employed instead.",
         assistant_name
     )
+}
+
+#[cfg(test)]
+mod save_status_tests {
+    use super::*;
+
+    #[test]
+    fn successful_save_refresh_keeps_confirmation_but_load_failure_remains_visible() {
+        let (_directory, application) = crate::payroll_timesheet_screen::tests::test_application();
+        let mut screen = PersonalAssistantScreen::new();
+        screen.load(&application);
+        assert_eq!(screen.status_message, "Personal Assistants loaded.");
+        screen.refresh_after_save = true;
+        screen.load(&application);
+        assert_eq!(screen.status_message, "Personal Assistant saved.");
+        assert!(!screen.refresh_after_save);
+        // An unrelated later load retains its original status behaviour.
+        screen.load(&application);
+        assert_eq!(screen.status_message, "Personal Assistants loaded.");
+        rusqlite::Connection::open(&application.context.environment.database_path)
+            .unwrap()
+            .execute("DROP TABLE personal_assistants", [])
+            .unwrap();
+        screen.refresh_after_save = true;
+        screen.load(&application);
+        assert!(screen
+            .status_message
+            .starts_with("Failed loading Personal Assistants:"));
+        assert!(!screen.refresh_after_save);
+    }
 }

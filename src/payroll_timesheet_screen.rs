@@ -445,12 +445,11 @@ impl PayrollTimesheetScreen {
         self.assistant_feature_flags.clear();
 
         for assistant in assistants {
-            let is_active = match &assistant.employment_status {
-                Some(status) => status.trim().eq_ignore_ascii_case("active"),
-                None => true,
-            };
-
-            if !is_active && !existing_personal_assistant_ids.contains(&assistant.id) {
+            if !assistant.eligible_for_period(
+                first_week,
+                first_week + chrono::Duration::days(27),
+                existing_personal_assistant_ids.contains(&assistant.id),
+            )? {
                 continue;
             }
 
@@ -2091,6 +2090,44 @@ pub(crate) mod tests {
         assert_eq!(screen.period_label, label);
         assert!(!screen.period_label.contains("Cycle"));
         assert!(!screen.period_label.contains("C6"));
+    }
+
+    #[test]
+    fn preparation_respects_dates_but_keeps_existing_leaver_record() {
+        let (_directory, application) = test_application();
+        let schedule = insert_schedule(&application, "2026/27", 6, "10/08/2026", "04/09/2026");
+        for id in 1..=4 {
+            insert_pa(&application, id, &format!("PA{id}"), Some("Active"));
+        }
+        let connection = setup_connection(&application);
+        connection
+            .execute_batch(
+                "UPDATE personal_assistants SET leaving_date='09/08/2026' WHERE id IN (1,2);
+            UPDATE personal_assistants SET leaving_date='10/08/2026' WHERE id=3;
+            UPDATE personal_assistants SET start_date='07/09/2026' WHERE id=4;",
+            )
+            .unwrap();
+        application
+            .payroll_timesheet_repository
+            .insert("2026/27", 6, 2, None, "created")
+            .unwrap();
+        let mut screen = PayrollTimesheetScreen::new();
+        screen.load(&application, &schedule, "period").unwrap();
+        let ids = screen
+            .weeks
+            .iter()
+            .map(|(record, _, _)| record.personal_assistant_id)
+            .collect::<Vec<_>>();
+        assert!(!ids.contains(&1));
+        assert!(ids.contains(&2));
+        assert!(ids.contains(&3));
+        assert!(!ids.contains(&4));
+        assert_eq!(
+            application.personal_assistant_repository.get_all().unwrap()[0]
+                .employment_status
+                .as_deref(),
+            Some("Active")
+        );
     }
 
     #[test]
