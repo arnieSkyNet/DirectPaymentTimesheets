@@ -1,4 +1,5 @@
 mod annual_leave_settings_repository;
+mod annual_leave_summary;
 mod app;
 mod application;
 mod application_settings_screen;

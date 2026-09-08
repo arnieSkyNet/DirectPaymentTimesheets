@@ -174,6 +174,30 @@ impl PayrollTimesheetRepository {
         }
     }
 
+    pub fn get_all_for_personal_assistant(
+        &self,
+        personal_assistant_id: i64,
+    ) -> Result<Vec<PayrollTimesheet>> {
+        let mut statement = self.connection.prepare(
+            "SELECT id, personal_assistant_id, payroll_year, cycle_number, previous_cycle_hours, created_at, updated_at
+             FROM payroll_timesheets WHERE personal_assistant_id = ?1 ORDER BY payroll_year, cycle_number, id"
+        )?;
+        let rows = statement
+            .query_map([personal_assistant_id], |row| {
+                Ok(PayrollTimesheet {
+                    id: row.get(0)?,
+                    personal_assistant_id: row.get(1)?,
+                    payroll_year: row.get(2)?,
+                    cycle_number: row.get(3)?,
+                    previous_cycle_hours: row.get(4)?,
+                    created_at: row.get(5)?,
+                    updated_at: row.get(6)?,
+                })
+            })?
+            .collect();
+        rows
+    }
+
     pub fn get_all_for_cycle(
         &self,
         payroll_year: &str,
