@@ -2,7 +2,7 @@
 
 DirectPaymentTimesheets is a local desktop application for administering UK Direct Payment Personal Assistant timesheets and the four-week payroll-provider workflow. It imports externally recorded work, prepares payroll timesheets, generates the provider PDF, sends timesheets and payslips, imports Payroll Returns, and preserves the evidence represented by submitted payroll.
 
-The current pre-release is version `0.0.12` with SQLite schema version 26. It is a working application under active development, not an installer-packaged or general-purpose payroll product.
+The current pre-release is version `0.0.12` with SQLite schema version 27. It is a working application under active development, not an installer-packaged or general-purpose payroll product.
 
 ## Technology
 
@@ -184,3 +184,5 @@ DirectPaymentTimesheets is free software licensed under the [GNU General Public 
 Third-party dependencies and bundled font components remain subject to their respective terms; see [THIRD_PARTY_LICENSES.md](THIRD_PARTY_LICENSES.md).
 
 Payroll Settings includes two annual-leave settings groups: contracted-hours annual leave (recurring DD/MM boundary and statutory weeks) and variable-hours annual leave (recurring DD/MM boundary and accrual percentage). Save Payroll Settings saves all four together. These are settings foundations only; annual-leave entitlement and statistics are not calculated.
+
+Personal Assistants have an optional Leaving date, stored as canonical `DD/MM/YYYY`. Schema 27 adds nullable `personal_assistants.leaving_date` without backfilling dates or altering historical data. A supplied date must be real and not precede Start date. Stored Active/Inactive status is never changed automatically. Ordinary selected-period payroll inclusion requires Active (or legacy unset status) and inclusive employment-date overlap with the four-week period. Existing selected-period preparation records remain included regardless of status or employment dates. No annual-leave calculations are implemented; the leaving boundary is available for a future inclusive entitlement cap.

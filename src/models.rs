@@ -48,5 +48,78 @@ pub struct PersonalAssistant {
     pub sick_pay_enabled: bool,
     pub mileage_enabled: bool,
     pub start_date: Option<String>,
+    pub leaving_date: Option<String>,
     pub signature: Option<String>,
+}
+
+impl PersonalAssistant {
+    pub fn eligible_for_period(
+        &self,
+        start: chrono::NaiveDate,
+        end: chrono::NaiveDate,
+        has_record: bool,
+    ) -> rusqlite::Result<bool> {
+        if has_record {
+            return Ok(true);
+        }
+        if !self
+            .employment_status
+            .as_deref()
+            .map(|status| status.trim().eq_ignore_ascii_case("active"))
+            .unwrap_or(true)
+        {
+            return Ok(false);
+        }
+        let parse = |value: &Option<String>| -> rusqlite::Result<Option<chrono::NaiveDate>> {
+            value
+                .as_deref()
+                .filter(|value| !value.trim().is_empty())
+                .map(|value| {
+                    parse_employment_date(value).ok_or_else(|| {
+                        rusqlite::Error::InvalidParameterName(format!(
+                            "Invalid employment date for {} {}: {value}",
+                            self.first_name, self.surname
+                        ))
+                    })
+                })
+                .transpose()
+        };
+        Ok(parse(&self.start_date)?.is_none_or(|date| date <= end)
+            && parse(&self.leaving_date)?.is_none_or(|date| date >= start))
+    }
+}
+
+pub fn parse_employment_date(value: &str) -> Option<chrono::NaiveDate> {
+    [
+        "%d/%m/%y", "%d-%m-%y", "%d/%m/%Y", "%d-%m-%Y", "%Y-%m-%d", "%d %B %Y", "%d %b %Y",
+    ]
+    .iter()
+    .find_map(|format| chrono::NaiveDate::parse_from_str(value.trim(), format).ok())
+}
+
+#[cfg(test)]
+mod employment_date_tests {
+    use super::parse_employment_date;
+
+    #[test]
+    fn flexible_employment_dates_still_require_real_calendar_dates() {
+        let expected = chrono::NaiveDate::from_ymd_opt(2026, 9, 30);
+        for input in [
+            "30/09/2026",
+            "30/9/26",
+            "2026-09-30",
+            "30 September 2026",
+            "30 Sep 2026",
+        ] {
+            assert_eq!(parse_employment_date(input), expected);
+        }
+        for input in [
+            "31 September 2026",
+            "29 February 2025",
+            "31/09/2026",
+            "not a date",
+        ] {
+            assert!(parse_employment_date(input).is_none());
+        }
+    }
 }

@@ -114,7 +114,7 @@ mod tests {
             if upgrading {
                 connection
                     .execute_batch(
-                        "DROP TABLE annual_leave_settings; UPDATE schema_version SET version = 25;",
+                        "ALTER TABLE personal_assistants DROP COLUMN leaving_date; DROP TABLE annual_leave_settings; UPDATE schema_version SET version = 25;",
                     )
                     .unwrap();
                 crate::database::create_schema(&connection).unwrap();

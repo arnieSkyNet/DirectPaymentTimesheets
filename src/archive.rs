@@ -716,6 +716,7 @@ mod tests {
             sick_pay_enabled: false,
             mileage_enabled: false,
             start_date: None,
+            leaving_date: None,
             signature: None,
         }
     }

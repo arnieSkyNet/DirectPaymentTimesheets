@@ -2,13 +2,13 @@
 
 ## Scope and versioning
 
-This is the implemented SQLite schema at version 26. It is derived from `create_schema` and migrations in `src/database.rs`; those migrations are authoritative.
+This is the implemented SQLite schema at version 27. It is derived from `create_schema` and migrations in `src/database.rs`; those migrations are authoritative.
 
-`schema_version` contains the current integer version. A new database begins at version 1 and receives each ordered migration through `CURRENT_SCHEMA_VERSION` 26. Existing databases are upgraded in place. Migration 23 removes the short-lived revision-only tables introduced by migration 22 while retaining the operational legacy snapshot tables. Migration 24 adds an explicit contracted/variable hours basis to effective-dated Personal Assistant contracted-hours history while preserving existing records as contracted.
+`schema_version` contains the current integer version. A new database begins at version 1 and receives each ordered migration through `CURRENT_SCHEMA_VERSION` 27. Existing databases are upgraded in place. Migration 23 removes the short-lived revision-only tables introduced by migration 22 while retaining the operational legacy snapshot tables. Migration 24 adds an explicit contracted/variable hours basis to effective-dated Personal Assistant contracted-hours history while preserving existing records as contracted.
 
 During unreleased schema-20 development, an earlier local database shape contained `direct_shifts` without soft-deletion columns or the audit table. Startup therefore performs an idempotent schema-20 compatibility check after normal migrations. When that exact incomplete shape is found, it transactionally rebuilds `direct_shifts` into the final constrained form while preserving IDs and row values, then creates the audit table/indexes. It does not fabricate historical audit events, and repeated startup does not duplicate existing audit rows.
 
-SQLite foreign-key constraints are not declared in schema 26. Relationships described below are logical relationships enforced by repository/application code and stored IDs/business keys.
+SQLite foreign-key constraints are not declared in schema 27. Relationships described below are logical relationships enforced by repository/application code and stored IDs/business keys.
 
 ## `schema_version`
 
@@ -341,3 +341,5 @@ The corrected uncommitted migration 25 → 26 transactionally creates an empty s
 Both effective-from values are recurring `DD/MM` boundaries, not year-specific dates. Repository validation normalises day/month input and requires a date that exists every year (29 February is rejected). Different valid boundaries are permitted for the two groups. A future annual period starts at the applicable boundary and ends inclusively the day before that boundary in the following year: `01/04` means, for example, 01/04/2026 through 31/03/2027. No period/entitlement calculations are implemented here.
 
 An absent row loads defaults of `01/04`, 5.6 weeks, `01/04`, and 12.07 percent without writing to the database. Save Payroll Settings validates these inputs before any payroll writes, then saves the four values in one atomic SQLite statement after the existing payroll-settings save. The config/provider and annual-leave writes are not a shared transaction; failures are reported explicitly, including when the other payroll settings have already saved. There is no separate leave-year-start config field, rule creation, history, editing/deletion workflow, or confirmation machinery. No compatibility repair for earlier development-only schema-26 layouts is included; local development databases may be reset manually.
+
+Personal Assistants have an optional Leaving date, stored as canonical `DD/MM/YYYY`. Schema 27 adds nullable `personal_assistants.leaving_date` without backfilling dates or altering historical data. A supplied date must be real and not precede Start date. Stored Active/Inactive status is never changed automatically. Ordinary selected-period payroll inclusion requires Active (or legacy unset status) and inclusive employment-date overlap with the four-week period. Existing selected-period preparation records remain included regardless of status or employment dates. No annual-leave calculations are implemented; the leaving boundary is available for a future inclusive entitlement cap.
