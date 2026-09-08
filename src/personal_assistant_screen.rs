@@ -8,6 +8,7 @@ use crate::personal_assistant_repository::PersonalAssistantDeleteResult;
 
 pub struct PersonalAssistantScreen {
     assistants: Vec<PersonalAssistant>,
+    annual_leave: crate::annual_leave_summary::AnnualLeaveSummaryUi,
     selected_index: Option<usize>,
     editing_assistant: Option<PersonalAssistant>,
 
@@ -32,6 +33,7 @@ impl PersonalAssistantScreen {
     pub fn new() -> Self {
         Self {
             assistants: Vec::new(),
+            annual_leave: Default::default(),
             selected_index: None,
             editing_assistant: None,
 
@@ -193,6 +195,7 @@ impl PersonalAssistantScreen {
                             .get_all_for_personal_assistant(assistant.id)
                             .unwrap_or_default();
 
+                        self.annual_leave.invalidate();
                         self.contracted_hours = application
                             .contracted_hours_repository
                             .get_all_for_personal_assistant(assistant.id)
@@ -312,6 +315,7 @@ impl PersonalAssistantScreen {
                                         .and_then(crate::models::parse_employment_date)
                                         .map(|date| date.format("%d/%m/%Y").to_string());
                                     self.status_message = "Personal Assistant saved.".to_string();
+                                    self.annual_leave.invalidate();
                                     self.refresh_after_save = true;
                                     self.loaded = false;
                                 }
@@ -353,6 +357,8 @@ impl PersonalAssistantScreen {
 
                     ui.separator();
 
+                    self.annual_leave.show(ui, application, assistant.id);
+                    ui.separator();
                     ui.heading("Contracted Weekly Hours");
 
                     if assistant.id == 0 {
@@ -378,6 +384,7 @@ impl PersonalAssistantScreen {
                                 if ui.button("Delete").clicked() {
                                     match application.contracted_hours_repository.delete(hours.id) {
                                         Ok(()) => {
+                                            self.annual_leave.invalidate();
                                             self.contracted_hours = application
                                                 .contracted_hours_repository
                                                 .get_all_for_personal_assistant(assistant.id)
@@ -434,6 +441,7 @@ impl PersonalAssistantScreen {
 
                             match result {
                                 Ok(()) => {
+                                    self.annual_leave.invalidate();
                                     self.contracted_hours = application
                                         .contracted_hours_repository
                                         .get_all_for_personal_assistant(assistant.id)
