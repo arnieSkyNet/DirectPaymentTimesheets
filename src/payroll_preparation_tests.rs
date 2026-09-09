@@ -969,3 +969,138 @@ fn whole_active_panel_contains_heading_audit_and_save_and_moves_with_selection()
         }
     }
 }
+
+pub(crate) fn employment_period_fixture() -> (TempDir, Application, PayrollSchedule, PayrollSchedule)
+{
+    let (dir, mut app) = test_application();
+    app.context.config.folders.pdf_output = dir.path().join("pdf");
+    let historical = insert_schedule(&app, "2026/27", 6, "10/08/2026", "04/09/2026");
+    let current = insert_schedule(&app, "2026/27", 7, "07/09/2026", "02/10/2026");
+    let db = setup_connection(&app);
+    db.execute(
+        "INSERT INTO employers(name) VALUES ('Eligibility Employer')",
+        [],
+    )
+    .unwrap();
+    for (id, status, start, leaving) in [
+        (1, "Inactive", "01/01/2020", Some("15/08/2026")),
+        (2, "Active", "07/09/2026", None),
+        (3, "Inactive", "06/09/2026", Some("06/09/2026")),
+        (4, "Inactive", "07/09/2026", Some("14/09/2026")),
+        (5, "Active", "20 August 2026", None),
+        (6, "Inactive", "01/07/2026", Some("09/08/2026")),
+        (7, "Inactive", "01/01/2027", Some("01/02/2027")),
+        (8, "Active", "01/01/2020", Some("10/08/2026")),
+    ] {
+        insert_pa(&app, id, &format!("Employee{id}"), Some(status));
+        db.execute(
+            "UPDATE personal_assistants SET start_date=?1,leaving_date=?2 WHERE id=?3",
+            params![start, leaving, id],
+        )
+        .unwrap();
+    }
+    (dir, app, historical, current)
+}
+
+pub(crate) fn load_period_for_eligibility_test(
+    app: &Application,
+    schedule: &PayrollSchedule,
+) -> PayrollTimesheetScreen {
+    let mut screen = PayrollTimesheetScreen::new();
+    screen.load(app, schedule, "period").unwrap();
+    screen
+}
+
+#[test]
+fn preparation_dropdown_uses_inclusive_employment_for_historical_and_current_periods() {
+    let (_dir, app, historical, current) = employment_period_fixture();
+    for (schedule, expected) in [(&historical, vec![1, 3, 5, 8]), (&current, vec![2, 4, 5])] {
+        let screen = load_period_for_eligibility_test(&app, schedule);
+        let mut dropdown = screen.dropdown_pas.clone();
+        dropdown.sort();
+        assert_eq!(dropdown, expected);
+        let mut preflight_scope =
+            crate::payroll_evidence::duplicate_ui::preparation_pa_scope(&app, schedule)
+                .unwrap()
+                .into_iter()
+                .collect::<Vec<_>>();
+        preflight_scope.sort();
+        assert_eq!(preflight_scope, expected);
+        let stored = app
+            .payroll_timesheet_repository
+            .get_all_for_cycle(&schedule.payroll_year, schedule.cycle_number)
+            .unwrap();
+        assert_eq!(
+            stored
+                .iter()
+                .map(|r| r.personal_assistant_id)
+                .collect::<std::collections::HashSet<_>>(),
+            expected.into_iter().collect()
+        );
+    }
+}
+
+#[test]
+fn existing_records_for_future_or_departed_pas_remain_visible_without_creating_earlier_records() {
+    let (_dir, app, historical, current) = employment_period_fixture();
+    let initial = load_period_for_eligibility_test(&app, &current);
+    let ids = initial.records.iter().map(|r| r.id).collect::<Vec<_>>();
+    setup_connection(&app).execute("UPDATE personal_assistants SET employment_status='Inactive',start_date='01/01/2027',leaving_date='01/02/2027' WHERE id=2", []).unwrap();
+    let reloaded = load_period_for_eligibility_test(&app, &current);
+    assert!(reloaded.dropdown_pas.contains(&2));
+    assert_eq!(
+        reloaded.records.iter().map(|r| r.id).collect::<Vec<_>>(),
+        ids
+    );
+    let earlier = load_period_for_eligibility_test(&app, &historical);
+    assert!(!earlier.dropdown_pas.contains(&2));
+    assert!(!earlier.dropdown_pas.contains(&6));
+    assert!(!earlier.dropdown_pas.contains(&7));
+}
+
+#[test]
+fn sent_and_settled_preparations_are_not_rewritten_when_employment_no_longer_overlaps() {
+    for kind in ["timesheet", "payslip"] {
+        let (_dir, app, historical, _) = employment_period_fixture();
+        let original = load_period_for_eligibility_test(&app, &historical);
+        let record = original
+            .records
+            .iter()
+            .find(|r| r.personal_assistant_id == 1)
+            .unwrap();
+        let db = setup_connection(&app);
+        db.execute("UPDATE payroll_timesheet_weeks SET worked_hours=7.5,travel_miles=3.0 WHERE payroll_timesheet_id=?1 AND week_number=1", [record.id]).unwrap();
+        app.payroll_timesheet_email_repository
+            .mark_sent(
+                1,
+                &historical.payroll_year,
+                historical.cycle_number,
+                kind,
+                "2026-09-04T10:00:00Z",
+            )
+            .unwrap();
+        let before = app
+            .payroll_timesheet_repository
+            .get_weeks(record.id)
+            .unwrap();
+        let audit = crate::payroll_evidence::reconciliation::audit_lines(&app, record).unwrap();
+        db.execute("UPDATE personal_assistants SET employment_status='Inactive',start_date='01/01/2027',leaving_date='01/02/2027' WHERE id=1", []).unwrap();
+        let reloaded = load_period_for_eligibility_test(&app, &historical);
+        assert!(reloaded.dropdown_pas.contains(&1));
+        assert_eq!(
+            reloaded.snapshot_states[&record.id],
+            SnapshotState::Submitted
+        );
+        assert!(weeks_equal(
+            &before,
+            &app.payroll_timesheet_repository
+                .get_weeks(record.id)
+                .unwrap()
+        ));
+        assert_eq!(
+            audit,
+            crate::payroll_evidence::reconciliation::audit_lines(&app, record).unwrap()
+        );
+        assert_eq!(reloaded.records.len(), original.records.len());
+    }
+}

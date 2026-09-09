@@ -355,6 +355,114 @@ mod tests {
         assert!(repository.get_all().unwrap()[0].leaving_date.is_none());
     }
 
+    macro_rules! period_overlap_case {
+        ($name:ident, $start:expr, $leave:expr, $expected:expr) => {
+            #[test]
+            fn $name() {
+                let date = |s| crate::models::parse_employment_date(s).unwrap();
+                for status in [Some("Active"), Some("Inactive"), None] {
+                    let mut pa = test_assistant();
+                    pa.employment_status = status.map(str::to_string);
+                    pa.start_date = Some($start.into());
+                    pa.leaving_date = $leave.map(str::to_string);
+                    assert_eq!(
+                        pa.employment_overlaps(date("10/08/2026"), date("06/09/2026"))
+                            .unwrap(),
+                        $expected
+                    );
+                    assert_eq!(
+                        pa.eligible_for_period(date("10/08/2026"), date("06/09/2026"), false)
+                            .unwrap(),
+                        $expected
+                    );
+                    assert!(pa
+                        .eligible_for_period(date("10/08/2026"), date("06/09/2026"), true)
+                        .unwrap());
+                }
+            }
+        };
+    }
+    period_overlap_case!(
+        future_start_excluded_regardless_of_status,
+        "07/09/2026",
+        None::<&str>,
+        false
+    );
+    period_overlap_case!(
+        mid_period_start_included_regardless_of_status,
+        "20/08/2026",
+        None::<&str>,
+        true
+    );
+    period_overlap_case!(
+        start_on_period_end_included_regardless_of_status,
+        "06/09/2026",
+        None::<&str>,
+        true
+    );
+    period_overlap_case!(
+        leaving_before_period_excludes_new_preparations,
+        "01/01/2026",
+        Some("09/08/2026"),
+        false
+    );
+    period_overlap_case!(
+        leaving_during_period_included_regardless_of_status,
+        "01/01/2026",
+        Some("20/08/2026"),
+        true
+    );
+    period_overlap_case!(
+        leaving_on_period_start_included_regardless_of_status,
+        "01/01/2026",
+        Some("10/08/2026"),
+        true
+    );
+    period_overlap_case!(
+        future_inactive_leaver_excluded_from_earlier_period,
+        "01/01/2027",
+        Some("01/02/2027"),
+        false
+    );
+
+    #[test]
+    fn period_overlap_parses_existing_formats_without_rewriting_dates() {
+        let date = |s| crate::models::parse_employment_date(s).unwrap();
+        for start in ["20 August 2026", "2026-08-20", "20/8/26", "20-08-2026"] {
+            let mut pa = test_assistant();
+            pa.start_date = Some(start.into());
+            pa.leaving_date = Some("06 Sep 2026".into());
+            pa.employment_status = Some("Inactive".into());
+            assert!(pa
+                .employment_overlaps(date("10/08/2026"), date("06/09/2026"))
+                .unwrap());
+            assert_eq!(pa.start_date.as_deref(), Some(start));
+            assert_eq!(pa.leaving_date.as_deref(), Some("06 Sep 2026"));
+        }
+    }
+
+    #[test]
+    fn legacy_missing_dates_remain_unbounded_and_invalid_dates_do_not_hide_stored_payroll() {
+        let date = |s| crate::models::parse_employment_date(s).unwrap();
+        let mut pa = test_assistant();
+        pa.employment_status = Some("Inactive".into());
+        pa.start_date = None;
+        pa.leaving_date = Some("  ".into());
+        assert!(pa
+            .employment_overlaps(date("10/08/2026"), date("06/09/2026"))
+            .unwrap());
+        for (start, leave) in [("invalid", None), ("01/01/2026", Some("31/02/2026"))] {
+            pa.start_date = Some(start.into());
+            pa.leaving_date = leave.map(str::to_string);
+            assert!(pa
+                .eligible_for_period(date("10/08/2026"), date("06/09/2026"), false)
+                .is_err());
+            assert!(pa
+                .eligible_for_period(date("10/08/2026"), date("06/09/2026"), true)
+                .unwrap());
+        }
+    }
+
     #[test]
     fn employment_overlap_is_inclusive_and_historical_records_remain_eligible() {
         let date = |value| crate::models::parse_employment_date(value).unwrap();
@@ -378,7 +486,7 @@ mod tests {
                 .unwrap());
         }
         assistant.employment_status = Some("Inactive".into());
-        assert!(!assistant
+        assert!(assistant
             .eligible_for_period(date("14/09/2026"), date("30/09/2026"), false)
             .unwrap());
         assert!(assistant

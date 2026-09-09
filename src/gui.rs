@@ -930,7 +930,7 @@ impl DirectPaymentApp {
         };
 
         if assistants.is_empty() {
-            ui.label("No active Personal Assistants are available for a test email.");
+            ui.label("No Personal Assistants are relevant to the selected payroll period for a test email.");
             return;
         }
 
@@ -1768,7 +1768,9 @@ impl DirectPaymentApp {
         };
 
         if assistants.is_empty() {
-            ui.label("No active Personal Assistants are available for preview.");
+            ui.label(
+                "No Personal Assistants are relevant to the selected payroll period for preview.",
+            );
             return;
         }
 
@@ -2356,29 +2358,12 @@ impl DirectPaymentApp {
         ];
 
         let assistants = self.selected_period_assistants()?;
-        let existing_payroll_timesheets = self
-            .application
-            .payroll_timesheet_repository
-            .get_all_for_cycle(&payroll_year, current_schedule.cycle_number)?;
-        let existing_personal_assistant_ids = existing_payroll_timesheets
-            .iter()
-            .map(|record| record.personal_assistant_id)
-            .collect::<HashSet<_>>();
-
         let output_dir =
             crate::paths::expand_path(&self.application.context.config.folders.pdf_output);
 
         let mut generated = 0usize;
 
         for assistant in &assistants {
-            if !assistant.eligible_for_period(
-                week_dates[0],
-                week_dates[3] + chrono::Duration::days(6),
-                existing_personal_assistant_ids.contains(&assistant.id),
-            )? {
-                continue;
-            }
-
             let personal_assistant_name = format!("{} {}", assistant.first_name, assistant.surname);
 
             let payroll_timesheet = self
@@ -2665,17 +2650,6 @@ fn operational_period_key(schedule: &PayrollSchedule) -> OperationalPayrollPerio
         payroll_year: schedule.payroll_year.clone(),
         cycle_number: schedule.cycle_number,
     }
-}
-
-#[cfg(test)]
-fn personal_assistant_is_eligible_for_generation(
-    employment_status: Option<&str>,
-    has_selected_period_record: bool,
-) -> bool {
-    employment_status
-        .map(|status| status.trim().eq_ignore_ascii_case("active"))
-        .unwrap_or(true)
-        || has_selected_period_record
 }
 
 fn capture_operational_payroll_period(
@@ -4202,27 +4176,6 @@ mod payroll_return_schedule_selection_tests {
     }
 
     #[test]
-    fn generation_eligibility_includes_active_and_none_status_personal_assistants() {
-        assert!(personal_assistant_is_eligible_for_generation(
-            Some("Active"),
-            false
-        ));
-        assert!(personal_assistant_is_eligible_for_generation(None, false));
-    }
-
-    #[test]
-    fn generation_eligibility_includes_inactive_only_with_selected_period_record() {
-        assert!(personal_assistant_is_eligible_for_generation(
-            Some("Inactive"),
-            true
-        ));
-        assert!(!personal_assistant_is_eligible_for_generation(
-            Some("Inactive"),
-            false
-        ));
-    }
-
-    #[test]
     fn inactive_historical_generation_uses_selected_schedule_without_creating_unrelated_records() {
         let directory = tempfile::TempDir::new().unwrap();
         let database = directory.path().join("test.sqlite");
@@ -4248,14 +4201,8 @@ mod payroll_return_schedule_selection_tests {
             .collect::<std::collections::HashSet<_>>();
         let historical = schedule(6, "2026/27", 6, "10/08/2026", "04/09/2026");
 
-        assert!(personal_assistant_is_eligible_for_generation(
-            Some("Inactive"),
-            ids.contains(&1)
-        ));
-        assert!(!personal_assistant_is_eligible_for_generation(
-            Some("Inactive"),
-            ids.contains(&2)
-        ));
+        assert!(ids.contains(&1));
+        assert!(!ids.contains(&2));
         let path = crate::payroll_file_naming::timesheet_path(
             std::path::Path::new("/timesheets/2027 to 2028"),
             "Historical PA",
@@ -4370,5 +4317,132 @@ mod preparation_navigation_tests {
         app.operational_payroll_period.revision += 1;
         app.guard_preparation_period_change(previous);
         assert!(app.pending_preparation_navigation.is_none());
+    }
+}
+
+#[cfg(test)]
+mod payroll_period_eligibility_tests {
+    use super::*;
+    use crate::payroll_timesheet_screen::tests::{
+        employment_period_fixture, load_period_for_eligibility_test,
+    };
+
+    #[test]
+    fn dashboard_email_batches_and_generation_share_period_eligibility() {
+        let (_dir, application, historical, current) = employment_period_fixture();
+        let mut app = DirectPaymentApp::new(application);
+        for (schedule, expected) in [(&historical, vec![1, 3, 5, 8]), (&current, vec![2, 4, 5])] {
+            app.operational_payroll_period.select(schedule, None);
+            let selected = app.selected_period_assistants().unwrap();
+            assert_eq!(selected.iter().map(|p| p.id).collect::<Vec<_>>(), expected);
+            assert_eq!(selected.len(), expected.len());
+            // Selection/preview/counting must not create payroll records.
+            assert!(app
+                .application
+                .payroll_timesheet_repository
+                .get_all_for_cycle(&schedule.payroll_year, schedule.cycle_number)
+                .unwrap()
+                .is_empty());
+            for kind in [PayrollEmailKind::Timesheet, PayrollEmailKind::Payslip] {
+                app.begin_email_batch(kind);
+                assert_eq!(
+                    app.pending_email_batch
+                        .as_ref()
+                        .unwrap()
+                        .selected_personal_assistant_ids,
+                    expected
+                );
+                app.clear_pending_email_batch();
+            }
+            app.payroll_timesheet_screen =
+                load_period_for_eligibility_test(&app.application, schedule);
+            assert_eq!(app.generate_payroll_timesheets().unwrap(), expected.len());
+            let records = app
+                .application
+                .payroll_timesheet_repository
+                .get_all_for_cycle(&schedule.payroll_year, schedule.cycle_number)
+                .unwrap();
+            assert_eq!(records.len(), expected.len());
+            for record in records {
+                assert!(expected.contains(&record.personal_assistant_id));
+                assert_eq!(
+                    app.application
+                        .payroll_worked_item_repository
+                        .snapshot_metadata(record.id)
+                        .unwrap()
+                        .unwrap()
+                        .state,
+                    SnapshotState::Candidate
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn stored_out_of_overlap_payroll_is_in_dashboard_and_email_scope_but_protected_from_generation()
+    {
+        let (_dir, application, historical, _) = employment_period_fixture();
+        let mut app = DirectPaymentApp::new(application);
+        app.operational_payroll_period.select(&historical, None);
+        app.payroll_timesheet_screen =
+            load_period_for_eligibility_test(&app.application, &historical);
+        app.application
+            .payroll_timesheet_email_repository
+            .mark_sent(
+                1,
+                &historical.payroll_year,
+                historical.cycle_number,
+                "payslip",
+                "2026-09-04T10:00:00Z",
+            )
+            .unwrap();
+        let db =
+            rusqlite::Connection::open(&app.application.context.environment.database_path).unwrap();
+        db.execute("UPDATE personal_assistants SET start_date='01/01/2027',leaving_date='01/02/2027' WHERE id=1", []).unwrap();
+        let records_before = app
+            .application
+            .payroll_timesheet_repository
+            .get_all_for_cycle(&historical.payroll_year, historical.cycle_number)
+            .unwrap();
+        assert_eq!(
+            app.selected_period_assistants()
+                .unwrap()
+                .iter()
+                .map(|p| p.id)
+                .collect::<Vec<_>>(),
+            vec![1, 3, 5, 8]
+        );
+        app.begin_email_batch(PayrollEmailKind::Timesheet);
+        assert!(app
+            .pending_email_batch
+            .as_ref()
+            .unwrap()
+            .selected_personal_assistant_ids
+            .contains(&1));
+        assert_eq!(app.generate_payroll_timesheets().unwrap(), 3);
+        assert_eq!(
+            app.application
+                .payroll_timesheet_repository
+                .get_all_for_cycle(&historical.payroll_year, historical.cycle_number)
+                .unwrap()
+                .iter()
+                .map(|r| r.id)
+                .collect::<Vec<_>>(),
+            records_before.iter().map(|r| r.id).collect::<Vec<_>>()
+        );
+        let settled = records_before
+            .iter()
+            .find(|r| r.personal_assistant_id == 1)
+            .unwrap();
+        assert!(app
+            .application
+            .payroll_worked_item_repository
+            .snapshot_metadata(settled.id)
+            .unwrap()
+            .is_none());
+        assert_eq!(
+            crate::payroll_evidence::lifecycle::stage(&db, settled).unwrap(),
+            crate::payroll_evidence::lifecycle::Stage::Settled
+        );
     }
 }
