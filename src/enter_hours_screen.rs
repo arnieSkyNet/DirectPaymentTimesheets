@@ -489,9 +489,20 @@ impl EnterHoursScreen {
             Some(&self.notes),
             &Local::now().to_rfc3339(),
         ) {
-            Ok(_) => {
+            Ok(shift) => {
                 self.picker = None;
                 self.status_message = "Shift clocked out and saved.".to_string();
+                match crate::payroll_evidence::reconciliation::historical_save_notice(
+                    application,
+                    shift.personal_assistant_id,
+                    shift.start().expect("validated saved shift").date(),
+                ) {
+                    Ok(Some(note)) => self.status_message.push_str(&format!(" {note}")),
+                    Err(e) => self
+                        .status_message
+                        .push_str(&format!(" Payroll status needs review: {e}")),
+                    _ => {}
+                }
                 if let Err(error) = self.load_selected_pa(application) {
                     self.status_message = format!("Shift saved, but refresh failed: {error}");
                 }
@@ -944,11 +955,22 @@ impl EnterHoursScreen {
             Some(&edit.notes),
             &Local::now().to_rfc3339(),
         ) {
-            Ok(_) => {
+            Ok(shift) => {
                 self.cancel_completed_edit();
                 self.status_message =
                     "Completed shift corrected; previous values retained in audit history."
                         .to_string();
+                match crate::payroll_evidence::reconciliation::historical_save_notice(
+                    application,
+                    shift.personal_assistant_id,
+                    shift.start().expect("validated shift").date(),
+                ) {
+                    Ok(Some(note)) => self.status_message.push_str(&format!(" {note}")),
+                    Err(e) => self
+                        .status_message
+                        .push_str(&format!(" Payroll status needs review: {e}")),
+                    _ => {}
+                }
                 if let Err(error) = self.load_selected_pa(application) {
                     self.status_message = format!("Shift saved, but refresh failed: {error}");
                 }

@@ -30,7 +30,7 @@ Configured business paths may point outside the data root. `email_archive` is cu
 
 ## SQLite and repositories
 
-`database.rs` creates the original schema and applies ordered migrations through `CURRENT_SCHEMA_VERSION` 23. Each repository opens/uses its own `rusqlite::Connection` to the same database path. Schema-changing work belongs in a migration; tests should exercise a newly initialised database and upgrade behaviour where relevant.
+`database.rs` creates the original schema and applies ordered migrations through `CURRENT_SCHEMA_VERSION` 28. Each repository opens/uses its own `rusqlite::Connection` to the same database path. Schema-changing work belongs in a migration; tests should exercise a newly initialised database and upgrade behaviour where relevant.
 
 Principal persisted areas are:
 
@@ -64,7 +64,7 @@ Payroll Return and View Payroll Schedule intentionally have independent selector
 
 `PayrollTimesheetScreen` receives a complete operational schedule and stores a private bound identity with its key and material dates. It does not independently choose today's schedule. Its display set combines active/legacy-NULL-active PAs with PAs already represented by a payroll-timesheet row in the selected period.
 
-Existing submitted or indeterminate records follow a persisted-only, read-only load path. Editable records follow reconciliation against imported rows, previous submitted membership and manual adjustments. Preparation baselines are compared before writes so that:
+Existing submitted or indeterminate records follow a persisted-only, read-only load path. Editable records follow the shared source-labelled reconciliation service against effective imported evidence, completed direct shifts, duplicate decisions, submission membership, outstanding corrections and manual adjustments. Preparation baselines are compared before writes so that:
 
 - opening unchanged data does not invalidate a candidate or update timestamps;
 - a material reconciliation change invalidates the candidate before persistence;
@@ -126,3 +126,8 @@ Unit and integration-style module tests use temporary directories and SQLite dat
 ## Deliberate boundaries
 
 The current architecture does not provide authentication/multi-user coordination, an overtime engine, P60-specific import, scheduled/cloud backups, retention cleanup or arbitrary SQLite restore. These are limitations, not partially implemented promises.
+
+
+## Schema-28 reconciliation extension
+
+`payroll_evidence` supplies the source model, transitive overlap grouping, versioned duplicate decisions, immutable submission history and signed correction ledger. `duplicate_ui` and `review_ui` provide consolidated selection and contextual review over that logic. The existing snapshot candidate/submitted/indeterminate model remains the current preparation/attachment slot; append-only submission tables preserve earlier successful sends across explicit resubmission. Final settlement uses the existing per-PA payslip delivery rule. No PDF revision naming architecture is restored. See [PAYROLL-EVIDENCE.md](PAYROLL-EVIDENCE.md) for the complete implemented workflow and audit model.

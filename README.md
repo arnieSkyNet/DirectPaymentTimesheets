@@ -2,7 +2,7 @@
 
 DirectPaymentTimesheets is a local desktop application for administering UK Direct Payment Personal Assistant timesheets and the four-week payroll-provider workflow. It imports externally recorded work, prepares payroll timesheets, generates the provider PDF, sends timesheets and payslips, imports Payroll Returns, and preserves the evidence represented by submitted payroll.
 
-The current pre-release is version `0.0.12` with SQLite schema version 27. It is a working application under active development, not an installer-packaged or general-purpose payroll product.
+The current pre-release is version `0.0.13` with SQLite schema version 29. It is a working application under active development, not an installer-packaged or general-purpose payroll product.
 
 ## Technology
 
@@ -34,14 +34,14 @@ The current pre-release is version `0.0.12` with SQLite schema version 27. It is
 - Payroll Timesheet Preparation bound to the selected period, including manual Hours Worked corrections, leave, sick/SSP, public-holiday and mileage values.
 - Read-only protection for submitted or indeterminate preparation records and invalidation of stale generated candidates when represented data changes.
 
-Imported `worked_minutes` is parsed from the CSV Worked Hours field. It is not recalculated from Start Time/End Time and is not changed by the persisted rounding setting. CSV rate and amount fields are retained as imported data but are not the authoritative payroll rate; maintained PA rate history is authoritative.
+Imported `worked_minutes` is parsed from the CSV Worked Hours field. It is not recalculated from Start Time/End Time and is not changed by the persisted rounding setting. For open payroll, selected evidence from both sources is converted to payable minutes using Payroll Settings rounding; original source minutes remain unchanged. CSV rate and amount fields are retained as imported data but are not the authoritative payroll rate; maintained PA rate history is authoritative.
 
 ### Payroll PDFs and historical evidence
 
 - Four-week provider PDF generation using configured fonts and sizes.
 - Per-shift effective-dated rate allocation retained internally without printing pay rates on the provider form.
 - Per-week effective-dated contracted-hours presentation.
-- Cross-payroll-year previous-cycle late-shift reconciliation.
+- Dated outstanding work across payroll periods, with audited signed carry-forward reconciliation.
 - Persistent manual adjustments and exact worked-item snapshots.
 - Candidate PDFs associated with SHA-256 digests before production sending.
 - Immutable submitted baselines and protected indeterminate-delivery state.
@@ -161,7 +161,7 @@ User-facing labels use Payroll Week, the four-week date range and pay date. Inte
 
 - This is a pre-release, single-user local desktop application.
 - There is no packaged installer, authentication or multi-user coordination.
-- Persisted frequency, rounding, workweek and overtime choices are not downstream configurable calculation rules; no overtime engine is implemented.
+- Persisted frequency, workweek and overtime choices are not downstream configurable calculation rules; no overtime engine is implemented.
 - Payroll Prep Sheet PDF import is implemented; DOCX import is recognised but not implemented.
 - Production email batches currently include active and legacy-`NULL`-status PAs only, even though preparation/generation can retain an inactive historical PA.
 - There is no P60-specific Payroll Return processing.
@@ -175,7 +175,7 @@ User-facing labels use Payroll Week, the four-week date range and pay date. Inte
 - [Domain rules](docs/DOMAIN.md)
 - [Development guide](docs/DEVELOPMENT.md)
 - [Conceptual data model](docs/DATA-MODEL.md)
-- [Database schema 23](docs/DATABASE-SCHEMA.md)
+- [Database schema](docs/DATABASE-SCHEMA.md)
 
 ## Licence
 
@@ -186,3 +186,10 @@ Third-party dependencies and bundled font components remain subject to their res
 Payroll Settings includes two annual-leave settings groups: contracted-hours annual leave (recurring DD/MM boundary and statutory weeks) and variable-hours annual leave (recurring DD/MM boundary and accrual percentage). Save Payroll Settings saves all four together. Personal Assistant Maintenance now provides read-only Annual Leave guidance with a compact April-to-March leave-year selector, entitlement/accrued, taken, remaining, Calculated to (Variable/mixed years), and an auditable Details view. Payroll remains definitive; negative remaining hours are retained.
 
 Personal Assistants have an optional Leaving date, stored as canonical `DD/MM/YYYY`. Schema 27 adds nullable `personal_assistants.leaving_date` without backfilling dates or altering historical data. A supplied date must be real and not precede Start date. Stored Active/Inactive status is never changed automatically. Ordinary selected-period payroll inclusion requires Active (or legacy unset status) and inclusive employment-date overlap with the four-week period. Existing selected-period preparation records remain included regardless of status or employment dates. Annual-leave guidance applies Start and Leaving dates inclusively without changing employment status.
+
+
+### Payroll evidence and reconciliation
+
+Completed Hours Shift records now feed payroll alongside Hours Keeper imports, while both original sources remain separate. Possible overlapping shifts use one consolidated, audited duplicate resolver. Preparation preserves sent submissions, offers contextual correction/resubmission or carry-forward, and treats each PA's definitively Sent payslip as settlement. Historical payment uncertainty and aggregate negative estimate corrections require explicit contextual reviews. Signed corrections persist, never make payable worked hours negative, and appear on PDFs only through final bold totals plus a subordinate `(Info only +/-X.XX hours)` line.
+
+See [Payroll evidence and reconciliation](docs/PAYROLL-EVIDENCE.md) for storage, safeguards, limitations of historical evidence and the manual verification sequence.

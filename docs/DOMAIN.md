@@ -28,7 +28,7 @@ The external file's hourly-rate and amount values are not authoritative for payr
 
 Schema 21 introduced an append-only correction-event layer for the effective start, end, break, worked minutes and notes of an imported row. Every event retains complete before/after values, actor, action time and optional reason; reverting is another event. The archived CSV and original `timesheets` row remain immutable, including PA identity, rate and amount. Worked minutes remain independent source evidence and are not recalculated from clocks or break.
 
-This foundation is intentionally not connected to the current UI or payroll pipeline. Import collision checks, Payroll Timesheet Preparation, snapshots and PDFs still consume raw imported evidence.
+Payroll evidence now projects these audited corrections for calculation, while import repeat detection and the imported-hours view retain the original raw source.
 
 The established duration rule assigns an entire shift to its start calendar date; real project shifts do not cross midnight. Imported clock values are not rewritten by preparation corrections.
 
@@ -38,7 +38,7 @@ A DirectShift is application-created source evidence stored independently from i
 
 Direct shift evidence represents what actually happened. Payroll calculations may later derive payable time and rates from it, but must never rewrite evidence as a side effect. Deliberate completed-shift corrections update the current record only while atomically appending immutable before/after audit evidence. Delete is a soft deletion: deleted rows remain stored and audited but are excluded from normal use. Cancelling an accidental running clock-in removes its current row only after recording a cancellation audit snapshot.
 
-Every mutation records action type/time and actor. The desktop actor is currently the stable `local_employer` identity; the text actor field is intentionally suitable for future authenticated identities, but authentication, accounts and web/mobile access do not yet exist. Actual worked minutes are derived as end minus start minus break, without payroll rounding. Direct shifts are not yet included in Payroll Timesheet Preparation and are not deduplicated or reconciled against imported work.
+Every mutation records action type/time and actor. The desktop actor is currently the stable `local_employer` identity; the text actor field is intentionally suitable for future authenticated identities, but authentication, accounts and web/mobile access do not yet exist. Actual worked minutes are derived as end minus start minus break, without payroll rounding. Completed, non-deleted direct shifts feed the shared payroll evidence reconciliation and duplicate resolver, without being copied to imported rows.
 
 ## Payroll years, periods and Payroll Week
 
@@ -92,11 +92,7 @@ When all weeks share a value, the PDF retains `Contracted Weekly Hours: VALUE`. 
 
 ## Previous-cycle work
 
-The existing positive previous-cycle adjustment detects late imported shifts from weeks three and four of the immediately preceding schedule. “Previous” is chronological, so cycle 1 of a new payroll year can follow cycle 13 of the prior year.
-
-Exact detection compares current TimesheetEntry IDs with the immutable submitted snapshot. Late rows keep their historical start dates and rates, and rows on opposite sides of a rate boundary remain distinct. A generated-but-unsent candidate is not evidence that work was submitted.
-
-Old schema-18 `previous_cycle_hours` can contain only an aggregate. Such an amount remains in totals as an opaque legacy adjustment with no invented shift ID, date or rate. The PDF presents the existing compact informational form such as `[Info.only +1 prev]`.
+Dated unpaid work remains outstanding across periods, with actual work dates and historical rates. Submitted membership reserves evidence and definitive per-PA payslip Sent state establishes settlement. Aggregate-only historical payment uncertainty requires an explicit paid/unpaid review. Separate signed corrections preserve estimate and actual-evidence differences; negative aggregate estimates require completeness confirmation, and negative applications cannot reduce worked hours below zero. Detailed rules and review gates are in [PAYROLL-EVIDENCE.md](PAYROLL-EVIDENCE.md).
 
 ## Preparation and submission states
 
@@ -117,7 +113,7 @@ There is no `public_holiday_enabled` business rule. An obsolete config key is ig
 
 ## Payroll PDF
 
-The provider PDF retains its established table and configured typography. Each Hours Worked cell shows the final reconciled weekly total as the primary bold value. It does not reveal pay rates, effective dates or allocation detail. Public-holiday dates remain in their intended field, and positive previous-cycle information remains a compact subordinate line.
+The provider PDF retains its established table and configured typography. Each Hours Worked cell shows the final reconciled weekly total as the primary bold value. It does not reveal pay rates, effective dates or allocation detail. Public-holiday dates remain in their intended field, and signed reconciliation information remains a compact subordinate `(Info only +/-X.XX hours)` line that is never totalled again.
 
 The same integer-minute structure supplies displayed totals and persisted worked-item evidence, with residual rounding reconciliation so independently represented portions do not contradict the weekly total.
 

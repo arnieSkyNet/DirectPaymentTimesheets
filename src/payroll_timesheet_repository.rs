@@ -362,6 +362,8 @@ impl PayrollTimesheetRepository {
         use rusqlite::OptionalExtension;
 
         let transaction = self.connection.unchecked_transaction()?;
+        crate::payroll_evidence::lifecycle::ensure_editable(&transaction, payroll_timesheet_id)
+            .map_err(|e| rusqlite::Error::InvalidParameterName(e.to_string()))?;
         let state: Option<String> = transaction
             .query_row(
                 "SELECT state FROM payroll_timesheet_snapshot_states
@@ -510,6 +512,8 @@ impl PayrollTimesheetRepository {
         }
 
         let transaction = self.connection.unchecked_transaction()?;
+        crate::payroll_evidence::lifecycle::ensure_editable(&transaction, record.id)
+            .map_err(|e| rusqlite::Error::InvalidParameterName(e.to_string()))?;
         let state: Option<String> = transaction
             .query_row(
                 "SELECT state FROM payroll_timesheet_snapshot_states

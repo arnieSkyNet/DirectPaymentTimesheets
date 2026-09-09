@@ -112,6 +112,7 @@ mod tests {
             let connection = Connection::open_in_memory().unwrap();
             crate::database::create_schema(&connection).unwrap();
             if upgrading {
+                crate::database::tests::remove_schema_28_fixture(&connection);
                 connection
                     .execute_batch(
                         "ALTER TABLE personal_assistants DROP COLUMN leaving_date; DROP TABLE annual_leave_settings; UPDATE schema_version SET version = 25;",

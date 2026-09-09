@@ -11,7 +11,7 @@ pub struct PayRatePortion {
     pub worked_minutes: i64,
     pub total_hourly_rate: Option<f64>,
     pub effective_date: Option<NaiveDate>,
-    rate_id: Option<i64>,
+    pub(crate) rate_id: Option<i64>,
     pub is_previous_cycle: bool,
     pub is_opaque_legacy: bool,
 }
@@ -195,6 +195,8 @@ pub fn reconcile_payroll_hours(
                 week_number: 1,
                 source_type: "legacy_previous_cycle_adjustment".to_string(),
                 timesheet_id: None,
+                direct_shift_id: None,
+                source_evidence: None,
                 work_date: None,
                 worked_minutes: previous.legacy_adjustment_minutes,
                 pay_rate_id: None,
@@ -247,6 +249,8 @@ pub fn reconcile_payroll_hours(
                 week_number: adjustment.week_number,
                 source_type: "manual_adjustment".to_string(),
                 timesheet_id: None,
+                direct_shift_id: None,
+                source_evidence: None,
                 work_date: None,
                 worked_minutes: adjustment.adjustment_minutes,
                 pay_rate_id: None,
@@ -336,6 +340,81 @@ fn add_raw_item(
     Ok(())
 }
 
+/// Round payable duration only; source intervals and raw minutes stay untouched.
+fn payable_minutes(
+    minutes: i64,
+    settings: &crate::config::PayrollConfig,
+) -> Result<i64, PayRateAllocationError> {
+    let increment = settings.rounding_minutes;
+    if minutes < 0 || ![1, 5, 10, 15, 30, 60].contains(&increment) {
+        return Err(PayRateAllocationError(
+            "Invalid payroll duration or rounding increment".into(),
+        ));
+    }
+    let remainder = minutes % increment;
+    match settings.rounding_direction.as_str() {
+        "Down" => Ok(minutes - remainder),
+        "Up" => minutes
+            .checked_add(if remainder == 0 {
+                0
+            } else {
+                increment - remainder
+            })
+            .ok_or_else(|| PayRateAllocationError("Payroll rounding overflow".into())),
+        _ => Err(PayRateAllocationError(
+            "Invalid payroll rounding direction".into(),
+        )),
+    }
+}
+
+/// Allocates already selected evidence; duplicate and lifecycle policy stays upstream.
+pub fn add_evidence(
+    rates: &PayRateRepository,
+    result: &mut ReconciledPayrollHours,
+    evidence: &crate::payroll_evidence::WorkEvidence,
+    week: usize,
+    late: bool,
+    settings: &crate::config::PayrollConfig,
+) -> Result<(), PayRateAllocationError> {
+    let minutes = payable_minutes(evidence.minutes, settings)?;
+    let date = evidence
+        .date()
+        .map_err(|e| PayRateAllocationError(e.to_string()))?;
+    let rate = rates
+        .get_for_personal_assistant_as_of(evidence.pa, date)
+        .map_err(repository_error)?
+        .ok_or_else(|| {
+            PayRateAllocationError(format!("No pay rate is effective for worked date {date}."))
+        })?;
+    add_portion(&mut result.weeks[week], minutes, &rate, late)?;
+    let mut item = snapshot_from_rate(
+        (week + 1) as i64,
+        if evidence.source == "direct" {
+            "direct_shift"
+        } else if late {
+            "previous_cycle_late_shift"
+        } else {
+            "imported_shift"
+        },
+        (evidence.source == "imported").then_some(evidence.id),
+        Some(date.to_string()),
+        minutes,
+        &rate,
+        None,
+    );
+    item.direct_shift_id = (evidence.source == "direct").then_some(evidence.id);
+    item.source_evidence =
+        Some(toml::to_string(evidence).map_err(|e| PayRateAllocationError(e.to_string()))?);
+    result.snapshot_items.push(item);
+    result.week_totals_minutes[week] = result.week_totals_minutes[week]
+        .checked_add(minutes)
+        .ok_or_else(|| PayRateAllocationError("Worked minutes overflow".into()))?;
+    if late {
+        result.previous_cycle_minutes += minutes;
+    }
+    Ok(())
+}
+
 fn add_portion(
     portions: &mut Vec<PayRatePortion>,
     minutes: i64,
@@ -381,6 +460,8 @@ fn snapshot_from_rate(
         week_number,
         source_type: source_type.to_string(),
         timesheet_id,
+        direct_shift_id: None,
+        source_evidence: None,
         work_date,
         worked_minutes,
         pay_rate_id: Some(rate.id),
@@ -753,6 +834,8 @@ mod tests {
                 week_number: 3,
                 source_type: "imported_shift".to_string(),
                 timesheet_id: Some(1),
+                direct_shift_id: None,
+                source_evidence: None,
                 work_date: Some("2027-03-10".to_string()),
                 worked_minutes: 60,
                 pay_rate_id: Some(1),
@@ -1059,6 +1142,8 @@ mod tests {
             week_number: 3,
             source_type: "imported_shift".to_string(),
             timesheet_id: Some(1),
+            direct_shift_id: None,
+            source_evidence: None,
             work_date: Some("2027-03-10".to_string()),
             worked_minutes: 60,
             pay_rate_id: Some(1),
@@ -1181,5 +1266,29 @@ mod tests {
             "5 (previous-cycle adjustment; historical rate allocation unavailable)"
         );
         assert!(!rendered.contains('£'));
+    }
+}
+
+#[cfg(test)]
+mod payroll_rounding_tests {
+    use super::*;
+
+    #[test]
+    fn payroll_rounding_preserves_exact_multiples_zero_and_rejects_invalid_settings() {
+        let mut settings = crate::config::PayrollConfig::default();
+        for direction in ["Up", "Down"] {
+            settings.rounding_direction = direction.into();
+            assert_eq!(payable_minutes(0, &settings).unwrap(), 0);
+            assert_eq!(payable_minutes(30, &settings).unwrap(), 30);
+        }
+        assert_eq!(payable_minutes(14, &settings).unwrap(), 0);
+        assert!(payable_minutes(-1, &settings).is_err());
+        settings.rounding_minutes = 0;
+        assert!(payable_minutes(34, &settings).is_err());
+        settings.rounding_minutes = 15;
+        settings.rounding_direction = "invalid".into();
+        assert!(payable_minutes(34, &settings).is_err());
+        settings.rounding_direction = "Up".into();
+        assert!(payable_minutes(i64::MAX, &settings).is_err());
     }
 }

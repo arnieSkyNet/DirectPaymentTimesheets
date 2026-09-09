@@ -14,6 +14,8 @@ pub struct WorkedItemSnapshot {
     pub week_number: i64,
     pub source_type: String,
     pub timesheet_id: Option<i64>,
+    pub direct_shift_id: Option<i64>,
+    pub source_evidence: Option<String>,
     pub work_date: Option<String>,
     pub worked_minutes: i64,
     pub pay_rate_id: Option<i64>,
@@ -171,6 +173,14 @@ impl PayrollWorkedItemRepository {
         week_totals_minutes: &[i64; 4],
     ) -> Result<()> {
         let transaction = self.connection.unchecked_transaction()?;
+        crate::payroll_evidence::lifecycle::ensure_editable(&transaction, payroll_timesheet_id)
+            .map_err(|e| rusqlite::Error::InvalidParameterName(e.to_string()))?;
+        let signature = crate::payroll_evidence::lifecycle::candidate_signature(
+            &transaction,
+            payroll_timesheet_id,
+        )
+        .map_err(|e| rusqlite::Error::InvalidParameterName(e.to_string()))?;
+        transaction.execute("INSERT INTO payroll_candidate_checks VALUES (?1,?2) ON CONFLICT(payroll_timesheet_id) DO UPDATE SET evidence_signature=excluded.evidence_signature",params![payroll_timesheet_id,signature])?;
         let existing_state: Option<String> = transaction
             .query_row(
                 "SELECT state FROM payroll_timesheet_snapshot_states
@@ -197,8 +207,8 @@ impl PayrollWorkedItemRepository {
                 "INSERT INTO payroll_timesheet_worked_item_snapshots (
                     payroll_timesheet_id, week_number, source_type, timesheet_id,
                     work_date, worked_minutes, pay_rate_id, pay_rate_effective_date,
-                    total_hourly_rate, reason, captured_at
-                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+                    total_hourly_rate, reason, captured_at, direct_shift_id, source_evidence
+                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
                 params![
                     payroll_timesheet_id,
                     item.week_number,
@@ -210,7 +220,9 @@ impl PayrollWorkedItemRepository {
                     item.pay_rate_effective_date,
                     item.total_hourly_rate,
                     item.reason,
-                    generated_at
+                    generated_at,
+                    item.direct_shift_id,
+                    item.source_evidence
                 ],
             )?;
         }
@@ -229,7 +241,7 @@ impl PayrollWorkedItemRepository {
             "UPDATE payroll_timesheets
              SET previous_cycle_hours = ?1, updated_at = ?2 WHERE id = ?3",
             params![
-                (previous_cycle_minutes > 0).then(|| previous_cycle_minutes as f64 / 60.0),
+                (previous_cycle_minutes != 0).then(|| previous_cycle_minutes as f64 / 60.0),
                 generated_at,
                 payroll_timesheet_id
             ],
@@ -259,6 +271,16 @@ impl PayrollWorkedItemRepository {
             )?;
         }
         transaction.commit()
+    }
+
+    pub fn verify_current_evidence(
+        &self,
+        payroll_timesheet_id: i64,
+    ) -> crate::payroll_evidence::Result<()> {
+        crate::payroll_evidence::lifecycle::verify_candidate_evidence(
+            &self.connection,
+            payroll_timesheet_id,
+        )
     }
 
     pub fn protect_for_send(&self, payroll_timesheet_id: i64, at: &str) -> Result<bool> {
@@ -309,13 +331,19 @@ impl PayrollWorkedItemRepository {
              DO UPDATE SET sent_at = excluded.sent_at",
             params![personal_assistant_id, payroll_year, cycle_number, sent_at],
         )?;
+        crate::payroll_evidence::lifecycle::archive_submission(
+            &transaction,
+            payroll_timesheet_id,
+            sent_at,
+        )
+        .map_err(|e| rusqlite::Error::InvalidParameterName(e.to_string()))?;
         transaction.commit()
     }
 
     pub fn get_snapshot_items(&self, payroll_timesheet_id: i64) -> Result<Vec<WorkedItemSnapshot>> {
         let mut statement = self.connection.prepare(
             "SELECT week_number, source_type, timesheet_id, work_date, worked_minutes,
-                    pay_rate_id, pay_rate_effective_date, total_hourly_rate, reason
+                    pay_rate_id, pay_rate_effective_date, total_hourly_rate, reason, direct_shift_id, source_evidence
              FROM payroll_timesheet_worked_item_snapshots
              WHERE payroll_timesheet_id = ?1 ORDER BY id",
         )?;
@@ -325,6 +353,8 @@ impl PayrollWorkedItemRepository {
                     week_number: row.get(0)?,
                     source_type: row.get(1)?,
                     timesheet_id: row.get(2)?,
+                    direct_shift_id: row.get(9)?,
+                    source_evidence: row.get(10)?,
                     work_date: row.get(3)?,
                     worked_minutes: row.get(4)?,
                     pay_rate_id: row.get(5)?,

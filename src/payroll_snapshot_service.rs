@@ -180,6 +180,9 @@ pub fn verify_candidate(
     payroll_timesheet_id: i64,
     attachment_path: &Path,
 ) -> Result<(), SnapshotSafetyError> {
+    repository
+        .verify_current_evidence(payroll_timesheet_id)
+        .map_err(|e| SnapshotSafetyError::Refused(e.to_string()))?;
     let metadata = repository
         .snapshot_metadata(payroll_timesheet_id)
         .map_err(operation_error)?
@@ -309,6 +312,8 @@ mod tests {
             week_number: 1,
             source_type: "imported_shift".to_string(),
             timesheet_id: Some(id),
+            direct_shift_id: None,
+            source_evidence: None,
             work_date: Some("2027-03-01".to_string()),
             worked_minutes: 60,
             pay_rate_id: Some(1),
