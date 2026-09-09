@@ -2582,13 +2582,19 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn pa_union_includes_active_and_inactive_with_record_but_not_unreferenced_inactive() {
+    fn pa_union_includes_overlap_and_stored_records_but_not_unemployed_leavers() {
         let (_directory, application) = test_application();
         let schedule = insert_schedule(&application, "2026/27", 6, "10/08/2026", "04/09/2026");
         insert_pa(&application, 1, "Active", Some("Active"));
         insert_pa(&application, 2, "Historical", Some("Inactive"));
         insert_pa(&application, 3, "Excluded", Some("Inactive"));
         insert_pa(&application, 4, "LegacyActive", None);
+        setup_connection(&application)
+            .execute(
+                "UPDATE personal_assistants SET leaving_date='09/08/2026' WHERE id IN (2,3)",
+                [],
+            )
+            .unwrap();
         application
             .payroll_timesheet_repository
             .insert("2026/27", 6, 2, None, "created")

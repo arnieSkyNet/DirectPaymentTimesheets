@@ -59,17 +59,22 @@ impl PersonalAssistant {
         end: chrono::NaiveDate,
         has_record: bool,
     ) -> rusqlite::Result<bool> {
+        // Stored payroll is historical evidence, not a request to create a new
+        // preparation. Keep it accessible even after employment dates change.
         if has_record {
             return Ok(true);
         }
-        if !self
-            .employment_status
-            .as_deref()
-            .map(|status| status.trim().eq_ignore_ascii_case("active"))
-            .unwrap_or(true)
-        {
-            return Ok(false);
-        }
+        self.employment_overlaps(start, end)
+    }
+
+    /// Inclusive employment overlap for creating new period preparations.
+    /// Current status is deliberately irrelevant to historical employment.
+    /// Legacy missing/blank dates retain their existing unbounded semantics.
+    pub fn employment_overlaps(
+        &self,
+        start: chrono::NaiveDate,
+        end: chrono::NaiveDate,
+    ) -> rusqlite::Result<bool> {
         let parse = |value: &Option<String>| -> rusqlite::Result<Option<chrono::NaiveDate>> {
             value
                 .as_deref()
