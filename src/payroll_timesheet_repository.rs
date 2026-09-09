@@ -50,9 +50,7 @@ pub struct PayrollTimesheetAnnualLeave {
 }
 
 pub fn parse_leave_date(value: &str) -> Option<chrono::NaiveDate> {
-    ["%d/%m/%y", "%d-%m-%y", "%d/%m/%Y", "%d-%m-%Y", "%Y-%m-%d"]
-        .iter()
-        .find_map(|format| chrono::NaiveDate::parse_from_str(value.trim(), format).ok())
+    crate::date_utils::parse_legacy(value).ok()
 }
 
 // Canonical UK dates match the existing preparation/public-holiday convention.
@@ -83,7 +81,10 @@ pub fn derive_annual_leave(
         }
         let start = parse_leave_date(&week.week_commencing)
             .ok_or_else(|| invalid("Invalid payroll week date."))?;
-        let date = parse_leave_date(&row.leave_date)
+        let old = previous
+            .iter()
+            .find(|old| old.id == row.id && old.leave_date == row.leave_date);
+        let date = (if old.is_some() { crate::date_utils::parse_legacy(&row.leave_date) } else { crate::date_utils::parse_input(&row.leave_date) }).ok()
             .ok_or_else(|| invalid(&format!("Enter a valid annual-leave date (DD/MM/YYYY); received '{}' for week commencing {}.", row.leave_date.trim(), start.format("%d/%m/%Y"))))?;
         if date < start || date.signed_duration_since(start).num_days() >= 7 {
             return Err(invalid(&format!(
@@ -100,7 +101,15 @@ pub fn derive_annual_leave(
         if !seen.insert((row.week_number, date)) {
             return Err(invalid("Duplicate annual-leave date in the same week."));
         }
-        row.leave_date = date.format("%d/%m/%Y").to_string();
+        row.leave_date = if let Some(old) = previous.iter().find(|old| {
+            old.id == row.id
+                && old.id != 0
+                && crate::date_utils::same(&old.leave_date, &row.leave_date)
+        }) {
+            old.leave_date.clone()
+        } else {
+            crate::date_utils::uk(date)
+        };
     }
     for week in weeks {
         if rows
@@ -429,7 +438,7 @@ impl PayrollTimesheetRepository {
                 hours
             FROM payroll_timesheet_public_holidays
             WHERE payroll_timesheet_id = ?1
-            ORDER BY week_number, holiday_date
+            ORDER BY week_number, id
             ",
         )?;
 
@@ -443,7 +452,15 @@ impl PayrollTimesheetRepository {
             })
         })?;
 
-        rows.collect()
+        let mut rows = rows.collect::<Result<Vec<_>>>()?;
+        rows.sort_by_key(|row| {
+            (
+                row.week_number,
+                crate::date_utils::parse_legacy(&row.holiday_date).ok(),
+                row.id,
+            )
+        });
+        Ok(rows)
     }
 
     pub fn insert_public_holiday(
@@ -475,9 +492,9 @@ impl PayrollTimesheetRepository {
         let mut statement = self.connection.prepare(
             "SELECT id, payroll_timesheet_id, week_number, leave_date, hours, created_at, updated_at
              FROM payroll_timesheet_annual_leave WHERE payroll_timesheet_id = ?1
-             ORDER BY week_number, substr(leave_date, 7, 4), substr(leave_date, 4, 2), substr(leave_date, 1, 2), id"
+             ORDER BY week_number, id"
         )?;
-        let rows = statement
+        let mut rows = statement
             .query_map([payroll_timesheet_id], |row| {
                 Ok(PayrollTimesheetAnnualLeave {
                     id: row.get(0)?,
@@ -489,8 +506,9 @@ impl PayrollTimesheetRepository {
                     updated_at: row.get(6)?,
                 })
             })?
-            .collect();
-        rows
+            .collect::<Result<Vec<_>>>()?;
+        rows.sort_by_key(|row| (row.week_number, parse_leave_date(&row.leave_date), row.id));
+        Ok(rows)
     }
 
     pub fn save_preparation_atomically(
@@ -536,7 +554,7 @@ impl PayrollTimesheetRepository {
                 !stored_weeks.iter().any(|stored| {
                     stored.id == week.id
                         && stored.week_number == week.week_number
-                        && stored.week_commencing == week.week_commencing
+                        && crate::date_utils::same(&stored.week_commencing, &week.week_commencing)
                 })
             })
             || weeks
@@ -689,7 +707,8 @@ impl PayrollTimesheetRepository {
 
         for (week_number, holiday_date) in holidays {
             let exists = existing.iter().any(|holiday| {
-                holiday.week_number == *week_number && holiday.holiday_date == *holiday_date
+                holiday.week_number == *week_number
+                    && crate::date_utils::same(&holiday.holiday_date, holiday_date)
             });
 
             if !exists {

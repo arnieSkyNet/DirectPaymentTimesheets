@@ -77,15 +77,12 @@ impl DateTimePickerState {
     }
 
     fn value(&self) -> Result<NaiveDateTime, String> {
+        if !(1900..=2200).contains(&self.year) {
+            return Err("Enter a year between 1900 and 2200.".into());
+        }
         NaiveDate::from_ymd_opt(self.year, self.month, self.day)
             .and_then(|date| date.and_hms_opt(self.hour, self.minute, 0))
             .ok_or_else(|| "Select a valid date and time.".to_string())
-    }
-
-    fn clamp_date(&mut self) {
-        self.month = self.month.clamp(1, 12);
-        self.day = self.day.clamp(1, days_in_month(self.year, self.month));
-        self.refresh_text();
     }
 
     fn refresh_text(&mut self) {
@@ -110,10 +107,11 @@ impl DateTimePickerState {
         };
         self.year = in_range(parse(&self.year_text, "year")?, 1900..=2200, "year")?;
         self.month = in_range(parse(&self.month_text, "month")?, 1..=12, "month")? as u32;
-        self.day = parse(&self.day_text, "day")?.max(1) as u32;
+        self.day = in_range(parse(&self.day_text, "day")?, 1..=31, "day")? as u32;
         self.hour = in_range(parse(&self.hour_text, "hour")?, 0..=23, "hour")? as u32;
         self.minute = in_range(parse(&self.minute_text, "minute")?, 0..=59, "minute")? as u32;
-        self.clamp_date();
+        self.value()?;
+        self.refresh_text();
         Ok(())
     }
 }
@@ -550,7 +548,13 @@ impl EnterHoursScreen {
                                 ui,
                                 90.0,
                                 start
-                                    .map(|value| value.format("%d/%m/%Y").to_string())
+                                    .map(|value| {
+                                        application
+                                            .context
+                                            .config
+                                            .date_display_format
+                                            .format(value.date())
+                                    })
                                     .unwrap_or_default(),
                             )
                             .clicked()
@@ -1035,7 +1039,7 @@ fn accept_completed_text_field(
 ) -> Result<(), String> {
     match field {
         RecentShiftEditField::Date => {
-            let date = NaiveDate::parse_from_str(edit.date_text.trim(), "%d/%m/%Y")
+            let date = crate::date_utils::parse_input(&edit.date_text)
                 .map_err(|_| "Enter a valid date as DD/MM/YYYY.".to_string())?;
             edit.start = date.and_time(edit.start.time());
         }
@@ -1103,6 +1107,7 @@ fn large_button(ui: &mut egui::Ui, label: &str) -> egui::Response {
     )
 }
 
+#[cfg(test)]
 fn days_in_month(year: i32, month: u32) -> u32 {
     match month {
         1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
@@ -1113,6 +1118,7 @@ fn days_in_month(year: i32, month: u32) -> u32 {
     }
 }
 
+#[cfg(test)]
 fn is_gregorian_leap_year(year: i32) -> bool {
     year.rem_euclid(4) == 0 && (year.rem_euclid(100) != 0 || year.rem_euclid(400) == 0)
 }
@@ -1163,7 +1169,13 @@ where
         ui.label(label);
         ui.add_sized(
             [72.0, 38.0],
-            egui::DragValue::new(value).range(range).speed(1),
+            if matches!(label, "Day" | "Month" | "Year") {
+                // Range-clamped DragValue text would silently change month 13
+                // into December. Let the calendar validator reject it instead.
+                egui::DragValue::new(value).speed(1)
+            } else {
+                egui::DragValue::new(value).range(range).speed(1)
+            },
         );
     });
 }
@@ -1335,30 +1347,21 @@ mod tests {
     }
 
     #[test]
-    fn typed_month_and_year_changes_clamp_invalid_days_immediately() {
-        let initial = NaiveDate::from_ymd_opt(2026, 1, 31)
-            .unwrap()
-            .and_hms_opt(8, 7, 0)
-            .unwrap();
-        let mut picker = DateTimePickerState::new(PickerPurpose::EditStart, initial);
-        picker.month_text = "2".into();
-        picker.accept_typed_values().unwrap();
-        assert_eq!(
-            picker.value().unwrap().date(),
-            NaiveDate::from_ymd_opt(2026, 2, 28).unwrap()
-        );
-
-        let leap = NaiveDate::from_ymd_opt(2028, 2, 29)
-            .unwrap()
-            .and_hms_opt(8, 7, 0)
-            .unwrap();
-        let mut picker = DateTimePickerState::new(PickerPurpose::EditStart, leap);
-        picker.year_text = "2027".into();
-        picker.accept_typed_values().unwrap();
-        assert_eq!(
-            picker.value().unwrap().date(),
-            NaiveDate::from_ymd_opt(2027, 2, 28).unwrap()
-        );
+    fn typed_month_and_year_changes_reject_invalid_days() {
+        for (year, month, day, new_year, new_month) in
+            [(2026, 1, 31, "2026", "2"), (2028, 2, 29, "2027", "2")]
+        {
+            let initial = NaiveDate::from_ymd_opt(year, month, day)
+                .unwrap()
+                .and_hms_opt(8, 7, 0)
+                .unwrap();
+            let mut picker = DateTimePickerState::new(PickerPurpose::EditStart, initial);
+            picker.year_text = new_year.into();
+            picker.month_text = new_month.into();
+            assert!(picker.accept_typed_values().is_err());
+            assert_eq!(picker.day, day);
+            assert!(picker.value().is_err());
+        }
     }
 
     #[test]

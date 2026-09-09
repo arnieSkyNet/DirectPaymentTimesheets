@@ -251,6 +251,7 @@ impl DirectPaymentApp {
 
 impl eframe::App for DirectPaymentApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        crate::date_utils::set_display(ctx, self.application.context.config.date_display_format);
         if self.initial_size_pending {
             self.initial_size_pending = false;
             let initial_size = ctx.input(|input| {
@@ -658,7 +659,10 @@ impl DirectPaymentApp {
                     ui.label(format!("Ready to send {}.", email_type));
                     ui.label(format!(
                         "Payroll period: {}",
-                        batch.payroll_period.display_label
+                        crate::date_utils::calendar_text(
+                            crate::date_utils::preference(ui),
+                            &batch.payroll_period.display_label
+                        )
                     ));
                     match captured_operational_period_timing(
                         &batch.payroll_period,
@@ -1262,7 +1266,12 @@ impl DirectPaymentApp {
                             .find(|schedule| operational_period_key(schedule) == *selected)
                     });
             let selected_text = selected_schedule
-                .map(payroll_schedule_label)
+                .map(|s| {
+                    crate::date_utils::calendar_text(
+                        crate::date_utils::preference(ui),
+                        &payroll_schedule_label(s),
+                    )
+                })
                 .unwrap_or_else(|| "Select a payroll period".to_string());
             let mut selected_key = self.operational_payroll_period.selected.clone();
 
@@ -1276,7 +1285,10 @@ impl DirectPaymentApp {
                             ui,
                             &mut selected_key,
                             Some(operational_period_key(schedule)),
-                            payroll_schedule_label(schedule),
+                            crate::date_utils::calendar_text(
+                                crate::date_utils::preference(ui),
+                                &payroll_schedule_label(schedule),
+                            ),
                         );
                     }
                 });
@@ -1383,7 +1395,7 @@ impl DirectPaymentApp {
                     &pending.schedules,
                     pending.selected_schedule_id,
                 )
-                .map(payroll_schedule_label)
+                .map(|s| crate::date_utils::calendar_text(crate::date_utils::preference(ui), &payroll_schedule_label(s)))
                 .unwrap_or_else(|| "Select a payroll period".to_string());
 
                 crate::gui_controls::combo_box("payroll_return_schedule_selection")
@@ -1395,7 +1407,7 @@ impl DirectPaymentApp {
                                 ui,
                                 &mut pending.selected_schedule_id,
                                 schedule.id,
-                                payroll_schedule_label(schedule),
+                                crate::date_utils::calendar_text(crate::date_utils::preference(ui), &payroll_schedule_label(schedule)),
                             );
                         }
                     });
@@ -1408,7 +1420,7 @@ impl DirectPaymentApp {
                     match payroll_schedule_details(schedule) {
                         Ok(details) => {
                             for detail in details {
-                                ui.label(detail);
+                                ui.label(crate::date_utils::calendar_text(crate::date_utils::preference(ui), &detail));
                             }
                         }
                         Err(error) => {
@@ -2692,8 +2704,10 @@ fn validate_captured_email_batch_period(
     let stored_schedule = stored_schedule.ok_or_else(|| {
         "The payroll period captured for this email batch no longer exists. Cancel this batch and select an available payroll period."
     })?;
-    if stored_schedule.first_week_commencing != captured.first_week_commencing
-        || stored_schedule.pay_date != captured.pay_date
+    if !crate::date_utils::same(
+        &stored_schedule.first_week_commencing,
+        &captured.first_week_commencing,
+    ) || !crate::date_utils::same(&stored_schedule.pay_date, &captured.pay_date)
     {
         return Err("The payroll schedule dates changed after this email batch began. Nothing was sent; cancel this batch and start it again using the updated payroll period.".into());
     }
@@ -3147,14 +3161,11 @@ fn blend_theme_colors(
 }
 
 fn parse_date_checked(value: &str) -> Option<chrono::NaiveDate> {
-    chrono::NaiveDate::parse_from_str(value.trim(), "%d/%m/%Y")
-        .or_else(|_| chrono::NaiveDate::parse_from_str(value.trim(), "%d-%m-%Y"))
-        .or_else(|_| chrono::NaiveDate::parse_from_str(value.trim(), "%Y-%m-%d"))
-        .ok()
+    crate::date_utils::parse_legacy(value).ok()
 }
 
 fn format_date(date: chrono::NaiveDate) -> String {
-    date.format("%d/%m/%Y").to_string()
+    crate::date_utils::uk(date)
 }
 
 // Names need the most room; timestamps include strings such as
@@ -3529,9 +3540,12 @@ fn draw_payroll_schedule(ui: &mut egui::Ui, schedules: &[PayrollSchedule]) {
 
             for schedule in schedules {
                 ui.label(schedule.cycle_number.to_string());
-                ui.label(&schedule.first_week_commencing);
-                ui.label(&schedule.latest_posting_date);
-                ui.label(&schedule.pay_date);
+                ui.label(crate::date_utils::screen(
+                    ui,
+                    &schedule.first_week_commencing,
+                ));
+                ui.label(crate::date_utils::screen(ui, &schedule.latest_posting_date));
+                ui.label(crate::date_utils::screen(ui, &schedule.pay_date));
 
                 if schedule.payslips_sent {
                     ui.label("Sent");

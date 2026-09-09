@@ -11,12 +11,21 @@ use crate::payroll_timesheet_repository::{
 };
 use crate::payroll_worked_item_repository::{ManualHoursAdjustment, SnapshotState};
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, Eq)]
 struct BoundPayrollPeriod {
     payroll_year: String,
     cycle_number: i64,
     first_week_commencing: String,
     pay_date: String,
+}
+
+impl PartialEq for BoundPayrollPeriod {
+    fn eq(&self, other: &Self) -> bool {
+        self.payroll_year == other.payroll_year
+            && self.cycle_number == other.cycle_number
+            && crate::date_utils::same(&self.first_week_commencing, &other.first_week_commencing)
+            && crate::date_utils::same(&self.pay_date, &other.pay_date)
+    }
 }
 
 impl From<&PayrollSchedule> for BoundPayrollPeriod {
@@ -270,16 +279,22 @@ impl PayrollTimesheetScreen {
             });
             if active {
                 if let Some(schedule) = &self.schedule {
-                    ui.label(format!("Payroll period: {}", self.period_label));
+                    ui.label(format!(
+                        "Payroll period: {}",
+                        crate::date_utils::calendar_text(
+                            crate::date_utils::preference(ui),
+                            &self.period_label
+                        )
+                    ));
 
                     ui.label(format!(
                         "Four-week period: {} to {}",
-                        schedule.first_week_commencing,
+                        crate::date_utils::screen(ui, &schedule.first_week_commencing),
                         self.weeks
                             .first()
                             .and_then(|(_, weeks, _)| weeks.last())
-                            .map(|week| week.week_commencing.as_str())
-                            .unwrap_or("")
+                            .map(|week| crate::date_utils::screen(ui, &week.week_commencing))
+                            .unwrap_or_default()
                     ));
                 }
 
@@ -402,7 +417,7 @@ impl PayrollTimesheetScreen {
                                 ui.end_row();
 
                                 for week in weeks.iter_mut() {
-                                    ui.label(&week.week_commencing);
+                                    ui.label(crate::date_utils::screen(ui, &week.week_commencing));
 
                                     edit_number(
                                         ui,
@@ -438,8 +453,11 @@ impl PayrollTimesheetScreen {
                                         {
                                             ui.horizontal(|ui| {
                                                 ui.label(
-                                                    egui::RichText::new(&holiday.holiday_date)
-                                                        .size(8.0),
+                                                    egui::RichText::new(crate::date_utils::screen(
+                                                        ui,
+                                                        &holiday.holiday_date,
+                                                    ))
+                                                    .size(8.0),
                                                 );
 
                                                 edit_optional_number(
@@ -561,7 +579,7 @@ impl PayrollTimesheetScreen {
                 }
                 ui.end_row();
                 for week in weeks {
-                    ui.label(&week.week_commencing);
+                    ui.label(crate::date_utils::screen(ui, &week.week_commencing));
                     ui.label(format_decimal_hours(week.worked_hours));
                     ui.vertical(|ui| {
                         ui.label(format_decimal_hours(week.annual_leave_hours));
@@ -576,7 +594,7 @@ impl PayrollTimesheetScreen {
                             for row in leave.iter().filter(|r| r.week_number == week.week_number) {
                                 ui.label(format!(
                                     "{}: {}",
-                                    row.leave_date,
+                                    crate::date_utils::screen(ui, &row.leave_date),
                                     format_decimal_hours(row.hours)
                                 ));
                             }
@@ -594,7 +612,7 @@ impl PayrollTimesheetScreen {
                         {
                             ui.label(format!(
                                 "{}: {}",
-                                holiday.holiday_date,
+                                crate::date_utils::screen(ui, &holiday.holiday_date),
                                 format_decimal_hours(holiday.hours)
                             ));
                         }
@@ -1321,10 +1339,15 @@ fn save_preparation_record(
         .payroll_schedule_repository
         .get_for_year_and_cycle(&bound.payroll_year, bound.cycle_number)?
         .ok_or("The payroll schedule bound to this screen no longer exists. Reload Payroll Timesheet Preparation before saving.")?;
-    if stored_schedule.first_week_commencing != bound.first_week_commencing
-        || stored_schedule.pay_date != bound.pay_date
-        || operational_schedule.first_week_commencing != bound.first_week_commencing
-        || operational_schedule.pay_date != bound.pay_date
+    if !crate::date_utils::same(
+        &stored_schedule.first_week_commencing,
+        &bound.first_week_commencing,
+    ) || !crate::date_utils::same(&stored_schedule.pay_date, &bound.pay_date)
+        || !crate::date_utils::same(
+            &operational_schedule.first_week_commencing,
+            &bound.first_week_commencing,
+        )
+        || !crate::date_utils::same(&operational_schedule.pay_date, &bound.pay_date)
     {
         return Err("The payroll schedule changed while this screen was open. Reload Payroll Timesheet Preparation before saving.".into());
     }
@@ -1439,14 +1462,24 @@ fn annual_leave_equal(
     left: &[PayrollTimesheetAnnualLeave],
     right: &[PayrollTimesheetAnnualLeave],
 ) -> bool {
-    let keys = |rows: &[PayrollTimesheetAnnualLeave]| {
+    let keys = |rows: &[PayrollTimesheetAnnualLeave], strict_edits: bool| {
         let mut values = rows
             .iter()
             .map(|row| {
+                let unchanged = left
+                    .iter()
+                    .any(|old| old.id == row.id && old.leave_date == row.leave_date);
+                let parsed = if strict_edits && !unchanged {
+                    crate::date_utils::parse_input(&row.leave_date)
+                } else {
+                    crate::date_utils::parse_legacy(&row.leave_date)
+                };
                 (
                     row.payroll_timesheet_id,
                     row.week_number,
-                    crate::payroll_timesheet_repository::parse_leave_date(&row.leave_date),
+                    parsed
+                        .map(crate::date_utils::iso)
+                        .unwrap_or_else(|_| format!("invalid:{}", row.leave_date)),
                     row.hours.to_bits(),
                 )
             })
@@ -1454,7 +1487,7 @@ fn annual_leave_equal(
         values.sort();
         values
     };
-    keys(left) == keys(right)
+    keys(left, false) == keys(right, true)
 }
 
 fn new_annual_leave(week: &PayrollTimesheetWeek, hours: f64) -> PayrollTimesheetAnnualLeave {
@@ -1512,10 +1545,10 @@ fn edit_annual_leave(
         {
             ui.push_id((week.id, index), |ui| {
                 ui.horizontal(|ui| {
-                    ui.add(
-                        egui::TextEdit::singleline(&mut row.leave_date)
-                            .desired_width(85.0)
-                            .hint_text("DD/MM/YYYY"),
+                    crate::date_utils::edit(
+                        ui,
+                        &mut row.leave_date,
+                        crate::date_utils::preference(ui),
                     );
                     ui.add(egui::DragValue::new(&mut row.hours).speed(0.25));
                     if ui.button("Remove").clicked() {
@@ -1555,7 +1588,7 @@ fn weeks_equal(left: &[PayrollTimesheetWeek], right: &[PayrollTimesheetWeek]) ->
         && left.iter().zip(right).all(|(left, right)| {
             left.id == right.id
                 && left.week_number == right.week_number
-                && left.week_commencing == right.week_commencing
+                && crate::date_utils::same(&left.week_commencing, &right.week_commencing)
                 && (left.worked_hours - right.worked_hours).abs() <= f64::EPSILON
                 && (left.annual_leave_hours - right.annual_leave_hours).abs() <= f64::EPSILON
                 && (left.sick_leave_hours - right.sick_leave_hours).abs() <= f64::EPSILON
@@ -1572,7 +1605,7 @@ fn public_holidays_equal(
         && left.iter().zip(right).all(|(left, right)| {
             left.id == right.id
                 && left.week_number == right.week_number
-                && left.holiday_date == right.holiday_date
+                && crate::date_utils::same(&left.holiday_date, &right.holiday_date)
                 && (left.hours - right.hours).abs() <= f64::EPSILON
         })
 }
@@ -2181,7 +2214,7 @@ pub(crate) mod tests {
         let expected = screen.annual_leave[&id][0].leave_date.clone();
         screen.annual_leave.get_mut(&id).unwrap()[0].leave_date = parse_leave_date(&expected)
             .unwrap()
-            .format("%-d/%-m/%y")
+            .format("%-d/%-m/%Y")
             .to_string();
         let result = save_current_row(&application, &schedule, &screen).unwrap();
         assert_eq!(result.normalised_annual_leave[0].leave_date, expected);
@@ -2197,7 +2230,7 @@ pub(crate) mod tests {
         screen.load(&application, &schedule, "period").unwrap();
         screen.annual_leave.get_mut(&id).unwrap()[0].leave_date = parse_leave_date(&expected)
             .unwrap()
-            .format("%-d/%-m/%y")
+            .format("%-d/%-m/%Y")
             .to_string();
         let result = save_current_row(&application, &schedule, &screen).unwrap();
         assert!(!result.changed);
@@ -3231,14 +3264,11 @@ pub(crate) mod tests {
 }
 
 fn parse_date(value: &str) -> Option<chrono::NaiveDate> {
-    chrono::NaiveDate::parse_from_str(value.trim(), "%d/%m/%Y")
-        .or_else(|_| chrono::NaiveDate::parse_from_str(value.trim(), "%d-%m-%Y"))
-        .or_else(|_| chrono::NaiveDate::parse_from_str(value.trim(), "%Y-%m-%d"))
-        .ok()
+    crate::date_utils::parse_legacy(value).ok()
 }
 
 fn format_date(date: chrono::NaiveDate) -> String {
-    date.format("%d/%m/%Y").to_string()
+    crate::date_utils::uk(date)
 }
 
 fn format_decimal_hours(value: f64) -> String {

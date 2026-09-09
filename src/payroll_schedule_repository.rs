@@ -215,7 +215,7 @@ impl PayrollScheduleRepository {
         let mut matches = Vec::new();
         for row in rows {
             let schedule = row?;
-            let first_week = NaiveDate::parse_from_str(&schedule.first_week_commencing, "%d/%m/%Y")
+            let first_week = crate::date_utils::parse_legacy(&schedule.first_week_commencing)
                 .map_err(|_| PayrollScheduleResolutionError::InvalidStoredDate {
                     schedule_id: schedule.id,
                     value: schedule.first_week_commencing.clone(),
@@ -242,13 +242,11 @@ impl PayrollScheduleRepository {
         &self,
         current: &PayrollSchedule,
     ) -> std::result::Result<Option<PayrollSchedule>, PayrollScheduleResolutionError> {
-        let current_first_week =
-            NaiveDate::parse_from_str(&current.first_week_commencing, "%d/%m/%Y").map_err(
-                |_| PayrollScheduleResolutionError::InvalidStoredDate {
-                    schedule_id: current.id,
-                    value: current.first_week_commencing.clone(),
-                },
-            )?;
+        let current_first_week = crate::date_utils::parse_legacy(&current.first_week_commencing)
+            .map_err(|_| PayrollScheduleResolutionError::InvalidStoredDate {
+                schedule_id: current.id,
+                value: current.first_week_commencing.clone(),
+            })?;
 
         let mut statement = self.connection.prepare(
             "SELECT id, payroll_year, cycle_number, first_week_commencing,
@@ -272,7 +270,7 @@ impl PayrollScheduleRepository {
         let mut matches = Vec::new();
         for row in rows {
             let schedule = row?;
-            let first_week = NaiveDate::parse_from_str(&schedule.first_week_commencing, "%d/%m/%Y")
+            let first_week = crate::date_utils::parse_legacy(&schedule.first_week_commencing)
                 .map_err(|_| PayrollScheduleResolutionError::InvalidStoredDate {
                     schedule_id: schedule.id,
                     value: schedule.first_week_commencing.clone(),
@@ -372,9 +370,13 @@ impl PayrollScheduleRepository {
                 params![
                     schedule.payroll_year,
                     schedule.cycle_number,
-                    schedule.first_week_commencing,
-                    schedule.latest_posting_date,
-                    schedule.pay_date,
+                    unchanged
+                        .map(|s| &s.first_week_commencing)
+                        .unwrap_or(&schedule.first_week_commencing),
+                    unchanged
+                        .map(|s| &s.latest_posting_date)
+                        .unwrap_or(&schedule.latest_posting_date),
+                    unchanged.map(|s| &s.pay_date).unwrap_or(&schedule.pay_date),
                     created_at,
                     payslips_sent,
                 ],
@@ -398,9 +400,9 @@ impl PayrollScheduleRepository {
 }
 
 fn same_schedule_dates(left: &PayrollSchedule, right: &PayrollSchedule) -> bool {
-    left.first_week_commencing == right.first_week_commencing
-        && left.latest_posting_date == right.latest_posting_date
-        && left.pay_date == right.pay_date
+    crate::date_utils::same(&left.first_week_commencing, &right.first_week_commencing)
+        && crate::date_utils::same(&left.latest_posting_date, &right.latest_posting_date)
+        && crate::date_utils::same(&left.pay_date, &right.pay_date)
 }
 
 #[cfg(test)]
@@ -408,7 +410,7 @@ mod tests {
     use super::*;
 
     fn date(value: &str) -> NaiveDate {
-        NaiveDate::parse_from_str(value, "%d/%m/%Y").unwrap()
+        crate::date_utils::parse_legacy(value).unwrap()
     }
 
     fn repository_with_schedules(schedules: &[(&str, i64, &str)]) -> PayrollScheduleRepository {

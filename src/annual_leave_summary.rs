@@ -224,7 +224,7 @@ fn optional_date(value: &Option<String>, label: &str) -> Result<Option<NaiveDate
         .transpose()
 }
 fn display(date: NaiveDate) -> String {
-    date.format("%d/%m/%Y").to_string()
+    crate::date_utils::uk(date)
 }
 
 // These settings are recurring rule effective dates, never the leave-year
@@ -673,7 +673,7 @@ impl AnnualLeaveSummaryUi {
                 "Calculated to: {}",
                 summary
                     .calculated_to
-                    .map(display)
+                    .map(|d| application.context.config.date_display_format.format(d))
                     .unwrap_or_else(|| "no qualifying Sent payroll period".into())
             ));
         }
@@ -695,11 +695,11 @@ impl AnnualLeaveSummaryUi {
             .id(egui::Id::new(("annual_leave_details",pa_id))).open(&mut self.details_open)
             .default_width(650.0).vscroll(true).show(ui.ctx(), |ui| {
                 ui.label("Guidance only. Payroll remains definitive. Values below retain additional precision.");
-                for warning in &summary.incomplete { ui.colored_label(ui.visuals().warn_fg_color, warning); }
+                for warning in &summary.incomplete { ui.colored_label(ui.visuals().warn_fg_color, crate::date_utils::calendar_text(application.context.config.date_display_format, warning)); }
                 for part in &summary.contracted_parts {
-                    ui.label(format!("Contracted {}–{} inclusive: {:.4} weekly h × {} weeks × {} / {} days = {:.6} h", display(part.start), display(part.end), part.weekly_hours, evidence.settings.statutory_weeks, (part.end-part.start).num_days()+1, (year.end()-year.start()).num_days()+1, part.entitlement));
+                    ui.label(format!("Contracted {}–{} inclusive: {:.4} weekly h × {} weeks × {} / {} days = {:.6} h", application.context.config.date_display_format.format(part.start), application.context.config.date_display_format.format(part.end), part.weekly_hours, evidence.settings.statutory_weeks, (part.end-part.start).num_days()+1, (year.end()-year.start()).num_days()+1, part.entitlement));
                 }
-                for detail in &summary.details { ui.label(detail); }
+                for detail in &summary.details { ui.label(crate::date_utils::calendar_text(application.context.config.date_display_format, detail)); }
             });
     }
 }

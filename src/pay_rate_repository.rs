@@ -1,5 +1,5 @@
 use chrono::NaiveDate;
-use rusqlite::{params, Connection, OptionalExtension, Result};
+use rusqlite::{params, Connection, Result};
 use std::collections::HashSet;
 
 #[derive(Debug)]
@@ -23,7 +23,7 @@ impl PayRateRepository {
     }
 
     pub fn insert(&self, rate: &PersonalAssistantPayRate) -> Result<()> {
-        let effective_date = normalise_date(&rate.effective_date);
+        let effective_date = crate::date_utils::edited(&rate.effective_date, None, false)?;
 
         self.connection.execute(
             "
@@ -49,7 +49,13 @@ impl PayRateRepository {
     }
 
     pub fn update(&self, rate: &PersonalAssistantPayRate) -> Result<()> {
-        let effective_date = normalise_date(&rate.effective_date);
+        let previous: String = self.connection.query_row(
+            "SELECT effective_date FROM personal_assistant_pay_rates WHERE id=?1",
+            [rate.id],
+            |row| row.get(0),
+        )?;
+        let effective_date =
+            crate::date_utils::edited(&rate.effective_date, Some(&previous), false)?;
 
         self.connection.execute(
             "
@@ -98,11 +104,7 @@ impl PayRateRepository {
                 created_at
             FROM personal_assistant_pay_rates
             WHERE personal_assistant_id = ?1
-            ORDER BY
-                substr(effective_date, 7, 4) DESC,
-                substr(effective_date, 4, 2) DESC,
-                substr(effective_date, 1, 2) DESC,
-                id DESC
+            ORDER BY id DESC
             ",
         )?;
 
@@ -123,6 +125,12 @@ impl PayRateRepository {
             results.push(rate?);
         }
 
+        results.sort_by_key(|row| {
+            std::cmp::Reverse((
+                crate::date_utils::parse_legacy(&row.effective_date).ok(),
+                row.id,
+            ))
+        });
         Ok(results)
     }
 
@@ -145,47 +153,16 @@ impl PayRateRepository {
         personal_assistant_id: i64,
         as_of_date: NaiveDate,
     ) -> Result<Option<PersonalAssistantPayRate>> {
-        self.connection
-            .query_row(
-                "
-                SELECT
-                    id,
-                    personal_assistant_id,
-                    effective_date,
-                    base_hourly_rate,
-                    employer_top_up_rate,
-                    created_at
-                FROM personal_assistant_pay_rates
-                WHERE personal_assistant_id = ?1
-                  AND printf(
-                        '%04d-%02d-%02d',
-                        CAST(substr(effective_date, 7, 4) AS INTEGER),
-                        CAST(substr(effective_date, 4, 2) AS INTEGER),
-                        CAST(substr(effective_date, 1, 2) AS INTEGER)
-                      ) <= ?2
-                ORDER BY
-                    substr(effective_date, 7, 4) DESC,
-                    substr(effective_date, 4, 2) DESC,
-                    substr(effective_date, 1, 2) DESC,
-                    id DESC
-                LIMIT 1
-                ",
-                params![
-                    personal_assistant_id,
-                    as_of_date.format("%Y-%m-%d").to_string()
-                ],
-                |row| {
-                    Ok(PersonalAssistantPayRate {
-                        id: row.get(0)?,
-                        personal_assistant_id: row.get(1)?,
-                        effective_date: row.get(2)?,
-                        base_hourly_rate: row.get(3)?,
-                        employer_top_up_rate: row.get(4)?,
-                        created_at: row.get(5)?,
-                    })
-                },
-            )
-            .optional()
+        let rows = self.get_all_for_personal_assistant(personal_assistant_id)?;
+        // Invalid legacy history is visible in maintenance, never guessed in payroll.
+        for row in &rows {
+            crate::date_utils::parse_legacy(&row.effective_date)
+                .map_err(crate::date_utils::sql_error)?;
+        }
+        Ok(rows.into_iter().find(|row| {
+            crate::date_utils::parse_legacy(&row.effective_date)
+                .is_ok_and(|date| date <= as_of_date)
+        }))
     }
 
     pub fn get_applicable_during_period(
@@ -196,8 +173,7 @@ impl PayRateRepository {
     ) -> Result<Vec<PersonalAssistantPayRate>> {
         let mut rates = self.get_all_for_personal_assistant(personal_assistant_id)?;
         rates.retain(|rate| {
-            NaiveDate::parse_from_str(&rate.effective_date, "%d/%m/%Y")
-                .is_ok_and(|date| date <= end_date)
+            crate::date_utils::parse_legacy(&rate.effective_date).is_ok_and(|date| date <= end_date)
         });
 
         let active_at_start = self
@@ -205,16 +181,16 @@ impl PayRateRepository {
             .map(|rate| rate.id);
         let mut effective_dates_seen = HashSet::new();
         rates.retain(|rate| {
-            let is_authoritative_for_effective_date =
-                effective_dates_seen.insert(rate.effective_date.clone());
+            let is_authoritative_for_effective_date = effective_dates_seen
+                .insert(crate::date_utils::parse_legacy(&rate.effective_date).ok());
             is_authoritative_for_effective_date
                 && (active_at_start == Some(rate.id)
-                    || NaiveDate::parse_from_str(&rate.effective_date, "%d/%m/%Y")
+                    || crate::date_utils::parse_legacy(&rate.effective_date)
                         .is_ok_and(|date| date >= start_date && date <= end_date))
         });
         rates.sort_by_key(|rate| {
             (
-                NaiveDate::parse_from_str(&rate.effective_date, "%d/%m/%Y").ok(),
+                crate::date_utils::parse_legacy(&rate.effective_date).ok(),
                 rate.id,
             )
         });
@@ -222,24 +198,55 @@ impl PayRateRepository {
     }
 }
 
-fn normalise_date(date: &str) -> String {
-    let parts: Vec<&str> = date.split('/').collect();
-
-    if parts.len() == 3 {
-        let day = parts[0].parse::<u32>().unwrap_or(0);
-        let month = parts[1].parse::<u32>().unwrap_or(0);
-        let year = parts[2].parse::<u32>().unwrap_or(0);
-
-        if day > 0 && month > 0 && year > 0 {
-            return format!("{:02}/{:02}/{:04}", day, month, year);
-        }
-    }
-
-    date.to_string()
-}
-
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn mixed_calendar_history_orders_by_date_and_id_without_rewriting() {
+        let repo = create_test_repository();
+        for (date, rate) in [
+            ("31/12/2025", 10),
+            ("2026-01-02", 12),
+            ("02/01/2026", 13),
+            ("1st Feb 2026", 14),
+        ] {
+            repo.connection.execute("INSERT INTO personal_assistant_pay_rates(personal_assistant_id,effective_date,base_hourly_rate,employer_top_up_rate,created_at) VALUES(1,?1,?2,0,'legacy')", params![date,rate]).unwrap();
+        }
+        let rows = repo.get_all_for_personal_assistant(1).unwrap();
+        assert_eq!(
+            rows.iter().map(|r| r.id).collect::<Vec<_>>(),
+            vec![4, 3, 2, 1]
+        );
+        let at = crate::date_utils::parse_input("15 Jan 2026").unwrap();
+        assert_eq!(
+            repo.get_for_personal_assistant_as_of(1, at)
+                .unwrap()
+                .unwrap()
+                .id,
+            3
+        );
+        let applicable = repo
+            .get_applicable_during_period(
+                1,
+                at,
+                crate::date_utils::parse_input("2 Feb 2026").unwrap(),
+            )
+            .unwrap();
+        assert_eq!(
+            applicable.iter().map(|r| r.id).collect::<Vec<_>>(),
+            vec![3, 4]
+        );
+        let mut row = rows[0].clone();
+        row.effective_date = "2026-02-01".into();
+        repo.update(&row).unwrap();
+        assert_eq!(
+            repo.get_all_for_personal_assistant(1).unwrap()[0].effective_date,
+            "1st Feb 2026"
+        );
+        row.effective_date = "2/2/26".into();
+        assert!(repo.update(&row).is_err());
+    }
+
     use super::*;
     use crate::database::create_schema;
 

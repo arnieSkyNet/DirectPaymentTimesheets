@@ -120,7 +120,11 @@ impl EmployerScreen {
 
                 let dob = employer.date_of_birth.get_or_insert(String::new());
 
-                columns[1].add_sized([120.0, 20.0], egui::TextEdit::singleline(dob));
+                crate::date_utils::edit(
+                    &mut columns[1],
+                    dob,
+                    application.context.config.date_display_format,
+                );
 
                 columns[1].add_space(15.0);
 

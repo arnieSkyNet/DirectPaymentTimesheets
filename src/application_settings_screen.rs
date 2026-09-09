@@ -9,6 +9,7 @@ pub struct ApplicationSettingsScreen {
     loaded: bool,
 
     theme: ApplicationTheme,
+    date_display_format: crate::date_utils::DateDisplayFormat,
     hours_shift_date_time_spinner: bool,
 
     csv_import: String,
@@ -38,6 +39,7 @@ impl ApplicationSettingsScreen {
             loaded: false,
 
             theme: ApplicationTheme::default(),
+            date_display_format: Default::default(),
             hours_shift_date_time_spinner: false,
 
             csv_import: String::new(),
@@ -74,6 +76,16 @@ impl ApplicationSettingsScreen {
         ui.separator();
 
         ui.heading("Appearance");
+        ui.horizontal(|ui| {
+            ui.label("Calendar date display");
+            crate::gui_controls::combo_box("calendar_date_display")
+                .selected_text(self.date_display_format.label())
+                .show_ui(ui, |ui| {
+                    for format in crate::date_utils::DateDisplayFormat::ALL {
+                        ui.selectable_value(&mut self.date_display_format, format, format.label());
+                    }
+                });
+        });
 
         ui.horizontal(|ui| {
             ui.label("Application Theme");
@@ -548,6 +560,7 @@ impl ApplicationSettingsScreen {
         let config = &application.context.config;
 
         self.theme = config.theme;
+        self.date_display_format = config.date_display_format;
         self.hours_shift_date_time_spinner = config.hours_shift_date_time_spinner;
 
         self.csv_import = config.folders.csv_import.to_string_lossy().to_string();
@@ -629,6 +642,7 @@ impl ApplicationSettingsScreen {
         }
 
         application.context.config.theme = self.theme;
+        application.context.config.date_display_format = self.date_display_format;
         application.context.config.hours_shift_date_time_spinner =
             self.hours_shift_date_time_spinner;
 

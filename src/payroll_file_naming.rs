@@ -6,7 +6,7 @@ use chrono::{Datelike, NaiveDate};
 use crate::payroll_schedule_repository::PayrollSchedule;
 
 pub fn paye_week(schedule: &PayrollSchedule) -> Result<u32, Box<dyn Error>> {
-    let pay_date = NaiveDate::parse_from_str(&schedule.pay_date, "%d/%m/%Y")
+    let pay_date = crate::date_utils::parse_legacy(&schedule.pay_date)
         .map_err(|_| format!("Invalid payroll pay date: '{}'.", schedule.pay_date))?;
     let april_sixth = NaiveDate::from_ymd_opt(pay_date.year(), 4, 6)
         .ok_or("Could not calculate the PAYE tax-year start.")?;
@@ -21,8 +21,8 @@ pub fn paye_week(schedule: &PayrollSchedule) -> Result<u32, Box<dyn Error>> {
 }
 
 pub fn payroll_period_code(schedule: &PayrollSchedule) -> Result<String, Box<dyn Error>> {
-    let first_week = NaiveDate::parse_from_str(&schedule.first_week_commencing, "%d/%m/%Y")
-        .map_err(|_| {
+    let first_week =
+        crate::date_utils::parse_legacy(&schedule.first_week_commencing).map_err(|_| {
             format!(
                 "Invalid payroll first week commencing date: '{}'.",
                 schedule.first_week_commencing
@@ -150,6 +150,28 @@ fn sanitise_filename(value: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn equivalent_calendar_formats_preserve_machine_names_and_paye_week() {
+        let mut item = schedule(
+            "2026/27",
+            6,
+            NaiveDate::from_ymd_opt(2026, 8, 10).unwrap(),
+            NaiveDate::from_ymd_opt(2026, 9, 4).unwrap(),
+        );
+        let original = timesheet_filename("Birch Sample", &item).unwrap();
+        let week = paye_week(&item).unwrap();
+        for format in crate::date_utils::DateDisplayFormat::ALL {
+            item.first_week_commencing =
+                format.format(NaiveDate::from_ymd_opt(2026, 8, 10).unwrap());
+            item.pay_date = format.format(NaiveDate::from_ymd_opt(2026, 9, 4).unwrap());
+            assert_eq!(
+                timesheet_filename("Birch Sample", &item).unwrap(),
+                original
+            );
+            assert_eq!(paye_week(&item).unwrap(), week);
+        }
+    }
+
     use super::*;
 
     fn schedule(

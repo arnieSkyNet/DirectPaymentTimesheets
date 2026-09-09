@@ -83,7 +83,7 @@ pub fn allocate_worked_hours_by_rate(
                 ))
             })?;
         let effective_date =
-            NaiveDate::parse_from_str(&rate.effective_date, "%d/%m/%Y").map_err(|_| {
+            crate::date_utils::parse_legacy(&rate.effective_date).map_err(|_| {
                 PayRateAllocationError(format!(
                     "Pay rate {} has invalid effective date {}.",
                     rate.id, rate.effective_date
@@ -421,7 +421,7 @@ fn add_portion(
     rate: &crate::pay_rate_repository::PersonalAssistantPayRate,
     is_previous_cycle: bool,
 ) -> Result<(), PayRateAllocationError> {
-    let effective_date = NaiveDate::parse_from_str(&rate.effective_date, "%d/%m/%Y")
+    let effective_date = crate::date_utils::parse_legacy(&rate.effective_date)
         .map_err(|_| PayRateAllocationError("Invalid pay-rate effective date.".into()))?;
     if let Some(portion) = portions.iter_mut().find(|portion| {
         portion.rate_id == Some(rate.id) && portion.is_previous_cycle == is_previous_cycle
@@ -588,17 +588,7 @@ fn format_hundredths(hundredths: i64) -> String {
 }
 
 pub(crate) fn parse_timesheet_date(value: &str) -> Option<NaiveDate> {
-    let value = value.trim();
-    NaiveDate::parse_from_str(value, "%d/%m/%Y")
-        .or_else(|_| NaiveDate::parse_from_str(value, "%d-%m-%Y"))
-        .or_else(|_| NaiveDate::parse_from_str(value, "%Y-%m-%d"))
-        .ok()
-        .or_else(|| {
-            let date = value.split(" at ").next()?.trim();
-            NaiveDate::parse_from_str(date, "%d %B %Y")
-                .or_else(|_| NaiveDate::parse_from_str(date, "%d %b %Y"))
-                .ok()
-        })
+    crate::date_utils::parse_legacy(value.trim().split(" at ").next()?).ok()
 }
 
 #[cfg(test)]

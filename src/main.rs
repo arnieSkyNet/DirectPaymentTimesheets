@@ -10,6 +10,7 @@ mod context;
 mod contracted_hours_repository;
 mod csv_import;
 mod database;
+mod date_utils;
 mod direct_shift_repository;
 mod email_service;
 mod employer_repository;

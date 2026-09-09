@@ -12,6 +12,12 @@ impl EmployerRepository {
     }
 
     pub fn insert(&self, employer: &Employer) -> Result<()> {
+        let previous: Option<String> = None;
+        let dob = crate::date_utils::optional_edited(
+            employer.date_of_birth.as_deref(),
+            previous.as_deref(),
+            true,
+        )?;
         self.connection.execute(
             "
             INSERT INTO employers (
@@ -32,7 +38,7 @@ impl EmployerRepository {
             ",
             params![
                 &employer.name,
-                &employer.date_of_birth,
+                &dob,
                 &employer.national_insurance_number,
                 &employer.reference_account_number,
                 &employer.address,
@@ -50,6 +56,16 @@ impl EmployerRepository {
     }
 
     pub fn update(&self, employer: &Employer) -> Result<()> {
+        let previous = self
+            .get_all()?
+            .into_iter()
+            .find(|row| row.id == employer.id)
+            .and_then(|row| row.date_of_birth);
+        let dob = crate::date_utils::optional_edited(
+            employer.date_of_birth.as_deref(),
+            previous.as_deref(),
+            true,
+        )?;
         self.connection.execute(
             "
             UPDATE employers
@@ -70,7 +86,7 @@ impl EmployerRepository {
             ",
             params![
                 &employer.name,
-                &employer.date_of_birth,
+                &dob,
                 &employer.national_insurance_number,
                 &employer.reference_account_number,
                 &employer.address,

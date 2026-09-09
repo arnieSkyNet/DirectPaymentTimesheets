@@ -10,6 +10,9 @@ pub struct AppConfig {
     pub theme: ApplicationTheme,
 
     #[serde(default)]
+    pub date_display_format: crate::date_utils::DateDisplayFormat,
+
+    #[serde(default)]
     pub hours_shift_date_time_spinner: bool,
 
     pub folders: FolderConfig,
@@ -251,6 +254,7 @@ impl Default for AppConfig {
     fn default() -> Self {
         Self {
             theme: ApplicationTheme::default(),
+            date_display_format: Default::default(),
             hours_shift_date_time_spinner: false,
             folders: FolderConfig {
                 csv_import: default_csv_import_folder(),
@@ -324,6 +328,33 @@ fn reconcile_legacy_timesheet_email_body(config: &mut AppConfig, source: &toml::
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn calendar_preference_defaults_and_round_trips_all_restricted_choices() {
+        use crate::date_utils::DateDisplayFormat;
+        let mut value = toml::Value::try_from(AppConfig::default()).unwrap();
+        value.as_table_mut().unwrap().remove("date_display_format");
+        let old: AppConfig = value.clone().try_into().unwrap();
+        assert_eq!(old.date_display_format, DateDisplayFormat::ShortMonth);
+        let dir = tempfile::tempdir().unwrap();
+        for format in DateDisplayFormat::ALL {
+            let mut config = AppConfig::default();
+            config.date_display_format = format;
+            config.save(&dir.path().join("config.toml")).unwrap();
+            assert_eq!(
+                AppConfig::load(&dir.path().join("config.toml"))
+                    .unwrap()
+                    .date_display_format,
+                format
+            );
+        }
+        value
+            .as_table_mut()
+            .unwrap()
+            .insert("date_display_format".into(), "arbitrary".into());
+        assert!(value.try_into::<AppConfig>().is_err());
+    }
+
     use super::*;
     use std::time::{SystemTime, UNIX_EPOCH};
 

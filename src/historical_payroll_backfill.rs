@@ -294,7 +294,7 @@ fn apply_figure(connection: &Connection, figure: &HistoricalPayroll) -> Result<(
         "SELECT id FROM payroll_timesheets WHERE personal_assistant_id = ?1 AND payroll_year = ?2 AND cycle_number = ?3",
         params![personal_assistant_id, PAYROLL_YEAR, figure.cycle], |row| row.get(0),
     )?;
-    let first_week = NaiveDate::parse_from_str(figure.first_week, "%d/%m/%Y").map_err(|_| {
+    let first_week = crate::date_utils::parse_legacy(figure.first_week).map_err(|_| {
         rusqlite::Error::InvalidParameterName("Invalid fixed historical date".to_string())
     })?;
 
@@ -453,7 +453,7 @@ mod tests {
                     index + 1
                 );
                 let adjustment: i64 = connection.query_row("SELECT adjustment_minutes FROM payroll_timesheet_manual_adjustments WHERE payroll_timesheet_id=?1 AND week_number=?2", params![id, index as i64 + 1], |r| r.get(0)).unwrap();
-                let week_start = NaiveDate::parse_from_str(figure.first_week, "%d/%m/%Y").unwrap()
+                let week_start = crate::date_utils::parse_legacy(figure.first_week).unwrap()
                     + Duration::days(index as i64 * 7);
                 assert_eq!(
                     raw_minutes_for_week(

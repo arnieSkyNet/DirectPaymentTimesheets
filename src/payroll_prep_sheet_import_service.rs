@@ -68,7 +68,7 @@ impl<'a> PayrollPrepSheetImportService<'a> {
         for line in text.lines() {
             let dates: Vec<&str> = line
                 .split_whitespace()
-                .filter(|value| chrono::NaiveDate::parse_from_str(value, "%d/%m/%Y").is_ok())
+                .filter(|value| crate::date_utils::parse_input(value).is_ok())
                 .collect();
 
             if dates.len() == 3 {
@@ -183,7 +183,7 @@ fn parse_schedule_date(
     cycle_number: i64,
     field_name: &str,
 ) -> Result<NaiveDate, Box<dyn Error>> {
-    NaiveDate::parse_from_str(value, "%d/%m/%Y").map_err(|_| {
+    crate::date_utils::parse_input(value).map_err(|_| {
         format!("Payroll cycle {cycle_number} has an invalid {field_name}: '{value}'.").into()
     })
 }
