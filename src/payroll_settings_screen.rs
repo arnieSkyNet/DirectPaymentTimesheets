@@ -87,7 +87,11 @@ impl PayrollSettingsScreen {
 
         ui.columns(3, |columns| {
             columns[0].label("Effective date:");
-            columns[0].text_edit_singleline(&mut self.standard_rate_effective_date);
+            crate::date_utils::edit(
+                &mut columns[0],
+                &mut self.standard_rate_effective_date,
+                application.context.config.date_display_format,
+            );
 
             columns[1].label("Basic hourly rate:");
             columns[1].text_edit_singleline(&mut self.standard_rate_base);

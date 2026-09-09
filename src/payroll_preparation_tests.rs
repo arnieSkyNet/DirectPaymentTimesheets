@@ -1104,3 +1104,84 @@ fn sent_and_settled_preparations_are_not_rewritten_when_employment_no_longer_ove
         assert_eq!(reloaded.records.len(), original.records.len());
     }
 }
+
+#[test]
+fn calendar_preferences_render_without_editing_candidate_or_evidence() {
+    let (_dir, mut app, schedule, mut screen) = load_active_record();
+    set_dated_leave(&mut screen, 0, 0, 2.0);
+    save_current_row(&app, &schedule, &screen).unwrap();
+    screen.reload();
+    screen.load(&app, &schedule, "period").unwrap();
+    create_candidate(&app, &screen);
+    let id = screen.weeks[0].0.id;
+    let original = app.payroll_timesheet_repository.get_annual_leave(id).unwrap();
+    let signature = crate::payroll_evidence::lifecycle::candidate_signature(&setup_connection(&app), id).unwrap();
+    screen.loaded = true;
+    screen.preflight_done = true;
+    let ctx = egui::Context::default();
+    for format in crate::date_utils::DateDisplayFormat::ALL {
+        app.context.config.date_display_format = format;
+        crate::date_utils::set_display(&ctx, format);
+        let text = render_preparation(&ctx, &app, &schedule, &mut screen).join(" ");
+        assert!(text.contains(&format.display(&screen.weeks[0].1[0].week_commencing)), "{text}");
+        assert!(!screen.has_unsaved_changes());
+        assert_eq!(screen.annual_leave[&id][0].leave_date, original[0].leave_date);
+        assert_eq!(crate::payroll_evidence::lifecycle::candidate_signature(&setup_connection(&app), id).unwrap(), signature);
+    }
+    screen.annual_leave.get_mut(&id).unwrap()[0].leave_date = "10th August 2026".into();
+    assert!(!screen.has_unsaved_changes());
+    assert!(!save_current_row(&app, &schedule, &screen).unwrap().changed);
+    assert_eq!(app.payroll_worked_item_repository.snapshot_metadata(id).unwrap().unwrap().state, SnapshotState::Candidate);
+}
+
+#[test]
+fn mixed_leave_dates_sort_chronologically_without_converting_existing_rows() {
+    let (_dir, app, _, screen) = load_active_record();
+    let record = screen.weeks[0].0.id;
+    let db = setup_connection(&app);
+    for date in ["12/08/2026", "2026-08-10", "11 Aug 2026"] {
+        db.execute("INSERT INTO payroll_timesheet_annual_leave(payroll_timesheet_id,week_number,leave_date,hours,created_at,updated_at) VALUES(?1,1,?2,1,'legacy','legacy')", params![record,date]).unwrap();
+    }
+    let rows = app.payroll_timesheet_repository.get_annual_leave(record).unwrap();
+    assert_eq!(rows.iter().map(|r| r.leave_date.as_str()).collect::<Vec<_>>(), vec!["2026-08-10", "11 Aug 2026", "12/08/2026"]);
+    let mut weeks = screen.weeks[0].1.clone();
+    let saved = derive_annual_leave(record, &mut weeks, &rows, &rows).unwrap();
+    assert_eq!(saved.iter().map(|r| &r.leave_date).collect::<Vec<_>>(), rows.iter().map(|r| &r.leave_date).collect::<Vec<_>>());
+    let mut changed = rows.clone();
+    changed[0].leave_date = "10/8/26".into();
+    assert!(derive_annual_leave(record, &mut weeks, &changed, &rows).is_err());
+}
+
+#[test]
+fn short_year_edit_is_dirty_and_rejected_without_losing_candidate() {
+    let (_dir, app, schedule, mut screen) = load_active_record();
+    set_dated_leave(&mut screen, 0, 0, 2.0);
+    save_current_row(&app, &schedule, &screen).unwrap();
+    screen.reload();
+    screen.load(&app, &schedule, "period").unwrap();
+    let id = screen.weeks[0].0.id;
+    create_candidate(&app, &screen);
+    screen.annual_leave.get_mut(&id).unwrap()[0].leave_date = "10/8/26".into();
+    assert!(screen.has_unsaved_changes());
+    assert!(save_current_row(&app, &schedule, &screen).is_err());
+    assert_eq!(app.payroll_worked_item_repository.snapshot_metadata(id).unwrap().unwrap().state, SnapshotState::Candidate);
+}
+
+#[test]
+fn equivalent_period_and_holiday_dates_do_not_reload_or_duplicate_rows() {
+    let (_dir, app, schedule, mut screen) = load_active_record();
+    let mut equivalent = schedule.clone();
+    equivalent.first_week_commencing = crate::date_utils::iso(parse_date(&schedule.first_week_commencing).unwrap());
+    equivalent.pay_date = crate::date_utils::iso(parse_date(&schedule.pay_date).unwrap());
+    assert!(!screen.rebind_if_operational_period_changed(&equivalent));
+    let id = screen.weeks[0].0.id;
+    let holidays = app.payroll_timesheet_repository.get_public_holidays(id).unwrap();
+    assert!(!holidays.is_empty());
+    for holiday in &holidays {
+        let iso = crate::date_utils::iso(parse_date(&holiday.holiday_date).unwrap());
+        app.payroll_timesheet_repository.create_missing_public_holidays(id, &[(holiday.week_number, iso)]).unwrap();
+    }
+    let reloaded = app.payroll_timesheet_repository.get_public_holidays(id).unwrap();
+    assert_eq!(reloaded.len(), holidays.len());
+    assert_eq!(reloaded[0].holiday_date, holidays[0].holiday_date);
+}

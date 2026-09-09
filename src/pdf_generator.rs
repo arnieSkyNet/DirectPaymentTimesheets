@@ -71,6 +71,14 @@ impl PdfGenerator {
         data: &TimesheetPdfData<'_>,
         pdf_config: &crate::config::PdfConfig,
     ) -> Result<(), Box<dyn std::error::Error>> {
+        for value in data.week_commencing_dates {
+            crate::date_utils::parse_legacy(value)?;
+        }
+        for entry in data.public_holidays.iter().flatten() {
+            if !entry.date.trim().is_empty() {
+                crate::date_utils::parse_legacy(&entry.date)?;
+            }
+        }
         if let Some(parent) = output_path.parent() {
             fs::create_dir_all(parent).map_err(|error| {
                 format!(
@@ -290,7 +298,7 @@ impl PdfGenerator {
         // Signature dates
         // ------------------------------------------------------------
 
-        let current_date = Local::now().format("%d/%m/%Y").to_string();
+        let current_date = crate::date_utils::formal(Local::now().date_naive());
 
         write_text(
             &mut ops,
@@ -451,14 +459,9 @@ pub fn contracted_hours_summary(
 
     let mut groups: Vec<(String, Vec<String>)> = Vec::new();
     for (value, date) in values.iter().zip(week_commencing_dates) {
-        let compact_date = date
-            .split_once('/')
-            .and_then(|(day, remainder)| {
-                remainder
-                    .split_once('/')
-                    .map(|(month, _)| format!("{day}/{month}"))
-            })
-            .unwrap_or_else(|| date.clone());
+        let compact_date = crate::date_utils::parse_legacy(date)
+            .map(|date| date.format("%d/%m").to_string())
+            .unwrap_or_else(|_| "Invalid date".into());
         if let Some((_, dates)) = groups
             .iter_mut()
             .find(|(existing_value, _)| existing_value == value)
@@ -591,7 +594,8 @@ fn draw_table(
 
         write_text(
             ops,
-            week_dates[index],
+            &crate::date_utils::compact(week_dates[index])
+                .unwrap_or_else(|_| "Invalid date".into()),
             x + 1.5,
             row_top - 10.0,
             week_commencing_font_size,
@@ -710,7 +714,11 @@ fn draw_table(
                 let hours_width = approximate_text_width(public_holiday, hours_font_size, true);
                 write_text(
                     ops,
-                    &format!("({})", entry.date.trim()),
+                    &format!(
+                        "({})",
+                        crate::date_utils::compact(&entry.date)
+                            .unwrap_or_else(|_| "Invalid date".into())
+                    ),
                     public_holiday_x + hours_width,
                     line_y,
                     information_font_size,
@@ -899,7 +907,7 @@ mod tests {
             personal_assistant_name: "Birch Sample",
             national_insurance_number: "AB123456C",
             contracted_weekly_hours: "25",
-            week_commencing_dates: ["23/03/2026", "30/03/2026", "06/04/2026", "13/04/2026"],
+            week_commencing_dates: ["2026-03-23", "30 Mar 2026", "06/04/2026", "13/04/2026"],
 
             hours_worked: ["26.5", "21", "6.25", "0"],
 
@@ -911,7 +919,7 @@ mod tests {
                 vec![],
                 vec![PublicHolidayPdfEntry {
                     hours: "7.5".to_string(),
-                    date: "03/04/2026".to_string(),
+                    date: "2026-04-03".to_string(),
                 }],
                 vec![],
                 vec![],
@@ -939,6 +947,12 @@ mod tests {
         let extracted = pdf_extract::extract_text(&path).unwrap();
         let normalised = extracted.split_whitespace().collect::<Vec<_>>().join(" ");
         assert!(!normalised.contains("Total"));
+        assert!(normalised.contains("23/03/2026"));
+        assert!(normalised.contains("30/03/2026"));
+        assert!(normalised.contains(&format!(
+            "Date: {}",
+            crate::date_utils::formal(Local::now().date_naive())
+        )));
         assert!(normalised.contains("26.5"));
         assert!(normalised.contains("21"));
         assert!(normalised.contains("6.25"));
@@ -1006,7 +1020,12 @@ mod tests {
         let path = PdfGenerator::generate(&output_dir, &data, &crate::config::PdfConfig::default())
             .unwrap();
         let extracted = pdf_extract::extract_text(&path).unwrap();
-        let tokens = extracted.split_whitespace().collect::<Vec<_>>();
+        // Signature dates now contain a standalone day number, which may
+        // legitimately equal the forbidden combined payroll totals (10/18).
+        let (table_text, _) = extracted
+            .split_once("DECLARATION")
+            .expect("declaration follows payroll table");
+        let tokens = table_text.split_whitespace().collect::<Vec<_>>();
         assert!(tokens.contains(&"8"));
         assert!(tokens.contains(&"6"));
         assert!(tokens.contains(&"4"));

@@ -1,5 +1,5 @@
 use chrono::NaiveDate;
-use rusqlite::{params, Connection, OptionalExtension, Result};
+use rusqlite::{params, Connection, Result};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum HoursBasis {
@@ -78,7 +78,7 @@ impl ContractedHoursRepository {
     }
 
     pub fn insert(&self, entry: &ContractedHoursEntry) -> Result<()> {
-        let effective_date = normalise_date(&entry.effective_date);
+        let effective_date = crate::date_utils::edited(&entry.effective_date, None, false)?;
 
         self.connection.execute(
             "
@@ -104,7 +104,13 @@ impl ContractedHoursRepository {
     }
 
     pub fn update(&self, entry: &ContractedHoursEntry) -> Result<()> {
-        let effective_date = normalise_date(&entry.effective_date);
+        let previous: String = self.connection.query_row(
+            "SELECT effective_date FROM personal_assistant_contracted_hours WHERE id=?1",
+            [entry.id],
+            |row| row.get(0),
+        )?;
+        let effective_date =
+            crate::date_utils::edited(&entry.effective_date, Some(&previous), false)?;
 
         self.connection.execute(
             "
@@ -153,11 +159,7 @@ impl ContractedHoursRepository {
                 hours_basis
             FROM personal_assistant_contracted_hours
             WHERE personal_assistant_id = ?1
-            ORDER BY
-                substr(effective_date, 7, 4) DESC,
-                substr(effective_date, 4, 2) DESC,
-                substr(effective_date, 1, 2) DESC
-            ",
+            ORDER BY id DESC",
         )?;
 
         let entries = statement.query_map(params![personal_assistant_id], |row| {
@@ -177,6 +179,12 @@ impl ContractedHoursRepository {
             results.push(entry?);
         }
 
+        results.sort_by_key(|row| {
+            std::cmp::Reverse((
+                crate::date_utils::parse_legacy(&row.effective_date).ok(),
+                row.id,
+            ))
+        });
         Ok(results)
     }
     #[allow(dead_code)]
@@ -198,68 +206,54 @@ impl ContractedHoursRepository {
         personal_assistant_id: i64,
         as_of_date: NaiveDate,
     ) -> Result<Option<ContractedHoursEntry>> {
-        self.connection
-            .query_row(
-                "
-                SELECT
-                    id,
-                    personal_assistant_id,
-                    effective_date,
-                    contracted_hours,
-                    created_at,
-                hours_basis
-                FROM personal_assistant_contracted_hours
-                WHERE personal_assistant_id = ?1
-                  AND printf(
-                        '%04d-%02d-%02d',
-                        CAST(substr(effective_date, 7, 4) AS INTEGER),
-                        CAST(substr(effective_date, 4, 2) AS INTEGER),
-                        CAST(substr(effective_date, 1, 2) AS INTEGER)
-                      ) <= ?2
-                ORDER BY
-                    substr(effective_date, 7, 4) DESC,
-                    substr(effective_date, 4, 2) DESC,
-                    substr(effective_date, 1, 2) DESC,
-                    id DESC
-                LIMIT 1
-                ",
-                params![
-                    personal_assistant_id,
-                    as_of_date.format("%Y-%m-%d").to_string()
-                ],
-                |row| {
-                    Ok(ContractedHoursEntry {
-                        id: row.get(0)?,
-                        personal_assistant_id: row.get(1)?,
-                        effective_date: row.get(2)?,
-                        contracted_hours: row.get(3)?,
-                        created_at: row.get(4)?,
-                        hours_basis: row.get(5)?,
-                    })
-                },
-            )
-            .optional()
-    }
-}
-
-fn normalise_date(date: &str) -> String {
-    let parts: Vec<&str> = date.split('/').collect();
-
-    if parts.len() == 3 {
-        let day = parts[0].parse::<u32>().unwrap_or(0);
-        let month = parts[1].parse::<u32>().unwrap_or(0);
-        let year = parts[2].parse::<u32>().unwrap_or(0);
-
-        if day > 0 && month > 0 && year > 0 {
-            return format!("{:02}/{:02}/{:04}", day, month, year);
+        let rows = self.get_all_for_personal_assistant(personal_assistant_id)?;
+        // Invalid legacy history is visible in maintenance, never guessed in payroll.
+        for row in &rows {
+            crate::date_utils::parse_legacy(&row.effective_date)
+                .map_err(crate::date_utils::sql_error)?;
         }
+        Ok(rows.into_iter().find(|row| {
+            crate::date_utils::parse_legacy(&row.effective_date)
+                .is_ok_and(|date| date <= as_of_date)
+        }))
     }
-
-    date.to_string()
 }
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn mixed_calendar_history_uses_typed_dates_and_preserves_legacy_bytes() {
+        let repo = repository();
+        for date in ["31/12/2025", "2026-01-02", "02/01/2026", "1 February 2026"] {
+            repo.connection.execute("INSERT INTO personal_assistant_contracted_hours(personal_assistant_id,effective_date,contracted_hours,created_at,hours_basis) VALUES(1,?1,'10','legacy','contracted')", [date]).unwrap();
+        }
+        assert_eq!(
+            repo.get_all_for_personal_assistant(1)
+                .unwrap()
+                .iter()
+                .map(|r| r.id)
+                .collect::<Vec<_>>(),
+            vec![4, 3, 2, 1]
+        );
+        assert_eq!(
+            repo.get_for_personal_assistant_as_of(1, date("2026-01-15"))
+                .unwrap()
+                .unwrap()
+                .id,
+            3
+        );
+        let mut row = repo.get_all_for_personal_assistant(1).unwrap().remove(0);
+        row.effective_date = "2026-02-01".into();
+        repo.update(&row).unwrap();
+        assert_eq!(
+            repo.get_all_for_personal_assistant(1).unwrap()[0].effective_date,
+            "1 February 2026"
+        );
+        row.effective_date = "31 February 2026".into();
+        assert!(repo.update(&row).is_err());
+    }
+
     use super::*;
     use crate::database::create_schema;
 

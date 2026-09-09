@@ -19,7 +19,27 @@ impl PersonalAssistantRepository {
     }
 
     pub fn insert(&self, assistant: &PersonalAssistant) -> Result<()> {
-        let leaving_date = validated_leaving_date(assistant)?;
+        let previous: Option<PersonalAssistant> = None;
+        let dob = crate::date_utils::optional_edited(
+            assistant.date_of_birth.as_deref(),
+            previous.as_ref().and_then(|pa| pa.date_of_birth.as_deref()),
+            true,
+        )?;
+        let start_date = crate::date_utils::optional_edited(
+            assistant.start_date.as_deref(),
+            previous.as_ref().and_then(|pa| pa.start_date.as_deref()),
+            true,
+        )?;
+        let leaving_date = crate::date_utils::optional_edited(
+            assistant.leaving_date.as_deref(),
+            previous.as_ref().and_then(|pa| pa.leaving_date.as_deref()),
+            false,
+        )?;
+        if previous.as_ref().is_none_or(|pa| {
+            pa.start_date != assistant.start_date || pa.leaving_date != assistant.leaving_date
+        }) {
+            validated_leaving_date(assistant)?;
+        }
         self.connection.execute(
             "
             INSERT INTO personal_assistants (
@@ -42,7 +62,7 @@ impl PersonalAssistantRepository {
             params![
                 &assistant.first_name,
                 &assistant.surname,
-                &assistant.date_of_birth,
+                &dob,
                 &assistant.national_insurance_number,
                 &assistant.address,
                 &assistant.postcode,
@@ -51,7 +71,7 @@ impl PersonalAssistantRepository {
                 &assistant.employment_status,
                 assistant.sick_pay_enabled,
                 assistant.mileage_enabled,
-                &assistant.start_date,
+                &start_date,
                 &assistant.signature,
                 leaving_date,
             ],
@@ -61,7 +81,27 @@ impl PersonalAssistantRepository {
     }
 
     pub fn update(&self, assistant: &PersonalAssistant) -> Result<()> {
-        let leaving_date = validated_leaving_date(assistant)?;
+        let previous = self.get_all()?.into_iter().find(|pa| pa.id == assistant.id);
+        let dob = crate::date_utils::optional_edited(
+            assistant.date_of_birth.as_deref(),
+            previous.as_ref().and_then(|pa| pa.date_of_birth.as_deref()),
+            true,
+        )?;
+        let start_date = crate::date_utils::optional_edited(
+            assistant.start_date.as_deref(),
+            previous.as_ref().and_then(|pa| pa.start_date.as_deref()),
+            true,
+        )?;
+        let leaving_date = crate::date_utils::optional_edited(
+            assistant.leaving_date.as_deref(),
+            previous.as_ref().and_then(|pa| pa.leaving_date.as_deref()),
+            false,
+        )?;
+        if previous.as_ref().is_none_or(|pa| {
+            pa.start_date != assistant.start_date || pa.leaving_date != assistant.leaving_date
+        }) {
+            validated_leaving_date(assistant)?;
+        }
         self.connection.execute(
             "
 UPDATE personal_assistants
@@ -84,7 +124,7 @@ WHERE id = ?14
             params![
                 &assistant.first_name,
                 &assistant.surname,
-                &assistant.date_of_birth,
+                &dob,
                 &assistant.national_insurance_number,
                 &assistant.address,
                 &assistant.postcode,
@@ -93,7 +133,7 @@ WHERE id = ?14
                 &assistant.employment_status,
                 assistant.sick_pay_enabled,
                 assistant.mileage_enabled,
-                &assistant.start_date,
+                &start_date,
                 &assistant.signature,
                 assistant.id,
                 leaving_date,
@@ -270,6 +310,36 @@ fn validated_leaving_date(assistant: &PersonalAssistant) -> Result<Option<String
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn malformed_legacy_dates_survive_unrelated_edits_but_changed_fields_require_correction() {
+        let repo = test_repository();
+        let id = insert_test_assistant(&repo);
+        repo.connection.execute("UPDATE personal_assistants SET date_of_birth='unknown', start_date='bad legacy', leaving_date='?' WHERE id=?1", [id]).unwrap();
+        let mut pa = repo.get_all().unwrap().remove(0);
+        pa.surname = "Changed".into();
+        repo.update(&pa).unwrap();
+        assert_eq!(
+            repo.get_all().unwrap()[0].start_date.as_deref(),
+            Some("bad legacy")
+        );
+        assert!(pa
+            .eligible_for_period(
+                crate::date_utils::parse_input("1 Apr 2026").unwrap(),
+                crate::date_utils::parse_input("28 Apr 2026").unwrap(),
+                true
+            )
+            .unwrap());
+        pa.date_of_birth = Some("bad new".into());
+        assert!(repo.update(&pa).is_err());
+        pa.date_of_birth = Some("4th April 1990".into());
+        repo.update(&pa).unwrap();
+        assert_eq!(
+            repo.get_all().unwrap()[0].date_of_birth.as_deref(),
+            Some("1990-04-04")
+        );
+    }
+
     use super::*;
     use crate::database::create_schema;
 
@@ -315,7 +385,7 @@ mod tests {
             saved.leaving_date = Some("30/09/2026".into());
             repository.update(&saved).unwrap();
             let mut reloaded = repository.get_all().unwrap().remove(0);
-            assert_eq!(reloaded.start_date.as_deref(), Some(start));
+            assert_eq!(reloaded.start_date.as_deref(), Some("2024-05-17"));
             assert_eq!(reloaded.leaving_date.as_deref(), Some("30/09/2026"));
             reloaded.leaving_date = Some("16 May 2024".into());
             assert!(repository.update(&reloaded).is_err());
@@ -334,6 +404,8 @@ mod tests {
         let repository = PersonalAssistantRepository::new(connection);
         let mut assistant = test_assistant();
         assistant.leaving_date = Some("18/9/30".into());
+        assert!(repository.insert(&assistant).is_err());
+        assistant.leaving_date = Some("18/9/2030".into());
         repository.insert(&assistant).unwrap();
         let mut saved = repository.get_all().unwrap().remove(0);
         assert_eq!(saved.leaving_date.as_deref(), Some("18/09/2030"));
@@ -506,7 +578,7 @@ mod tests {
         let saved = &saved[0];
         assert_eq!(saved.first_name, assistant.first_name);
         assert_eq!(saved.surname, assistant.surname);
-        assert_eq!(saved.date_of_birth, assistant.date_of_birth);
+        assert_eq!(saved.date_of_birth.as_deref(), Some("1990-02-01"));
         assert_eq!(
             saved.national_insurance_number,
             assistant.national_insurance_number
@@ -518,7 +590,7 @@ mod tests {
         assert_eq!(saved.employment_status, assistant.employment_status);
         assert_eq!(saved.sick_pay_enabled, assistant.sick_pay_enabled);
         assert_eq!(saved.mileage_enabled, assistant.mileage_enabled);
-        assert_eq!(saved.start_date, assistant.start_date);
+        assert_eq!(saved.start_date.as_deref(), Some("2025-04-03"));
         assert_eq!(saved.signature, assistant.signature);
     }
 

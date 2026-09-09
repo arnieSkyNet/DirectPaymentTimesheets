@@ -218,7 +218,7 @@ impl PersonalAssistantScreen {
                         columns[1].text_edit_singleline(&mut assistant.surname);
 
                         columns[0].label("Date of Birth");
-                        edit_optional_text(&mut columns[0], &mut assistant.date_of_birth);
+                        crate::date_utils::edit(&mut columns[0], assistant.date_of_birth.get_or_insert_with(String::new), application.context.config.date_display_format);
 
                         columns[1].label("Address");
                         edit_optional_multiline(&mut columns[1], &mut assistant.address);
@@ -293,10 +293,10 @@ impl PersonalAssistantScreen {
                         }
 
                         if let Some(start_date) = &mut assistant.start_date {
-                            ui.add(egui::TextEdit::singleline(start_date).desired_width(150.0));
+                            crate::date_utils::edit(ui, start_date, application.context.config.date_display_format);
                         }
                         ui.label("Leaving date (optional)");
-                        ui.add(egui::TextEdit::singleline(assistant.leaving_date.get_or_insert_with(String::new)).desired_width(150.0));
+                        crate::date_utils::edit(ui, assistant.leaving_date.get_or_insert_with(String::new), application.context.config.date_display_format);
                     });
 
                     ui.separator();
@@ -311,9 +311,6 @@ impl PersonalAssistantScreen {
 
                             match result {
                                 Ok(()) => {
-                                    assistant.leaving_date = assistant.leaving_date.as_deref()
-                                        .and_then(crate::models::parse_employment_date)
-                                        .map(|date| date.format("%d/%m/%Y").to_string());
                                     self.status_message = "Personal Assistant saved.".to_string();
                                     self.annual_leave.invalidate();
                                     self.refresh_after_save = true;
@@ -368,7 +365,7 @@ impl PersonalAssistantScreen {
                             ui.horizontal(|ui| {
                                 ui.label(format!(
                                     "{}  {}  {}",
-                                    hours.effective_date, hours.hours_basis.label(),
+                                    application.context.config.date_display_format.display(&hours.effective_date), hours.hours_basis.label(),
                                     if hours.hours_basis == HoursBasis::Contracted { &hours.contracted_hours } else { "" }
                                 ));
 
@@ -408,7 +405,7 @@ impl PersonalAssistantScreen {
                         ui.horizontal_wrapped(|ui| {
                             ui.label("Effective Date");
 
-                            ui.text_edit_singleline(&mut self.new_hours_effective_date);
+                            crate::date_utils::edit(ui, &mut self.new_hours_effective_date, application.context.config.date_display_format);
 
                             crate::gui_controls::combo_box("contracted_hours_basis")
                                 .selected_text(self.new_hours_basis.label())
@@ -474,7 +471,7 @@ impl PersonalAssistantScreen {
                             ui.horizontal(|ui| {
                                 ui.label(format!(
                                     "{}  £{:.2}  Top up £{:.2}",
-                                    rate.effective_date,
+                                    application.context.config.date_display_format.display(&rate.effective_date),
                                     rate.base_hourly_rate,
                                     rate.employer_top_up_rate
                                 ));
@@ -513,7 +510,7 @@ impl PersonalAssistantScreen {
 
                         ui.columns(3, |columns| {
                             columns[0].label("Effective Date");
-                            columns[0].text_edit_singleline(&mut self.new_rate_effective_date);
+                            crate::date_utils::edit(&mut columns[0], &mut self.new_rate_effective_date, application.context.config.date_display_format);
 
                             columns[1].label("Base Hourly Rate");
                             columns[1].text_edit_singleline(&mut self.new_rate_base);

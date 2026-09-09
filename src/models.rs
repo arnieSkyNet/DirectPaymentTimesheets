@@ -95,11 +95,7 @@ impl PersonalAssistant {
 }
 
 pub fn parse_employment_date(value: &str) -> Option<chrono::NaiveDate> {
-    [
-        "%d/%m/%y", "%d-%m-%y", "%d/%m/%Y", "%d-%m-%Y", "%Y-%m-%d", "%d %B %Y", "%d %b %Y",
-    ]
-    .iter()
-    .find_map(|format| chrono::NaiveDate::parse_from_str(value.trim(), format).ok())
+    crate::date_utils::parse_legacy(value).ok()
 }
 
 #[cfg(test)]
