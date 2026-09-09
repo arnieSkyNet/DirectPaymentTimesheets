@@ -2,7 +2,7 @@ use std::path::Path;
 
 use rusqlite::{Connection, Result};
 
-pub const CURRENT_SCHEMA_VERSION: i64 = 27;
+pub const CURRENT_SCHEMA_VERSION: i64 = 29;
 
 pub fn initialise_database(database_path: &Path) -> Result<()> {
     let connection = Connection::open(database_path)?;
@@ -76,6 +76,8 @@ fn apply_migrations(connection: &Connection) -> Result<()> {
         connection.query_row("SELECT version FROM schema_version LIMIT 1", [], |row| {
             row.get(0)
         })?;
+
+    let before_28 = current_version < 28;
 
     if current_version < 2 {
         migrate_to_version_2(connection)?;
@@ -201,6 +203,13 @@ fn apply_migrations(connection: &Connection) -> Result<()> {
     }
     if current_version < 27 {
         migrate_to_version_27(connection)?;
+    }
+    if current_version < 28 {
+        crate::payroll_evidence::migrate(connection)?;
+    }
+
+    if current_version < 29 {
+        crate::payroll_evidence::legacy_baseline::migrate(connection, before_28)?;
     }
 
     Ok(())
@@ -1106,7 +1115,44 @@ fn table_has_column(connection: &Connection, table: &str, column: &str) -> Resul
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
+    pub(crate) fn remove_schema_28_fixture(db: &rusqlite::Connection) {
+        for table in [
+            "payroll_legacy_cutover",
+            "payroll_legacy_evidence",
+            "payroll_legacy_settlements",
+            "payroll_correction_evidence",
+            "payroll_candidate_checks",
+            "payroll_duplicate_members",
+            "payroll_duplicate_decisions",
+            "payroll_submissions",
+            "payroll_submission_items",
+            "payroll_submission_weeks",
+            "payroll_submission_leave",
+            "payroll_submission_holidays",
+            "payroll_reconciliation_decisions",
+            "payroll_corrections",
+            "payroll_correction_applications",
+            "payroll_submission_corrections",
+        ] {
+            db.execute(&format!("DROP TABLE {table}"), []).unwrap();
+        }
+        db.execute_batch(
+            "DROP INDEX payroll_snapshot_direct_shift;
+            ALTER TABLE payroll_timesheet_worked_item_snapshots DROP COLUMN source_evidence;",
+        )
+        .unwrap();
+        // Rebuild via the original migration, retaining the twelve original columns.
+        db.execute_batch(
+            "ALTER TABLE payroll_timesheet_worked_item_snapshots RENAME TO fixture_items;
+            DROP INDEX payroll_snapshot_raw_shift; DROP INDEX payroll_snapshot_timesheet_id;
+            DROP TABLE payroll_timesheet_snapshot_states;
+            DROP TABLE payroll_timesheet_manual_adjustments;",
+        )
+        .unwrap();
+        super::migrate_to_version_19(db).unwrap();
+        db.execute_batch("INSERT INTO payroll_timesheet_worked_item_snapshots SELECT id,payroll_timesheet_id,week_number,source_type,timesheet_id,work_date,worked_minutes,pay_rate_id,pay_rate_effective_date,total_hourly_rate,reason,captured_at FROM fixture_items; DROP TABLE fixture_items; UPDATE schema_version SET version=27;").unwrap();
+    }
     use super::*;
 
     fn drop_schema_22(connection: &Connection) {
@@ -1136,6 +1182,7 @@ mod tests {
     fn migration_26_to_27_preserves_pas_without_inventing_leaving_dates() {
         let connection = Connection::open_in_memory().unwrap();
         create_schema(&connection).unwrap();
+        remove_schema_28_fixture(&connection);
         connection.execute_batch("ALTER TABLE personal_assistants DROP COLUMN leaving_date; UPDATE schema_version SET version=26;
             INSERT INTO personal_assistants (id, first_name, surname, employment_status, start_date) VALUES (77,'Existing','PA','Active','03/04/2025');
             INSERT INTO payroll_timesheet_annual_leave (payroll_timesheet_id,week_number,leave_date,hours,created_at,updated_at) VALUES (77,1,'14/09/2026',2.5,'created','updated');").unwrap();
@@ -1157,7 +1204,7 @@ mod tests {
                 .query_row("SELECT version FROM schema_version", [], |r| r
                     .get::<_, i64>(0))
                 .unwrap(),
-            27
+            CURRENT_SCHEMA_VERSION
         );
     }
 
@@ -1165,6 +1212,7 @@ mod tests {
     fn migration_25_to_26_preserves_existing_data_and_creates_empty_settings() {
         let connection = Connection::open_in_memory().unwrap();
         create_schema(&connection).unwrap();
+        remove_schema_28_fixture(&connection);
         connection
             .execute_batch(
                 "ALTER TABLE personal_assistants DROP COLUMN leaving_date; DROP TABLE annual_leave_settings;
@@ -1184,7 +1232,7 @@ mod tests {
                 .query_row("SELECT version FROM schema_version", [], |row| row
                     .get::<_, i64>(0))
                 .unwrap(),
-            27
+            CURRENT_SCHEMA_VERSION
         );
         assert_eq!(
             connection
@@ -1217,6 +1265,7 @@ mod tests {
     fn schema_26_settings_constraints_and_transactional_failure() {
         let connection = Connection::open_in_memory().unwrap();
         create_schema(&connection).unwrap();
+        remove_schema_28_fixture(&connection);
         let insert = "INSERT INTO annual_leave_settings VALUES (1, '01/04', ?1, '01/04', ?2)";
         for (weeks, percentage) in [
             (-1.0, 12.07),
@@ -1256,6 +1305,7 @@ mod tests {
     fn migration_24_to_25_preserves_undated_totals_without_backfill() {
         let connection = Connection::open_in_memory().unwrap();
         create_schema(&connection).unwrap();
+        remove_schema_28_fixture(&connection);
         connection
             .execute_batch(
                 "ALTER TABLE personal_assistants DROP COLUMN leaving_date; DROP TABLE annual_leave_settings; DROP TABLE payroll_timesheet_annual_leave;
@@ -1272,7 +1322,7 @@ mod tests {
                 .query_row("SELECT version FROM schema_version", [], |row| row
                     .get::<_, i64>(0))
                 .unwrap(),
-            27
+            CURRENT_SCHEMA_VERSION
         );
         assert_eq!(
             connection
@@ -1328,6 +1378,7 @@ mod tests {
     fn migration_23_to_24_preserves_history_and_defaults_to_contracted() {
         let connection = Connection::open_in_memory().unwrap();
         create_schema(&connection).unwrap();
+        remove_schema_28_fixture(&connection);
         connection
             .execute_batch(
                 "ALTER TABLE personal_assistants DROP COLUMN leaving_date; DROP TABLE annual_leave_settings; DROP TABLE payroll_timesheet_annual_leave;
@@ -1394,7 +1445,7 @@ mod tests {
                 .query_row("SELECT version FROM schema_version", [], |row| row
                     .get::<_, i64>(0))
                 .unwrap(),
-            27
+            CURRENT_SCHEMA_VERSION
         );
     }
 
@@ -1429,7 +1480,7 @@ mod tests {
                 .query_row("SELECT version FROM schema_version", [], |row| row
                     .get::<_, i64>(0))
                 .unwrap(),
-            27
+            CURRENT_SCHEMA_VERSION
         );
     }
 
@@ -1437,6 +1488,7 @@ mod tests {
     fn migration_to_version_18_preserves_legacy_statuses_as_timesheets() {
         let connection = Connection::open_in_memory().unwrap();
         create_schema(&connection).unwrap();
+        remove_schema_28_fixture(&connection);
         drop_schema_22(&connection);
 
         connection
@@ -1484,7 +1536,7 @@ mod tests {
             .unwrap();
 
         assert_eq!(email_type, "timesheet");
-        assert_eq!(version, 27);
+        assert_eq!(version, CURRENT_SCHEMA_VERSION);
     }
 
     #[test]
@@ -1513,13 +1565,14 @@ mod tests {
             .unwrap();
 
         assert!(duplicate.is_err());
-        assert_eq!(version, 27);
+        assert_eq!(version, CURRENT_SCHEMA_VERSION);
     }
 
     #[test]
     fn migration_to_version_21_adds_correction_history_without_changing_imported_rows() {
         let connection = Connection::open_in_memory().unwrap();
         create_schema(&connection).unwrap();
+        remove_schema_28_fixture(&connection);
         drop_schema_22(&connection);
         connection
             .execute(
@@ -1564,7 +1617,7 @@ mod tests {
                 .query_row("SELECT version FROM schema_version", [], |row| row
                     .get::<_, i64>(0))
                 .unwrap(),
-            27
+            CURRENT_SCHEMA_VERSION
         );
     }
 
@@ -1572,6 +1625,7 @@ mod tests {
     fn final_schema_19_migrates_directly_to_final_schema_20() {
         let connection = Connection::open_in_memory().unwrap();
         create_schema(&connection).unwrap();
+        remove_schema_28_fixture(&connection);
         drop_schema_22(&connection);
         connection
             .execute_batch(
@@ -1592,7 +1646,7 @@ mod tests {
                 .query_row("SELECT version FROM schema_version", [], |row| row
                     .get::<_, i64>(0))
                 .unwrap(),
-            27
+            CURRENT_SCHEMA_VERSION
         );
     }
 
@@ -1600,6 +1654,7 @@ mod tests {
     fn earlier_development_schema_20_is_repaired_idempotently_without_data_loss() {
         let connection = Connection::open_in_memory().unwrap();
         create_schema(&connection).unwrap();
+        remove_schema_28_fixture(&connection);
         drop_schema_22(&connection);
         connection
             .execute_batch(
@@ -1686,6 +1741,7 @@ mod tests {
     fn migration_to_version_22_backfills_only_legacy_snapshots_with_exact_evidence() {
         let connection = Connection::open_in_memory().unwrap();
         create_schema(&connection).unwrap();
+        remove_schema_28_fixture(&connection);
         drop_schema_22(&connection);
         connection
             .execute_batch(
@@ -1910,6 +1966,7 @@ mod tests {
     fn migration_to_version_22_rolls_back_all_new_tables_on_failure() {
         let connection = Connection::open_in_memory().unwrap();
         create_schema(&connection).unwrap();
+        remove_schema_28_fixture(&connection);
         drop_schema_22(&connection);
         connection
             .execute_batch(
@@ -1935,6 +1992,7 @@ mod tests {
     fn migration_to_version_23_removes_only_revision_infrastructure() {
         let connection = Connection::open_in_memory().unwrap();
         create_schema(&connection).unwrap();
+        remove_schema_28_fixture(&connection);
         connection
             .execute(
                 "INSERT INTO payroll_timesheets
@@ -1998,7 +2056,7 @@ mod tests {
                 .query_row("SELECT version FROM schema_version", [], |row| row
                     .get::<_, i64>(0))
                 .unwrap(),
-            27
+            CURRENT_SCHEMA_VERSION
         );
     }
 
@@ -2011,7 +2069,7 @@ mod tests {
                 .query_row("SELECT version FROM schema_version", [], |row| row
                     .get::<_, i64>(0))
                 .unwrap(),
-            27
+            CURRENT_SCHEMA_VERSION
         );
         assert!(!table_exists(&connection, "payroll_timesheet_revisions").unwrap());
         assert!(table_exists(&connection, "timesheet_correction_events").unwrap());

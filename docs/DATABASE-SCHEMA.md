@@ -2,13 +2,13 @@
 
 ## Scope and versioning
 
-This is the implemented SQLite schema at version 27. It is derived from `create_schema` and migrations in `src/database.rs`; those migrations are authoritative.
+This is the implemented SQLite schema at version 29. It is derived from `create_schema` and migrations in `src/database.rs`; those migrations are authoritative.
 
-`schema_version` contains the current integer version. A new database begins at version 1 and receives each ordered migration through `CURRENT_SCHEMA_VERSION` 27. Existing databases are upgraded in place. Migration 23 removes the short-lived revision-only tables introduced by migration 22 while retaining the operational legacy snapshot tables. Migration 24 adds an explicit contracted/variable hours basis to effective-dated Personal Assistant contracted-hours history while preserving existing records as contracted.
+`schema_version` contains the current integer version. A new database begins at version 1 and receives each ordered migration through `CURRENT_SCHEMA_VERSION` 29. Existing databases are upgraded in place. Migration 23 removes the short-lived revision-only tables introduced by migration 22 while retaining the operational legacy snapshot tables. Migration 24 adds an explicit contracted/variable hours basis to effective-dated Personal Assistant contracted-hours history while preserving existing records as contracted.
 
 During unreleased schema-20 development, an earlier local database shape contained `direct_shifts` without soft-deletion columns or the audit table. Startup therefore performs an idempotent schema-20 compatibility check after normal migrations. When that exact incomplete shape is found, it transactionally rebuilds `direct_shifts` into the final constrained form while preserving IDs and row values, then creates the audit table/indexes. It does not fabricate historical audit events, and repeated startup does not duplicate existing audit rows.
 
-SQLite foreign-key constraints are not declared in schema 27. Relationships described below are logical relationships enforced by repository/application code and stored IDs/business keys.
+SQLite foreign-key constraints are not declared in schema 28. Relationships described below are logical relationships enforced by repository/application code and stored IDs/business keys.
 
 ## `schema_version`
 
@@ -99,7 +99,7 @@ Append-only corrections to the effective interpretation of an immutable imported
 
 Correction timestamps use canonical local-minute text `YYYY-MM-DDTHH:MM`. `(timesheet_id, id)` supports ordered history and latest-event lookup. Repository validation requires end after start but deliberately does not derive worked minutes from clock times or break. Reversion appends another event whose after-values match the raw evidence; events are not updated or deleted.
 
-Schema 23 retains the schema-21 raw and effective repository queries, but current application, import collision and payroll paths continue to use raw rows. Corrected effective values are not yet consumed by Payroll Timesheet Preparation, snapshots or PDFs.
+Schema 28 retains raw imported rows for the import/view audit paths. Payroll evidence reads the latest correction-event values, while preserving raw source identity.
 
 ### `import_audit`
 
@@ -343,3 +343,32 @@ Both effective-from values are recurring `DD/MM` boundaries, not year-specific d
 An absent row loads defaults of `01/04`, 5.6 weeks, `01/04`, and 12.07 percent without writing to the database. Save Payroll Settings validates these inputs before any payroll writes, then saves the four values in one atomic SQLite statement after the existing payroll-settings save. The config/provider and annual-leave writes are not a shared transaction; failures are reported explicitly, including when the other payroll settings have already saved. There is no separate leave-year-start config field, rule creation, history, editing/deletion workflow, or confirmation machinery. No compatibility repair for earlier development-only schema-26 layouts is included; local development databases may be reset manually.
 
 Personal Assistants have an optional Leaving date, stored as canonical `DD/MM/YYYY`. Schema 27 adds nullable `personal_assistants.leaving_date` without backfilling dates or altering historical data. A supplied date must be real and not precede Start date. Stored Active/Inactive status is never changed automatically. Ordinary selected-period payroll inclusion requires Active (or legacy unset status) and inclusive employment-date overlap with the four-week period. Existing selected-period preparation records remain included regardless of status or employment dates. Annual-leave guidance applies Start and Leaving dates inclusively without changing employment status.
+
+
+## Schema 28: payroll evidence decisions and submission history
+
+Migration 28 is transactional and preserves original imported/direct evidence and snapshot IDs. It extends worked snapshots with nullable `direct_shift_id` and `source_evidence` (a TOML capture of actual source fields), keeps imported/direct IDs mutually exclusive, and adds a unique per-preparation direct-shift index. Explicit `carry_correction` items may retain unavailable rate/date fields; ordinary source allocations still require maintained historical rate evidence. No revision-only tables are restored.
+
+New tables are grouped by purpose:
+
+- `payroll_duplicate_decisions`, `payroll_duplicate_members`: versioned group fingerprints, one winner, retained candidate data and invalidation audit.
+- `payroll_submissions`, `payroll_submission_items`, `payroll_submission_weeks`, `payroll_submission_leave`, `payroll_submission_holidays`: immutable submitted contents, attachment identity/available bytes and supersession links. Existing submitted snapshots are backfilled only from retained facts; missing legacy timestamps and exact clock captures remain null.
+- `payroll_reconciliation_decisions`: explicit resubmit, carry, actual-evidence-complete and historical paid/unpaid decisions, with actor/time and evidence.
+- `payroll_corrections`, `payroll_correction_evidence`: individual signed corrections and actual evidence covered by aggregate reconciliation.
+- `payroll_correction_applications`, `payroll_submission_corrections`: open reservations and immutable submitted applications; remaining amounts are derived, not overwritten as an anonymous net balance.
+- `payroll_candidate_checks`: material evidence signatures used to reject stale generation before production send.
+
+The SQL definition is `src/payroll_evidence/schema.sql`; migration mechanics are in `src/payroll_evidence.rs`. See [the evidence guide](PAYROLL-EVIDENCE.md) for lifecycle and calculation rules.
+
+## Schema 29: verified legacy settlement baseline
+
+Forward migration 29 adds `payroll_legacy_evidence` (source, source_id, material
+fingerprint), `payroll_legacy_settlements` (payroll_timesheet_id, retained definitive
+payslip sent_at), and singleton `payroll_legacy_cutover` (recorded_at, inventory TOML
+including provenance). These are cutover facts, not per-shift payment assertions.
+No original payroll, duplicate-decision, submission or evidence rows are rewritten.
+The inventory is captured for upgrades from before 28 or validated from an explicit
+operator-provided recovery inventory for existing 28 databases. Without such an
+inventory an existing 28 database gets no exemption. See
+[Payroll evidence](PAYROLL-EVIDENCE.md#legacy-settlement-cutover-schema-29) for recovery
+file preparation, validation, and the distinction between cutover and recording time.

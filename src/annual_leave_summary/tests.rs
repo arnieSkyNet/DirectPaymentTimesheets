@@ -78,6 +78,8 @@ fn work(day: &str, minutes: i64) -> WorkedItemSnapshot {
         week_number: 1,
         source_type: "imported_shift".into(),
         timesheet_id: None,
+        direct_shift_id: None,
+        source_evidence: None,
         work_date: Some(day.into()),
         worked_minutes: minutes,
         pay_rate_id: Some(1),
@@ -469,7 +471,7 @@ fn application_reads_operational_defaults_and_only_this_pas_definitively_sent_pa
     assert_eq!(
         db.query_row::<i64, _, _>("SELECT version FROM schema_version", [], |r| r.get(0))
             .unwrap(),
-        27
+        crate::database::CURRENT_SCHEMA_VERSION
     );
 }
 

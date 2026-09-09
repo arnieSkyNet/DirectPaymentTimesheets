@@ -164,6 +164,7 @@ impl OperationalPayrollPeriodState {
 }
 
 pub struct DirectPaymentApp {
+    duplicate_ui: crate::payroll_evidence::duplicate_ui::DuplicateUi,
     application: Application,
     version: String,
     about_open: bool,
@@ -193,6 +194,8 @@ pub struct DirectPaymentApp {
     personal_assistant_screen: PersonalAssistantScreen,
     payroll_settings_screen: PayrollSettingsScreen,
     payroll_timesheet_screen: PayrollTimesheetScreen,
+    pending_preparation_navigation: Option<(ActiveScreen, OperationalPayrollPeriodState, bool)>,
+    preparation_close_allowed: bool,
     enter_hours_screen: EnterHoursScreen,
     application_settings_screen: ApplicationSettingsScreen,
     active_screen: ActiveScreen,
@@ -205,6 +208,7 @@ impl DirectPaymentApp {
         let (operational_payroll_schedules, operational_payroll_period, operational_error) =
             initial_operational_payroll_period(&application);
         Self {
+            duplicate_ui: Default::default(),
             version: application.context.version.clone(),
             about_open: false,
             about_schema_version: String::new(),
@@ -234,6 +238,8 @@ impl DirectPaymentApp {
             personal_assistant_screen: PersonalAssistantScreen::new(),
             payroll_settings_screen: PayrollSettingsScreen::new(),
             payroll_timesheet_screen: PayrollTimesheetScreen::new(),
+            pending_preparation_navigation: None,
+            preparation_close_allowed: false,
             enter_hours_screen: EnterHoursScreen::new(),
             application_settings_screen: ApplicationSettingsScreen::new(),
             active_screen: ActiveScreen::Dashboard,
@@ -257,6 +263,15 @@ impl eframe::App for DirectPaymentApp {
             if let Some(size) = initial_size {
                 ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(size));
             }
+        }
+        let was_preparation = self.active_screen == ActiveScreen::PayrollTimesheet;
+        let mut requested_close = ctx.input(|i| i.viewport().close_requested());
+        if was_preparation
+            && !self.preparation_close_allowed
+            && self.payroll_timesheet_screen.has_unsaved_changes()
+            && requested_close
+        {
+            ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
         }
         self.draw_about(ctx);
         if let Some(message) = &self.restart_required_message {
@@ -315,7 +330,7 @@ impl eframe::App for DirectPaymentApp {
 
                 ui.add_space(10.0);
                 if ui.button("Exit").clicked() {
-                    ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                    requested_close = true;
                 }
             });
         });
@@ -339,10 +354,14 @@ impl eframe::App for DirectPaymentApp {
                 }
 
                 if ui.button("Exit").clicked() {
-                    ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                    requested_close = true;
                 }
             });
         });
+
+        if !self.defer_preparation_navigation(was_preparation, requested_close) && requested_close {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+        }
 
         egui::CentralPanel::default().show(ctx, |ui| match self.active_screen {
             ActiveScreen::Dashboard => {
@@ -384,7 +403,9 @@ impl eframe::App for DirectPaymentApp {
             ActiveScreen::PayrollTimesheet => {
                 egui::ScrollArea::vertical().show(ui, |ui| {
                     ui.heading("Payroll Timesheet Preparation");
+                    let previous_period = self.operational_payroll_period.clone();
                     self.draw_operational_payroll_period_selector(ui);
+                    self.guard_preparation_period_change(previous_period);
                     ui.separator();
 
                     match self.selected_operational_payroll_schedule() {
@@ -429,10 +450,64 @@ impl eframe::App for DirectPaymentApp {
                 });
             }
         });
+        if self.pending_preparation_navigation.is_some() {
+            if let Some(proceed) = self
+                .payroll_timesheet_screen
+                .unsaved_dialog(ctx, &self.application)
+            {
+                if self.finish_preparation_navigation(proceed) {
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                }
+            }
+        }
     }
 }
 
 impl DirectPaymentApp {
+    fn defer_preparation_navigation(&mut self, was_preparation: bool, close: bool) -> bool {
+        if was_preparation
+            && self.payroll_timesheet_screen.has_unsaved_changes()
+            && (self.active_screen != ActiveScreen::PayrollTimesheet || close)
+        {
+            self.pending_preparation_navigation = Some((
+                self.active_screen,
+                self.operational_payroll_period.clone(),
+                close,
+            ));
+            self.active_screen = ActiveScreen::PayrollTimesheet;
+            true
+        } else {
+            false
+        }
+    }
+
+    fn guard_preparation_period_change(&mut self, previous: OperationalPayrollPeriodState) {
+        if previous != self.operational_payroll_period
+            && self.payroll_timesheet_screen.has_unsaved_changes()
+        {
+            self.pending_preparation_navigation = Some((
+                ActiveScreen::PayrollTimesheet,
+                self.operational_payroll_period.clone(),
+                false,
+            ));
+            self.operational_payroll_period = previous;
+        }
+    }
+
+    fn finish_preparation_navigation(&mut self, proceed: bool) -> bool {
+        let Some((screen, period, close)) = self.pending_preparation_navigation.take() else {
+            return false;
+        };
+        if proceed {
+            self.active_screen = screen;
+            self.operational_payroll_period = period;
+            self.preparation_close_allowed = close;
+            close
+        } else {
+            false
+        }
+    }
+
     fn draw_about(&mut self, ctx: &egui::Context) {
         self.update_check.poll();
         egui::Window::new("About DirectPaymentTimesheets")
@@ -1465,6 +1540,10 @@ impl DirectPaymentApp {
     }
 
     fn draw_dashboard(&mut self, ui: &mut egui::Ui) {
+        if !self.duplicate_ui.pending.is_empty() {
+            self.duplicate_ui.show(ui, &self.application);
+            return;
+        }
         egui::ScrollArea::vertical().show(ui, |ui| {
             ui.heading("Dashboard");
 
@@ -1497,6 +1576,12 @@ impl DirectPaymentApp {
                                 self.status_message.clone(),
                                 summary.archived_paths.clone(),
                             ));
+                            if summary.files_succeeded>0 {
+                                if let Err(e)=self.duplicate_ui.refresh(&self.application,None) {
+                                    self.status_message=format!("Import retained; duplicate preflight failed: {e}");
+                                }
+                                self.duplicate_ui.pending.retain(|g|g.candidates.iter().any(|e| e.date().is_ok_and(|d|summary.affected_pa_dates.contains(&(e.pa,d)))));
+                            }
                             self.last_import = Some(summary);
                         }
 
@@ -2279,7 +2364,6 @@ impl DirectPaymentApp {
             .iter()
             .map(|record| record.personal_assistant_id)
             .collect::<HashSet<_>>();
-        let all_timesheets = self.application.get_timesheets()?;
 
         let output_dir =
             crate::paths::expand_path(&self.application.context.config.folders.pdf_output);
@@ -2308,6 +2392,13 @@ impl DirectPaymentApp {
                     )
                 })?;
 
+            if crate::payroll_evidence::lifecycle::stage(
+                &crate::payroll_evidence::open(&self.application)?,
+                &payroll_timesheet,
+            )? != crate::payroll_evidence::lifecycle::Stage::Editable
+            {
+                continue;
+            }
             let payroll_weeks = self
                 .application
                 .payroll_timesheet_repository
@@ -2372,12 +2463,9 @@ impl DirectPaymentApp {
             } else {
                 None
             };
-            let reconciled = crate::pay_rate_allocation::reconcile_payroll_hours(
-                &self.application.pay_rate_repository,
-                &self.application.payroll_worked_item_repository,
-                &all_timesheets,
-                assistant.id,
-                payroll_timesheet.id,
+            let reconciled = crate::payroll_evidence::reconciliation::calculate(
+                &self.application,
+                &payroll_timesheet,
                 &week_dates,
                 previous_context.as_ref(),
             )
@@ -2457,7 +2545,7 @@ impl DirectPaymentApp {
                 format_pdf_hours(payroll_weeks[3].travel_miles),
             ];
 
-            let previous_cycle_hours = (reconciled.previous_cycle_minutes > 0).then(|| {
+            let previous_cycle_hours = (reconciled.previous_cycle_minutes != 0).then(|| {
                 crate::pay_rate_allocation::format_total_minutes(reconciled.previous_cycle_minutes)
             });
 
@@ -4181,5 +4269,106 @@ mod payroll_return_schedule_selection_tests {
             )
         );
         assert_eq!(repository.get_all_for_cycle("2026/27", 6).unwrap().len(), 1);
+    }
+}
+
+#[cfg(test)]
+mod preparation_navigation_tests {
+    use super::*;
+    use crate::payroll_timesheet_screen::{tests::dirty_preparation_fixture, UnsavedChoice};
+
+    #[test]
+    fn every_screen_destination_and_window_close_obey_save_discard_cancel() {
+        for destination in [
+            ActiveScreen::Dashboard,
+            ActiveScreen::Employer,
+            ActiveScreen::PersonalAssistant,
+            ActiveScreen::PayrollSettings,
+            ActiveScreen::ApplicationSettings,
+            ActiveScreen::EmailSettings,
+            ActiveScreen::EnterHours,
+            ActiveScreen::PayrollTimesheet,
+        ] {
+            for choice in [
+                UnsavedChoice::Save,
+                UnsavedChoice::Discard,
+                UnsavedChoice::Cancel,
+            ] {
+                let (_dir, application, screen) = dirty_preparation_fixture();
+                let mut app = DirectPaymentApp::new(application);
+                app.payroll_timesheet_screen = screen;
+                app.active_screen = destination;
+                let close = destination == ActiveScreen::PayrollTimesheet;
+                assert!(app.defer_preparation_navigation(true, close));
+                assert_eq!(app.active_screen, ActiveScreen::PayrollTimesheet);
+                let proceed = app
+                    .payroll_timesheet_screen
+                    .resolve_unsaved(&app.application, choice)
+                    .unwrap();
+                let closing = app.finish_preparation_navigation(proceed);
+                if matches!(choice, UnsavedChoice::Cancel) {
+                    assert_eq!(app.active_screen, ActiveScreen::PayrollTimesheet);
+                    assert!(app.payroll_timesheet_screen.has_unsaved_changes());
+                    assert!(!closing);
+                } else {
+                    assert_eq!(app.active_screen, destination);
+                    assert!(!app.payroll_timesheet_screen.has_unsaved_changes());
+                    assert_eq!(closing, close);
+                }
+                assert!(app.pending_preparation_navigation.is_none());
+            }
+        }
+    }
+
+    #[test]
+    fn period_dropdown_restores_old_selection_until_navigation_is_confirmed() {
+        for choice in [
+            UnsavedChoice::Save,
+            UnsavedChoice::Discard,
+            UnsavedChoice::Cancel,
+        ] {
+            let (_dir, application, screen) = dirty_preparation_fixture();
+            let mut app = DirectPaymentApp::new(application);
+            app.payroll_timesheet_screen = screen;
+            app.active_screen = ActiveScreen::PayrollTimesheet;
+            let previous = app.operational_payroll_period.clone();
+            let requested = OperationalPayrollPeriodState {
+                selected: Some(OperationalPayrollPeriodKey {
+                    payroll_year: "2027/28".into(),
+                    cycle_number: 1,
+                }),
+                explicitly_selected: true,
+                revision: previous.revision + 1,
+            };
+            app.operational_payroll_period = requested.clone();
+            app.guard_preparation_period_change(previous.clone());
+            assert_eq!(app.operational_payroll_period, previous);
+            let proceed = app
+                .payroll_timesheet_screen
+                .resolve_unsaved(&app.application, choice)
+                .unwrap();
+            assert!(!app.finish_preparation_navigation(proceed));
+            assert_eq!(
+                app.operational_payroll_period,
+                if proceed { requested } else { previous }
+            );
+        }
+    }
+
+    #[test]
+    fn unchanged_navigation_does_not_open_confirmation() {
+        let (_dir, application, screen) = dirty_preparation_fixture();
+        let mut app = DirectPaymentApp::new(application);
+        app.payroll_timesheet_screen = screen;
+        app.payroll_timesheet_screen
+            .resolve_unsaved(&app.application, UnsavedChoice::Discard)
+            .unwrap();
+        app.active_screen = ActiveScreen::Dashboard;
+        assert!(!app.defer_preparation_navigation(true, false));
+        assert!(!app.defer_preparation_navigation(true, true));
+        let previous = app.operational_payroll_period.clone();
+        app.operational_payroll_period.revision += 1;
+        app.guard_preparation_period_change(previous);
+        assert!(app.pending_preparation_navigation.is_none());
     }
 }

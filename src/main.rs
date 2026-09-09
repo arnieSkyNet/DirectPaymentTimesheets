@@ -26,6 +26,7 @@ mod models;
 mod paths;
 mod pay_rate_allocation;
 mod pay_rate_repository;
+mod payroll_evidence;
 mod payroll_file_naming;
 mod payroll_prep_sheet_import_service;
 mod payroll_provider_repository;

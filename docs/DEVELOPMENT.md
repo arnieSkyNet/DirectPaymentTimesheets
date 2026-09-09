@@ -4,7 +4,7 @@
 
 This is a local Rust/egui/SQLite application. Prefer small, evidence-led changes that preserve payroll history and existing provider output. Inspect the current source, schema and tests before changing behaviour; documentation and conversation history are secondary evidence.
 
-Current package version is `0.0.12`; current SQLite schema version is 27. Do not change either unless a task explicitly requires it.
+Current package version is `0.0.13`; current SQLite schema version is 28. Do not change either unless a task explicitly requires it.
 
 ## Local setup
 
@@ -76,7 +76,7 @@ The database is upgraded by sequential functions in `database.rs`. To add persis
 4. add tests for fresh initialisation and the relevant upgrade/compatibility path; and
 5. do not mutate a real database during automated work.
 
-Schema 19 added manual adjustments, worked-item snapshot rows and candidate/submitted/indeterminate state with PDF path and SHA-256 digest. Preserve its constraints: opaque legacy previous-cycle rows alone may have null rate/date evidence; ordinary allocated items require it.
+Schema 19 added manual adjustments, worked-item snapshot rows and candidate/submitted/indeterminate state with PDF path and SHA-256 digest. Preserve its constraints: opaque legacy previous-cycle rows and explicit schema-28 correction items may retain unavailable rate/date evidence; ordinary allocated source items require it.
 
 Use stable business keys where the workflow does. Payroll operations identify schedules by `(payroll_year, cycle_number)` and then validate material dates. Row IDs must not replace this identity in UI state.
 
@@ -171,7 +171,7 @@ Avoid brittle pixel assertions for PDFs. Test prepared content/data and extract 
 
 Serde ignores unknown TOML fields, so removed settings such as `public_holiday_enabled` remain load-compatible but are not saved. New optional fields should normally have defaults. Preserve legacy timesheet email-body reconciliation unless a separately scoped migration removes it.
 
-The persisted payroll frequency, rounding, workweek and overtime settings are not currently applied as downstream configurable calculation rules. Do not wire them into unrelated behaviour merely because they exist. Email subject/body fields live in `PayrollConfig` but are edited through Email Settings. The configured `email_archive` path currently has no production consumer; Payroll Return information must continue to use `payroll_information_folder`. Public holidays are permanently active.
+The persisted payroll frequency, workweek and overtime settings are not currently applied as downstream configurable calculation rules. Do not wire them into unrelated behaviour merely because they exist. Email subject/body fields live in `PayrollConfig` but are edited through Email Settings. The configured `email_archive` path currently has no production consumer; Payroll Return information must continue to use `payroll_information_folder`. Public holidays are permanently active.
 
 ## Current boundaries
 
@@ -194,3 +194,28 @@ Personal Assistants have an optional Leaving date, stored as canonical `DD/MM/YY
 - Undated manual worked adjustments can be allocated only when their entire week qualifies for the same year, employment and Variable basis and is not future. Ambiguous adjustments, undated previous-cycle legacy amounts, missing submitted evidence and missing/invalid Hours Basis history make guidance visibly incomplete; no dates or raw-shift reconstruction are invented. Variable-basis Sick/SSP always flags that an additional sickness accrual calculation is required. The sickness reference-period algorithm remains deferred.
 
 Deterministic tests in `src/annual_leave_summary/tests.rs` cover year navigation, inclusive employment, actual-date history segments, mixed basis, per-cycle rounding, Sent gating, dated/legacy leave, incomplete evidence and read-only application loading with operational settings defaults. No GUI pixel tests or additional migrations are required.
+
+
+## Evidence reconciliation (schema 28)
+
+Read [PAYROLL-EVIDENCE.md](PAYROLL-EVIDENCE.md) before changing payroll source selection. Domain/repository logic lives in `payroll_evidence`, with thin duplicate and contextual review UIs. `pay_rate_allocation::add_evidence` accepts selected evidence and never decides duplicates. Both preparation and generation call the same reconciliation service. Imported-hours viewing still uses raw rows; payroll reads effective imported corrections plus completed direct evidence.
+
+Do not replace source rows to resolve duplicates. Fingerprints omit notes but retain payroll-relevant identity and duration. Preflight checks stored evidence; it does not import CSVs. Source/correction consumption follows per-PA submission and definitive payslip state, not a schedule flag. Production submission archives its items, preparation data and attachment, and resubmission supersedes rather than deletes that history. Aggregate negative corrections require explicit actual-evidence completeness; unknown historical paid membership requires an audited paid/unpaid determination.
+
+Tests in `payroll_evidence/tests.rs` cover source reconciliation, resolver invalidation, history, reviews, persistent corrections, zero-floor behaviour, stale sending and migration rollback. Existing import collision tests were intentionally updated: conflicting and within-file identical candidates now survive for user selection. Repeat exports of already-retained identical rows remain idempotent. Old migration fixtures remove schema-28 additions before simulating earlier versions, so upgrade tests exercise real old table shapes. Annual-leave tests retain their prior assertions apart from the current schema-version expectation and additional nullable snapshot source fields.
+
+Schema 29 adds the verified legacy-settlement baseline described in
+[Payroll evidence](PAYROLL-EVIDENCE.md#legacy-settlement-cutover-schema-29).
+An existing schema-28 database needs its operator-verified inventory staged before
+first startup of the schema-29 build to receive the exemption; current row IDs or
+old work dates alone must never be used to reconstruct a missing cutover.
+
+Shared payroll rounding is applied by `pay_rate_allocation::add_evidence` only to
+eligible raw source durations for open payroll. It rounds each selected worked
+item (including late work) using the configured increment and Up/Down direction,
+after source break handling. It does not round source intervals, imported rows,
+direct records, retained corrections or manual adjustments. Snapshots retain raw
+`source_evidence` separately from payable `worked_minutes`. Historical discrepancy
+checks recognise an unchanged raw duration as retaining its submitted payable
+value, so rounding differences alone cannot produce a correction. Configuration
+changes do not recalculate submitted or settled history.

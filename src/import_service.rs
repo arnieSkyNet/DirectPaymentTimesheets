@@ -1,5 +1,4 @@
 use chrono::Local;
-use std::collections::HashMap;
 use std::error::Error;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -11,6 +10,7 @@ use crate::repository::TimesheetRepository;
 
 #[derive(Default)]
 pub struct ImportSummary {
+    pub affected_pa_dates: Vec<(i64, chrono::NaiveDate)>,
     pub files_discovered: i64,
     pub files_already_imported: i64,
     pub files_processed: i64,
@@ -45,6 +45,7 @@ struct FileFailure {
 }
 
 struct FileImportResult {
+    affected_pa_dates: Vec<(i64, chrono::NaiveDate)>,
     rows_processed: i64,
     rows_imported: i64,
     rows_skipped: i64,
@@ -133,6 +134,7 @@ impl<'a> ImportService<'a> {
                     summary.rows_imported += result.rows_imported;
                     summary.rows_skipped += result.rows_skipped;
                     summary.archived_paths.push(result.archive_path);
+                    summary.affected_pa_dates.extend(result.affected_pa_dates);
                 }
                 Err(failure) => {
                     match failure.kind {
@@ -181,6 +183,10 @@ impl<'a> ImportService<'a> {
             csv_import::import_csv_bytes(&bytes).map_err(|error| FileFailure::refused(error, 0))?;
         let row_count = rows.len() as i64;
         self.resolve_personal_assistants(&mut rows, row_count)?;
+        let affected_pa_dates = rows
+            .iter()
+            .filter_map(|r| r.entry.personal_assistant_id.map(|id| (id, r.start.date())))
+            .collect();
         let (entries, rows_skipped) = self.classify_collisions(rows, row_count)?;
 
         let archive_path = archive::archive_csv_bytes(path, &bytes, self.archive_dir)
@@ -204,6 +210,7 @@ impl<'a> ImportService<'a> {
             });
         }
         Ok(FileImportResult {
+            affected_pa_dates,
             rows_processed: row_count,
             rows_imported: entries.len() as i64,
             rows_skipped,
@@ -253,92 +260,26 @@ impl<'a> ImportService<'a> {
         rows: Vec<ParsedTimesheetRow>,
         row_count: i64,
     ) -> Result<(Vec<TimesheetEntry>, i64), FileFailure> {
-        let mut incoming: HashMap<(i64, chrono::NaiveDateTime), usize> = HashMap::new();
-        let mut unique_rows: Vec<ParsedTimesheetRow> = Vec::new();
-        let mut rows_skipped = 0;
-        for row in rows {
-            let pa_id = row.entry.personal_assistant_id.ok_or_else(|| {
-                FileFailure::failed(
-                    "Internal error: unresolved PA reached collision preflight",
-                    row_count,
-                )
-            })?;
-            let key = (pa_id, row.start);
-            if let Some(previous_index) = incoming.get(&key).copied() {
-                let previous = &unique_rows[previous_index];
-                if rows_are_materially_identical(previous, &row) {
-                    rows_skipped += 1;
-                    continue;
-                }
-                return Err(FileFailure::refused(
-                    format!(
-                        "CSV rows {} and {} contain conflicting shifts for the same PA and start timestamp; explicit review is required",
-                        previous.source_row, row.source_row
-                    ),
-                    row_count,
-                ));
-            }
-            incoming.insert(key, unique_rows.len());
-            unique_rows.push(row);
-        }
-
         let existing_entries = self
             .repository
             .get_all_raw()
             .map_err(|error| FileFailure::failed(error, row_count))?;
         let mut entries = Vec::new();
-        for row in unique_rows {
-            let collisions: Vec<&TimesheetEntry> = existing_entries
+        let mut rows_skipped = 0;
+        for row in rows {
+            // Repeated exports of an exactly retained row are idempotent. New
+            // within-file candidates, including identical intervals, are kept.
+            if existing_entries
                 .iter()
-                .filter(|existing| same_shift_key(existing, &row))
-                .collect();
-            if collisions.is_empty() {
-                entries.push(row.entry);
-                continue;
-            }
-            if collisions
-                .iter()
-                .all(|existing| existing_row_is_materially_identical(existing, &row))
+                .any(|existing| existing_row_is_materially_identical(existing, &row))
             {
                 rows_skipped += 1;
-                continue;
+            } else {
+                entries.push(row.entry);
             }
-            let ids = collisions
-                .iter()
-                .map(|entry| entry.id.to_string())
-                .collect::<Vec<_>>()
-                .join(", ");
-            return Err(FileFailure::refused(
-                format!(
-                    "CSV row {} conflicts materially with existing immutable TimesheetEntry ID(s) {ids} for the same PA and start timestamp; no evidence was changed",
-                    row.source_row
-                ),
-                row_count,
-            ));
         }
         Ok((entries, rows_skipped))
     }
-}
-
-fn same_shift_key(existing: &TimesheetEntry, incoming: &ParsedTimesheetRow) -> bool {
-    let same_pa = existing.personal_assistant_id == incoming.entry.personal_assistant_id
-        || normalize_person_name(&existing.pa_name)
-            == normalize_person_name(&incoming.entry.pa_name);
-    let same_start = csv_import::parse_supported_timestamp(&existing.start_time)
-        .is_some_and(|start| start == incoming.start)
-        || existing.start_time.trim() == incoming.entry.start_time.trim();
-    same_pa && same_start
-}
-
-fn rows_are_materially_identical(left: &ParsedTimesheetRow, right: &ParsedTimesheetRow) -> bool {
-    material_fields_are_identical(
-        &left.entry,
-        left.start,
-        left.end,
-        &right.entry,
-        right.start,
-        right.end,
-    )
 }
 
 fn existing_row_is_materially_identical(
@@ -382,14 +323,6 @@ fn material_fields_are_identical(
 
 fn import_time() -> String {
     Local::now().format("%Y-%m-%d %H:%M:%S").to_string()
-}
-
-fn normalize_person_name(value: &str) -> String {
-    value
-        .split_whitespace()
-        .map(str::to_lowercase)
-        .collect::<Vec<_>>()
-        .join(" ")
 }
 
 #[cfg(test)]
@@ -518,7 +451,7 @@ mod tests {
     }
 
     #[test]
-    fn missing_ambiguous_and_within_file_collisions_are_refused() {
+    fn missing_ambiguous_pas_refused_but_conflicting_candidates_retained() {
         let (missing_dir, missing_db, missing_repo) = setup(&[("Alex", "Smith")]);
         write_source(
             &missing_dir,
@@ -547,8 +480,8 @@ mod tests {
                 "Alex Smith,27 July 2026 at 09:00:00,27 July 2026 at 11:00:00,0h 00m,2h 00m,£12.00,£24.00,corrected",
             ],
         );
-        assert_eq!(run(&collision_dir, &collision_repo).files_refused, 1);
-        assert_eq!(count(&collision_db, "timesheets"), 0);
+        assert_eq!(run(&collision_dir, &collision_repo).files_succeeded, 1);
+        assert_eq!(count(&collision_db, "timesheets"), 2);
     }
 
     #[test]
@@ -640,7 +573,7 @@ mod tests {
     }
 
     #[test]
-    fn exact_duplicate_rows_within_file_are_skipped_once() {
+    fn exact_duplicate_candidates_within_file_are_retained_for_review() {
         let (directory, database_path, repository) = setup(&[("Alex", "Smith")]);
         let row = "Alex Smith,27 July 2026 at 09:00:00,27 July 2026 at 10:00:00,0h 00m,1h 00m,£12.00,£12.00,same";
         write_source(&directory, "duplicates.csv", &[row, row]);
@@ -649,9 +582,9 @@ mod tests {
 
         assert_eq!(summary.files_succeeded, 1);
         assert_eq!(summary.rows_processed, 2);
-        assert_eq!(summary.rows_imported, 1);
-        assert_eq!(summary.rows_skipped, 1);
-        assert_eq!(count(&database_path, "timesheets"), 1);
+        assert_eq!(summary.rows_imported, 2);
+        assert_eq!(summary.rows_skipped, 0);
+        assert_eq!(count(&database_path, "timesheets"), 2);
     }
 
     #[test]
@@ -779,9 +712,9 @@ mod tests {
 
         let summary = run(&directory, &repository);
 
-        assert_eq!(summary.files_refused, 1);
-        assert_eq!(summary.rows_imported, 0);
-        assert_eq!(repository.get_all_raw().unwrap().len(), 1);
+        assert_eq!(summary.files_refused, 0);
+        assert_eq!(summary.rows_imported, 2);
+        assert_eq!(repository.get_all_raw().unwrap().len(), 3);
         assert_eq!(repository.get_all_raw().unwrap()[0].id, existing.id);
         let snapshots = PayrollWorkedItemRepository::new(Connection::open(&database_path).unwrap());
         assert!(snapshots

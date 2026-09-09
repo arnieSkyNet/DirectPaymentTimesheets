@@ -626,7 +626,10 @@ fn draw_table(
                 if !previous.trim().is_empty() {
                     write_text(
                         ops,
-                        &format!("[Info.only +{} prev]", previous),
+                        &format!(
+                            "(Info only {:+.2} hours)",
+                            previous.parse::<f64>().unwrap_or(0.0)
+                        ),
                         x + columns[0].1 + 1.5,
                         row_top - 14.5,
                         information_font_size,
@@ -890,7 +893,7 @@ mod tests {
         let output_dir = env::temp_dir().join("direct_payment_timesheets_test");
         let schedule = schedule("23/03/2026", "17/04/2026");
 
-        let data = TimesheetPdfData {
+        let mut data = TimesheetPdfData {
             schedule: &schedule,
             employer_name: "Morgan",
             personal_assistant_name: "Birch Sample",
@@ -939,7 +942,7 @@ mod tests {
         assert!(normalised.contains("26.5"));
         assert!(normalised.contains("21"));
         assert!(normalised.contains("6.25"));
-        assert!(normalised.contains("[Info.only +1.25 prev]"));
+        assert!(normalised.contains("(Info only +1.25 hours)"));
         assert!(normalised.contains("(03/04/2026)"));
         assert!(!normalised.contains('£'));
         assert!(!normalised.contains("from 01/04/2026"));
@@ -947,6 +950,17 @@ mod tests {
         assert!(!normalised.contains("historical work date"));
         assert!(normalised.contains("Contracted Weekly Hours: 25"));
 
+        data.hours_worked = ["15.75", "0", "0", "0"];
+        data.previous_cycle_hours = Some("-3.00");
+        PdfGenerator::generate(&output_dir, &data, &pdf_config).unwrap();
+        let text = pdf_extract::extract_text(&path)
+            .unwrap()
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ");
+        assert!(text.contains("15.75"));
+        assert!(text.contains("(Info only -3.00 hours)"));
+        assert!(!text.contains("12.75")); // Info only must not be deducted again.
         let _ = fs::remove_file(path);
         let _ = fs::remove_dir_all(output_dir);
     }

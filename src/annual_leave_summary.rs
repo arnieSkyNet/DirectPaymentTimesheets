@@ -467,7 +467,7 @@ fn calculate(evidence: &Evidence, year: LeaveYear, today: NaiveDate) -> Result<S
                     continue;
                 }
                 match item.source_type.as_str() {
-                    "imported_shift" | "previous_cycle_late_shift" => {
+                    "imported_shift" | "previous_cycle_late_shift" | "direct_shift" => {
                         let Some(date) = item.work_date.as_deref().and_then(parse_employment_date)
                         else {
                             if relevant_week {
@@ -480,8 +480,13 @@ fn calculate(evidence: &Evidence, year: LeaveYear, today: NaiveDate) -> Result<S
                         if !qualifying(date) || date > today {
                             continue;
                         }
-                        if let Some(id) = item.timesheet_id {
-                            if !seen_shifts.insert(id) {
+                        if let Some(key) = item
+                            .timesheet_id
+                            .map(|id| ("imported", id))
+                            .or_else(|| item.direct_shift_id.map(|id| ("direct", id)))
+                        {
+                            let id = key.1;
+                            if !seen_shifts.insert(key) {
                                 result.incomplete.insert(format!(
                                     "Duplicate retained shift {id}; counted once."
                                 ));
