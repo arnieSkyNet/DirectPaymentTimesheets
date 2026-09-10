@@ -756,3 +756,94 @@ fn historical_boundary_note_does_not_hide_genuine_incomplete_conditions() {
         }
     }
 }
+
+#[test]
+fn summary_presentation_rounds_up_to_quarter_hours_only() {
+    for (precise, rounded, original) in [
+        (18.0, "18.00", None),
+        (82.8, "83.00", Some("82.80")),
+        (100.8, "101.00", Some("100.80")),
+        (0.0, "0.00", None),
+        (1.25, "1.25", None),
+        (1.2501, "1.50", Some("1.25")),
+        (1.2499, "1.25", Some("1.25")),
+        (-1.3, "-1.25", Some("-1.30")),
+        (-1.25, "-1.25", None),
+    ] {
+        assert_eq!(
+            quarter_hour_presentation(precise),
+            (rounded.into(), original.map(str::to_string))
+        );
+    }
+}
+
+#[test]
+fn displayed_remaining_uses_precise_totals() {
+    let summary = Summary {
+        entitlement: 100.8,
+        taken: 18.1,
+        ..Default::default()
+    };
+    assert_eq!(
+        quarter_hour_presentation(summary.remaining()),
+        ("82.75".into(), Some("82.70".into()))
+    );
+    assert_eq!(summary.entitlement, 100.8);
+    assert_eq!(summary.taken, 18.1);
+}
+
+#[test]
+fn summary_only_rounded_number_uses_bold_body_font() {
+    let ctx = egui::Context::default();
+    let _ = ctx.run(Default::default(), |ctx| {
+        egui::CentralPanel::default().show(ctx, |ui| {
+            let job = summary_hours_job(ui, "Remaining", 82.8);
+            assert_eq!(job.text, "Remaining 83.00 (82.80) hours");
+            for section in &job.sections {
+                assert_eq!(
+                    section.format.font_id.size,
+                    egui::TextStyle::Body.resolve(ui.style()).size
+                );
+                assert_eq!(
+                    section.format.font_id.family == summary_bold_family(),
+                    &job.text[section.byte_range.clone()] == "83.00"
+                );
+            }
+            assert_eq!(
+                summary_hours_job(ui, "Taken", 18.0).text,
+                "Taken 18.00 hours"
+            );
+        });
+    });
+}
+
+#[test]
+fn summary_screen_loads_its_bold_font_and_preserves_precise_evidence() {
+    let (_directory, application) = crate::payroll_timesheet_screen::tests::test_application();
+    let today = chrono::Local::now().date_naive();
+    let mut screen = AnnualLeaveSummaryUi {
+        loaded_for: Some((1, today)),
+        selected_pa: Some(1),
+        evidence: Some(evidence(HoursBasis::Contracted)),
+        ..Default::default()
+    };
+    let ctx = egui::Context::default();
+    for width in [1000.0, 420.0] {
+        let _ = ctx.run(
+            egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(width, 900.0),
+                )),
+                ..Default::default()
+            },
+            |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| screen.show(ui, &application, 1));
+            },
+        );
+    }
+    assert!(ctx.fonts(|fonts| fonts.families().contains(&summary_bold_family())));
+    assert!(screen.evidence.is_some());
+    assert!(screen.error.is_none());
+    assert_eq!(screen.loaded_for, Some((1, today)));
+}
