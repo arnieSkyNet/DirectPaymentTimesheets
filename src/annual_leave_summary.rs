@@ -583,6 +583,48 @@ fn calculate(evidence: &Evidence, year: LeaveYear, today: NaiveDate) -> Result<S
     Ok(result)
 }
 
+// Presentation only: each figure is rounded independently from its precise total.
+fn quarter_hour_presentation(hours: f64) -> (String, Option<String>) {
+    let rounded = (hours * 4.0).ceil() / 4.0;
+    (
+        format!("{rounded:.2}"),
+        (rounded != hours).then(|| format!("{hours:.2}")),
+    )
+}
+
+fn summary_bold_family() -> egui::FontFamily {
+    egui::FontFamily::Name("annual_leave_summary_bold".into())
+}
+
+fn summary_hours_job(ui: &egui::Ui, label: &str, hours: f64) -> egui::text::LayoutJob {
+    let (rounded, original) = quarter_hour_presentation(hours);
+    let font = egui::TextStyle::Body.resolve(ui.style());
+    let normal = egui::TextFormat {
+        font_id: font.clone(),
+        color: ui.visuals().text_color(),
+        ..Default::default()
+    };
+    let mut job = egui::text::LayoutJob::default();
+    job.append(&format!("{label} "), 0.0, normal.clone());
+    job.append(
+        &rounded,
+        0.0,
+        egui::TextFormat {
+            font_id: egui::FontId::new(font.size, summary_bold_family()),
+            ..normal.clone()
+        },
+    );
+    if let Some(original) = original {
+        job.append(&format!(" ({original})"), 0.0, normal.clone());
+    }
+    job.append(" hours", 0.0, normal);
+    job
+}
+
+fn summary_hours(ui: &mut egui::Ui, label: &str, hours: f64) -> egui::Response {
+    ui.label(summary_hours_job(ui, label, hours))
+}
+
 #[derive(Default)]
 pub struct AnnualLeaveSummaryUi {
     loaded_for: Option<(i64, NaiveDate)>,
@@ -601,6 +643,21 @@ impl AnnualLeaveSummaryUi {
         if pa_id == 0 {
             return;
         }
+        // egui's `strong()` changes colour only. Use a dedicated embedded bold
+        // face for the summary numbers without changing any existing font family.
+        if !ui.fonts(|fonts| fonts.families().contains(&summary_bold_family())) {
+            ui.ctx().add_font(egui::epaint::text::FontInsert::new(
+                "annual_leave_summary_bold",
+                egui::FontData::from_static(include_bytes!("../assets/fonts/DejaVuSans-Bold.ttf")),
+                vec![egui::epaint::text::InsertFontFamily {
+                    family: summary_bold_family(),
+                    priority: egui::epaint::text::FontPriority::Highest,
+                }],
+            ));
+            ui.ctx()
+                .request_discard("Load annual leave summary bold font");
+            return;
+        }
         let frame = ui.ctx().cumulative_frame_nr();
         if self.last_frame.is_some_and(|previous| frame > previous + 1) {
             self.invalidate();
@@ -613,10 +670,7 @@ impl AnnualLeaveSummaryUi {
             self.selected_pa = Some(pa_id);
         }
         ui.separator();
-        ui.heading("Annual Leave");
-        ui.label("Guidance/reference only — Payroll remains definitive. Uses saved PA data.");
-        let refresh = ui.small_button("Refresh annual leave").clicked();
-        if self.loaded_for != Some((pa_id, today)) || refresh {
+        if self.loaded_for != Some((pa_id, today)) {
             self.loaded_for = Some((pa_id, today));
             match Evidence::load(application, pa_id) {
                 Ok(evidence) => {
@@ -629,45 +683,76 @@ impl AnnualLeaveSummaryUi {
                 }
             }
         }
-        if let Some(error) = &self.error {
-            ui.colored_label(ui.visuals().error_fg_color, error);
-        }
-        let Some(evidence) = &self.evidence else {
-            return;
-        };
         let current = LeaveYear::containing(today);
-        let years = evidence.years(today);
+        let years = self
+            .evidence
+            .as_ref()
+            .map(|evidence| evidence.years(today))
+            .unwrap_or_default();
         if self
             .selected_year
             .is_some_and(|year| !years.contains(&LeaveYear(year)))
         {
             self.selected_year = None;
         }
-        crate::gui_controls::combo_box(("annual_leave_year", pa_id))
-            .selected_text(LeaveYear(self.selected_year.unwrap_or(current.0)).label())
-            .show_ui(ui, |ui| {
-                for year in years {
-                    crate::gui_controls::combo_value(
-                        ui,
-                        &mut self.selected_year,
-                        if year == current { None } else { Some(year.0) },
-                        year.label(),
-                    );
-                }
-            });
         let year = LeaveYear(self.selected_year.unwrap_or(current.0));
-        let summary = match calculate(evidence, year, today) {
-            Ok(summary) => summary,
-            Err(error) => {
-                ui.colored_label(ui.visuals().error_fg_color, error.to_string());
-                return;
-            }
-        };
+        let calculation = self
+            .evidence
+            .as_ref()
+            .map(|evidence| calculate(evidence, year, today));
+        let summary = calculation.as_ref().and_then(|result| result.as_ref().ok());
         ui.horizontal_wrapped(|ui| {
-            ui.label(format!("{}: {:.2} h", summary.label(), summary.entitlement));
-            ui.label(format!("Annual leave taken: {:.2} h", summary.taken));
-            ui.label(format!("Remaining: {:.2} h", summary.remaining()));
+            ui.heading("Annual Leave");
+            if ui
+                .add_enabled(summary.is_some(), egui::Button::new("Details"))
+                .clicked()
+            {
+                self.details_open = true;
+            }
+            if let Some(summary) = summary {
+                summary_hours(ui, "Taken", summary.taken);
+                summary_hours(ui, "Remaining", summary.remaining());
+                summary_hours(ui, "Entitlement", summary.entitlement)
+                    .on_hover_text(summary.label());
+            } else {
+                ui.label("Summary unavailable");
+            }
         });
+        ui.horizontal_wrapped(|ui| {
+            if ui.small_button("Refresh annual leave").clicked() {
+                // The summary is above these controls: reload on the next frame.
+                self.loaded_for = None;
+                ui.ctx().request_repaint();
+            }
+            if !years.is_empty() {
+                let previous_year = self.selected_year;
+                crate::gui_controls::combo_box(("annual_leave_year", pa_id))
+                    .selected_text(year.label())
+                    .show_ui(ui, |ui| {
+                        for year in years {
+                            crate::gui_controls::combo_value(
+                                ui,
+                                &mut self.selected_year,
+                                if year == current { None } else { Some(year.0) },
+                                year.label(),
+                            );
+                        }
+                    });
+                if self.selected_year != previous_year {
+                    ui.ctx().request_repaint();
+                }
+            }
+            ui.label("Guidance/reference only — Payroll remains definitive. Uses saved PA data.");
+        });
+        if let Some(error) = &self.error {
+            ui.colored_label(ui.visuals().error_fg_color, error);
+        }
+        if let Some(Err(error)) = &calculation {
+            ui.colored_label(ui.visuals().error_fg_color, error.to_string());
+        }
+        let (Some(summary), Some(evidence)) = (summary, &self.evidence) else {
+            return;
+        };
         if summary.variable {
             ui.label(format!(
                 "Calculated to: {}",
@@ -687,9 +772,6 @@ impl AnnualLeaveSummaryUi {
                     ui.label(warning);
                 }
             }
-        }
-        if ui.button("Details").clicked() {
-            self.details_open = true;
         }
         egui::Window::new(format!("Annual Leave Details — {}", year.label()))
             .id(egui::Id::new(("annual_leave_details",pa_id))).open(&mut self.details_open)
