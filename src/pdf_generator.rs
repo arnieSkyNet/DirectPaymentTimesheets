@@ -57,12 +57,13 @@ impl PdfGenerator {
         output_dir: &Path,
         data: &TimesheetPdfData<'_>,
         pdf_config: &crate::config::PdfConfig,
+        payroll_config: &crate::config::PayrollConfig,
     ) -> Result<PathBuf, Box<dyn std::error::Error>> {
         fs::create_dir_all(output_dir)?;
 
         let output_path = Self::output_path(output_dir, data)?;
 
-        Self::generate_to_path(&output_path, data, pdf_config)?;
+        Self::generate_to_path(&output_path, data, pdf_config, payroll_config)?;
         Ok(output_path)
     }
 
@@ -70,6 +71,7 @@ impl PdfGenerator {
         output_path: &Path,
         data: &TimesheetPdfData<'_>,
         pdf_config: &crate::config::PdfConfig,
+        payroll_config: &crate::config::PayrollConfig,
     ) -> Result<(), Box<dyn std::error::Error>> {
         for value in data.week_commencing_dates {
             crate::date_utils::parse_legacy(value)?;
@@ -228,13 +230,13 @@ impl PdfGenerator {
         // Signatures / declaration
         // ------------------------------------------------------------
 
-        let signature_y = 82.0;
+        let signature_y = 90.0;
 
         write_text(
             &mut ops,
             "DECLARATION",
             20.0,
-            signature_y + 25.0,
+            107.0,
             9.0,
             true,
             TextAlignment::Left,
@@ -246,7 +248,7 @@ impl PdfGenerator {
             &mut ops,
             "I confirm that the hours and information recorded above are correct.",
             20.0,
-            signature_y + 15.0,
+            97.0,
             8.0,
             false,
             TextAlignment::Left,
@@ -258,9 +260,11 @@ impl PdfGenerator {
         // Employer signature
         // ------------------------------------------------------------
 
-        if let Some(path) = data.employer_signature_path {
-            add_signature(&mut document, &mut ops, path, 20.0, 58.0, 55.25, 17.0)?;
-        }
+        let employer_signature_bottom = if let Some(path) = data.employer_signature_path {
+            add_signature(&mut document, &mut ops, path, 20.0, 68.0, 55.25, 17.0)?
+        } else {
+            68.0
+        };
 
         write_text(
             &mut ops,
@@ -278,9 +282,11 @@ impl PdfGenerator {
         // PA signature
         // ------------------------------------------------------------
 
-        if let Some(path) = data.pa_signature_path {
-            add_signature(&mut document, &mut ops, path, 115.0, 58.0, 55.25, 17.0)?;
-        }
+        let pa_signature_bottom = if let Some(path) = data.pa_signature_path {
+            add_signature(&mut document, &mut ops, path, 115.0, 68.0, 55.25, 17.0)?
+        } else {
+            68.0
+        };
 
         write_text(
             &mut ops,
@@ -304,7 +310,7 @@ impl PdfGenerator {
             &mut ops,
             &format!("Date: {}", current_date),
             20.0,
-            45.0,
+            employer_signature_bottom - 4.0,
             8.0,
             false,
             TextAlignment::Left,
@@ -316,7 +322,7 @@ impl PdfGenerator {
             &mut ops,
             &format!("Date: {}", current_date),
             115.0,
-            45.0,
+            pa_signature_bottom - 4.0,
             8.0,
             false,
             TextAlignment::Left,
@@ -325,32 +331,14 @@ impl PdfGenerator {
         );
 
         // ------------------------------------------------------------
-        // Required NASS statements
-        // ------------------------------------------------------------
-
-        write_text(
+        // Configurable organisation-specific footer; generic declaration stays above.
+        write_footer(
             &mut ops,
-            "Both the employer and the employee must sign all time sheets before NASS can process them.",
-            20.0,
-            32.0,
-            7.0,
-            false,
-            TextAlignment::Left,
-            &bold_id,
+            &regular_font,
             &regular_id,
-        );
-
-        write_text(
-            &mut ops,
-            "These time sheets will be retained on file for 6 years and may be required for inspection by the County Treasurer.",
-            20.0,
-            24.0,
-            7.0,
-            false,
-            TextAlignment::Left,
             &bold_id,
-            &regular_id,
-        );
+            payroll_config,
+        )?;
 
         // ------------------------------------------------------------
         // Create PDF
@@ -420,6 +408,154 @@ fn write_text(
     });
 
     ops.push(Op::EndTextSection);
+}
+
+fn write_footer(
+    ops: &mut Vec<Op>,
+    regular_font: &ParsedFont,
+    regular_id: &printpdf::FontId,
+    bold_id: &printpdf::FontId,
+    payroll_config: &crate::config::PayrollConfig,
+) -> Result<(), String> {
+    let footer_size =
+        crate::config::normalise_footer_font_size(payroll_config.timesheet_footer_font_size) as f32;
+    let footer_lines = layout_footer(
+        &payroll_config.timesheet_footer_text,
+        footer_size,
+        regular_font,
+    )?;
+    for line in footer_lines.iter().filter(|line| !line.text.is_empty()) {
+        write_text(
+            ops,
+            &line.text,
+            20.0 - footer_line_metrics(&line.text, footer_size, regular_font)?.0 * 25.4 / 72.0,
+            line.baseline,
+            footer_size,
+            false,
+            TextAlignment::Left,
+            bold_id,
+            regular_id,
+        );
+    }
+
+    Ok(())
+}
+
+// Match printpdf's unkerned, integer-normalized hmtx advances, including spaces
+// and glyphs with no outlines. Retain ink overhangs in the measured bounds.
+fn footer_line_metrics(text: &str, size: f32, font: &ParsedFont) -> Result<(f32, f32), String> {
+    let scale = size / font.font_metrics.units_per_em as f32;
+    let mut cursor = 0.0_f32;
+    let mut left = 0.0_f32;
+    let mut right = 0.0_f32;
+    let metrics_count = font
+        .hhea_table
+        .as_ref()
+        .map(|table| table.num_h_metrics as usize)
+        .filter(|count| *count > 0)
+        .ok_or("Payroll-timesheet footer: configured regular font has no horizontal metrics.")?;
+    for ch in text.chars() {
+        let glyph = font.lookup_glyph_index(ch as u32).ok_or_else(|| format!("Payroll-timesheet footer contains a character the configured regular font cannot render: {ch:?}. Choose supported text."))?;
+        let offset = (glyph as usize).min(metrics_count - 1) * 4;
+        let bytes = font
+            .hmtx_data
+            .get(offset..offset + 2)
+            .ok_or("Payroll-timesheet footer: incomplete regular font metrics.")?;
+        let advance = u16::from_be_bytes([bytes[0], bytes[1]]) as f32;
+        if let Some(record) = font.glyph_records_decoded.get(&glyph) {
+            left = left.min(cursor + record.bounding_box.min_x as f32 * scale);
+            right = right.max(cursor + record.bounding_box.max_x as f32 * scale);
+        }
+        cursor +=
+            (advance * 1000.0 / font.font_metrics.units_per_em as f32).floor() * size / 1000.0;
+    }
+    Ok((left, right.max(cursor)))
+}
+
+#[derive(Debug)]
+struct FooterLine {
+    text: String,
+    baseline: f32,
+}
+
+fn footer_line_spacing(size: f32, font: &ParsedFont) -> f32 {
+    (size * 1.25).max(
+        font.font_metrics.get_ascender(size) - font.font_metrics.get_descender(size)
+            + font.font_metrics.get_line_gap(size),
+    ) * 25.4
+        / 72.0
+}
+
+// Footer: x=20..190 mm, y=10..54 mm, first baseline 48 mm. Signature dates
+// are >=64 mm (4 mm below the actual image), leaving a safe gap above the footer.
+// Normal lines use font-aware leading (at least 1.25 em); each explicit empty
+// line adds 1.5 normal advances. Blank paragraphs therefore have visibly larger
+// spacing, and multiple/trailing blank lines consume proportional height.
+fn layout_footer(text: &str, size: f32, font: &ParsedFont) -> Result<Vec<FooterLine>, String> {
+    let overflow = || {
+        format!("Payroll-timesheet footer text does not fit at {size} pt. Shorten the text or select a smaller font size.")
+    };
+    if text.is_empty() {
+        return Ok(Vec::new());
+    }
+    let max_width = 170.0 * 72.0 / 25.4;
+    let width =
+        |text: &str| footer_line_metrics(text, size, font).map(|(left, right)| right - left);
+    let mut lines = Vec::new();
+    let leading = footer_line_spacing(size, font);
+    let mut baseline = 48.0;
+    let top = baseline + font.font_metrics.get_y_max(size) * 25.4 / 72.0;
+    if top > 54.0 {
+        return Err(overflow());
+    }
+    let mut push_line = |text: &str, advance: f32| -> Result<(), String> {
+        // Blank lines reserve their entire advance, including trailing blanks.
+        let bottom = if text.is_empty() {
+            baseline - advance
+        } else {
+            baseline + font.font_metrics.get_y_min(size) * 25.4 / 72.0
+        };
+        if bottom < 10.0 {
+            return Err(overflow());
+        }
+        lines.push(FooterLine {
+            text: text.into(),
+            baseline,
+        });
+        baseline -= advance;
+        Ok(())
+    };
+    // split, not lines(): retain empty paragraphs and a trailing blank line.
+    for explicit_line in text.split('\n') {
+        let explicit_line = explicit_line.strip_suffix('\r').unwrap_or(explicit_line);
+        if explicit_line.is_empty() {
+            push_line("", leading * 1.5)?;
+            continue;
+        }
+        let mut remaining = explicit_line;
+        loop {
+            if width(remaining)? <= max_width {
+                push_line(remaining, leading)?;
+                break;
+            }
+            // Wrap at an existing space without discarding or collapsing it.
+            let mut last_break = None;
+            for (offset, ch) in remaining.char_indices() {
+                if ch == ' ' {
+                    let end = offset + ch.len_utf8();
+                    if width(&remaining[..end])? <= max_width {
+                        last_break = Some(end);
+                    } else {
+                        break;
+                    }
+                }
+            }
+            let end = last_break.ok_or_else(overflow)?;
+            push_line(&remaining[..end], leading)?;
+            remaining = &remaining[end..];
+        }
+    }
+    Ok(lines)
 }
 
 fn approximate_text_width(text: &str, font_size: f32, bold: bool) -> f32 {
@@ -768,7 +904,7 @@ fn add_signature(
     y: f32,
     width: f32,
     height: f32,
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> Result<f32, Box<dyn std::error::Error>> {
     let bytes = fs::read(path)?;
 
     let mut warnings = Vec::new();
@@ -824,7 +960,7 @@ fn add_signature(
         },
     });
 
-    Ok(())
+    Ok(placed_y)
 }
 
 fn draw_vertical_line(ops: &mut Vec<Op>, x: f32, bottom: f32, top: f32) {
@@ -879,6 +1015,165 @@ fn draw_horizontal_line(ops: &mut Vec<Op>, left: f32, right: f32, y: f32) {
 mod tests {
     use super::*;
     use std::env;
+
+    fn footer_font() -> ParsedFont {
+        ParsedFont::from_bytes(
+            &fs::read(crate::config::PdfConfig::default().regular_font).unwrap(),
+            0,
+            &mut Vec::new(),
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn footer_preserves_explicit_lines_spaces_and_blank_lines() {
+        let font = footer_font();
+        assert_eq!(
+            layout_footer("First  paragraph\n\nSecond paragraph", 7.0, &font)
+                .unwrap()
+                .iter()
+                .map(|line| line.text.as_str())
+                .collect::<Vec<_>>(),
+            ["First  paragraph", "", "Second paragraph"]
+        );
+        assert_eq!(
+            layout_footer("First\n", 7.0, &font)
+                .unwrap()
+                .iter()
+                .map(|line| line.text.as_str())
+                .collect::<Vec<_>>(),
+            ["First", ""]
+        );
+        assert_eq!(
+            layout_footer("First\r\n\r\nSecond", 7.0, &font)
+                .unwrap()
+                .iter()
+                .map(|line| line.text.as_str())
+                .collect::<Vec<_>>(),
+            ["First", "", "Second"]
+        );
+        assert!(layout_footer("", 10.0, &font).unwrap().is_empty());
+        assert!(layout_footer(&"\n".repeat(30), 7.0, &font).is_err());
+    }
+
+    #[test]
+    fn footer_paragraph_gaps_are_larger_than_single_and_wrapped_line_breaks() {
+        let font = footer_font();
+        for size in [7.0, 10.0, 11.0, 12.0] {
+            let single = layout_footer("One\nTwo", size, &font).unwrap();
+            let paragraph = layout_footer("One\n\nTwo", size, &font).unwrap();
+            let multiple = layout_footer("One\n\n\nTwo", size, &font).unwrap();
+            let wrapped = layout_footer(&"Payroll instructions ".repeat(12), size, &font).unwrap();
+            let normal = single[0].baseline - single[1].baseline;
+            assert!((normal - (wrapped[0].baseline - wrapped[1].baseline)).abs() < 0.001);
+            assert!((paragraph[0].baseline - paragraph[2].baseline - 2.5 * normal).abs() < 0.001);
+            assert!((multiple[0].baseline - multiple[3].baseline - 4.0 * normal).abs() < 0.001);
+            assert_eq!(
+                single
+                    .iter()
+                    .map(|line| line.text.as_str())
+                    .collect::<Vec<_>>(),
+                ["One", "Two"]
+            );
+        }
+    }
+
+    #[test]
+    fn footer_wraps_measured_text_and_rejects_overflow_without_shrinking() {
+        let font = footer_font();
+        let text = "Payroll instructions ".repeat(12);
+        let lines = layout_footer(&text, 7.0, &font).unwrap();
+        assert!(lines.len() > 1);
+        assert_eq!(
+            lines
+                .iter()
+                .map(|line| line.text.as_str())
+                .collect::<String>(),
+            text
+        );
+        let size_sensitive_word = "W".repeat(60);
+        assert!(layout_footer(&size_sensitive_word, 6.0, &font).is_ok());
+        assert!(layout_footer(&size_sensitive_word, 10.0, &font).is_err());
+        for text in [
+            "W".repeat(500),
+            "line\n".repeat(30),
+            "Payroll instructions ".repeat(500),
+        ] {
+            let error = layout_footer(&text, 10.0, &font).unwrap_err();
+            assert!(error.contains("does not fit at 10 pt"));
+            assert!(error.contains("Shorten the text or select a smaller font size"));
+        }
+    }
+
+    #[test]
+    fn footer_operations_keep_legacy_wording_regular_font_and_exact_selected_size() {
+        let font = footer_font();
+        let mut document = PdfDocument::new("test");
+        let regular = document.add_font(&font);
+        let bold = printpdf::FontId("unused-bold".into());
+        let mut config = crate::config::PayrollConfig::default();
+        let legacy: Vec<_> = config
+            .timesheet_footer_text
+            .split('\n')
+            .map(str::to_string)
+            .collect();
+        for size in [6.0, 7.0, 8.0, 9.0, 10.0, 11.0, 12.0, 99.0] {
+            config.timesheet_footer_font_size = size;
+            let mut ops = Vec::new();
+            write_footer(&mut ops, &font, &regular, &bold, &config).unwrap();
+            let rendered: Vec<_> = ops
+                .iter()
+                .filter_map(|op| match op {
+                    Op::WriteText { items, font } => {
+                        assert_eq!(font, &regular);
+                        Some(
+                            items
+                                .iter()
+                                .filter_map(|item| match item {
+                                    TextItem::Text(text) => Some(text.as_str()),
+                                    _ => None,
+                                })
+                                .collect::<String>(),
+                        )
+                    }
+                    _ => None,
+                })
+                .collect();
+            if size == 7.0 || size == 99.0 {
+                assert_eq!(rendered, legacy);
+                let ys: Vec<_> = ops
+                    .iter()
+                    .filter_map(|op| match op {
+                        Op::SetTextCursor { pos } => Some(pos.y.0),
+                        _ => None,
+                    })
+                    .collect();
+                assert_eq!(
+                    ys,
+                    [
+                        Pt::from(Mm(48.0)).0,
+                        Pt::from(Mm(48.0 - footer_line_spacing(7.0, &font))).0
+                    ]
+                );
+            }
+            for op in &ops {
+                if let Op::SetFontSize { size: actual, .. } = op {
+                    assert_eq!(
+                        actual.0,
+                        crate::config::normalise_footer_font_size(size) as f32
+                    );
+                }
+            }
+        }
+        config.timesheet_footer_text = "W".repeat(500);
+        let mut rejected_ops = Vec::new();
+        assert!(write_footer(&mut rejected_ops, &font, &regular, &bold, &config).is_err());
+        assert!(rejected_ops.is_empty());
+        config.timesheet_footer_text.clear();
+        let mut ops = Vec::new();
+        write_footer(&mut ops, &font, &regular, &bold, &config).unwrap();
+        assert!(ops.is_empty());
+    }
 
     fn schedule(
         first_week: &str,
@@ -936,7 +1231,12 @@ mod tests {
 
         let pdf_config = crate::config::PdfConfig::default();
 
-        let result = PdfGenerator::generate(&output_dir, &data, &pdf_config);
+        let result = PdfGenerator::generate(
+            &output_dir,
+            &data,
+            &pdf_config,
+            &crate::config::PayrollConfig::default(),
+        );
 
         assert!(result.is_ok());
 
@@ -946,6 +1246,22 @@ mod tests {
 
         let extracted = pdf_extract::extract_text(&path).unwrap();
         let normalised = extracted.split_whitespace().collect::<Vec<_>>().join(" ");
+        for sentence in crate::config::default_timesheet_footer_text().split('\n') {
+            assert!(normalised.contains(sentence));
+        }
+        assert!(normalised.contains("DECLARATION"));
+        assert!(normalised
+            .contains("I confirm that the hours and information recorded above are correct."));
+        let original_pdf = fs::read(&path).unwrap();
+        let mut overflowing = crate::config::PayrollConfig::default();
+        overflowing.timesheet_footer_text = "Too many lines\n".repeat(20);
+        let error =
+            PdfGenerator::generate_to_path(&path, &data, &pdf_config, &overflowing).unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("footer text does not fit at 7 pt"));
+        assert_eq!(fs::read(&path).unwrap(), original_pdf);
+
         assert!(!normalised.contains("Total"));
         assert!(normalised.contains("23/03/2026"));
         assert!(normalised.contains("30/03/2026"));
@@ -966,7 +1282,13 @@ mod tests {
 
         data.hours_worked = ["15.75", "0", "0", "0"];
         data.previous_cycle_hours = Some("-3.00");
-        PdfGenerator::generate(&output_dir, &data, &pdf_config).unwrap();
+        PdfGenerator::generate(
+            &output_dir,
+            &data,
+            &pdf_config,
+            &crate::config::PayrollConfig::default(),
+        )
+        .unwrap();
         let text = pdf_extract::extract_text(&path)
             .unwrap()
             .split_whitespace()
@@ -1017,8 +1339,13 @@ mod tests {
             pa_signature_path: None,
         };
 
-        let path = PdfGenerator::generate(&output_dir, &data, &crate::config::PdfConfig::default())
-            .unwrap();
+        let path = PdfGenerator::generate(
+            &output_dir,
+            &data,
+            &crate::config::PdfConfig::default(),
+            &crate::config::PayrollConfig::default(),
+        )
+        .unwrap();
         let extracted = pdf_extract::extract_text(&path).unwrap();
         // Signature dates now contain a standalone day number, which may
         // legitimately equal the forbidden combined payroll totals (10/18).
@@ -1099,8 +1426,13 @@ mod tests {
             pa_signature_path: None,
         };
 
-        let path = PdfGenerator::generate(&output_dir, &data, &crate::config::PdfConfig::default())
-            .unwrap();
+        let path = PdfGenerator::generate(
+            &output_dir,
+            &data,
+            &crate::config::PdfConfig::default(),
+            &crate::config::PayrollConfig::default(),
+        )
+        .unwrap();
         let extracted = pdf_extract::extract_text(&path).unwrap();
         let normalised = extracted.split_whitespace().collect::<Vec<_>>().join(" ");
         assert!(normalised.contains("16 (w/c 10/08, 17/08)"));

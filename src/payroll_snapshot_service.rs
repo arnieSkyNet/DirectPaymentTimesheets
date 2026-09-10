@@ -365,6 +365,40 @@ mod tests {
     }
 
     #[test]
+    fn footer_generation_failure_preserves_published_pdf_and_candidate() {
+        let (directory, repository) = repository();
+        let path = directory.path().join("timesheet.pdf");
+        publish(&repository, &path, 1).unwrap();
+        let error = publish_candidate(&repository, CandidatePublication {
+            payroll_timesheet_id: 10, items: &[item(2)], final_pdf_path: &path,
+            generated_at: "2027-03-01T11:00:00Z", previous_cycle_minutes: 0,
+            week_ids: &[0; 4], week_totals_minutes: &[60, 0, 0, 0],
+        }, |temporary| {
+            fs::write(temporary, "incomplete output")?;
+            Err("Payroll-timesheet footer text does not fit at 10 pt. Shorten the text or select a smaller font size.".into())
+        }).unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("footer text does not fit at 10 pt"));
+        assert_eq!(fs::read_to_string(&path).unwrap(), "PDF 1");
+        assert_eq!(
+            repository.get_snapshot_items(10).unwrap()[0].timesheet_id,
+            Some(1)
+        );
+        assert_eq!(
+            fs::read_dir(directory.path())
+                .unwrap()
+                .filter_map(Result::ok)
+                .filter(|entry| entry
+                    .path()
+                    .extension()
+                    .is_some_and(|extension| extension == "pdf"))
+                .count(),
+            1
+        );
+    }
+
+    #[test]
     fn candidate_can_be_replaced_before_send_and_uses_temporary_publication() {
         let (directory, repository) = repository();
         let path = directory.path().join("timesheet.pdf");

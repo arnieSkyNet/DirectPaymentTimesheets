@@ -24,6 +24,8 @@ pub struct PayrollSettingsScreen {
     standard_rate_base: String,
     standard_rate_top_up: String,
     overtime_enabled: bool,
+    timesheet_footer_text: String,
+    timesheet_footer_font_size: f64,
 
     status_message: String,
     confirm_bulk_pay_rate_update: bool,
@@ -49,6 +51,8 @@ impl PayrollSettingsScreen {
             standard_rate_base: String::new(),
             standard_rate_top_up: String::new(),
             overtime_enabled: false,
+            timesheet_footer_text: crate::config::default_timesheet_footer_text(),
+            timesheet_footer_font_size: 7.0,
 
             status_message: "Payroll settings not loaded.".to_string(),
             confirm_bulk_pay_rate_update: false,
@@ -250,6 +254,31 @@ impl PayrollSettingsScreen {
         self.annual_leave.show(ui);
 
         ui.separator();
+        ui.heading("Payroll-timesheet footer / instructions");
+        ui.label("Organisation-specific instructions printed below the signature dates. Blank lines are preserved; leave empty for no footer.");
+        ui.add(
+            egui::TextEdit::multiline(&mut self.timesheet_footer_text)
+                .desired_rows(5)
+                .desired_width(f32::INFINITY),
+        );
+        ui.horizontal(|ui| {
+            ui.label("Footer font size");
+            crate::gui_controls::combo_box("timesheet_footer_font_size")
+                .selected_text(format!("{} pt", self.timesheet_footer_font_size))
+                .show_ui(ui, |ui| {
+                    for size in crate::config::FOOTER_FONT_SIZES {
+                        crate::gui_controls::combo_value(
+                            ui,
+                            &mut self.timesheet_footer_font_size,
+                            f64::from(size),
+                            format!("{size} pt"),
+                        );
+                    }
+                });
+        });
+        ui.label("Text must fit at the selected size. If generation reports overflow, shorten the text or choose a smaller font size.");
+
+        ui.separator();
 
         ui.horizontal(|ui| {
             if ui.button("Save Payroll Settings").clicked() {
@@ -277,6 +306,9 @@ impl PayrollSettingsScreen {
         self.start_of_workweek = payroll.start_of_workweek.clone();
 
         self.overtime_enabled = payroll.overtime_enabled;
+        self.timesheet_footer_text = payroll.timesheet_footer_text.clone();
+        self.timesheet_footer_font_size =
+            crate::config::normalise_footer_font_size(payroll.timesheet_footer_font_size);
 
         if let Ok(Some(provider)) = application.payroll_provider_repository.get() {
             self.provider_name = provider.name.unwrap_or_default();
@@ -315,6 +347,9 @@ impl PayrollSettingsScreen {
         payroll.start_of_workweek = self.start_of_workweek.clone();
 
         payroll.overtime_enabled = self.overtime_enabled;
+        payroll.timesheet_footer_text = self.timesheet_footer_text.clone();
+        payroll.timesheet_footer_font_size =
+            crate::config::normalise_footer_font_size(self.timesheet_footer_font_size);
 
         let payroll_department_email = match application.payroll_provider_repository.get() {
             Ok(provider) => provider.and_then(|provider| provider.payroll_department_email),
@@ -499,6 +534,8 @@ mod annual_leave_settings_tests {
             folders.payroll_information_folder = directory.path().join("information");
             let mut screen = PayrollSettingsScreen::new();
             screen.load(&application);
+            screen.timesheet_footer_text = "First\n\nSecond\n".into();
+            screen.timesheet_footer_font_size = 9.0;
             screen.annual_leave.contracted_from = "1/1".into();
             screen.annual_leave.weeks = "6".into();
             screen.annual_leave.variable_from = "1/9".into();
@@ -523,6 +560,13 @@ mod annual_leave_settings_tests {
                     (6.0, 13.0)
                 );
                 assert!(directory.path().join("config.toml").is_file());
+                let persisted =
+                    crate::config::AppConfig::load(&directory.path().join("config.toml")).unwrap();
+                assert_eq!(persisted.payroll.timesheet_footer_text, "First\n\nSecond\n");
+                assert_eq!(persisted.payroll.timesheet_footer_font_size, 9.0);
+                screen.load(&application);
+                assert_eq!(screen.timesheet_footer_text, "First\n\nSecond\n");
+                assert_eq!(screen.timesheet_footer_font_size, 9.0);
             } else {
                 assert_ne!(screen.status_message, "Payroll settings saved.");
                 assert_eq!(
