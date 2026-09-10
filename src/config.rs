@@ -152,7 +152,49 @@ pub struct PayrollConfig {
     #[serde(default = "default_payslip_email_body")]
     pub payslip_email_body: String,
 
+    #[serde(default = "default_timesheet_footer_text")]
+    pub timesheet_footer_text: String,
+
+    #[serde(
+        default = "default_timesheet_footer_font_size",
+        deserialize_with = "deserialize_footer_font_size"
+    )]
+    pub timesheet_footer_font_size: f64,
+
     pub overtime_enabled: bool,
+}
+
+pub const FOOTER_FONT_SIZES: [u8; 7] = [6, 7, 8, 9, 10, 11, 12];
+
+pub fn default_timesheet_footer_text() -> String {
+    "Both the employer and the employee must sign all time sheets before NASS can process them.\nThese time sheets will be retained on file for 6 years and may be required for inspection by the County Treasurer.".into()
+}
+
+fn default_timesheet_footer_font_size() -> f64 {
+    7.0
+}
+
+pub fn normalise_footer_font_size(size: f64) -> f64 {
+    if FOOTER_FONT_SIZES
+        .iter()
+        .any(|allowed| f64::from(*allowed) == size)
+    {
+        size
+    } else {
+        7.0
+    }
+}
+
+fn deserialize_footer_font_size<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<f64, D::Error> {
+    let value = toml::Value::deserialize(deserializer)?;
+    Ok(normalise_footer_font_size(
+        value
+            .as_float()
+            .or_else(|| value.as_integer().map(|n| n as f64))
+            .unwrap_or(7.0),
+    ))
 }
 
 fn default_rounding_direction() -> String {
@@ -185,6 +227,8 @@ impl Default for PayrollConfig {
             email_subject_format: default_email_subject_format(),
             timesheet_email_body: default_timesheet_email_body(),
             payslip_email_body: default_payslip_email_body(),
+            timesheet_footer_text: default_timesheet_footer_text(),
+            timesheet_footer_font_size: default_timesheet_footer_font_size(),
             overtime_enabled: false,
         }
     }
@@ -328,6 +372,67 @@ fn reconcile_legacy_timesheet_email_body(config: &mut AppConfig, source: &toml::
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn payroll_footer_old_configs_defaults_and_multiline_round_trip() {
+        let mut source = toml::Value::try_from(AppConfig::default()).unwrap();
+        let payroll = source.get_mut("payroll").unwrap().as_table_mut().unwrap();
+        payroll.remove("timesheet_footer_text");
+        payroll.remove("timesheet_footer_font_size");
+        let mut loaded: AppConfig = toml::from_str(&toml::to_string(&source).unwrap()).unwrap();
+        assert_eq!(loaded.payroll.timesheet_footer_text, "Both the employer and the employee must sign all time sheets before NASS can process them.\nThese time sheets will be retained on file for 6 years and may be required for inspection by the County Treasurer.");
+        assert_eq!(loaded.payroll.timesheet_footer_font_size, 7.0);
+        source.as_table_mut().unwrap().remove("payroll");
+        let missing: AppConfig = toml::from_str(&toml::to_string(&source).unwrap()).unwrap();
+        assert_eq!(
+            missing.payroll.timesheet_footer_text,
+            loaded.payroll.timesheet_footer_text
+        );
+        for text in [
+            "First  line\n\nSecond paragraph\n",
+            "",
+            "First\r\n\r\nSecond",
+        ] {
+            loaded.payroll.timesheet_footer_text = text.into();
+            let roundtrip: AppConfig = toml::from_str(&toml::to_string(&loaded).unwrap()).unwrap();
+            assert_eq!(roundtrip.payroll.timesheet_footer_text, text);
+        }
+    }
+
+    #[test]
+    fn payroll_footer_sizes_are_restricted_and_unsupported_config_falls_back() {
+        for size in [
+            6.0,
+            7.0,
+            8.0,
+            9.0,
+            10.0,
+            11.0,
+            12.0,
+            13.0,
+            -1.0,
+            0.0,
+            7.5,
+            100.0,
+            f64::NAN,
+            f64::INFINITY,
+        ] {
+            let mut config = AppConfig::default();
+            config.payroll.timesheet_footer_font_size = size;
+            let loaded: AppConfig = toml::from_str(&toml::to_string(&config).unwrap()).unwrap();
+            let expected = if (6.0..=12.0).contains(&size) && size.fract() == 0.0 {
+                size
+            } else {
+                7.0
+            };
+            assert_eq!(loaded.payroll.timesheet_footer_font_size, expected);
+            assert_eq!(normalise_footer_font_size(size), expected);
+        }
+        let mut value = toml::Value::try_from(AppConfig::default()).unwrap();
+        value["payroll"]["timesheet_footer_font_size"] = toml::Value::String("invalid".into());
+        let loaded: AppConfig = toml::from_str(&toml::to_string(&value).unwrap()).unwrap();
+        assert_eq!(loaded.payroll.timesheet_footer_font_size, 7.0);
+    }
 
     #[test]
     fn calendar_preference_defaults_and_round_trips_all_restricted_choices() {

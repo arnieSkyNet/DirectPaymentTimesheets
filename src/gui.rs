@@ -2639,6 +2639,7 @@ impl DirectPaymentApp {
                         temporary_path,
                         &data,
                         &self.application.context.config.pdf,
+                        &self.application.context.config.payroll,
                     )
                 },
             )?;

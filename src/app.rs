@@ -240,6 +240,7 @@ impl Application {
             &output_dir,
             data,
             &self.context.config.pdf,
+            &self.context.config.payroll,
         )?)
     }
 
