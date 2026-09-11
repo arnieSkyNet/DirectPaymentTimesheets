@@ -64,9 +64,8 @@ struct DashboardWorkflowActions {
     prepare_timesheets: bool,
     generate_timesheets: bool,
     email_timesheets: bool,
-    import_payroll_return: bool,
+    import_payroll_documents: bool,
     email_payslips: bool,
-    import_payroll_prep_sheet: bool,
     view_payroll_schedule: bool,
 }
 
@@ -116,6 +115,7 @@ struct PendingEmailBatch {
 }
 
 struct PendingPayrollReturnImport {
+    source_path: std::path::PathBuf,
     schedules: Vec<PayrollSchedule>,
     selected_schedule_id: i64,
 }
@@ -561,7 +561,7 @@ impl DirectPaymentApp {
         self.additional_notes_by_personal_assistant.clear();
         self.note_enabled_personal_assistant_ids.clear();
         let selected_personal_assistant_ids = self
-            .selected_period_assistants()
+            .email_assistants(kind)
             .unwrap_or_default()
             .into_iter()
             .map(|assistant| assistant.id)
@@ -604,7 +604,12 @@ impl DirectPaymentApp {
         if let Some(ids) = ids {
             ui.separator();
             ui.label("Additional notes by Personal Assistant");
-            let assistants = self.selected_period_assistants().unwrap_or_default();
+            let assistants = self
+                .pending_email_batch
+                .as_ref()
+                .map(|batch| batch.kind)
+                .map(|kind| self.email_assistants(kind).unwrap_or_default())
+                .unwrap_or_default();
             for assistant in assistants
                 .into_iter()
                 .filter(|assistant| ids.contains(&assistant.id))
@@ -1137,6 +1142,35 @@ impl DirectPaymentApp {
         }
     }
 
+    fn payslip_email_assistants(
+        &self,
+    ) -> Result<Vec<crate::models::PersonalAssistant>, Box<dyn std::error::Error>> {
+        let mut assistants = self.selected_period_assistants()?;
+        let schedule = self.selected_operational_payroll_schedule()?;
+        let root =
+            crate::paths::expand_path(&self.application.context.config.folders.payslip_folder);
+        for assistant in self.application.personal_assistant_repository.get_all()? {
+            if !assistants
+                .iter()
+                .any(|selected| selected.id == assistant.id)
+                && !crate::archive::payslip_supplements(&root, assistant.id, &schedule)?.is_empty()
+            {
+                assistants.push(assistant);
+            }
+        }
+        Ok(assistants)
+    }
+
+    fn email_assistants(
+        &self,
+        kind: PayrollEmailKind,
+    ) -> Result<Vec<crate::models::PersonalAssistant>, Box<dyn std::error::Error>> {
+        match kind {
+            PayrollEmailKind::Payslip => self.payslip_email_assistants(),
+            PayrollEmailKind::Timesheet => self.selected_period_assistants(),
+        }
+    }
+
     fn selected_period_assistants(
         &self,
     ) -> Result<Vec<crate::models::PersonalAssistant>, Box<dyn std::error::Error>> {
@@ -1346,6 +1380,22 @@ impl DirectPaymentApp {
     }
 
     fn begin_payroll_return_import(&mut self) {
+        let Some(path) = rfd::FileDialog::new()
+            .add_filter(
+                "Payroll Documents (ZIP or individual Prep Sheet)",
+                &["zip", "pdf", "docx"],
+            )
+            .pick_file()
+        else {
+            return;
+        };
+        if !path
+            .extension()
+            .is_some_and(|ext| ext.eq_ignore_ascii_case("zip"))
+        {
+            self.import_selected_payroll_documents(&path, None);
+            return;
+        }
         let result = (|| -> Result<PendingPayrollReturnImport, Box<dyn std::error::Error>> {
             let today = chrono::Local::now().date_naive();
             let current_schedule_id = self
@@ -1359,9 +1409,10 @@ impl DirectPaymentApp {
             );
             let selected_schedule_id =
                 default_payroll_return_schedule_id(&schedules, current_schedule_id)
-                    .ok_or("No imported Payroll Prep Sheet schedules are available.")?;
+                    .ok_or("No payroll periods are available. Use Import Payroll Documents to select an individual Payroll Prep Sheet PDF first.")?;
 
             Ok(PendingPayrollReturnImport {
+                source_path: path,
                 schedules,
                 selected_schedule_id,
             })
@@ -1383,12 +1434,12 @@ impl DirectPaymentApp {
 
         let mut import = false;
         let mut cancel = false;
-        egui::Window::new("Choose Payroll Return period")
+        egui::Window::new("Choose Payroll Documents period")
             .collapsible(false)
             .resizable(false)
             .show(ctx, |ui| {
                 ui.label(
-                    "Choose the payroll period this return belongs to, then select the Payroll Return ZIP file.",
+                    "Choose the payroll period these documents belong to. A payslip is not required.",
                 );
 
                 let selected_text = selected_payroll_return_schedule(
@@ -1433,7 +1484,7 @@ impl DirectPaymentApp {
                 }
 
                 ui.horizontal(|ui| {
-                    import = ui.button("Choose Payroll Return ZIP").clicked();
+                    import = ui.button("Import Payroll Documents").clicked();
                     cancel = ui.button("Cancel").clicked();
                 });
             });
@@ -1442,45 +1493,38 @@ impl DirectPaymentApp {
             self.pending_payroll_return_import = None;
             self.status_message = "Payroll return import cancelled; no files were changed.".into();
         } else if import {
-            let schedule = self
-                .pending_payroll_return_import
-                .as_ref()
-                .and_then(|pending| {
-                    selected_payroll_return_schedule(
-                        &pending.schedules,
-                        pending.selected_schedule_id,
-                    )
-                })
-                .cloned();
-            self.pending_payroll_return_import = None;
-
-            let Some(schedule) = schedule else {
+            let pending = self.pending_payroll_return_import.take().unwrap();
+            let Some(schedule) =
+                selected_payroll_return_schedule(&pending.schedules, pending.selected_schedule_id)
+                    .cloned()
+            else {
                 self.status_message =
-                    "Payroll return import failed: no payroll period was selected.".to_string();
+                    "Payroll document import failed: no payroll period was selected.".into();
                 return;
             };
-            if crate::payroll_file_naming::paye_week(&schedule).is_err() {
-                self.status_message =
-                    "Payroll return import failed: the selected schedule has an invalid pay date."
-                        .to_string();
-                return;
-            }
+            self.import_selected_payroll_documents(&pending.source_path, Some(&schedule));
+        }
+    }
 
-            if let Some(path) = rfd::FileDialog::new()
-                .add_filter("ZIP files", &["zip"])
-                .pick_file()
-            {
-                match self.application.import_payroll_return(&path, &schedule) {
-                    Ok(result) => {
-                        self.status_message = payroll_return_status_message(&result);
-                        self.file_status =
-                            Some((self.status_message.clone(), result.published_paths.clone()));
-                    }
-                    Err(error) => {
-                        self.status_message = format!("Payroll return import failed: {error}");
-                        self.file_status = None;
-                    }
+    fn import_selected_payroll_documents(
+        &mut self,
+        path: &std::path::Path,
+        schedule: Option<&PayrollSchedule>,
+    ) {
+        match self.application.import_payroll_documents(path, schedule) {
+            Ok(result) => {
+                self.status_message = payroll_return_status_message(&result);
+                self.file_status =
+                    Some((self.status_message.clone(), result.published_paths.clone()));
+                if let Err(error) = self.refresh_operational_payroll_schedules() {
+                    self.operational_payroll_period_error = Some(format!(
+                        "Could not refresh operational payroll periods: {error}"
+                    ));
                 }
+            }
+            Err(error) => {
+                self.status_message = format!("Payroll document import failed: {error}");
+                self.file_status = None;
             }
         }
     }
@@ -1650,38 +1694,12 @@ impl DirectPaymentApp {
                     self.begin_email_batch(PayrollEmailKind::Timesheet);
                 }
 
-                if actions.import_payroll_return {
+                if actions.import_payroll_documents {
                     self.begin_payroll_return_import();
                 }
 
                 if actions.email_payslips {
                     self.begin_email_batch(PayrollEmailKind::Payslip);
-                }
-
-                if actions.import_payroll_prep_sheet {
-                    if let Some(path) = rfd::FileDialog::new()
-                        .add_filter("Payroll Prep Sheet", &["pdf", "docx"])
-                        .pick_file()
-                    {
-                        match self.application.import_payroll_prep_sheet(&path) {
-                            Ok(count) => {
-                                self.status_message = format!(
-                                    "Payroll Prep Sheet imported: {} schedule entries.",
-                                    count
-                                );
-                                if let Err(error) = self.refresh_operational_payroll_schedules() {
-                                    self.operational_payroll_period_error = Some(format!(
-                                        "Could not refresh operational payroll periods: {error}"
-                                    ));
-                                }
-                            }
-
-                            Err(error) => {
-                                self.status_message =
-                                    format!("Payroll Prep Sheet import failed: {}", error);
-                            }
-                        }
-                    }
                 }
 
                 if actions.view_payroll_schedule {
@@ -1771,7 +1789,7 @@ impl DirectPaymentApp {
         ui.heading("Email Preview");
         ui.label("Previews never send an email or update the sent status.");
 
-        let assistants = match self.selected_period_assistants() {
+        let assistants = match self.payslip_email_assistants() {
             Ok(assistants) => assistants.into_iter().collect::<Vec<_>>(),
             Err(error) => {
                 ui.label(format!("Unable to load Personal Assistants: {}", error));
@@ -1830,6 +1848,9 @@ impl DirectPaymentApp {
             ui.label(format!("BCC: {}", preview.bcc.as_deref().unwrap_or("None")));
             ui.label(format!("Subject: {}", preview.subject));
             ui.label(format!("Attachment: {}", preview.attachment_path));
+            for path in &preview.additional_attachment_paths {
+                ui.label(format!("Attachment: {}", path.display()));
+            }
             ui.label("Body:");
             ui.add_sized(
                 [600.0, 140.0],
@@ -1845,7 +1866,7 @@ impl DirectPaymentApp {
                 .ok_or("Select a Personal Assistant to preview an email.")?;
 
             let assistant = self
-                .selected_period_assistants()?
+                .email_assistants(kind)?
                 .into_iter()
                 .find(|assistant| assistant.id == personal_assistant_id)
                 .ok_or("Selected Personal Assistant was not found.")?;
@@ -1877,6 +1898,11 @@ impl DirectPaymentApp {
             let current_schedule = self.selected_operational_payroll_schedule()?;
 
             let personal_assistant_name = format!("{} {}", assistant.first_name, assistant.surname);
+            let bundle = if matches!(kind, PayrollEmailKind::Payslip) {
+                Some(self.unsent_payslip_documents(&assistant, &current_schedule)?)
+            } else {
+                None
+            };
             let (attachment_path, body) = match kind {
                 PayrollEmailKind::Timesheet => (
                     crate::payroll_file_naming::timesheet_path(
@@ -1889,20 +1915,14 @@ impl DirectPaymentApp {
                     &self.application.context.config.payroll.timesheet_email_body,
                 ),
                 PayrollEmailKind::Payslip => (
-                    crate::payroll_file_naming::payslip_path(
-                        &crate::paths::expand_path(
-                            &self.application.context.config.folders.payslip_folder,
-                        ),
-                        &personal_assistant_name,
-                        &current_schedule,
-                    )?,
+                    bundle
+                        .as_ref()
+                        .and_then(|bundle| bundle.paths.first())
+                        .cloned()
+                        .ok_or("No unsent PA payroll documents are available for this period.")?,
                     &self.application.context.config.payroll.payslip_email_body,
                 ),
             };
-
-            if matches!(kind, PayrollEmailKind::Payslip) {
-                crate::archive::validate_payslip_pdf(&attachment_path)?;
-            }
 
             if matches!(kind, PayrollEmailKind::Timesheet) {
                 verify_timesheet_candidate_for_attachment(
@@ -1913,7 +1933,7 @@ impl DirectPaymentApp {
                 )?;
             }
 
-            self.application.preview_payroll_email(
+            let mut preview = self.application.preview_payroll_email(
                 &payroll_department_email,
                 employer_email,
                 assistant.email.as_deref(),
@@ -1927,7 +1947,11 @@ impl DirectPaymentApp {
                     .get(&assistant.id)
                     .map(String::as_str),
                 employer.email_signature.as_deref(),
-            )
+            )?;
+            if let Some(bundle) = bundle {
+                preview.additional_attachment_paths = bundle.paths.into_iter().skip(1).collect();
+            }
+            Ok(preview)
         })();
 
         match result {
@@ -1940,6 +1964,29 @@ impl DirectPaymentApp {
                 self.status_message = format!("Email preview failed: {}", error);
             }
         }
+    }
+
+    fn unsent_payslip_documents(
+        &self,
+        assistant: &crate::models::PersonalAssistant,
+        schedule: &PayrollSchedule,
+    ) -> Result<crate::payslip_delivery_service::PayslipEmailBundle, Box<dyn std::error::Error>>
+    {
+        let root =
+            crate::paths::expand_path(&self.application.context.config.folders.payslip_folder);
+        let name = format!("{} {}", assistant.first_name, assistant.surname);
+        let payslip = crate::payroll_file_naming::payslip_path(&root, &name, schedule)?;
+        let supplements = crate::archive::payslip_supplements(&root, assistant.id, schedule)?;
+        crate::payslip_delivery_service::select_unsent_payslip_documents(
+            &self.application.payroll_timesheet_email_repository,
+            crate::payslip_delivery_service::PayslipDeliveryIdentity {
+                personal_assistant_id: assistant.id,
+                payroll_year: &schedule.payroll_year,
+                cycle_number: schedule.cycle_number,
+            },
+            &payslip,
+            &supplements,
+        )
     }
 
     fn email_payslips(
@@ -1975,66 +2022,32 @@ impl DirectPaymentApp {
 
         let payroll_year = schedule.payroll_year.clone();
 
-        let assistants = self.selected_period_assistants()?;
-
-        let payslip_folder =
-            crate::paths::expand_path(&self.application.context.config.folders.payslip_folder);
+        let required_assistants = self.selected_period_assistants()?;
+        let assistants = self.payslip_email_assistants()?;
 
         let mut sent = 0usize;
 
         for assistant in &assistants {
             let personal_assistant_name = format!("{} {}", assistant.first_name, assistant.surname);
 
-            let existing_status = self
-                .application
-                .payroll_timesheet_email_repository
-                .get_for_pa_and_cycle(
-                    assistant.id,
-                    &payroll_year,
-                    schedule.cycle_number,
-                    "payslip",
-                )?;
-
-            if let Some(status) = existing_status {
-                match status.delivery_state {
-                    crate::payroll_timesheet_email_repository::EmailDeliveryState::Sent {
-                        ..
-                    } => continue,
-                    crate::payroll_timesheet_email_repository::EmailDeliveryState::Indeterminate {
-                        attempted_at,
-                    } => {
-                        return Err(format!(
-                            "Payslip delivery for {personal_assistant_name} is indeterminate from the production attempt at {attempted_at}. Delivery may already have occurred, so automatic resend is refused. Verify delivery outside the application; recovery controls are not yet available."
-                        )
-                        .into());
-                    }
-                    crate::payroll_timesheet_email_repository::EmailDeliveryState::Unsent => {}
-                }
-            }
-
+            let bundle = self.unsent_payslip_documents(assistant, schedule)?;
+            let Some((attachment, additional_attachments)) = bundle.paths.split_first() else {
+                continue;
+            };
             let personal_assistant_email = assistant.email.as_deref();
 
-            let payslip_path = crate::payroll_file_naming::payslip_path(
-                &payslip_folder,
-                &personal_assistant_name,
-                schedule,
-            )?;
-
-            crate::archive::validate_payslip_pdf(&payslip_path).map_err(|error| {
-                format!("Payslip PDF is not safe to send for {personal_assistant_name}: {error}")
-            })?;
-
             let attempted_at = chrono::Local::now().to_rfc3339();
-            crate::payslip_delivery_service::send_production_payslip(
+            crate::payslip_delivery_service::send_production_payslip_bundle(
                 &self.application.payroll_timesheet_email_repository,
                 crate::payslip_delivery_service::PayslipDeliveryIdentity {
                     personal_assistant_id: assistant.id,
                     payroll_year: &payroll_year,
                     cycle_number: schedule.cycle_number,
                 },
+                &bundle.email_types,
                 &attempted_at,
                 || {
-                    self.application.send_payroll_email(
+                    self.application.send_payroll_email_with_attachments(
                         payroll_department_email,
                         employer_email,
                         personal_assistant_email,
@@ -2042,12 +2055,13 @@ impl DirectPaymentApp {
                         assistant.date_of_birth.as_deref(),
                         assistant.national_insurance_number.as_deref(),
                         schedule,
-                        &payslip_path,
+                        attachment,
                         &self.application.context.config.payroll.payslip_email_body,
                         self.additional_notes_by_personal_assistant
                             .get(&assistant.id)
                             .map(String::as_str),
                         employer.email_signature.as_deref(),
+                        additional_attachments,
                     )
                 },
             )?;
@@ -2055,7 +2069,7 @@ impl DirectPaymentApp {
             sent += 1;
         }
 
-        let required = assistants
+        let required = required_assistants
             .iter()
             .map(
                 |assistant| crate::payslip_delivery_service::PayslipDeliveryIdentity {
@@ -2065,12 +2079,14 @@ impl DirectPaymentApp {
                 },
             )
             .collect::<Vec<_>>();
-        crate::payslip_delivery_service::mark_schedule_sent_if_complete(
-            &self.application.payroll_timesheet_email_repository,
-            &self.application.payroll_schedule_repository,
-            schedule.id,
-            &required,
-        )?;
+        if !required.is_empty() {
+            crate::payslip_delivery_service::mark_schedule_sent_if_complete(
+                &self.application.payroll_timesheet_email_repository,
+                &self.application.payroll_schedule_repository,
+                schedule.id,
+                &required,
+            )?;
+        }
 
         Ok(sent)
     }
@@ -2502,12 +2518,13 @@ impl DirectPaymentApp {
                 format_pdf_hours(payroll_weeks[3].annual_leave_hours),
             ];
 
-            let sick_leave_hours = [
-                format_pdf_hours(payroll_weeks[0].sick_leave_hours),
-                format_pdf_hours(payroll_weeks[1].sick_leave_hours),
-                format_pdf_hours(payroll_weeks[2].sick_leave_hours),
-                format_pdf_hours(payroll_weeks[3].sick_leave_hours),
-            ];
+            let sickness_periods = crate::pdf_generator::sickness_periods_for_weeks(
+                &crate::sickness_period_repository::SicknessPeriodRepository::new(
+                    crate::payroll_evidence::open(&self.application)?,
+                ),
+                assistant.id,
+                &week_dates,
+            )?;
 
             let public_holidays = self
                 .application
@@ -2592,12 +2609,7 @@ impl DirectPaymentApp {
                     &annual_leave_hours[3],
                 ],
 
-                sick_leave_hours: [
-                    &sick_leave_hours[0],
-                    &sick_leave_hours[1],
-                    &sick_leave_hours[2],
-                    &sick_leave_hours[3],
-                ],
+                sickness_periods,
 
                 public_holidays: public_holiday_entries,
 
@@ -2845,12 +2857,25 @@ fn selected_payroll_return_schedule(
 
 fn payroll_return_status_message(result: &crate::archive::PayrollReturnImportResult) -> String {
     let summary = format!(
-        "{} payslip(s) imported, {} already present unchanged, {} information file(s) imported, {} entry/entries skipped",
+        "{} payslip(s) imported, {} already present unchanged, {} information file(s) imported, {} entry/entries skipped; {} P60/P45 imported, {} already present unchanged",
         result.payslips_imported,
         result.payslips_already_present,
         result.information_files_imported,
-        result.files_skipped
+        result.files_skipped,
+        result.supplements_imported,
+        result.supplements_already_present
     );
+    let summary = format!(
+        "{summary}; {} schedule entries imported",
+        result.schedule_entries_imported
+    );
+    if !result.prep_sheet_failures.is_empty() {
+        return format!(
+            "Payroll documents stored with schedule import errors ({summary}). {} {}",
+            result.prep_sheet_failures.join(" "),
+            result.publication_failure.as_deref().unwrap_or("")
+        );
+    }
     if let Some(failure) = &result.publication_failure {
         format!(
             "Payroll return was only partially published ({summary}). {failure} Published paths: {}",
@@ -3052,14 +3077,10 @@ fn draw_dashboard_workflow_actions(ui: &mut egui::Ui) -> DashboardWorkflowAction
                     actions.email_timesheets = workflow_button(ui, 2, "Email Payroll Timesheets");
                     ui.end_row();
 
-                    actions.import_payroll_return =
-                        workflow_button(ui, 0, "Import Payroll Return (Payslips)");
+                    actions.import_payroll_documents =
+                        workflow_button(ui, 0, "Import Payroll Documents");
                     actions.email_payslips = workflow_button(ui, 1, "Email Payslips");
-                    ui.end_row();
-
-                    actions.import_payroll_prep_sheet =
-                        workflow_button(ui, 0, "Import Payroll Prep Sheet");
-                    actions.view_payroll_schedule = workflow_button(ui, 1, "View Payroll Schedule");
+                    actions.view_payroll_schedule = workflow_button(ui, 2, "View Payroll Schedule");
                     ui.end_row();
                 });
         }
@@ -3080,15 +3101,11 @@ fn draw_dashboard_workflow_actions(ui: &mut egui::Ui) -> DashboardWorkflowAction
                     sized_workflow_button(ui, widths[2], "Email Payroll Timesheets");
             });
             ui.horizontal_wrapped(|ui| {
-                actions.import_payroll_return =
-                    sized_workflow_button(ui, widths[0], "Import Payroll Return (Payslips)");
+                actions.import_payroll_documents =
+                    sized_workflow_button(ui, widths[0], "Import Payroll Documents");
                 actions.email_payslips = sized_workflow_button(ui, widths[1], "Email Payslips");
-            });
-            ui.horizontal_wrapped(|ui| {
-                actions.import_payroll_prep_sheet =
-                    sized_workflow_button(ui, widths[0], "Import Payroll Prep Sheet");
                 actions.view_payroll_schedule =
-                    sized_workflow_button(ui, widths[1], "View Payroll Schedule");
+                    sized_workflow_button(ui, widths[2], "View Payroll Schedule");
             });
         }
     }
@@ -3573,6 +3590,88 @@ mod payroll_return_schedule_selection_tests {
     }
 
     #[test]
+    fn dashboard_renders_exact_three_row_workflow_with_unified_import() {
+        fn collect(shape: &egui::Shape, labels: &mut Vec<(String, egui::Pos2)>) {
+            match shape {
+                egui::Shape::Text(text) => labels.push((text.galley.job.text.clone(), text.pos)),
+                egui::Shape::Vec(shapes) => {
+                    for shape in shapes {
+                        collect(shape, labels);
+                    }
+                }
+                _ => {}
+            }
+        }
+        let expected = [
+            [
+                "Enter Hours/Shifts",
+                "Import Hours CSV",
+                "View Imported Hours",
+            ],
+            [
+                "Payroll Timesheet Preparation",
+                "Generate Payroll Timesheets",
+                "Email Payroll Timesheets",
+            ],
+            [
+                "Import Payroll Documents",
+                "Email Payslips",
+                "View Payroll Schedule",
+            ],
+        ];
+        for width in [900.0, 500.0] {
+            let context = egui::Context::default();
+            let mut labels = Vec::new();
+            for _ in 0..2 {
+                let output = context.run(
+                    egui::RawInput {
+                        screen_rect: Some(egui::Rect::from_min_size(
+                            egui::Pos2::ZERO,
+                            egui::vec2(width, 600.0),
+                        )),
+                        ..Default::default()
+                    },
+                    |ctx| {
+                        egui::CentralPanel::default().show(ctx, |ui| {
+                            draw_dashboard_workflow_actions(ui);
+                        });
+                    },
+                );
+                labels.clear();
+                for shape in &output.shapes {
+                    collect(&shape.shape, &mut labels);
+                }
+            }
+            assert_eq!(labels.len(), 9);
+            for (row_index, row) in expected.iter().enumerate() {
+                let positions = row.map(|label| {
+                    labels
+                        .iter()
+                        .find(|(text, _)| text == label)
+                        .expect(label)
+                        .1
+                });
+                if width > 800.0 {
+                    assert!((positions[0].y - positions[1].y).abs() < 1.0);
+                    assert!((positions[1].y - positions[2].y).abs() < 1.0);
+                    assert!(positions[0].x < positions[1].x && positions[1].x < positions[2].x);
+                    if row_index > 0 {
+                        let previous = labels
+                            .iter()
+                            .find(|(text, _)| text == expected[row_index - 1][0])
+                            .unwrap()
+                            .1;
+                        assert!(previous.y < positions[0].y);
+                    }
+                }
+            }
+            assert!(!labels
+                .iter()
+                .any(|(text, _)| text == "Import Payroll Prep Sheet"));
+        }
+    }
+
+    #[test]
     fn dashboard_workflow_uses_aligned_columns_only_when_they_fit() {
         let spacing = 8.0;
         let required = WORKFLOW_COLUMN_WIDTHS.iter().sum::<f32>() + spacing * 2.0;
@@ -3622,6 +3721,11 @@ mod payroll_return_schedule_selection_tests {
         let safe = crate::archive::PayrollReturnImportResult {
             payslips_imported: 2,
             payslips_already_present: 1,
+            supplements_imported: 0,
+            supplements_already_present: 0,
+            prep_sheet_paths: Vec::new(),
+            schedule_entries_imported: 0,
+            prep_sheet_failures: Vec::new(),
             information_files_imported: 3,
             files_skipped: 1,
             details: vec!["Ignored directory entry 'provider/'.".to_string()],
@@ -4341,6 +4445,353 @@ mod payroll_period_eligibility_tests {
     use crate::payroll_timesheet_screen::tests::{
         employment_period_fixture, load_period_for_eligibility_test,
     };
+
+    #[test]
+    fn later_supplements_import_and_preview_without_resending_an_ordinary_payslip() {
+        use std::io::Write;
+        for types in [vec!["P60"], vec!["P45"], vec!["P60", "P45"]] {
+            for ordinary_sent in [false, true] {
+                let (dir, mut application, _, current) = employment_period_fixture();
+                application.context.config.folders.payslip_folder = dir.path().join("payslips");
+                application
+                    .context
+                    .config
+                    .folders
+                    .payroll_information_folder = dir.path().join("info");
+                let db = rusqlite::Connection::open(&application.context.environment.database_path)
+                    .unwrap();
+                db.execute_batch("UPDATE employers SET email='employer@example.com'; INSERT INTO payroll_provider(id, name, payroll_department_email) VALUES(1, 'Provider', 'payroll@example.com'); UPDATE personal_assistants SET email='pa@example.com' WHERE id=1;").unwrap();
+                let before = format!(
+                    "{:?}",
+                    application.personal_assistant_repository.get_all().unwrap()
+                );
+                let pa = application
+                    .personal_assistant_repository
+                    .get_all()
+                    .unwrap()
+                    .into_iter()
+                    .find(|pa| pa.id == 1)
+                    .unwrap();
+                let full_name = format!("{} {}", pa.first_name, pa.surname);
+                let ordinary_path = crate::payroll_file_naming::payslip_path(
+                    &application.context.config.folders.payslip_folder,
+                    &full_name,
+                    &current,
+                )
+                .unwrap();
+                if ordinary_sent {
+                    std::fs::create_dir_all(ordinary_path.parent().unwrap()).unwrap();
+                    std::fs::write(&ordinary_path, b"%PDF-1.4 previously sent").unwrap();
+                    application
+                        .payroll_timesheet_email_repository
+                        .mark_sent(
+                            pa.id,
+                            &current.payroll_year,
+                            current.cycle_number,
+                            "payslip",
+                            "previous-send",
+                        )
+                        .unwrap();
+                }
+                let zip_path = dir.path().join("later-documents.zip");
+                let mut zip = zip::ZipWriter::new(std::fs::File::create(&zip_path).unwrap());
+                let mut names = types
+                    .iter()
+                    .map(|kind| format!("Provider - {kind} Summary for {full_name}.pdf"))
+                    .collect::<Vec<_>>();
+                names.push(format!("P30 Employer's Payslip {full_name}.pdf"));
+                for name in names {
+                    zip.start_file(name, zip::write::SimpleFileOptions::default())
+                        .unwrap();
+                    zip.write_all(b"%PDF-1.4 document").unwrap();
+                }
+                zip.finish().unwrap();
+                let imported = application
+                    .import_payroll_documents(&zip_path, Some(&current))
+                    .unwrap();
+                assert_eq!(imported.supplements_imported, types.len());
+                assert_eq!(imported.payslips_imported, 0);
+                let mut app = DirectPaymentApp::new(application);
+                app.operational_payroll_period.select(&current, None);
+                app.preview_personal_assistant_id = Some(pa.id);
+                app.load_email_preview(PayrollEmailKind::Payslip);
+                let preview = app.email_preview.as_ref().expect(&app.status_message);
+                let bundle = app.unsent_payslip_documents(&pa, &current).unwrap();
+                assert_eq!(bundle.paths.len(), types.len());
+                assert!(!bundle.paths.contains(&ordinary_path));
+                assert_eq!(
+                    preview.attachment_path,
+                    bundle.paths[0].display().to_string()
+                );
+                assert_eq!(preview.additional_attachment_paths, bundle.paths[1..]);
+                assert_eq!(preview.bcc.as_deref(), Some("pa@example.com"));
+                assert!(bundle
+                    .email_types
+                    .iter()
+                    .all(|kind| matches!(*kind, "p60" | "p45")));
+                let prior = app
+                    .application
+                    .payroll_timesheet_email_repository
+                    .get_for_pa_and_cycle(
+                        pa.id,
+                        &current.payroll_year,
+                        current.cycle_number,
+                        "payslip",
+                    )
+                    .unwrap();
+                if ordinary_sent {
+                    assert_eq!(prior.unwrap().sent_at.as_deref(), Some("previous-send"));
+                } else {
+                    assert!(prior.is_none());
+                }
+                assert_eq!(
+                    before,
+                    format!(
+                        "{:?}",
+                        app.application
+                            .personal_assistant_repository
+                            .get_all()
+                            .unwrap()
+                    )
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn combined_preview_selects_only_imported_pa_context_pdfs_and_preserves_employment() {
+        use std::io::Write;
+        for types in [vec!["P60"], vec!["P45"], vec!["P60", "P45"]] {
+            let (dir, mut application, _, current) = employment_period_fixture();
+            application.context.config.folders.payslip_folder = dir.path().join("payslips");
+            application
+                .context
+                .config
+                .folders
+                .payroll_information_folder = dir.path().join("info");
+            let db =
+                rusqlite::Connection::open(&application.context.environment.database_path).unwrap();
+            db.execute_batch("UPDATE employers SET email='employer@example.com'; INSERT INTO payroll_provider(id, name, payroll_department_email) VALUES(1, 'Provider', 'payroll@example.com'); UPDATE personal_assistants SET email='pa@example.com' WHERE id=1;").unwrap();
+            let before = format!(
+                "{:?}",
+                application.personal_assistant_repository.get_all().unwrap()
+            );
+            let pa = application
+                .personal_assistant_repository
+                .get_all()
+                .unwrap()
+                .into_iter()
+                .find(|pa| pa.id == 1)
+                .unwrap();
+            let name = format!("{} {}", pa.first_name, pa.surname);
+            let zip_path = dir.path().join("return.zip");
+            let mut names = vec![
+                format!("Payslip {name}.pdf"),
+                format!("P30 Employer's Payslip {name}.pdf"),
+            ];
+            names.extend(
+                types
+                    .iter()
+                    .map(|kind| format!("Provider - {kind} Summary for {name}.pdf")),
+            );
+            let mut zip = zip::ZipWriter::new(std::fs::File::create(&zip_path).unwrap());
+            for name in names {
+                zip.start_file(name, zip::write::SimpleFileOptions::default())
+                    .unwrap();
+                zip.write_all(b"%PDF-1.4 document").unwrap();
+            }
+            zip.finish().unwrap();
+            application
+                .import_payroll_return(&zip_path, &current)
+                .unwrap();
+            let mut app = DirectPaymentApp::new(application);
+            app.operational_payroll_period.select(&current, None);
+            app.preview_personal_assistant_id = Some(1);
+            app.load_email_preview(PayrollEmailKind::Payslip);
+            let preview = app.email_preview.as_ref().expect(&app.status_message);
+            assert!(preview.attachment_path.contains("Payslip for Week"));
+            assert_eq!(preview.additional_attachment_paths.len(), types.len());
+            for kind in &types {
+                assert!(preview.additional_attachment_paths.iter().any(|path| path
+                    .file_name()
+                    .unwrap()
+                    .to_string_lossy()
+                    .starts_with(kind)));
+                assert!(app
+                    .application
+                    .payroll_timesheet_email_repository
+                    .get_for_pa_and_cycle(
+                        1,
+                        &current.payroll_year,
+                        current.cycle_number,
+                        &kind.to_lowercase()
+                    )
+                    .unwrap()
+                    .is_none());
+            }
+            assert!(preview
+                .additional_attachment_paths
+                .iter()
+                .all(|path| !path.to_string_lossy().contains("P30")));
+            assert_eq!(preview.to, "payroll@example.com");
+            assert_eq!(preview.bcc.as_deref(), Some("pa@example.com"));
+            assert_eq!(
+                before,
+                format!(
+                    "{:?}",
+                    app.application
+                        .personal_assistant_repository
+                        .get_all()
+                        .unwrap()
+                )
+            );
+        }
+    }
+
+    #[test]
+    fn adding_another_document_after_type_delivery_is_refused_but_identical_reimport_is_safe() {
+        use std::io::Write;
+        for marker in ["sent", "indeterminate:attempt"] {
+            let (dir, mut application, _, current) = employment_period_fixture();
+            application.context.config.folders.payslip_folder = dir.path().join("payslips");
+            application
+                .context
+                .config
+                .folders
+                .payroll_information_folder = dir.path().join("info");
+            let pa = application
+                .personal_assistant_repository
+                .get_all()
+                .unwrap()
+                .remove(0);
+            let zip_path = dir.path().join("return.zip");
+            let write_zip = |variant: &str| {
+                let mut zip = zip::ZipWriter::new(std::fs::File::create(&zip_path).unwrap());
+                zip.start_file(
+                    format!("P60 {variant} for {} {}.pdf", pa.first_name, pa.surname),
+                    zip::write::SimpleFileOptions::default(),
+                )
+                .unwrap();
+                zip.write_all(b"%PDF-1.4 document").unwrap();
+                zip.finish().unwrap();
+            };
+            write_zip("original");
+            application
+                .import_payroll_return(&zip_path, &current)
+                .unwrap();
+            application
+                .payroll_timesheet_email_repository
+                .mark_sent(
+                    pa.id,
+                    &current.payroll_year,
+                    current.cycle_number,
+                    "p60",
+                    marker,
+                )
+                .unwrap();
+            assert_eq!(
+                application
+                    .import_payroll_return(&zip_path, &current)
+                    .unwrap()
+                    .supplements_already_present,
+                1
+            );
+            write_zip("additional");
+            let error = application
+                .import_payroll_return(&zip_path, &current)
+                .unwrap_err();
+            assert!(error.to_string().contains("already sent or indeterminate"));
+            assert_eq!(
+                crate::archive::payslip_supplements(
+                    &application.context.config.folders.payslip_folder,
+                    pa.id,
+                    &current
+                )
+                .unwrap()
+                .len(),
+                1
+            );
+        }
+    }
+
+    #[test]
+    fn imported_p45_keeps_former_pa_access_without_changing_employment_or_timesheet_scope() {
+        use std::io::Write;
+        let (dir, mut application, _, current) = employment_period_fixture();
+        application.context.config.folders.payslip_folder = dir.path().join("payslips");
+        application
+            .context
+            .config
+            .folders
+            .payroll_information_folder = dir.path().join("info");
+        let before = format!(
+            "{:?}",
+            application.personal_assistant_repository.get_all().unwrap()
+        );
+        let pa = application
+            .personal_assistant_repository
+            .get_all()
+            .unwrap()
+            .into_iter()
+            .find(|pa| pa.id == 1)
+            .unwrap();
+        let zip_path = dir.path().join("return.zip");
+        let mut zip = zip::ZipWriter::new(std::fs::File::create(&zip_path).unwrap());
+        for name in [
+            format!("Provider - P45 for {} {}.pdf", pa.first_name, pa.surname),
+            format!("P60 for {} {}.pdf", pa.first_name, pa.surname),
+        ] {
+            zip.start_file(name, zip::write::SimpleFileOptions::default())
+                .unwrap();
+            zip.write_all(b"%PDF-1.4 document").unwrap();
+        }
+        zip.finish().unwrap();
+        application
+            .import_payroll_return(&zip_path, &current)
+            .unwrap();
+        let mut app = DirectPaymentApp::new(application);
+        app.operational_payroll_period.select(&current, None);
+        assert!(!app
+            .selected_period_assistants()
+            .unwrap()
+            .iter()
+            .any(|pa| pa.id == 1));
+        assert!(app
+            .payslip_email_assistants()
+            .unwrap()
+            .iter()
+            .any(|pa| pa.id == 1));
+        app.begin_email_batch(PayrollEmailKind::Payslip);
+        assert!(app
+            .pending_email_batch
+            .as_ref()
+            .unwrap()
+            .selected_personal_assistant_ids
+            .contains(&1));
+        app.begin_email_batch(PayrollEmailKind::Timesheet);
+        assert!(!app
+            .pending_email_batch
+            .as_ref()
+            .unwrap()
+            .selected_personal_assistant_ids
+            .contains(&1));
+        assert_eq!(
+            before,
+            format!(
+                "{:?}",
+                app.application
+                    .personal_assistant_repository
+                    .get_all()
+                    .unwrap()
+            )
+        );
+        assert!(app
+            .application
+            .payroll_timesheet_repository
+            .get_all_for_cycle(&current.payroll_year, current.cycle_number)
+            .unwrap()
+            .is_empty());
+    }
 
     #[test]
     fn dashboard_email_batches_and_generation_share_period_eligibility() {

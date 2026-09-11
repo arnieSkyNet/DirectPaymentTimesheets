@@ -20,7 +20,7 @@ pub struct TimesheetPdfData<'a> {
     pub hours_worked: [&'a str; 4],
 
     pub annual_leave_hours: [&'a str; 4],
-    pub sick_leave_hours: [&'a str; 4],
+    pub sickness_periods: [Vec<[String; 2]>; 4],
     pub public_holidays: [Vec<PublicHolidayPdfEntry>; 4],
     pub travel_miles: [&'a str; 4],
 
@@ -33,6 +33,59 @@ pub struct TimesheetPdfData<'a> {
 pub struct PublicHolidayPdfEntry {
     pub hours: String,
     pub date: String,
+}
+
+/// Read-only PDF projection: retain complete dates in every overlapping week.
+pub fn sickness_periods_for_weeks(
+    repository: &crate::sickness_period_repository::SicknessPeriodRepository,
+    pa_id: i64,
+    weeks: &[chrono::NaiveDate; 4],
+) -> Result<[Vec<[String; 2]>; 4], Box<dyn std::error::Error>> {
+    let mut result = std::array::from_fn(|_| Vec::new());
+    for (index, start) in weeks.iter().enumerate() {
+        let end = *start + chrono::Duration::days(6);
+        for period in repository.get_overlapping_for_pa(
+            pa_id,
+            &crate::date_utils::iso(*start),
+            &crate::date_utils::iso(end),
+        )? {
+            result[index].push([
+                format!("({} to", crate::date_utils::compact(&period.start_date)?),
+                format!("{})", crate::date_utils::compact(&period.end_date)?),
+            ]);
+        }
+    }
+    Ok(result)
+}
+
+// Use the existing information font, with a small extra gap between periods.
+fn sickness_line_offset(block: usize, line: usize, size: f32) -> f32 {
+    let leading = (size * 1.2 * 25.4 / 72.0).max(2.4);
+    3.0 + block as f32 * (2.0 * leading + 0.8) + line as f32 * leading
+}
+
+fn validate_sickness_layout(
+    weeks: &[Vec<[String; 2]>; 4],
+    size: f32,
+    font: &ParsedFont,
+) -> Result<(), String> {
+    for (week, periods) in weeks.iter().enumerate() {
+        for (block, lines) in periods.iter().enumerate() {
+            for (line, text) in lines.iter().enumerate() {
+                let (left, right) = footer_line_metrics(text, size, font)?;
+                if !size.is_finite()
+                    || size <= 0.0
+                    || left < 0.0
+                    || right * 25.4 / 72.0 > 22.0
+                    || size * 25.4 / 72.0 > 3.0
+                    || sickness_line_offset(block, line, size) > 18.5
+                {
+                    return Err(format!("Sickness dates for week {} do not fit in the Sick / SSP cell at the configured information font size. No dates have been omitted; PDF generation stopped.", week + 1));
+                }
+            }
+        }
+    }
+    Ok(())
 }
 
 pub struct PdfGenerator;
@@ -103,6 +156,11 @@ impl PdfGenerator {
         let bold_font = ParsedFont::from_bytes(&bold_bytes, 0, &mut font_warnings)
             .ok_or("Could not parse configured bold PDF font")?;
 
+        validate_sickness_layout(
+            &data.sickness_periods,
+            pdf_config.information_font_size as f32,
+            &regular_font,
+        )?;
         let regular_id = document.add_font(&regular_font);
         let bold_id = document.add_font(&bold_font);
 
@@ -217,7 +275,7 @@ impl PdfGenerator {
             &data.week_commencing_dates,
             &data.hours_worked,
             &data.annual_leave_hours,
-            &data.sick_leave_hours,
+            &data.sickness_periods,
             &data.public_holidays,
             &data.travel_miles,
             data.previous_cycle_hours,
@@ -647,7 +705,7 @@ fn draw_table(
     week_dates: &[&str; 4],
     hours_worked: &[&str; 4],
     annual_leave_hours: &[&str; 4],
-    sick_leave_hours: &[&str; 4],
+    sickness_periods: &[Vec<[String; 2]>; 4],
     public_holidays: &[Vec<PublicHolidayPdfEntry>; 4],
     travel_miles: &[&str; 4],
     previous_cycle_hours: Option<&str>,
@@ -806,20 +864,21 @@ fn draw_table(
         // Sick / SSP
         // --------------------------------------------------------
 
-        let sick_leave = display_table_value(sick_leave_hours[index]);
-
-        if !sick_leave.is_empty() {
-            write_text(
-                ops,
-                sick_leave,
-                x + columns[0].1 + columns[1].1 + columns[2].1 + 7.0,
-                row_top - 10.0,
-                12.0,
-                true,
-                TextAlignment::Left,
-                bold_font,
-                regular_font,
-            );
+        let sickness_x = x + columns[0].1 + columns[1].1 + columns[2].1 + 1.5;
+        for (block, lines) in sickness_periods[index].iter().enumerate() {
+            for (line, text) in lines.iter().enumerate() {
+                write_text(
+                    ops,
+                    text,
+                    sickness_x,
+                    row_top - sickness_line_offset(block, line, information_font_size),
+                    information_font_size,
+                    false,
+                    TextAlignment::Left,
+                    bold_font,
+                    regular_font,
+                );
+            }
         }
 
         // --------------------------------------------------------
@@ -1192,6 +1251,144 @@ mod tests {
     }
 
     #[test]
+    fn sickness_projection_is_read_only_and_preserves_full_cross_week_dates() {
+        let connection = rusqlite::Connection::open_in_memory().unwrap();
+        crate::database::create_schema(&connection).unwrap();
+        connection.execute_batch("INSERT INTO personal_assistants (id, first_name, surname) VALUES (1, 'Test', 'PA'), (2, 'Other', 'PA');").unwrap();
+        let repo = crate::sickness_period_repository::SicknessPeriodRepository::new(connection);
+        let start = chrono::NaiveDate::from_ymd_opt(2026, 8, 31).unwrap();
+        let weeks = std::array::from_fn(|i| start + chrono::Duration::days(i as i64 * 7));
+        assert!(sickness_periods_for_weeks(&repo, 1, &weeks)
+            .unwrap()
+            .iter()
+            .all(Vec::is_empty));
+        repo.insert(1, "2026-09-01", "2026-09-02").unwrap();
+        let one = sickness_periods_for_weeks(&repo, 1, &weeks).unwrap();
+        assert_eq!(
+            one[0],
+            vec![["(01/09/2026 to".to_string(), "02/09/2026)".to_string()]]
+        );
+        repo.insert(1, "2026-09-05", "2026-09-08").unwrap();
+        repo.insert(2, "2026-09-01", "2026-09-20").unwrap();
+        let before = repo.get_for_pa(1).unwrap();
+        let blocks = sickness_periods_for_weeks(&repo, 1, &weeks).unwrap();
+        assert_eq!(blocks[0].len(), 2);
+        assert_eq!(blocks[0][1], ["(05/09/2026 to", "08/09/2026)"]);
+        assert_eq!(blocks[1], vec![blocks[0][1].clone()]);
+        assert!(blocks[2].is_empty() && blocks[3].is_empty());
+        assert_eq!(repo.get_for_pa(1).unwrap(), before);
+    }
+
+    #[test]
+    fn sickness_pdf_writes_separate_lines_only_in_populated_cells() {
+        let config = crate::config::PdfConfig::default();
+        let mut document = PdfDocument::new("test");
+        let regular = document.add_font(&footer_font());
+        let bold = regular.clone();
+        let blocks = [
+            vec![
+                ["(01/09/2026 to".into(), "02/09/2026)".into()],
+                ["(05/09/2026 to".into(), "08/09/2026)".into()],
+            ],
+            vec![["(05/09/2026 to".into(), "08/09/2026)".into()]],
+            vec![],
+            vec![],
+        ];
+        validate_sickness_layout(&blocks, config.information_font_size as f32, &footer_font())
+            .unwrap();
+        let mut ops = Vec::new();
+        draw_table(
+            &mut ops,
+            15.0,
+            220.0,
+            24.0,
+            20.0,
+            &[
+                ("W/c", 28.0),
+                ("Worked", 42.0),
+                ("Leave", 25.0),
+                ("Sick", 25.0),
+                ("Holiday", 25.0),
+                ("Miles", 25.0),
+            ],
+            &["31/08/2026", "07/09/2026", "14/09/2026", "21/09/2026"],
+            &[""; 4],
+            &[""; 4],
+            &blocks,
+            &std::array::from_fn(|_| Vec::new()),
+            &[""; 4],
+            None,
+            &config,
+            &bold,
+            &regular,
+        );
+        let mut cursor = None;
+        let mut size = None;
+        let mut sickness = Vec::new();
+        for op in &ops {
+            match op {
+                Op::SetTextCursor { pos } => cursor = Some(*pos),
+                Op::SetFontSize { size: current, .. } => size = Some(current.0),
+                Op::WriteText { items, .. } => {
+                    for item in items {
+                        if let TextItem::Text(text) = item {
+                            let pos = cursor.unwrap();
+                            // Sick column's fixed left inset, excluding its header.
+                            if (pos.x.0 - Pt::from(Mm(111.5)).0).abs() < 0.01
+                                && pos.y.0 < Pt::from(Mm(196.0)).0
+                            {
+                                sickness.push((text.clone(), pos.y.0, size.unwrap()));
+                            }
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+        assert_eq!(
+            sickness.iter().map(|v| v.0.as_str()).collect::<Vec<_>>(),
+            [
+                "(01/09/2026 to",
+                "02/09/2026)",
+                "(05/09/2026 to",
+                "08/09/2026)",
+                "(05/09/2026 to",
+                "08/09/2026)"
+            ]
+        );
+        assert!(sickness
+            .iter()
+            .all(|v| v.2 == config.information_font_size as f32));
+        assert!(sickness.windows(2).all(|pair| pair[0].1 > pair[1].1));
+        assert!(sickness.iter().all(|v| v.1 > Pt::from(Mm(156.0)).0));
+        document.pages.push(PdfPage::new(Mm(210.0), Mm(297.0), ops));
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("sickness.pdf");
+        fs::write(
+            &path,
+            document.save(&PdfSaveOptions::default(), &mut Vec::new()),
+        )
+        .unwrap();
+        let text = pdf_extract::extract_text(&path).unwrap();
+        assert_eq!(text.matches("(01/09/2026 to").count(), 1);
+        assert_eq!(text.matches("(05/09/2026 to").count(), 2);
+        assert_eq!(text.matches("08/09/2026)").count(), 2);
+    }
+
+    #[test]
+    fn sickness_overflow_is_rejected_without_changing_font_or_layout() {
+        let font = footer_font();
+        let block = ["(01/09/2026 to".to_string(), "02/09/2026)".to_string()];
+        let mut weeks = std::array::from_fn(|_| Vec::new());
+        weeks[0] = vec![block.clone(); 3];
+        assert!(validate_sickness_layout(&weeks, 5.5, &font).is_ok());
+        weeks[0] = vec![block; 20];
+        assert!(validate_sickness_layout(&weeks, 5.5, &font)
+            .unwrap_err()
+            .contains("week 1"));
+    }
+
+    #[test]
     fn generates_four_week_timesheet_pdf() {
         let output_dir = env::temp_dir().join("direct_payment_timesheets_test");
         let schedule = schedule("23/03/2026", "17/04/2026");
@@ -1208,7 +1405,7 @@ mod tests {
 
             annual_leave_hours: ["0", "0", "0", "0"],
 
-            sick_leave_hours: ["0", "0", "0", "0"],
+            sickness_periods: std::array::from_fn(|_| Vec::new()),
 
             public_holidays: [
                 vec![],
@@ -1314,7 +1511,7 @@ mod tests {
             week_commencing_dates: ["21/12/2026", "28/12/2026", "04/01/2027", "11/01/2027"],
             hours_worked: ["8", "0", "0", "0"],
             annual_leave_hours: ["0", "0", "0", "0"],
-            sick_leave_hours: ["0", "0", "0", "0"],
+            sickness_periods: std::array::from_fn(|_| Vec::new()),
             public_holidays: [
                 vec![
                     PublicHolidayPdfEntry {
@@ -1418,7 +1615,7 @@ mod tests {
             week_commencing_dates: ["10/08/2026", "17/08/2026", "24/08/2026", "31/08/2026"],
             hours_worked: ["26.5", "21", "28.5", "6.25"],
             annual_leave_hours: ["0", "0", "0", "0"],
-            sick_leave_hours: ["0", "0", "0", "0"],
+            sickness_periods: std::array::from_fn(|_| Vec::new()),
             public_holidays: std::array::from_fn(|_| Vec::new()),
             travel_miles: ["0", "0", "0", "0"],
             previous_cycle_hours: None,

@@ -159,7 +159,6 @@ impl PersonalAssistantScreen {
                 telephone: None,
                 email: None,
                 employment_status: Some("Active".to_string()),
-                sick_pay_enabled: false,
                 mileage_enabled: false,
                 start_date: None,
                 leaving_date: None,
@@ -851,7 +850,6 @@ fn employment_controls(
             };
         }
 
-        ui.checkbox(&mut assistant.sick_pay_enabled, "Enable sickness");
         ui.checkbox(&mut assistant.mileage_enabled, "Enable mileage");
     });
     ui.horizontal_wrapped(|ui| {
@@ -1008,7 +1006,6 @@ mod save_status_tests {
             telephone: None,
             email: None,
             employment_status: None,
-            sick_pay_enabled: false,
             mileage_enabled: false,
             start_date: None,
             leaving_date: None,

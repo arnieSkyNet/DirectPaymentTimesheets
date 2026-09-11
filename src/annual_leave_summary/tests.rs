@@ -29,7 +29,6 @@ fn evidence(basis: HoursBasis) -> Evidence {
             telephone: None,
             email: None,
             employment_status: Some("Active".into()),
-            sick_pay_enabled: true,
             mileage_enabled: true,
             start_date: Some("01/04/2026".into()),
             leaving_date: None,

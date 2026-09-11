@@ -52,12 +52,11 @@ impl PersonalAssistantRepository {
                 telephone,
                 email,
                 employment_status,
-                sick_pay_enabled,
                 mileage_enabled,
                 start_date,
                 signature, leaving_date
             )
-            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
             ",
             params![
                 &assistant.first_name,
@@ -69,7 +68,6 @@ impl PersonalAssistantRepository {
                 &assistant.telephone,
                 &assistant.email,
                 &assistant.employment_status,
-                assistant.sick_pay_enabled,
                 assistant.mileage_enabled,
                 &start_date,
                 &assistant.signature,
@@ -115,11 +113,10 @@ postcode = ?6,
 telephone = ?7,
 email = ?8,
 employment_status = ?9,
-sick_pay_enabled = ?10,
-mileage_enabled = ?11,
-start_date = ?12,
-signature = ?13, leaving_date = ?15
-WHERE id = ?14
+mileage_enabled = ?10,
+start_date = ?11,
+signature = ?12, leaving_date = ?14
+WHERE id = ?13
 ",
             params![
                 &assistant.first_name,
@@ -131,7 +128,6 @@ WHERE id = ?14
                 &assistant.telephone,
                 &assistant.email,
                 &assistant.employment_status,
-                assistant.sick_pay_enabled,
                 assistant.mileage_enabled,
                 &start_date,
                 &assistant.signature,
@@ -157,7 +153,6 @@ postcode,
 telephone,
 email,
 employment_status,
-sick_pay_enabled,
 mileage_enabled,
 start_date,
 signature, leaving_date
@@ -177,11 +172,10 @@ FROM personal_assistants
                 telephone: row.get(7)?,
                 email: row.get(8)?,
                 employment_status: row.get(9)?,
-                sick_pay_enabled: row.get::<_, i64>(10)? != 0,
-                mileage_enabled: row.get::<_, i64>(11)? != 0,
-                start_date: row.get(12)?,
-                leaving_date: row.get(14)?,
-                signature: row.get(13)?,
+                mileage_enabled: row.get::<_, i64>(10)? != 0,
+                start_date: row.get(11)?,
+                leaving_date: row.get(13)?,
+                signature: row.get(12)?,
             })
         })?;
 
@@ -349,6 +343,51 @@ mod tests {
         PersonalAssistantRepository::new(connection)
     }
 
+    #[test]
+    fn pa_updates_ignore_and_preserve_legacy_sickness_flag() {
+        let repository = test_repository();
+        repository.insert(&test_assistant()).unwrap();
+        let mut pa = repository.get_all().unwrap().remove(0);
+        assert_eq!(
+            repository
+                .connection
+                .query_row::<i64, _, _>(
+                    "SELECT sick_pay_enabled FROM personal_assistants WHERE id=?1",
+                    [pa.id],
+                    |row| row.get(0),
+                )
+                .unwrap(),
+            0
+        );
+        for legacy in [0, 1] {
+            repository
+                .connection
+                .execute(
+                    "UPDATE personal_assistants SET sick_pay_enabled=?1 WHERE id=?2",
+                    params![legacy, pa.id],
+                )
+                .unwrap();
+            pa.surname = format!("Updated {legacy}");
+            repository.update(&pa).unwrap();
+            let loaded = repository.get_all().unwrap().remove(0);
+            assert_eq!(loaded.surname, pa.surname);
+            assert_eq!(loaded.mileage_enabled, pa.mileage_enabled);
+            assert_eq!(loaded.signature, pa.signature);
+            assert_eq!(loaded.leaving_date, pa.leaving_date);
+            assert_eq!(
+                repository
+                    .connection
+                    .query_row::<i64, _, _>(
+                        "SELECT sick_pay_enabled FROM personal_assistants WHERE id=?1",
+                        [pa.id],
+                        |row| row.get(0),
+                    )
+                    .unwrap(),
+                legacy
+            );
+        }
+    }
+
     fn test_assistant() -> PersonalAssistant {
         PersonalAssistant {
             id: 0,
@@ -361,7 +400,6 @@ mod tests {
             telephone: Some("01234 567890".to_string()),
             email: Some("alex@example.test".to_string()),
             employment_status: Some("Active".to_string()),
-            sick_pay_enabled: true,
             mileage_enabled: true,
             start_date: Some("03/04/2025".to_string()),
             leaving_date: None,
@@ -588,7 +626,6 @@ mod tests {
         assert_eq!(saved.telephone, assistant.telephone);
         assert_eq!(saved.email, assistant.email);
         assert_eq!(saved.employment_status, assistant.employment_status);
-        assert_eq!(saved.sick_pay_enabled, assistant.sick_pay_enabled);
         assert_eq!(saved.mileage_enabled, assistant.mileage_enabled);
         assert_eq!(saved.start_date.as_deref(), Some("2025-04-03"));
         assert_eq!(saved.signature, assistant.signature);

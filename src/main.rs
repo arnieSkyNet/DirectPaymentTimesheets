@@ -43,6 +43,7 @@ mod pdf_generator;
 mod personal_assistant_repository;
 mod personal_assistant_screen;
 mod repository;
+mod sickness_period_repository;
 mod theme;
 mod update_check;
 
