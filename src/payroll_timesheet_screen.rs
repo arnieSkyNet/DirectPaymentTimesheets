@@ -1,3 +1,6 @@
+#[path = "payroll_mileage_editor.rs"]
+mod mileage_editor;
+
 #[path = "payroll_sickness_editor.rs"]
 mod sickness_editor;
 
@@ -82,6 +85,7 @@ pub(crate) enum UnsavedChoice {
 }
 
 pub struct PayrollTimesheetScreen {
+    mileage_editor: Option<mileage_editor::MileageEditor>,
     sickness_ui: sickness_editor::SicknessUi,
     selected_pa: Option<i64>,
     pending_pa: Option<i64>,
@@ -117,6 +121,7 @@ pub struct PayrollTimesheetScreen {
 impl PayrollTimesheetScreen {
     pub fn new() -> Self {
         Self {
+            mileage_editor: None,
             sickness_ui: Default::default(),
             selected_pa: None,
             pending_pa: None,
@@ -149,6 +154,7 @@ impl PayrollTimesheetScreen {
     }
 
     pub fn reload(&mut self) {
+        self.mileage_editor = None;
         self.sickness_ui = Default::default();
         self.selected_pa = None;
         self.pending_pa = None;
@@ -473,15 +479,25 @@ impl PayrollTimesheetScreen {
                                         }
                                     });
 
-                                    if mileage_enabled {
-                                        edit_number(
-                                            ui,
-                                            numeric_editor_texts,
-                                            NumericEditorKey::TravelMiles(week.id),
-                                            &mut week.travel_miles,
-                                        );
-                                    } else {
-                                        ui.label("");
+                                    if mileage_editor::cell(
+                                        ui,
+                                        mileage_enabled,
+                                        week.travel_miles != 0.0,
+                                    )
+                                    .clicked()
+                                        && mileage_enabled
+                                    {
+                                        self.mileage_editor =
+                                            Some(mileage_editor::MileageEditor::new(
+                                                record.id,
+                                                week.id,
+                                                assistant_name,
+                                                &crate::date_utils::screen(
+                                                    ui,
+                                                    &week.week_commencing,
+                                                ),
+                                                week.travel_miles,
+                                            ));
                                     }
 
                                     ui.end_row();
@@ -513,7 +529,63 @@ impl PayrollTimesheetScreen {
             ui.ctx().request_repaint();
         }
         self.sickness_ui.show(ui, application, &self.weeks);
+        let action = self
+            .mileage_editor
+            .as_mut()
+            .and_then(|editor| editor.show(ui.ctx()));
+        match action {
+            Some(mileage_editor::Action::Close) => self.mileage_editor = None,
+            Some(mileage_editor::Action::Save(value)) => {
+                if let Err(error) = self.save_mileage(application, value) {
+                    self.mileage_editor.as_mut().unwrap().error = error.to_string();
+                }
+            }
+            None => {}
+        }
         ui.label(&self.status_message);
+    }
+
+    fn save_mileage(
+        &mut self,
+        app: &Application,
+        value: f64,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let editor = self
+            .mileage_editor
+            .as_ref()
+            .ok_or("No mileage editor open")?;
+        let record_id = editor.record_id;
+        let week_id = editor.week_id;
+        let record = self
+            .weeks
+            .iter()
+            .find(|(record, _, _)| record.id == record_id)
+            .ok_or("Payroll period changed")?;
+        if Some(record.0.personal_assistant_id) != self.selected_pa
+            || self.blocked(record_id, record.0.personal_assistant_id)
+        {
+            return Err("This payroll record is not available for editing".into());
+        }
+        let invalidated = app
+            .payroll_timesheet_repository
+            .save_week_mileage(record_id, week_id, value)?;
+        for (_, weeks, _) in &mut self.weeks {
+            if let Some(week) = weeks.iter_mut().find(|week| week.id == week_id) {
+                week.travel_miles = value;
+            }
+        }
+        if let Some(baseline) = self.preparation_baselines.get_mut(&record_id) {
+            if let Some(week) = baseline.weeks.iter_mut().find(|week| week.id == week_id) {
+                week.travel_miles = value;
+            }
+        }
+        self.numeric_editor_texts
+            .remove(&NumericEditorKey::TravelMiles(week_id));
+        if invalidated {
+            self.snapshot_states.remove(&record_id);
+        }
+        self.mileage_editor.as_mut().unwrap().saved(value);
+        Ok(())
     }
 
     fn reload_evidence_preserving_visits(&mut self) {
@@ -2116,6 +2188,75 @@ pub(crate) mod tests {
             )
             .unwrap();
         (directory, application, schedule, screen)
+    }
+
+    #[test]
+    fn mileage_save_reload_edit_clear_preserves_other_preparation_drafts() {
+        let (_dir, app, schedule, mut screen) = load_active_record();
+        let record = screen.weeks[0].0.clone();
+        let week = screen.weeks[0].1[0].clone();
+        let db = setup_connection(&app);
+        db.execute(
+            "UPDATE personal_assistants SET mileage_enabled=1 WHERE id=?1",
+            [record.personal_assistant_id],
+        )
+        .unwrap();
+        screen.mileage_editor = Some(mileage_editor::MileageEditor::new(
+            record.id,
+            week.id,
+            "PA",
+            &week.week_commencing,
+            week.travel_miles,
+        ));
+        screen.weeks[0].1[0].worked_hours = 99.0;
+        create_candidate(&app, &screen);
+        screen.save_mileage(&app, 12.5).unwrap();
+        assert_eq!(screen.weeks[0].1[0].worked_hours, 99.0);
+        assert!(screen.has_unsaved_changes());
+        assert!(app
+            .payroll_worked_item_repository
+            .snapshot_metadata(record.id)
+            .unwrap()
+            .is_none());
+        let reopened = crate::payroll_timesheet_repository::PayrollTimesheetRepository::new(
+            setup_connection(&app),
+        );
+        let stored = reopened.get_weeks(record.id).unwrap();
+        assert_eq!(stored[0].travel_miles, 12.5);
+        assert_eq!(stored[0].worked_hours, week.worked_hours);
+        let mut loaded = PayrollTimesheetScreen::new();
+        loaded.load(&app, &schedule, "test").unwrap();
+        assert_eq!(loaded.weeks[0].1[0].travel_miles, 12.5);
+        screen.save_mileage(&app, 8.25).unwrap();
+        assert_eq!(reopened.get_weeks(record.id).unwrap()[0].travel_miles, 8.25);
+        screen.save_mileage(&app, 0.0).unwrap();
+        assert_eq!(reopened.get_weeks(record.id).unwrap()[0].travel_miles, 0.0);
+    }
+
+    #[test]
+    fn mileage_disabled_invalid_and_protected_saves_are_rejected() {
+        let (_dir, app, _, screen) = load_active_record();
+        let record = &screen.weeks[0].0;
+        let week = &screen.weeks[0].1[0];
+        let repo = &app.payroll_timesheet_repository;
+        assert!(repo.save_week_mileage(record.id, week.id, 5.0).is_err());
+        let db = setup_connection(&app);
+        db.execute(
+            "UPDATE personal_assistants SET mileage_enabled=1 WHERE id=?1",
+            [record.personal_assistant_id],
+        )
+        .unwrap();
+        for value in [-1.0, f64::NAN, f64::INFINITY] {
+            assert!(repo.save_week_mileage(record.id, week.id, value).is_err());
+        }
+        assert!(repo.save_week_mileage(record.id, -1, 5.0).is_err());
+        repo.save_week_mileage(record.id, week.id, 5.0).unwrap();
+        for status in ["sent", "indeterminate:delivery"] {
+            db.execute("INSERT OR REPLACE INTO payroll_timesheet_email_status (personal_assistant_id, payroll_year, cycle_number, email_type, sent_at) VALUES (?1, ?2, ?3, 'timesheet', ?4)", params![record.personal_assistant_id, record.payroll_year, record.cycle_number, status]).unwrap();
+            assert!(repo.save_week_mileage(record.id, week.id, 6.0).is_err());
+            assert!(repo.save_week_mileage(record.id, week.id, 0.0).is_err());
+        }
+        assert_eq!(repo.get_weeks(record.id).unwrap()[0].travel_miles, 5.0);
     }
 
     fn create_candidate(application: &Application, screen: &PayrollTimesheetScreen) {

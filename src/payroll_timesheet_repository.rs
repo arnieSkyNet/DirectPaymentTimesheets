@@ -511,6 +511,62 @@ impl PayrollTimesheetRepository {
         Ok(rows)
     }
 
+    /// Save only one weekly mileage value; zero represents a cleared cell.
+    /// Return whether an existing PDF candidate was invalidated.
+    pub fn save_week_mileage(&self, record_id: i64, week_id: i64, miles: f64) -> Result<bool> {
+        use rusqlite::OptionalExtension;
+        let invalid = |message: &str| rusqlite::Error::InvalidParameterName(message.into());
+        if !miles.is_finite() || miles < 0.0 {
+            return Err(invalid("Enter a finite, non-negative number of miles"));
+        }
+        let tx = self.connection.unchecked_transaction()?;
+        crate::payroll_evidence::lifecycle::ensure_editable(&tx, record_id)
+            .map_err(|e| invalid(&e.to_string()))?;
+        let enabled: bool = tx.query_row(
+            "SELECT pa.mileage_enabled FROM personal_assistants pa JOIN payroll_timesheets p ON p.personal_assistant_id=pa.id WHERE p.id=?1",
+            [record_id], |row| row.get(0),
+        )?;
+        if !enabled {
+            return Err(invalid("Mileage is disabled for this Personal Assistant"));
+        }
+        let previous: f64 = tx.query_row(
+            "SELECT travel_miles FROM payroll_timesheet_weeks WHERE id=?1 AND payroll_timesheet_id=?2",
+            params![week_id, record_id], |row| row.get(0),
+        )?;
+        if previous == miles {
+            tx.commit()?;
+            return Ok(false);
+        }
+        let state: Option<String> = tx
+            .query_row(
+                "SELECT state FROM payroll_timesheet_snapshot_states WHERE payroll_timesheet_id=?1",
+                [record_id],
+                |row| row.get(0),
+            )
+            .optional()?;
+        if matches!(state.as_deref(), Some("submitted" | "indeterminate")) {
+            return Err(invalid("Payroll timesheet is read-only"));
+        }
+        let invalidated = state.as_deref() == Some("candidate");
+        if invalidated {
+            tx.execute("DELETE FROM payroll_timesheet_snapshot_states WHERE payroll_timesheet_id=?1 AND state='candidate'", [record_id])?;
+            tx.execute(
+                "DELETE FROM payroll_timesheet_worked_item_snapshots WHERE payroll_timesheet_id=?1",
+                [record_id],
+            )?;
+        }
+        tx.execute("UPDATE payroll_timesheet_weeks SET travel_miles=?1 WHERE id=?2 AND payroll_timesheet_id=?3", params![miles, week_id, record_id])?;
+        tx.execute(
+            "UPDATE payroll_timesheets SET updated_at=?1 WHERE id=?2",
+            params![
+                chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string(),
+                record_id
+            ],
+        )?;
+        tx.commit()?;
+        Ok(invalidated)
+    }
+
     pub fn save_preparation_atomically(
         &self,
         record: &PayrollTimesheet,
