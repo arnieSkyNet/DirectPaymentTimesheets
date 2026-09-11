@@ -2,7 +2,7 @@ use std::path::Path;
 
 use rusqlite::{Connection, Result};
 
-pub const CURRENT_SCHEMA_VERSION: i64 = 29;
+pub const CURRENT_SCHEMA_VERSION: i64 = 30;
 
 pub fn initialise_database(database_path: &Path) -> Result<()> {
     let connection = Connection::open(database_path)?;
@@ -212,7 +212,28 @@ fn apply_migrations(connection: &Connection) -> Result<()> {
         crate::payroll_evidence::legacy_baseline::migrate(connection, before_28)?;
     }
 
+    if current_version < 30 {
+        migrate_to_version_30(connection)?;
+    }
+
     Ok(())
+}
+
+fn migrate_to_version_30(connection: &Connection) -> Result<()> {
+    let transaction = connection.unchecked_transaction()?;
+    transaction.execute_batch(
+        "CREATE TABLE IF NOT EXISTS personal_assistant_sickness_periods (
+            id INTEGER PRIMARY KEY,
+            personal_assistant_id INTEGER NOT NULL REFERENCES personal_assistants(id),
+            start_date TEXT NOT NULL CHECK (length(start_date) = 10 AND start_date GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]'),
+            end_date TEXT NOT NULL CHECK (length(end_date) = 10 AND end_date GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]'),
+            CHECK (end_date >= start_date)
+        );
+        CREATE INDEX IF NOT EXISTS idx_sickness_periods_pa_dates
+            ON personal_assistant_sickness_periods(personal_assistant_id, start_date, end_date);
+        UPDATE schema_version SET version = 30;",
+    )?;
+    transaction.commit()
 }
 
 fn migrate_to_version_2(connection: &Connection) -> Result<()> {

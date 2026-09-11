@@ -344,8 +344,8 @@ mod tests {
             connection
                 .execute(
                     "INSERT INTO personal_assistants (
-                        first_name, surname, sick_pay_enabled, mileage_enabled
-                     ) VALUES (?1, ?2, 0, 0)",
+                        first_name, surname, mileage_enabled
+                     ) VALUES (?1, ?2, 0)",
                     params![first_name, surname],
                 )
                 .unwrap();
