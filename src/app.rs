@@ -208,25 +208,129 @@ impl Application {
         Ok(service.import(path)?)
     }
 
+    pub fn import_payroll_documents(
+        &self,
+        path: &std::path::Path,
+        schedule: Option<&crate::payroll_schedule_repository::PayrollSchedule>,
+    ) -> Result<crate::archive::PayrollReturnImportResult, Box<dyn std::error::Error>> {
+        let names = crate::archive::source_payslip_filenames(
+            path,
+            &self.personal_assistant_repository.get_all()?,
+        )?;
+        let schedules = self.payroll_schedule_repository.get_all()?;
+        let mut associations = std::collections::HashMap::new();
+        for name in names {
+            let exact = crate::payroll_file_naming::infer_payslip_schedule(
+                std::slice::from_ref(&name),
+                &schedules,
+            );
+            let candidates = crate::payroll_file_naming::plausible_payslip_schedules(
+                &name,
+                &schedules,
+                chrono::Local::now().date_naive(),
+            );
+            let association = if let Some(exact) = exact {
+                Some(exact.clone())
+            } else if candidates.is_empty() {
+                None
+            } else {
+                Some(candidates.into_iter().find(|candidate| schedule.is_some_and(|selected| selected.id == candidate.id))
+                        .ok_or("Choose an applicable stored period for the ordinary payslips that need association.")?)
+            };
+            associations.insert(name, association);
+        }
+        let assistants = self.personal_assistant_repository.get_all()?;
+        let payslip_folder = crate::paths::expand_path(&self.context.config.folders.payslip_folder);
+        let information_folder =
+            crate::paths::expand_path(&self.context.config.folders.payroll_information_folder);
+        let mut result = crate::archive::import_payroll_documents(
+            path,
+            &payslip_folder,
+            &information_folder,
+            &assistants,
+            |name| {
+                associations.get(name).cloned().ok_or_else(|| {
+                    "Source changed after classification; choose the source again.".into()
+                })
+            },
+            |pa, kind, path, year| {
+                self.payroll_timesheet_email_repository
+                    .register_document(pa, kind, path, year)?;
+                Ok(())
+            },
+        )?;
+        for path in &result.prep_sheet_paths {
+            match self.import_payroll_prep_sheet(path) {
+                Ok(count) => {
+                    result.schedule_entries_imported += count;
+                    result.details.push(format!(
+                        "Payroll Prep Sheet '{}': {count} schedule entries imported.",
+                        path.display()
+                    ));
+                }
+                Err(error) => result.prep_sheet_failures.push(format!(
+                    "Payroll Prep Sheet '{}' was stored but schedule import failed: {error}",
+                    path.display()
+                )),
+            }
+        }
+        Ok(result)
+    }
+
+    #[allow(dead_code)]
     pub fn import_payroll_return(
         &self,
         path: &std::path::Path,
         schedule: &crate::payroll_schedule_repository::PayrollSchedule,
     ) -> Result<crate::archive::PayrollReturnImportResult, Box<dyn std::error::Error>> {
-        let assistants = self.personal_assistant_repository.get_all()?;
+        self.import_payroll_documents(path, Some(schedule))
+    }
 
-        let payslip_folder = crate::paths::expand_path(&self.context.config.folders.payslip_folder);
+    pub fn payroll_source_requires_period(
+        &self,
+        path: &std::path::Path,
+    ) -> Result<bool, Box<dyn std::error::Error>> {
+        Ok(!self.payroll_source_period_candidates(path)?.is_empty())
+    }
 
-        let information_folder =
-            crate::paths::expand_path(&self.context.config.folders.payroll_information_folder);
-
-        Ok(crate::archive::import_payroll_return(
+    pub fn payroll_source_period_candidates(
+        &self,
+        path: &std::path::Path,
+    ) -> Result<Vec<crate::payroll_schedule_repository::PayrollSchedule>, Box<dyn std::error::Error>>
+    {
+        let names = crate::archive::source_payslip_filenames(
             path,
-            &payslip_folder,
-            &information_folder,
-            &assistants,
-            schedule,
-        )?)
+            &self.personal_assistant_repository.get_all()?,
+        )?;
+        let schedules = self.payroll_schedule_repository.get_all()?;
+        let mut common: Option<Vec<crate::payroll_schedule_repository::PayrollSchedule>> = None;
+        for name in names {
+            if crate::payroll_file_naming::infer_payslip_schedule(
+                std::slice::from_ref(&name),
+                &schedules,
+            )
+            .is_some()
+            {
+                continue;
+            }
+            let candidates = crate::payroll_file_naming::plausible_payslip_schedules(
+                &name,
+                &schedules,
+                chrono::Local::now().date_naive(),
+            );
+            if candidates.is_empty() {
+                continue;
+            }
+            if let Some(common) = &mut common {
+                common.retain(|s| candidates.iter().any(|c| c.id == s.id));
+            } else {
+                common = Some(candidates);
+            }
+        }
+        if common.as_ref().is_some_and(|c| c.is_empty()) {
+            return Err("These ordinary payslips need different stored periods; import those payslips separately.".into());
+        }
+        Ok(common.unwrap_or_default())
     }
 
     #[allow(dead_code)]
@@ -244,7 +348,7 @@ impl Application {
         )?)
     }
 
-    pub fn preview_payroll_email(
+    pub fn preview_payroll_email<'a>(
         &self,
         payroll_department_email: &str,
         employer_email: &str,
@@ -252,9 +356,10 @@ impl Application {
         personal_assistant_name: &str,
         personal_assistant_dob: Option<&str>,
         personal_assistant_ni: Option<&str>,
-        schedule: &crate::payroll_schedule_repository::PayrollSchedule,
+        schedule: impl Into<Option<&'a crate::payroll_schedule_repository::PayrollSchedule>>,
         attachment_path: &std::path::Path,
         email_body: &str,
+        subject_template: &str,
         additional_note: Option<&str>,
         email_signature: Option<&str>,
     ) -> Result<crate::email_service::PayrollEmailPreview, Box<dyn std::error::Error>> {
@@ -265,12 +370,16 @@ impl Application {
             personal_assistant_name,
             personal_assistant_dob,
             personal_assistant_ni,
-            &crate::payroll_file_naming::payroll_period_code(schedule)?,
+            &schedule
+                .into()
+                .map(crate::payroll_file_naming::payroll_period_code)
+                .transpose()?
+                .unwrap_or_else(|| "Payroll documents".into()),
             attachment_path,
             email_body,
             additional_note,
             email_signature,
-            &self.context.config.payroll.email_subject_format,
+            subject_template,
         )?)
     }
 
@@ -288,6 +397,39 @@ impl Application {
         additional_note: Option<&str>,
         email_signature: Option<&str>,
     ) -> Result<(), Box<dyn std::error::Error>> {
+        self.send_payroll_email_with_attachments(
+            payroll_department_email,
+            employer_email,
+            personal_assistant_email,
+            personal_assistant_name,
+            personal_assistant_dob,
+            personal_assistant_ni,
+            schedule,
+            attachment_path,
+            email_body,
+            &self.context.config.payroll.email_subject_format,
+            additional_note,
+            email_signature,
+            &[],
+        )
+    }
+
+    pub fn send_payroll_email_with_attachments<'a>(
+        &self,
+        payroll_department_email: &str,
+        employer_email: &str,
+        personal_assistant_email: Option<&str>,
+        personal_assistant_name: &str,
+        personal_assistant_dob: Option<&str>,
+        personal_assistant_ni: Option<&str>,
+        schedule: impl Into<Option<&'a crate::payroll_schedule_repository::PayrollSchedule>>,
+        attachment_path: &std::path::Path,
+        email_body: &str,
+        subject_template: &str,
+        additional_note: Option<&str>,
+        email_signature: Option<&str>,
+        additional_attachments: &[std::path::PathBuf],
+    ) -> Result<(), Box<dyn std::error::Error>> {
         let email_config = &self.context.config.email;
         let (smtp_host, smtp_port, smtp_username, smtp_password) =
             if email_config.smtp_transport == "SMTP Server" {
@@ -301,7 +443,7 @@ impl Application {
                 ("localhost", 25, "", "")
             };
 
-        crate::email_service::send_payroll_email(
+        crate::email_service::send_payroll_email_with_attachments(
             smtp_host,
             smtp_port,
             smtp_username,
@@ -312,12 +454,17 @@ impl Application {
             personal_assistant_name,
             personal_assistant_dob,
             personal_assistant_ni,
-            &crate::payroll_file_naming::payroll_period_code(schedule)?,
+            &schedule
+                .into()
+                .map(crate::payroll_file_naming::payroll_period_code)
+                .transpose()?
+                .unwrap_or_else(|| "Payroll documents".into()),
             attachment_path,
             email_body,
             additional_note,
             email_signature,
-            &self.context.config.payroll.email_subject_format,
+            subject_template,
+            additional_attachments,
         )
     }
 
@@ -377,9 +524,10 @@ impl Application {
         personal_assistant_name: &str,
         personal_assistant_dob: Option<&str>,
         personal_assistant_ni: Option<&str>,
-        schedule: &crate::payroll_schedule_repository::PayrollSchedule,
-        attachment_path: &std::path::Path,
+        schedule: Option<&crate::payroll_schedule_repository::PayrollSchedule>,
+        attachment_paths: &[std::path::PathBuf],
         email_body: &str,
+        subject_template: &str,
         additional_note: Option<&str>,
         email_signature: Option<&str>,
     ) -> Result<(), Box<dyn std::error::Error>> {
@@ -406,12 +554,15 @@ impl Application {
             personal_assistant_name,
             personal_assistant_dob,
             personal_assistant_ni,
-            &crate::payroll_file_naming::payroll_period_code(schedule)?,
-            attachment_path,
+            &schedule
+                .map(crate::payroll_file_naming::payroll_period_code)
+                .transpose()?
+                .unwrap_or_else(|| "Payroll documents".to_string()),
+            attachment_paths,
             email_body,
             additional_note,
             email_signature,
-            &self.context.config.payroll.email_subject_format,
+            subject_template,
         )
     }
 }

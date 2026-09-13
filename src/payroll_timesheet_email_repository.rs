@@ -22,7 +22,7 @@ impl PayrollTimesheetEmailStatus {
 }
 
 pub struct PayrollTimesheetEmailRepository {
-    connection: Connection,
+    pub(crate) connection: Connection,
 }
 
 impl PayrollTimesheetEmailRepository {
@@ -134,6 +134,59 @@ impl PayrollTimesheetEmailRepository {
         Ok(())
     }
 
+    /// All attachment types move together, including rollback on a stale status
+    /// or a database error part way through the bundle.
+    pub fn transition_documents(
+        &self,
+        personal_assistant_id: i64,
+        payroll_year: &str,
+        cycle_number: i64,
+        email_types: &[&str],
+        expected: Option<&str>,
+        next: Option<&str>,
+    ) -> Result<bool> {
+        if email_types.is_empty()
+            || email_types
+                .iter()
+                .any(|kind| !matches!(*kind, "payslip" | "p60" | "p45"))
+        {
+            return Ok(false);
+        }
+        let transaction = self.connection.unchecked_transaction()?;
+        for email_type in email_types {
+            transaction.execute(
+                "INSERT OR IGNORE INTO payroll_timesheet_email_status
+                 (personal_assistant_id, payroll_year, cycle_number, email_type, sent_at)
+                 VALUES (?1, ?2, ?3, ?4, NULL)",
+                params![
+                    personal_assistant_id,
+                    payroll_year,
+                    cycle_number,
+                    email_type
+                ],
+            )?;
+            if transaction.execute(
+                "UPDATE payroll_timesheet_email_status SET sent_at = ?1
+                 WHERE personal_assistant_id = ?2 AND payroll_year = ?3
+                   AND cycle_number = ?4 AND email_type = ?5 AND sent_at IS ?6",
+                params![
+                    next,
+                    personal_assistant_id,
+                    payroll_year,
+                    cycle_number,
+                    email_type,
+                    expected
+                ],
+            )? != 1
+            {
+                return Ok(false);
+            }
+        }
+        transaction.commit()?;
+        Ok(true)
+    }
+
+    #[allow(dead_code)] // Compatibility with existing single-payslip callers.
     pub fn protect_payslip_for_send(
         &self,
         personal_assistant_id: i64,
@@ -141,20 +194,17 @@ impl PayrollTimesheetEmailRepository {
         cycle_number: i64,
         attempted_at: &str,
     ) -> Result<bool> {
-        self.ensure_record(personal_assistant_id, payroll_year, cycle_number, "payslip")?;
-        let marker = indeterminate_marker(attempted_at);
-        Ok(self.connection.execute(
-            "UPDATE payroll_timesheet_email_status
-             SET sent_at = ?1
-             WHERE personal_assistant_id = ?2
-               AND payroll_year = ?3
-               AND cycle_number = ?4
-               AND email_type = 'payslip'
-               AND sent_at IS NULL",
-            params![marker, personal_assistant_id, payroll_year, cycle_number],
-        )? == 1)
+        self.transition_documents(
+            personal_assistant_id,
+            payroll_year,
+            cycle_number,
+            &["payslip"],
+            None,
+            Some(&format!("indeterminate:{attempted_at}")),
+        )
     }
 
+    #[allow(dead_code)]
     pub fn restore_unsent_after_failed_payslip_send(
         &self,
         personal_assistant_id: i64,
@@ -162,19 +212,17 @@ impl PayrollTimesheetEmailRepository {
         cycle_number: i64,
         attempted_at: &str,
     ) -> Result<bool> {
-        let marker = indeterminate_marker(attempted_at);
-        Ok(self.connection.execute(
-            "UPDATE payroll_timesheet_email_status
-             SET sent_at = NULL
-             WHERE personal_assistant_id = ?1
-               AND payroll_year = ?2
-               AND cycle_number = ?3
-               AND email_type = 'payslip'
-               AND sent_at = ?4",
-            params![personal_assistant_id, payroll_year, cycle_number, marker],
-        )? == 1)
+        self.transition_documents(
+            personal_assistant_id,
+            payroll_year,
+            cycle_number,
+            &["payslip"],
+            Some(&format!("indeterminate:{attempted_at}")),
+            None,
+        )
     }
 
+    #[allow(dead_code)]
     pub fn mark_payslip_sent_from_indeterminate(
         &self,
         personal_assistant_id: i64,
@@ -183,31 +231,18 @@ impl PayrollTimesheetEmailRepository {
         attempted_at: &str,
         sent_at: &str,
     ) -> Result<bool> {
-        let marker = indeterminate_marker(attempted_at);
-        Ok(self.connection.execute(
-            "UPDATE payroll_timesheet_email_status
-             SET sent_at = ?1
-             WHERE personal_assistant_id = ?2
-               AND payroll_year = ?3
-               AND cycle_number = ?4
-               AND email_type = 'payslip'
-               AND sent_at = ?5",
-            params![
-                sent_at,
-                personal_assistant_id,
-                payroll_year,
-                cycle_number,
-                marker
-            ],
-        )? == 1)
+        self.transition_documents(
+            personal_assistant_id,
+            payroll_year,
+            cycle_number,
+            &["payslip"],
+            Some(&format!("indeterminate:{attempted_at}")),
+            Some(sent_at),
+        )
     }
 }
 
-fn indeterminate_marker(attempted_at: &str) -> String {
-    format!("{INDETERMINATE_PREFIX}{attempted_at}")
-}
-
-fn delivery_state(value: Option<&str>) -> EmailDeliveryState {
+pub(crate) fn delivery_state(value: Option<&str>) -> EmailDeliveryState {
     match value {
         None => EmailDeliveryState::Unsent,
         Some(value) => match value.strip_prefix(INDETERMINATE_PREFIX) {

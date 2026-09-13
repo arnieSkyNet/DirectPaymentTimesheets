@@ -15,6 +15,7 @@ pub struct PayrollEmailPreview {
     pub subject: String,
     pub body: String,
     pub attachment_path: String,
+    pub additional_attachment_paths: Vec<std::path::PathBuf>,
 }
 
 pub fn preview_payroll_email(
@@ -118,6 +119,26 @@ pub fn preview_test_payslip_email(
     )
 }
 
+/// Wording follows the selected bundle, independently of the Dashboard period.
+pub fn payroll_document_wording<'a>(
+    bundle: &crate::payslip_delivery_service::PayslipEmailBundle,
+    configured_subject: &'a str,
+    configured_body: &'a str,
+) -> (&'a str, &'a str) {
+    if bundle.email_types.contains(&"payslip") {
+        (configured_subject, configured_body)
+    } else {
+        (
+            "Payroll documents - {Personal Assistant Name}",
+            if bundle.paths.len() == 1 {
+                "Please find attached your payroll document."
+            } else {
+                "Please find attached your payroll documents."
+            },
+        )
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 fn compose_payroll_email(
     sender_email: &str,
@@ -200,9 +221,11 @@ fn compose_payroll_email(
         subject,
         body,
         attachment_path: attachment_path.display().to_string(),
+        additional_attachment_paths: Vec::new(),
     })
 }
 
+#[allow(dead_code)] // Retain the existing single-attachment API.
 pub fn send_payroll_email(
     smtp_host: &str,
     smtp_port: u16,
@@ -221,7 +244,47 @@ pub fn send_payroll_email(
     email_signature: Option<&str>,
     subject_template: &str,
 ) -> Result<(), Box<dyn Error>> {
-    let preview = preview_payroll_email(
+    send_payroll_email_with_attachments(
+        smtp_host,
+        smtp_port,
+        smtp_username,
+        smtp_password,
+        payroll_department_email,
+        employer_email,
+        personal_assistant_email,
+        personal_assistant_name,
+        personal_assistant_dob,
+        personal_assistant_ni,
+        payroll_period,
+        attachment_path,
+        email_body,
+        additional_note,
+        email_signature,
+        subject_template,
+        &[],
+    )
+}
+
+pub fn send_payroll_email_with_attachments(
+    smtp_host: &str,
+    smtp_port: u16,
+    smtp_username: &str,
+    smtp_password: &str,
+    payroll_department_email: &str,
+    employer_email: &str,
+    personal_assistant_email: Option<&str>,
+    personal_assistant_name: &str,
+    personal_assistant_dob: Option<&str>,
+    personal_assistant_ni: Option<&str>,
+    payroll_period: &str,
+    attachment_path: &Path,
+    email_body: &str,
+    additional_note: Option<&str>,
+    email_signature: Option<&str>,
+    subject_template: &str,
+    additional_attachments: &[std::path::PathBuf],
+) -> Result<(), Box<dyn Error>> {
+    let mut preview = preview_payroll_email(
         payroll_department_email,
         employer_email,
         personal_assistant_email,
@@ -236,6 +299,7 @@ pub fn send_payroll_email(
         subject_template,
     )?;
 
+    preview.additional_attachment_paths = additional_attachments.to_vec();
     send_preview(
         smtp_host,
         smtp_port,
@@ -302,13 +366,16 @@ pub fn send_test_payslip_email(
     personal_assistant_dob: Option<&str>,
     personal_assistant_ni: Option<&str>,
     payroll_period: &str,
-    attachment_path: &Path,
+    attachment_paths: &[std::path::PathBuf],
     email_body: &str,
     additional_note: Option<&str>,
     email_signature: Option<&str>,
     subject_template: &str,
 ) -> Result<(), Box<dyn Error>> {
-    let preview = preview_test_payslip_email(
+    let (attachment_path, additional_attachments) = attachment_paths
+        .split_first()
+        .ok_or("No unsent PA payroll documents are available for this test email.")?;
+    let mut preview = preview_test_payslip_email(
         sender_email,
         pa_test_email,
         personal_assistant_name,
@@ -322,6 +389,7 @@ pub fn send_test_payslip_email(
         subject_template,
     )?;
 
+    preview.additional_attachment_paths = additional_attachments.to_vec();
     send_preview(
         smtp_host,
         smtp_port,
@@ -340,43 +408,7 @@ fn send_preview(
     preview: PayrollEmailPreview,
     attachment_path: &Path,
 ) -> Result<(), Box<dyn Error>> {
-    if !attachment_path.exists() {
-        return Err(format!(
-            "Email attachment does not exist: {}",
-            attachment_path.display()
-        )
-        .into());
-    }
-
-    let attachment_data = fs::read(attachment_path)?;
-
-    let filename = attachment_path
-        .file_name()
-        .ok_or("Invalid timesheet filename.")?
-        .to_string_lossy()
-        .to_string();
-
-    let attachment =
-        Attachment::new(filename).body(attachment_data, ContentType::parse("application/pdf")?);
-
-    let mut email = Message::builder()
-        .from(preview.from.parse::<Mailbox>()?)
-        .to(preview.to.parse::<Mailbox>()?)
-        .subject(preview.subject);
-
-    if let Some(cc) = preview.cc {
-        email = email.cc(cc.parse::<Mailbox>()?);
-    }
-
-    if let Some(personal_assistant_email) = preview.bcc {
-        email = email.bcc(personal_assistant_email.parse::<Mailbox>()?);
-    }
-
-    let email = email.multipart(
-        MultiPart::mixed()
-            .singlepart(SinglePart::plain(preview.body))
-            .singlepart(attachment),
-    )?;
+    let email = build_message(&preview, attachment_path)?;
 
     let mut builder = SmtpTransport::builder_dangerous(smtp_host.trim()).port(smtp_port);
     if !smtp_username.trim().is_empty() {
@@ -392,9 +424,96 @@ fn send_preview(
     Ok(())
 }
 
+fn build_message(
+    preview: &PayrollEmailPreview,
+    attachment_path: &Path,
+) -> Result<Message, Box<dyn Error>> {
+    let mut email = Message::builder()
+        .from(preview.from.parse::<Mailbox>()?)
+        .to(preview.to.parse::<Mailbox>()?)
+        .subject(&preview.subject);
+    if let Some(cc) = &preview.cc {
+        email = email.cc(cc.parse::<Mailbox>()?);
+    }
+    if let Some(bcc) = &preview.bcc {
+        email = email.bcc(bcc.parse::<Mailbox>()?);
+    }
+    let mut multipart = MultiPart::mixed().singlepart(SinglePart::plain(preview.body.clone()));
+    for path in std::iter::once(attachment_path).chain(
+        preview
+            .additional_attachment_paths
+            .iter()
+            .map(|path| path.as_path()),
+    ) {
+        let data = fs::read(path)?;
+        let filename = path
+            .file_name()
+            .ok_or("Invalid attachment filename.")?
+            .to_string_lossy()
+            .to_string();
+        multipart = multipart.singlepart(
+            Attachment::new(filename).body(data, ContentType::parse("application/pdf")?),
+        );
+    }
+    Ok(email.multipart(multipart)?)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn combined_pdf_mime_message_preserves_existing_content_and_addresses() {
+        let directory = tempfile::TempDir::new().unwrap();
+        let payslip = directory.path().join("payslip.pdf");
+        fs::write(&payslip, b"%PDF-1.4 payslip").unwrap();
+        for additional in [vec!["P60.pdf"], vec!["P45.pdf"], vec!["P60.pdf", "P45.pdf"]] {
+            let mut preview = preview_payroll_email(
+                "payroll@example.com",
+                "employer@example.com",
+                Some("pa@example.com"),
+                "Alex Smith",
+                None,
+                None,
+                "202608w22",
+                &payslip,
+                "Existing payslip body",
+                Some("Note"),
+                Some("Signature"),
+                "{Personal Assistant Name} {YYYYMMwWW}",
+            )
+            .unwrap();
+            for name in &additional {
+                let path = directory.path().join(name);
+                fs::write(&path, b"%PDF-1.4 supplement").unwrap();
+                preview.additional_attachment_paths.push(path);
+            }
+            let message = build_message(&preview, &payslip).unwrap();
+            let raw = String::from_utf8(message.formatted()).unwrap();
+            assert_eq!(
+                raw.matches("Content-Type: application/pdf").count(),
+                additional.len() + 1
+            );
+            assert!(raw.contains("filename=\"payslip.pdf\""));
+            for name in additional {
+                assert!(raw.contains(&format!("filename=\"{name}\"")));
+            }
+            assert!(raw.contains("Existing payslip body"));
+            assert!(raw.contains("Note"));
+            assert!(raw.contains("Signature"));
+            assert_eq!(preview.to, "payroll@example.com");
+            assert_eq!(preview.cc.as_deref(), Some("employer@example.com"));
+            assert_eq!(preview.bcc.as_deref(), Some("pa@example.com"));
+            let recipients = message
+                .envelope()
+                .to()
+                .iter()
+                .map(|address| address.to_string())
+                .collect::<Vec<_>>();
+            assert!(recipients.contains(&"pa@example.com".to_string()));
+            assert!(!raw.contains("P30"));
+        }
+    }
 
     #[test]
     fn preview_composes_recipients_subject_and_signature_without_an_attachment() {
