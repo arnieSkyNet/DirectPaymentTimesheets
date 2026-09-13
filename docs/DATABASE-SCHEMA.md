@@ -2,13 +2,13 @@
 
 ## Scope and versioning
 
-This is the implemented SQLite schema at version 29. It is derived from `create_schema` and migrations in `src/database.rs`; those migrations are authoritative.
+This is the implemented SQLite schema at version 31 (application `0.0.14`). It is derived from `create_schema` and migrations in `src/database.rs`; those migrations are authoritative.
 
 `schema_version` contains the current integer version. A new database begins at version 1 and receives each ordered migration through `CURRENT_SCHEMA_VERSION` 31. Existing databases are upgraded in place. Migration 23 removes the short-lived revision-only tables introduced by migration 22 while retaining the operational legacy snapshot tables. Migration 24 adds an explicit contracted/variable hours basis to effective-dated Personal Assistant contracted-hours history while preserving existing records as contracted.
 
 During unreleased schema-20 development, an earlier local database shape contained `direct_shifts` without soft-deletion columns or the audit table. Startup therefore performs an idempotent schema-20 compatibility check after normal migrations. When that exact incomplete shape is found, it transactionally rebuilds `direct_shifts` into the final constrained form while preserving IDs and row values, then creates the audit table/indexes. It does not fabricate historical audit events, and repeated startup does not duplicate existing audit rows.
 
-SQLite foreign-key constraints are not declared in schema 28. Relationships described below are logical relationships enforced by repository/application code and stored IDs/business keys.
+Most older relationships are logical references enforced by repository/application code. Schemas 30 and 31 declare PA foreign-key references for sickness periods and imported payroll documents, without cascading deletes. SQLite enforcement depends on each connection enabling foreign keys; connections do not uniformly do so.
 
 ## `schema_version`
 
@@ -77,7 +77,7 @@ Imported external work rows.
 | `notes` | `TEXT` | Optional source note. |
 | `personal_assistant_id` | `INTEGER` | Logical reference to `personal_assistants.id`; nullable for unresolved/legacy imports. |
 
-No database uniqueness constraint implements duplicate detection. New CSV imports preflight possible collisions in application code: materially identical evidence is counted/skipped, while a same-PA/start material difference refuses the complete file rather than selecting or replacing a row. The complete file's new inserts and SUCCESS audit, including truthful imported/skipped counts, are committed in one SQLite transaction.
+No database uniqueness constraint implements duplicate detection. New CSV imports preflight possible collisions in application code: exact already-stored raw evidence is counted/skipped; conflicting same-start and new within-file duplicate candidates are retained for audited duplicate resolution, never silently selected or replaced. The complete file's new inserts and SUCCESS audit, including truthful imported/skipped counts, are committed in one SQLite transaction.
 
 ### `timesheet_correction_events`
 
@@ -123,13 +123,14 @@ Schema 28 retains raw imported rows for the import/view audit paths. Payroll evi
 |---|---|
 | `id` | `INTEGER PRIMARY KEY` |
 | `name` | `TEXT NOT NULL` |
-| `address`, `postcode`, `telephone`, `email` | nullable `TEXT` |
+| `address`, `telephone`, `email` | nullable `TEXT` |
+| `postcode` | nullable legacy `TEXT`; not mapped by current Employer model/editor/repository |
 | `payroll_provider`, `payroll_provider_address`, `payroll_provider_phone` | nullable legacy `TEXT` |
 | `employer_signature`, `email_signature`, `default_pdf_template` | nullable path/text fields |
-| `sick_pay_enabled`, `mileage_enabled` | `INTEGER NOT NULL DEFAULT 0` booleans |
+| `sick_pay_enabled`, `mileage_enabled` | `INTEGER NOT NULL DEFAULT 0`; retained legacy booleans, no runtime feature gates or UI controls |
 | `date_of_birth`, `national_insurance_number`, `reference_account_number` | nullable `TEXT` |
 
-The application normally uses one employer record. The schema does not enforce a singleton.
+The current Employer editor preserves one multiline address string, including any entered postcode, rather than mapping the legacy postcode column. The application normally uses one employer record. The schema does not enforce a singleton.
 
 ### `personal_assistants`
 
@@ -139,10 +140,11 @@ The application normally uses one employer record. The schema does not enforce a
 | `first_name`, `surname` | `TEXT NOT NULL` |
 | `date_of_birth`, `national_insurance_number` | nullable `TEXT` |
 | `address`, `postcode`, `telephone`, `email` | nullable `TEXT` |
-| `employment_status` | nullable `TEXT`; `NULL` is treated as active by current workflows |
+| `employment_status` | nullable `TEXT`; retained status, not the payroll-period eligibility gate |
 | `sick_pay_enabled` | `INTEGER NOT NULL DEFAULT 0`; unused legacy PA flag, retained for compatibility |
 | `mileage_enabled` | `INTEGER NOT NULL DEFAULT 0` boolean |
 | `start_date`, `signature` | nullable `TEXT` |
+| `leaving_date` | nullable `TEXT` added in schema27; current writes use `DD/MM/YYYY` |
 
 ### `payroll_provider`
 
@@ -176,7 +178,8 @@ There is no uniqueness constraint on PA/effective date. Repository lookup orders
 | `id` | `INTEGER PRIMARY KEY` |
 | `personal_assistant_id` | `INTEGER NOT NULL`; logical PA reference |
 | `effective_date` | `TEXT NOT NULL`, current format `DD/MM/YYYY` |
-| `contracted_hours` | `TEXT NOT NULL` |
+| `contracted_hours` | `TEXT NOT NULL`; weekly value for Contracted, empty for Variable |
+| `hours_basis` | `TEXT NOT NULL DEFAULT 'contracted' CHECK (hours_basis IN ('contracted', 'variable'))`; schema24 |
 | `created_at` | `TEXT NOT NULL` |
 
 There is no uniqueness constraint on PA/effective date. The as-of lookup uses effective date descending and ID descending.
@@ -196,7 +199,7 @@ There is no uniqueness constraint on PA/effective date. The as-of lookup uses ef
 | `created_at` | `TEXT NOT NULL` |
 | `payslips_sent` | `INTEGER NOT NULL DEFAULT 0` boolean |
 
-Dates are stored as `DD/MM/YYYY`. Repository logic treats `(payroll_year, cycle_number)` as schedule identity, but schema 23 does not declare that pair unique. Validated import supplies exactly 13 chronological four-week cycles and replaces one year transactionally.
+Dates are stored as `DD/MM/YYYY`. Repository logic treats `(payroll_year, cycle_number)` as schedule identity, but the current schema does not declare that pair unique. Validated import supplies exactly 13 chronological four-week cycles and replaces one year transactionally.
 
 ## Payroll preparation
 
@@ -225,7 +228,7 @@ Unique constraint: `(personal_assistant_id, payroll_year, cycle_number)`.
 | `week_commencing` | `TEXT NOT NULL` |
 | `worked_hours` | `REAL NOT NULL DEFAULT 0` |
 | `annual_leave_hours` | `REAL NOT NULL DEFAULT 0` |
-| `sick_leave_hours` | `REAL NOT NULL DEFAULT 0` |
+| `sick_leave_hours` | `REAL NOT NULL DEFAULT 0`; legacy aggregate, not current sickness entry/PDF projection |
 | `public_holiday_hours` | `REAL NOT NULL DEFAULT 0` |
 | `travel_miles` | `REAL NOT NULL DEFAULT 0` |
 
@@ -282,6 +285,8 @@ Unique constraint: `(personal_assistant_id, payroll_year, cycle_number, email_ty
 | `week_number` | `INTEGER NOT NULL` |
 | `source_type` | `TEXT NOT NULL` |
 | `timesheet_id` | nullable `INTEGER`; logical source `timesheets.id` |
+| `direct_shift_id` | nullable `INTEGER`; logical source `direct_shifts.id`, added in schema28 |
+| `source_evidence` | nullable `TEXT`; TOML capture of raw source fields, distinct from payable minutes |
 | `work_date` | nullable `TEXT` |
 | `worked_minutes` | `INTEGER NOT NULL` |
 | `pay_rate_id` | nullable `INTEGER`; logical rate reference |
@@ -292,13 +297,16 @@ Unique constraint: `(personal_assistant_id, payroll_year, cycle_number, email_ty
 
 Check constraint:
 
-- `legacy_previous_cycle_adjustment` requires `timesheet_id`, work date and all rate fields to be `NULL`.
-- Every other source type requires pay-rate ID, effective date and total rate to be non-null.
+- Imported and direct source IDs are mutually exclusive.
+- `legacy_previous_cycle_adjustment` requires both source IDs, work date and all rate fields to be `NULL`.
+- `carry_correction` may retain unavailable date/rate evidence.
+- Other source types require pay-rate ID, effective date and total rate to be non-null.
 
 Indexes:
 
 - partial unique index `payroll_snapshot_raw_shift` on `(payroll_timesheet_id, timesheet_id)` where `timesheet_id IS NOT NULL`;
-- non-unique index `payroll_snapshot_timesheet_id` on `timesheet_id`.
+- non-unique index `payroll_snapshot_timesheet_id` on `timesheet_id`;
+- schema28 partial unique index `payroll_snapshot_direct_shift` on `(payroll_timesheet_id, direct_shift_id)` where `direct_shift_id IS NOT NULL`.
 
 The partial unique index prevents one raw imported row appearing twice in the same payroll snapshot.
 
@@ -318,7 +326,7 @@ The primary key enforces at most one publication state per payroll timesheet.
 
 ## Constraint summary
 
-Declared uniqueness beyond primary keys:
+Core preparation uniqueness beyond primary keys (later tables have additional constraints listed in their sections and `src/payroll_evidence/schema.sql`):
 
 - one payroll-timesheet row per PA/year/cycle;
 - one weekly row per payroll-timesheet/week;
@@ -327,7 +335,7 @@ Declared uniqueness beyond primary keys:
 - one email status per PA/year/cycle/type; and
 - one occurrence of a non-null source TimesheetEntry ID per legacy payroll-timesheet snapshot.
 
-Schema 23 also declares the direct-shift running/recent indexes, direct-shift value checks and correction-history index described above. No foreign keys or cascading deletes are declared. Repository and service validation supplies the remaining business rules.
+The retained direct-shift running/recent indexes, direct-shift value checks and correction-history index are described above. Later constraints include unique active duplicate-group fingerprints, reconciliation evidence keys, correction evidence keys and compound application/member identities (schema28), sickness date indexing (schema30), and unique document paths plus PA/document indexing (schema31). Schemas30/31 declare PA references without cascading deletes; connection-level enforcement is not uniform. Repository and service validation supplies other business rules.
 
 ### `payroll_timesheet_annual_leave` (schema 25)
 
@@ -343,7 +351,7 @@ Both effective-from values are recurring `DD/MM` boundaries, not year-specific d
 
 An absent row loads defaults of `01/04`, 5.6 weeks, `01/04`, and 12.07 percent without writing to the database. Save Payroll Settings validates these inputs before any payroll writes, then saves the four values in one atomic SQLite statement after the existing payroll-settings save. The config/provider and annual-leave writes are not a shared transaction; failures are reported explicitly, including when the other payroll settings have already saved. There is no separate leave-year-start config field, rule creation, history, editing/deletion workflow, or confirmation machinery. No compatibility repair for earlier development-only schema-26 layouts is included; local development databases may be reset manually.
 
-Personal Assistants have an optional Leaving date, stored as canonical `DD/MM/YYYY`. Schema 27 adds nullable `personal_assistants.leaving_date` without backfilling dates or altering historical data. A supplied date must be real and not precede Start date. Stored Active/Inactive status is never changed automatically. Ordinary selected-period payroll inclusion requires Active (or legacy unset status) and inclusive employment-date overlap with the four-week period. Existing selected-period preparation records remain included regardless of status or employment dates. Annual-leave guidance applies Start and Leaving dates inclusively without changing employment status.
+Personal Assistants have an optional Leaving date, stored as canonical `DD/MM/YYYY`. Schema 27 adds nullable `personal_assistants.leaving_date` without backfilling dates or altering historical data. A supplied date must be real and not precede Start date. Stored Active/Inactive status is never changed automatically. Ordinary selected-period payroll inclusion uses inclusive Start/Leaving date overlap with the four-week period, independent of current Active/Inactive status. Missing employment boundaries remain unbounded. Existing selected-period preparation records remain included regardless of status or employment dates. Annual-leave guidance applies Start and Leaving dates inclusively without changing employment status.
 
 
 ## Schema 28: payroll evidence decisions and submission history
@@ -374,6 +382,18 @@ inventory an existing 28 database gets no exemption. See
 [Payroll evidence](PAYROLL-EVIDENCE.md#legacy-settlement-cutover-schema-29) for recovery
 file preparation, validation, and the distinction between cutover and recording time.
 
+
+## Schema 30: structured sickness periods
+
+Migration 30 transactionally creates `personal_assistant_sickness_periods` and its index, preserving legacy PA flags and weekly `sick_leave_hours` without backfilling or converting them.
+
+| Column | Type/constraint |
+|---|---|
+| `id` | `INTEGER PRIMARY KEY` |
+| `personal_assistant_id` | `INTEGER NOT NULL REFERENCES personal_assistants(id)`; no cascading delete |
+| `start_date`, `end_date` | `TEXT NOT NULL`; length 10 and ISO digit-pattern checks, canonical `YYYY-MM-DD` |
+
+The table checks `end_date >= start_date`; repository validation additionally requires real calendar dates and an existing PA. Dates are inclusive. `idx_sickness_periods_pa_dates(personal_assistant_id, start_date, end_date)` supports PA/date queries. Periods are independent of payroll weeks: overlapping weeks project the same full date record. Protected payroll editing and candidate invalidation are application rules, not triggers. The application records dates; Payroll calculates SSP. Legacy weekly sickness hours are not synchronised by period entry and remain a limitation of the annual-leave warning described in [Domain](DOMAIN.md#annual-leave-guidance).
 
 ## Schema 31: cycle-independent PA payroll documents
 

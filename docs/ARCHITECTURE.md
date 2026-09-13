@@ -2,7 +2,7 @@
 
 ## Shape of the application
 
-DirectPaymentTimesheets is a local Rust desktop application. `main.rs` initialises the environment, configuration, SQLite database and application object, then starts the `eframe`/`egui` GUI. There is no server process or web API.
+DirectPaymentTimesheets is a local Rust desktop application. `main.rs` wires modules and calls `application::run`. Startup orchestration lives in `application.rs`, `Application::initialise` and context/environment code, including database initialisation and `eframe`/`egui` launch. There is no server process or web API.
 
 The main layers are:
 
@@ -24,9 +24,9 @@ The GUI owns navigation and stable selection state. `Application` exposes reposi
 
 `AppEnvironment` uses `DIRECTPAYMENTTIMESHEETS_HOME` when set, otherwise `~/.directpaymenttimesheets`. It creates the internal data, import, archive, backup, log, template and cache directories and locates `database.sqlite`. `config.toml` is stored in the data root.
 
-`AppConfig` is TOML/Serde data split into theme, folder, PDF, payroll and email sections. Serde's normal unknown-field handling permits obsolete keys in old files. Missing newer fields use defaults. A compatibility reconciliation preserves the legacy timesheet email body when the newer payroll template is absent.
+`AppConfig` is TOML/Serde data split into theme, folder, PDF, payroll and email sections. Serde's normal unknown-field handling permits obsolete keys in old files. Missing newer fields use defaults. Annual-leave rule values are an exception to TOML settings: they live in the singleton SQLite `annual_leave_settings` table. A compatibility reconciliation preserves the legacy timesheet email body when the newer payroll template is absent.
 
-Configured business paths may point outside the data root. `email_archive` is currently persisted without a production consumer, and Payroll Return information deliberately uses the separate payroll-information path. Path creation is deliberately late: for example, a future payroll-year directory is created only when a PDF or Payroll Return file is actually written.
+Configured business paths may point outside the data root. `email_archive` is currently persisted without a production consumer, and Payroll Return information deliberately uses the separate payroll-information path. Saving configuration ensures configured business roots exist. Schedule-derived path creation is deliberately late: for example, a future payroll-year directory is created only when a PDF or Payroll Return file is actually written.
 
 ## SQLite and repositories
 
@@ -39,8 +39,11 @@ Principal persisted areas are:
 - effective-dated PA pay rates and contracted hours;
 - multi-year payroll schedules;
 - payroll timesheets, four weekly preparation rows and individual public-holiday rows;
-- per-timesheet email status; and
-- schema-19 manual adjustments, worked-item snapshots and snapshot state/digest metadata.
+- per-timesheet email status;
+- schema-19 manual adjustments, worked-item snapshots and snapshot state/digest metadata;
+- dated annual leave, SQLite annual-leave settings and structured sickness periods;
+- duplicate decisions, immutable submissions, corrections and verified legacy settlement; and
+- schema31 cycle-independent P60/P45 documents and delivery state.
 
 Repositories isolate queries and identity rules. Important compound identities use payroll year plus internal cycle number, not row ID alone. Dates are currently stored as text in existing formats, so repository methods parse and compare calendar dates explicitly where ordering must be chronological.
 
@@ -62,7 +65,7 @@ Payroll Return and View Payroll Schedule intentionally have independent selector
 
 ## Payroll preparation architecture
 
-`PayrollTimesheetScreen` receives a complete operational schedule and stores a private bound identity with its key and material dates. It does not independently choose today's schedule. Its display set combines active/legacy-NULL-active PAs with PAs already represented by a payroll-timesheet row in the selected period.
+`PayrollTimesheetScreen` receives a complete operational schedule and stores a private bound identity with its key and material dates. It does not independently choose today's schedule. Its display set combines inclusive Start/Leaving date overlap independent of current status with PAs already represented by a payroll-timesheet row in the selected period, including records outside those dates.
 
 Existing submitted or indeterminate records follow a persisted-only, read-only load path. Editable records follow the shared source-labelled reconciliation service against effective imported evidence, completed direct shifts, duplicate decisions, submission membership, outstanding corrections and manual adjustments. Preparation baselines are compared before writes so that:
 
@@ -107,7 +110,7 @@ Payroll-year directory normalisation recognises a final `YYYY to YYYY` component
 
 `email_service` composes previews and performs SMTP transport. Both production timesheets and payslips are sent from the employer to the payroll department, CC the employer and BCC the PA when available. Test functions use only configured test addresses and add test markers; payslip test email goes to the configured PA test address.
 
-The GUI's `PendingEmailBatch` captures its kind/stage, selected PA IDs, an optional selected schedule key, material schedule dates and operational-selection revision; it does not capture already resolved email addresses. The existing confirmation window is the production safety boundary. Final dispatch re-fetches and validates the captured schedule and rejects a changed global selection. It never substitutes today's schedule. Timesheet dispatch also preserves candidate digest/state verification; payslip dispatch requires the exact shared path-derived file. Before production payslip SMTP, the existing per-PA status row is durably marked indeterminate; SMTP failure restores unsent state, successful SMTP is followed by definitive sent state, and any crash or failed final write leaves restart-safe uncertainty that refuses automatic resend. Preview and test sends do not touch this state. PA payroll email also includes PAs with unsent imported P60/P45, regardless of employment eligibility. Their document IDs and delivery states are independent of the selected cycle. A batch without a selected schedule can send these documents alone.
+The GUI's `PendingEmailBatch` captures its kind/stage, selected PA IDs, an optional selected schedule key, material schedule dates and operational-selection revision; it does not capture already resolved email addresses. The existing confirmation window is the production safety boundary. Final dispatch re-fetches and validates the captured schedule and rejects a changed global selection. It never substitutes today's schedule. Timesheet dispatch also preserves candidate digest/state verification; payslip/document dispatch uses the shared selector for an optional ordinary payslip plus unsent P60/P45; eligible standalone documents do not require an ordinary payslip. Before production payslip/document SMTP, selected ordinary-payslip status and document-ID states are durably marked indeterminate; SMTP failure restores unsent state, successful SMTP is followed by definitive sent state, and any crash or failed final write leaves restart-safe uncertainty that refuses automatic resend. Preview and test sends do not touch this state. PA payroll email also includes PAs with unsent imported P60/P45, regardless of employment eligibility. Their document IDs and delivery states are independent of the selected cycle. A batch without a selected schedule can send these documents alone.
 
 ## Backup and restore architecture
 
@@ -142,4 +145,10 @@ When there is no plausible stored cycle, an ordinary payslip is filed as archiva
 P60/P45 continue using `imported_payroll_documents` on the email repository's connection. Their paths follow the same year-known/year-unknown PA hierarchy, with cleaned provider filenames; unknown-year files escape any configured year suffix. Their document IDs and delivery states remain cycle-independent. A P60's year, a prep sheet's year, the current date or Dashboard selection is never borrowed to date another document. Information files use their own explicit filename tax year when available, otherwise the configured information root. Prep sheets use the existing parser and update their own schedule year. P30, bank-transfer slips, memos and general files never enter PA email. Collisions never overwrite different bytes, and `[1]` remains filename data.
 
 
-Mixed bundles protect the ordinary payslip status and the specific P60/P45 IDs in one SQLite transaction before SMTP. SMTP failure restores unsent states together; success marks them sent together. Failed final persistence leaves indeterminate states that block automatic resend. Already-sent ordinary payslips are excluded from later document emails. Schedule completion and payroll settlement continue to consult only ordinary payslip status. Standalone document subjects substitute “Payroll documents” for the period token. P45 imports never update employment data.
+Mixed bundles protect the ordinary payslip status and the specific P60/P45 IDs in one SQLite transaction before SMTP. SMTP failure restores unsent states together; success marks them sent together. Failed final persistence leaves indeterminate states that block automatic resend. Already-sent ordinary payslips are excluded from later document emails. Schedule completion and payroll settlement continue to consult only ordinary payslip status. Standalone P60/P45 bundles bypass the configured subject template and use neutral subject/body wording independent of Dashboard dates; ordinary and combined bundles retain configured cycle composition. See [Email rules](DOMAIN.md#email). P45 imports never update employment data.
+
+Information imports reuse identical content at the original or any existing numbered destination, including beyond suffix gaps; different bytes get a collision-safe filename. Reimporting that variant reuses it rather than creating another copy. `[1]` is ordinary filename content, not a collision suffix to strip.
+
+Individual files and mixed ZIPs use the same staging and no-clobber publication. Results distinguish imported, already-present, archival and failed items. Prep sheets are stored, then parsed through the existing per-year transactional schedule importer; parsing failure is reported separately from successful file storage. The overall mixed workflow is not one filesystem/database transaction. Published files may remain after registration/parser failure, with paths and errors reported for recovery.
+
+The test path uses this same read-only selection and validation followed only by test transport, never production transitions. See [Email rules](DOMAIN.md#email) for recipient, composition and state guarantees. User-triggered GitHub update checking in `update_check` reports versions and installation guidance; it does not download or install updates.

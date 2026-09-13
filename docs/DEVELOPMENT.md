@@ -4,7 +4,7 @@
 
 This is a local Rust/egui/SQLite application. Prefer small, evidence-led changes that preserve payroll history and existing provider output. Inspect the current source, schema and tests before changing behaviour; documentation and conversation history are secondary evidence.
 
-Current package version is `0.0.14`; current SQLite schema version is 28. Do not change either unless a task explicitly requires it.
+Current package version is `0.0.14`; current SQLite schema version is 31. Do not change either unless a task explicitly requires it.
 
 ## Local setup
 
@@ -41,8 +41,8 @@ For documentation-only work, `git diff --check`, `cargo check` and `cargo test` 
 
 Key entry/orchestration modules:
 
-- `main.rs`: module wiring, environment/database/config initialisation and eframe startup.
-- `application.rs` and `app.rs`: application operations and repository access.
+- `main.rs`: module wiring and the call to `application::run`.
+- `application.rs`: startup/database orchestration and eframe launch; `app.rs` / `Application::initialise` and context/environment code: configuration, environment and repository access.
 - `gui.rs`: Dashboard, selector/dialog state, navigation and email workflow orchestration.
 - `context.rs`, `environment.rs`, `config.rs`, `paths.rs`: runtime context and paths.
 
@@ -91,7 +91,7 @@ Payroll Prep Sheet PDF extraction is implemented. DOCX is recognised but deliber
 Keep the three selector concerns separate:
 
 - Dashboard operational payroll period;
-- Payroll Return's explicit period; and
+- Import Payroll Documents' optional period after source classification; and
 - View Payroll Schedule's selected year.
 
 Normal labels use Payroll Week, period dates and pay date. Internal cycle numbers may appear in code/tests/diagnostics but not ordinary user-facing labels.
@@ -105,7 +105,7 @@ Use `payroll_file_naming` for every producer and consumer. Do not reimplement pe
 - Payslip filename is `Payslip for Week N for Name.pdf`.
 - A root ending in `YYYY to YYYY` is normalised back to its parent before applying another schedule year.
 - Generic timesheet PDF roots stay flat; year-suffixed timesheet roots roll to sibling years.
-- Create directories only immediately before an actual write/import.
+- Create schedule-derived directories only immediately before an actual write/import. Saving configuration also ensures configured business roots exist.
 
 When adding file writes, preserve collision handling and propagate directory/write errors before changing related database state.
 
@@ -113,7 +113,7 @@ When adding file writes, preserve collision handling and propagate directory/wri
 
 `PayrollTimesheetScreen` must be supplied a complete operational schedule. Its bound key and material dates are a stale-save guard. Do not add an independent `Local::now()` period resolver; current-time calls in this screen are for timestamps only.
 
-Preparation PA eligibility is active/legacy-NULL-active plus any PA with an existing selected-period payroll record. Generation deliberately uses the same union. Do not create selected-period records for unrelated inactive PAs.
+Preparation, generation and timesheet email use inclusive Start/Leaving date overlap independent of current Active status, plus any PA with an existing selected-period record even outside those dates. Missing boundaries are unbounded.
 
 Submitted and indeterminate records are persisted-only/read-only. Loading them must not create missing weeks/holidays, reconcile imports or update timestamps. Candidate/unsent records are editable.
 
@@ -131,7 +131,7 @@ Generate via `payroll_snapshot_service::publish_candidate`, not direct final-pat
 
 Pay-rate lookup is as of each imported shift's start date and returns newest effective date then newest ID. It excludes future rates and includes employer top-up. Missing effective rate for positive work is an error. Manual adjustment allocation rules and integer-minute reconciliation live in `pay_rate_allocation`; do not use imported CSV rate/amount.
 
-Contracted-hours lookup is independently as of each payroll week commencing date. It is PDF information only. Do not apply pay-rate midweek rules to contracted hours or make it affect worked totals.
+Contracted-hours lookup is independently as of each payroll week commencing date. It supplies PDF information and annual-leave guidance. Do not apply pay-rate midweek rules to contracted hours or make it affect worked totals.
 
 ## Email development
 
@@ -141,13 +141,19 @@ Keep preview, test and production semantics distinct:
 - test sends use configured test recipients and markers and do not freeze snapshots;
 - production uses established employer/payroll/PA routing and updates status/snapshot state.
 
-That production route is the employer as sender, payroll department as recipient, employer as CC and PA as BCC when available for both timesheets and payslips. Payslip test email instead targets the configured PA test address. `PendingEmailBatch` captures selected PA IDs and period facts/revision, not resolved email addresses. Production batches currently include active/legacy-`NULL` PAs only; the inactive-with-existing-record eligibility rule is limited to preparation and generation.
+That production route is the employer as sender, payroll department as recipient, employer as CC and PA as BCC when available for both timesheets and payslips. Payslip test email instead targets the configured PA test address. `PendingEmailBatch` captures selected PA IDs and period facts/revision, not resolved email addresses. Timesheets use selected-period eligibility; payslip/document batches additionally include unsent P60/P45 recipients. Standalone documents need no schedule; see [Email rules](DOMAIN.md#email).
 
-Production batches capture the selected schedule and selection revision. Final dispatch must re-fetch and validate that schedule, refuse a changed global selection and use only captured/re-fetched period facts for attachments, subject and status. Never re-resolve today during dispatch.
+Production batches capture the optional selected schedule and selection revision; timesheets require a schedule. For period-associated sends, final dispatch must re-fetch and validate that schedule, refuse a changed global selection and use only captured/re-fetched period facts. Standalone document attachments/status use document IDs and neutral wording, never a fabricated period. Never re-resolve today during dispatch.
 
 ## Backup/restore development
 
 Keep filesystem and SQLite details in `BackupService`. A backup must use SQLite's online backup API, not copy an open database file. Restore must stay confined to recognised application backup directories, validate read-only integrity/schema, create a safety backup first and require restart after success. Tests use temporary roots only.
+
+## Current document and maintenance boundaries
+
+Unified Import Payroll Documents classifies individual files/ZIPs before any optional ordinary-payslip period choice. P60/P45 use independent schema31 document IDs; information uses its own filename year or configured root. Preserve idempotency, archival exclusions and mixed-import partial-result reporting described in [Architecture](ARCHITECTURE.md#schema31-payroll-documents).
+
+Employer feature flags and PA sickness enablement are legacy storage, not feature gates. Structured sickness records report dates to Payroll; PA mileage remains the mileage gate. Maintenance layout, footer controls and user-facing rules are summarised in [README](../README.md#records-and-settings) and [Domain](DOMAIN.md#sickness-and-weekly-mileage). Do not reintroduce gates from old columns.
 
 ## Testing conventions
 
@@ -165,6 +171,8 @@ Important regression areas include:
 - email batch period binding and test/production routing; and
 - backup validation/restore with no access to runtime data.
 
+Email regression tests use temporary data and an isolated loopback SMTP sink; environments that prohibit binding local ports need permission to run those tests outside that restriction. They do not use production SMTP.
+
 Avoid brittle pixel assertions for PDFs. Test prepared content/data and extract text where practical.
 
 ## Configuration compatibility
@@ -175,11 +183,11 @@ The persisted payroll frequency, workweek and overtime settings are not currentl
 
 ## Current boundaries
 
-Do not document or build these as if already present: overtime calculations, arbitrary/scheduled/cloud restore, backup retention, P60-specific Payroll Return handling, multi-user/authentication, or a general payroll calculation engine. Keep future-work descriptions explicit and separate from implemented behaviour.
+Do not document or build these as if already present: overtime calculations, arbitrary/scheduled/cloud restore, backup retention, multi-user/authentication, or a general payroll calculation engine. Keep future-work descriptions explicit and separate from implemented behaviour.
 
 Annual-leave settings foundation: schema 26 uses a singleton `annual_leave_settings` SQLite row for two recurring DD/MM boundaries, statutory weeks and accrual percentage. Missing settings load defaults 01/04, 5.6, 01/04, 12.07 without persistence. Save Payroll Settings writes all four together. There is no separate config leave-year start or effective-dated rule history. The two recurring effective-from dates apply to their respective rules; they do not set leave-year boundaries or change a PA’s Hours Basis. Annual-leave guidance always uses 1 April through 31 March inclusive, even when the two settings dates differ. Earlier development-only schema-26 databases require manual reset, not production repair logic.
 
-Personal Assistants have an optional Leaving date, stored as canonical `DD/MM/YYYY`. Schema 27 adds nullable `personal_assistants.leaving_date` without backfilling dates or altering historical data. A supplied date must be real and not precede Start date. Stored Active/Inactive status is never changed automatically. Ordinary selected-period payroll inclusion requires Active (or legacy unset status) and inclusive employment-date overlap with the four-week period. Existing selected-period preparation records remain included regardless of status or employment dates. Annual-leave guidance applies Start and Leaving dates inclusively without changing employment status.
+Personal Assistants have an optional Leaving date, stored as canonical `DD/MM/YYYY`. Schema 27 adds nullable `personal_assistants.leaving_date` without backfilling dates or altering historical data. A supplied date must be real and not precede Start date. Stored Active/Inactive status is never changed automatically. Ordinary selected-period payroll inclusion uses inclusive Start/Leaving date overlap with the four-week period, independent of current Active/Inactive status. Missing employment boundaries remain unbounded. Existing selected-period preparation records remain included regardless of status or employment dates. Annual-leave guidance applies Start and Leaving dates inclusively without changing employment status.
 
 
 ### Annual-leave guidance (schema 27 unchanged)
@@ -188,10 +196,10 @@ Personal Assistants have an optional Leaving date, stored as canonical `DD/MM/YY
 
 - Years are fixed 1 April–31 March. The current year is always offered; previous years come from employment dates, Hours Basis history, preparation weeks, dated leave and actual worked dates (application schedules supply evidence where Start date is absent).
 - Contracted entitlement is weekly hours × configured statutory weeks × inclusive segment days / actual days in the selected leave year. Effective-dated Hours Basis history is ordered by date and then id, preserving highest-id precedence on equal dates. Start/Leaving and midweek changes are applied on actual dates. The full attributable Contracted portion is included, including future contracted days; Variable work is never projected.
-- Variable evidence comes from `PayrollWorkedItemRepository` submitted snapshots, gated by this PA/cycle’s definitively Sent `email_type='payslip'` state from `PayrollTimesheetEmailRepository`. Neither a timesheet email nor the schedule-level sent flag suffices. Imported and previous-cycle late shifts use retained actual dates. Qualifying minutes are totalled per four-week cycle, multiplied by the configured percentage and rounded once to whole hours (half up). Annual leave, Sick/SSP, public-holiday hours and mileage are not worked hours. Calculated to is the latest contributing cycle’s scheduled end, which can follow a historical year when late shifts settle later.
+- Variable evidence comes from retained `PayrollWorkedItemRepository` submitted snapshots, with a safe historical fallback to weekly preparation worked totals when item evidence is unavailable and whole-week attribution is unambiguous, gated by this PA/cycle’s definitively Sent `email_type='payslip'` state from `PayrollTimesheetEmailRepository`. Neither a timesheet email nor the schedule-level sent flag suffices. Imported and previous-cycle late shifts use retained actual dates. Qualifying minutes are totalled per four-week cycle, multiplied by the configured percentage and rounded once to whole hours (half up). Annual leave, Sick/SSP, public-holiday hours and mileage are not worked hours. Calculated to is the latest contributing cycle’s scheduled end, which can follow a historical year when late shifts settle later.
 - Dated leave uses actual leave dates; legacy undated leave uses the week commencing date, including crossing weeks. Dated rows supersede the weekly aggregate. Taken is recorded leave, independent of payslip Sent status; negative remaining is displayed.
 - The two settings effective-from fields retain their separate recurring-rule meaning. With only a singleton numeric value per rule and no historical rule values, each recurrence uses the current saved/default value; no different historic value is invented. Details discloses this limitation. PA basis changes come exclusively from contracted-hours history.
-- Undated manual worked adjustments can be allocated only when their entire week qualifies for the same year, employment and Variable basis and is not future. Ambiguous adjustments, undated previous-cycle legacy amounts, missing submitted evidence and missing/invalid Hours Basis history make guidance visibly incomplete; no dates or raw-shift reconstruction are invented. Variable-basis Sick/SSP always flags that an additional sickness accrual calculation is required. The sickness reference-period algorithm remains deferred.
+- Undated manual worked adjustments can be allocated only when their entire week qualifies for the same year, employment and Variable basis and is not future. Ambiguous adjustments, undated previous-cycle legacy amounts, unusable submitted/aggregate evidence and missing/invalid Hours Basis history make guidance visibly incomplete; no dates or raw-shift reconstruction are invented. The current sickness warning checks legacy weekly `sick_leave_hours` in qualifying Variable weeks. It does not read structured sickness periods; do not describe those records as integrated into accrual. The sickness reference-period algorithm remains deferred.
 
 Deterministic tests in `src/annual_leave_summary/tests.rs` cover year navigation, inclusive employment, actual-date history segments, mixed basis, per-cycle rounding, Sent gating, dated/legacy leave, incomplete evidence and read-only application loading with operational settings defaults. No GUI pixel tests or additional migrations are required.
 

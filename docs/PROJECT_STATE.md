@@ -5,7 +5,7 @@ This document describes the implementation on `main`. Source code, migrations an
 ## Current release and platform
 
 - Application version: `0.0.14`.
-- Database schema: version 23, upgraded in place by ordered SQLite migrations.
+- Database schema: version 31, upgraded in place by ordered SQLite migrations.
 - Desktop UI: Rust with `eframe`/`egui`.
 - Persistence: SQLite through `rusqlite` (bundled SQLite).
 - Documents and integration: `printpdf`, PDF text extraction, ZIP import and SMTP via `lettre`.
@@ -36,15 +36,15 @@ First-run and missing-key business-folder defaults are provider-neutral `~/Docum
 
 ### Maintenance
 
-The application maintains employer, payroll-provider and Personal Assistant (PA) records. PA maintenance retains pay-rate and contracted-hours histories, including future-dated rows. Themes include system, light/dark variants, blue and high contrast.
+The application maintains employer, payroll-provider and Personal Assistant (PA) records. PA maintenance retains pay-rate and contracted-hours histories, including future-dated rows. Themes include system, light/dark variants, blue and high contrast. See [maintenance and Dashboard layout](../README.md#implemented-functionality) for the current Employer/PA controls and three-row workflow. Annual-leave rule values are stored in SQLite, and guidance is read-only; see [Domain](DOMAIN.md#annual-leave-guidance).
 
-Payroll Settings persists payroll frequency, rounding choice, workweek start and overtime enabled. These values are not currently applied as downstream configurable calculation rules: schedule dates define the four payroll weeks, imported worked minutes are not altered by the rounding setting, and no overtime calculation is implemented. Public-holiday handling is permanently active and has no enable/disable setting. Email subject/body templates are configured separately through Email Settings.
+Payroll Settings persists payroll frequency, rounding choice, workweek start and overtime enabled. Payable allocation applies the configured increment and direction (default 15 minutes Up) to selected imported/internal source durations, preserving raw minutes. Frequency and workweek choices do not override schedule dates, and no overtime calculation is implemented. Public-holiday handling is permanently active and has no enable/disable setting. Email subject/body templates are configured separately through Email Settings.
 
 ### Importing work
 
-CSV import parses provider rows, prevents duplicates and stores stable `TimesheetEntry` identities. Start/end values are retained unchanged, and `worked_minutes` is parsed directly from the CSV worked-duration field rather than calculated from those values or altered using the persisted rounding settings. The imported CSV rate and amount are not authoritative payroll rates.
+CSV import parses provider rows, skips exact already-stored raw matches, retains conflicting/within-file candidates for audited duplicate resolution and stores stable `TimesheetEntry` identities. Start/end values are retained unchanged, and `worked_minutes` is parsed directly from the CSV worked-duration field rather than calculated from those values or altered using the persisted rounding settings. The imported CSV rate and amount are not authoritative payroll rates.
 
-Schema 21 adds append-only imported-row correction events with actor/action metadata, optional reason and complete before/after start, end, break, worked-minute and note values. Raw and effective repository queries are explicit; the immutable imported row remains the raw source and reversion appends history. This is currently a repository foundation only: Dashboard display, duplicate detection, Payroll Timesheet Preparation, snapshots and PDFs continue to use raw imported rows until revision-aware payroll support is implemented.
+Schema 21 adds append-only imported-row correction events with actor/action metadata, optional reason and complete before/after start, end, break, worked-minute and note values. Raw and effective repository queries are explicit; the immutable imported row remains the raw source and reversion appends history. Payroll preparation, duplicate resolution and generation consume effective imported corrections through shared reconciliation. Import repeat detection and View Imported Hours retain raw source values. Schema28 submission history does not restore the removed PDF revision architecture.
 
 After a successful import, the source CSV is copied to the internal `archive/YYYY/MM/` hierarchy with a timestamped filename and is not subsequently modified by the application. Successes and failures are recorded in `import_audit`, including row counts, source/archive paths and errors where applicable.
 
@@ -52,7 +52,7 @@ After a successful import, the source CSV is copied to the internal `archive/YYY
 
 Enter Hours/Shifts records actual work independently from imported CSV rows. A clock-in is persisted immediately with no end time, so a running shift survives restart. Clock-out stores the exact local end minute, actual break minutes and optional notes. Actual duration is derived without payroll rounding.
 
-Completed shifts can be corrected through the same exact-minute picker. Creation, completion, edits, soft deletion and running-clock cancellation atomically append immutable before/after audit evidence under the current `local_employer` desktop actor. Delete hides a completed row from normal use without removing its evidence. The actor field is designed for future authenticated identities, but accounts, roles and web/mobile access are not implemented. Integration into Payroll Timesheet Preparation remains deliberately deferred.
+Completed shifts can be corrected through the same exact-minute picker. Creation, completion, edits, soft deletion and running-clock cancellation atomically append immutable before/after audit evidence under the current `local_employer` desktop actor. Delete hides a completed row from normal use without removing its evidence. The actor field is designed for future authenticated identities, but accounts, roles and web/mobile access are not implemented. Completed, non-deleted shifts feed Payroll Timesheet Preparation alongside effective imported evidence; running shifts are excluded. See [Payroll evidence](PAYROLL-EVIDENCE.md).
 
 ### Payroll schedules and rollover
 
@@ -71,19 +71,19 @@ The authoritative resolver searches every imported schedule for a date within th
 
 There are deliberately separate selections:
 
-- The Dashboard operational payroll period controls preparation/generation and non-production email operations. It defaults to the schedule containing today, or the newest imported schedule when none contains today. Historical or future choices are explicit and can be reset with **Use current payroll period**.
-- Payroll Return import has its own schedule-selection dialog, then opens the ZIP chooser.
+- The Dashboard operational payroll period controls preparation, generation and period-associated email operations. It defaults to the schedule containing today, or the newest imported schedule when none contains today. Historical or future choices are explicit and can be reset with **Use current payroll period**.
+- Import Payroll Documents selects and classifies an individual file or ZIP first; a separate period chooser is used only for unresolved ordinary payslips with applicable stored candidates.
 - View Payroll Schedule has a payroll-year selector and is display-only.
 
 Normal UI labels use Payroll Week, date range and pay date. The database still uses `cycle_number` 1–13 as part of schedule identity; it is not the user-facing payroll week.
 
 ### Payroll Timesheet Preparation
 
-Preparation is bound to the complete selected schedule and remembers payroll year, internal cycle, first-week date and pay date. Its PA list is the union of currently active PAs (including legacy `NULL` active state) and PAs that already have a payroll-timesheet record for that selected period. An inactive PA with no such record is not added.
+Preparation is bound to the complete selected schedule and remembers payroll year, internal cycle, first-week date and pay date. Its PA list includes inclusive Start/Leaving date overlaps regardless of current status, plus any PA with an existing selected-period payroll record, even outside those dates.
 
 Unsent records and generated candidates are editable. Submitted and indeterminate records load their persisted timesheet, week and public-holiday values read-only, without reconciliation or load-time writes. Saving rechecks the operational selection and the schedule facts; a changed selection, missing schedule or materially re-imported schedule requires the screen to be reloaded.
 
-Worked Hours remains editable. Imported shifts are not changed: the persistent manual adjustment is the difference between imported/reconciled minutes and the employer's final value, with an optional reason. Annual leave, sick/SSP, public-holiday rows and mileage remain editable preparation values.
+Worked Hours remains editable. Imported shifts are not changed: the persistent manual adjustment is the difference between imported/reconciled minutes and the employer's final value, with an optional reason. Dated annual leave and public-holiday rows remain preparation values. Sick / SSP opens structured sickness-date records; mileage opens a PA-enabled weekly editor. Submitted/settled protections apply; see [Domain rules](DOMAIN.md#sickness-and-weekly-mileage).
 
 If editable reconciliation or a save changes data represented by an existing generated candidate, the candidate is invalidated before preparation writes. Merely viewing an unchanged candidate does not invalidate it. A failed invalidation aborts the associated mutation.
 
@@ -97,37 +97,35 @@ Contracted weekly hours are informational. Each PDF week resolves the newest con
 
 ### Previous-cycle adjustments and snapshots
 
-Late imported shifts from previous-cycle weeks three and four are identified against the frozen submitted snapshot's stable TimesheetEntry membership. Their actual historical work dates and effective rates are retained, including when the previous cycle belongs to another payroll year. The compatible aggregate `previous_cycle_hours` display is reconciled from those items.
+Outstanding dated work can cross multiple periods, retaining its actual dates and historical rates. Submitted membership reserves evidence; definitive per-PA ordinary-payslip delivery establishes settlement. Uncertain historical payment requires audited paid/unpaid review; signed corrections preserve discrepancies without making payable hours negative. See [Payroll evidence](PAYROLL-EVIDENCE.md).
 
 Schema-18 positive previous-cycle aggregates that lack historical membership are carried forward as explicitly opaque legacy items. Their minutes remain in totals, but work date, entry ID and rate fields stay `NULL`; the PDF shows only the compact previous-cycle information and never fabricates historical precision. The first schema-19 submission establishes exact membership for later detection.
 
 ### PDF and snapshot safety
 
-The PDF displays reconciled weekly Hours Worked totals using configured font roles. Pay rates and allocations remain internal. Existing leave, sick/SSP, public-holiday and mileage presentation is retained; positive previous-cycle hours use the compact `[Info.only +… prev]` line.
+The PDF displays reconciled weekly Hours Worked totals using configured font roles. Pay rates and allocations remain internal. Leave/public-holiday totals, structured sickness dates and stored mileage appear on the provider form. Signed corrections are already included in bold totals; the subordinate `(Info only +/-X.XX hours)` line is never added again. Configurable footer instructions are described in [Domain rules](DOMAIN.md#payroll-pdf).
 
 Generation writes a temporary PDF, persists a candidate snapshot and SHA-256 digest, then publishes the final PDF. Required output parents are created only when writing. A generic PDF root remains flat; an already year-suffixed root such as `2026 to 2027` rolls over to a sibling year directory.
 
 Only a successful production timesheet send freezes the candidate as the immutable submitted baseline. Preview and test email do not. Production verifies the exact candidate path and digest. SMTP failure leaves the candidate replaceable. If transport may have succeeded but persisting the submitted state fails, the record enters protected indeterminate state to prevent an unsafe automatic resend or regeneration. Production payslip delivery likewise writes durable per-PA indeterminate state before SMTP, restores unsent only after a reported SMTP failure, and records definitive sent state after successful transport. A crash or failed final status write leaves the payslip visibly uncertain and blocks automatic resend; recovery remains an explicit future workflow.
 
-Generation uses the same PA eligibility principle as preparation: active PAs plus inactive PAs with an existing selected-period payroll record. It does not create unrelated historical records for inactive PAs.
-
-That historical inactive-PA eligibility applies to preparation and PDF generation only. Production timesheet and payslip batches currently include active PAs and legacy `NULL`-status PAs, not inactive historical PAs.
+Generation and production timesheet email use the same selected-period employment eligibility as preparation. Payslip/document email additionally includes PAs with unsent imported P60/P45, independent of employment overlap.
 
 ### Email and Payroll Returns
 
-Preview and test operations use the operational selection. Test messages use configured test recipients and test markers rather than production recipient routing.
+Timesheet preview and test operations require the operational period; P60/P45-only emails can operate without one. Test messages use configured test recipients and test markers rather than production recipient routing.
 
 Both production timesheet and payslip messages are sent from the employer address to the payroll department, with the employer copied and the PA blind-copied when an address is available. Payslip test email is different: it is sent to the configured PA test address.
 
-A production email batch captures the selected schedule key and material facts when it starts. Confirmation displays the Payroll Week/date/pay-date label and warns for historical or future periods. Before dispatch, the schedule and global selection are revalidated; changed, missing or materially re-imported schedules are refused. Attachment paths, subject period code and status reads/writes use only the captured schedule. Cancel sends nothing and changes no status or snapshot.
+A production email batch captures the optional selected schedule key and material facts when it starts; timesheets require a schedule, standalone documents do not. Confirmation displays the Payroll Week/date/pay-date label and warns for historical or future periods. Before dispatch, the schedule and global selection are revalidated; changed, missing or materially re-imported schedules are refused. Ordinary cycle attachments and status use captured schedule facts; P60/P45 use their own document identities. Standalone wording never borrows the Dashboard period. Cancel sends nothing and changes no status or snapshot.
 
-Payroll Return import uses the explicitly selected complete schedule, not today's cycle and not the internal cycle number as a filename week. Payslips are named `Payslip for Week <PAYE-week> for <PA>.pdf`. Other returned payroll information keeps a safe original name where possible and goes under the configured payroll-information folder, with deterministic collision avoidance.
+Import Payroll Documents handles prep sheets, ordinary payslips, P60/P45 and general information together. Ordinary payslips resolve exact stored periods, require an applicable choice when ambiguous, or become unassociated PA archives when no period applies. P60/P45 use schema31 document IDs; P30/general information is never attached to PA payroll email. See [Import/storage details](ARCHITECTURE.md#schema31-payroll-documents) and [Email rules](DOMAIN.md#email).
 
 ### PAYE filenames and year folders
 
 The PAYE week is calculated from `PayrollSchedule.pay_date`: the tax year starts on 6 April of the pay date's year, or the previous year when the pay date precedes 6 April; week is `floor(days / 7) + 1`, including week 53 when applicable. The period code remains `YYYYMMwWW`, where `YYYYMM` comes from the first week commencing date.
 
-Year folders use `YYYY to YYYY`. If a configured root already ends with any year suffix in that form, its parent is treated as the reusable base before the selected schedule's year is appended. Payslips and payroll information are year-separated. Directories are created on actual import/write, not by schedule import, selection or viewing.
+Year folders use `YYYY to YYYY`. If a configured root already ends with any year suffix in that form, its parent is treated as the reusable base before the selected schedule's year is appended. Associated payslips use the schedule year. Other documents use their own explicit filename year; yearless information uses the configured information root. Schedule-derived directories are created on actual import/write, not selection/viewing; saving configuration also ensures business roots exist.
 
 ### Backup and restore
 
@@ -142,10 +140,9 @@ The test suite uses temporary/in-memory databases and temporary filesystem roots
 Known limitations and deliberately deferred work include:
 
 - no overtime calculation despite the persisted setting;
-- persisted frequency, rounding, workweek and overtime choices are not applied as downstream configurable calculation rules;
-- no P60-specific Payroll Return handling;
+- persisted frequency, workweek and overtime choices are not applied as downstream configurable calculation rules;
 - no implemented DOCX Payroll Prep Sheet import;
 - no production consumer for the configured `email_archive` path;
 - no arbitrary-file restore or automated backup retention/scheduling;
 - public-holiday weekly aggregate hours and individual holiday rows remain distinct existing representations; and
-- generated historical payroll is limited to active PAs or PAs with an existing record for the selected period, while production email batches remain active/legacy-`NULL` only.
+- see [README limitations](../README.md#current-limitations) for packaging, access, annual-leave algorithms, CSV provenance, archival-payslip promotion and indeterminate-delivery recovery boundaries.
