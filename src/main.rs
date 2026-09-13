@@ -27,6 +27,9 @@ mod models;
 mod paths;
 mod pay_rate_allocation;
 mod pay_rate_repository;
+#[cfg(test)]
+mod payroll_document_import_tests;
+mod payroll_document_repository;
 mod payroll_evidence;
 mod payroll_file_naming;
 mod payroll_prep_sheet_import_service;

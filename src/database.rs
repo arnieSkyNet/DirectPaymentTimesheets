@@ -2,7 +2,7 @@ use std::path::Path;
 
 use rusqlite::{Connection, Result};
 
-pub const CURRENT_SCHEMA_VERSION: i64 = 30;
+pub const CURRENT_SCHEMA_VERSION: i64 = 31;
 
 pub fn initialise_database(database_path: &Path) -> Result<()> {
     let connection = Connection::open(database_path)?;
@@ -216,7 +216,30 @@ fn apply_migrations(connection: &Connection) -> Result<()> {
         migrate_to_version_30(connection)?;
     }
 
+    if current_version < 31 {
+        migrate_to_version_31(connection)?;
+    }
+
     Ok(())
+}
+
+fn migrate_to_version_31(connection: &Connection) -> Result<()> {
+    let transaction = connection.unchecked_transaction()?;
+    transaction.execute_batch(
+        "CREATE TABLE IF NOT EXISTS imported_payroll_documents (
+            id INTEGER PRIMARY KEY,
+            personal_assistant_id INTEGER NOT NULL REFERENCES personal_assistants(id),
+            document_type TEXT NOT NULL CHECK (document_type IN ('p60', 'p45')),
+            stored_path TEXT NOT NULL UNIQUE,
+            sha256 TEXT NOT NULL CHECK (length(sha256) = 64),
+            document_year TEXT,
+            sent_at TEXT
+        );
+        CREATE INDEX IF NOT EXISTS idx_imported_payroll_documents_pa
+            ON imported_payroll_documents(personal_assistant_id, id);
+        UPDATE schema_version SET version = 31;",
+    )?;
+    transaction.commit()
 }
 
 fn migrate_to_version_30(connection: &Connection) -> Result<()> {

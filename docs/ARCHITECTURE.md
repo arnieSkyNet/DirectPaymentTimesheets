@@ -30,7 +30,7 @@ Configured business paths may point outside the data root. `email_archive` is cu
 
 ## SQLite and repositories
 
-`database.rs` creates the original schema and applies ordered migrations through `CURRENT_SCHEMA_VERSION` 28. Each repository opens/uses its own `rusqlite::Connection` to the same database path. Schema-changing work belongs in a migration; tests should exercise a newly initialised database and upgrade behaviour where relevant.
+`database.rs` creates the original schema and applies ordered migrations through `CURRENT_SCHEMA_VERSION` 31. Each repository opens/uses its own `rusqlite::Connection` to the same database path. Schema-changing work belongs in a migration; tests should exercise a newly initialised database and upgrade behaviour where relevant.
 
 Principal persisted areas are:
 
@@ -107,7 +107,7 @@ Payroll-year directory normalisation recognises a final `YYYY to YYYY` component
 
 `email_service` composes previews and performs SMTP transport. Both production timesheets and payslips are sent from the employer to the payroll department, CC the employer and BCC the PA when available. Test functions use only configured test addresses and add test markers; payslip test email goes to the configured PA test address.
 
-The GUI's `PendingEmailBatch` captures its kind/stage, selected PA IDs, selected schedule key, material schedule dates and operational-selection revision; it does not capture already resolved email addresses. The existing confirmation window is the production safety boundary. Final dispatch re-fetches and validates the captured schedule and rejects a changed global selection. It never substitutes today's schedule. Timesheet dispatch also preserves candidate digest/state verification; payslip dispatch requires the exact shared path-derived file. Before production payslip SMTP, the existing per-PA status row is durably marked indeterminate; SMTP failure restores unsent state, successful SMTP is followed by definitive sent state, and any crash or failed final write leaves restart-safe uncertainty that refuses automatic resend. Preview and test sends do not touch this state. Production batches currently select active and legacy-`NULL`-status PAs only, even though preparation and generation can include an inactive PA with an existing selected-period record.
+The GUI's `PendingEmailBatch` captures its kind/stage, selected PA IDs, an optional selected schedule key, material schedule dates and operational-selection revision; it does not capture already resolved email addresses. The existing confirmation window is the production safety boundary. Final dispatch re-fetches and validates the captured schedule and rejects a changed global selection. It never substitutes today's schedule. Timesheet dispatch also preserves candidate digest/state verification; payslip dispatch requires the exact shared path-derived file. Before production payslip SMTP, the existing per-PA status row is durably marked indeterminate; SMTP failure restores unsent state, successful SMTP is followed by definitive sent state, and any crash or failed final write leaves restart-safe uncertainty that refuses automatic resend. Preview and test sends do not touch this state. PA payroll email also includes PAs with unsent imported P60/P45, regardless of employment eligibility. Their document IDs and delivery states are independent of the selected cycle. A batch without a selected schedule can send these documents alone.
 
 ## Backup and restore architecture
 
@@ -125,9 +125,21 @@ Unit and integration-style module tests use temporary directories and SQLite dat
 
 ## Deliberate boundaries
 
-The current architecture does not provide authentication/multi-user coordination, an overtime engine, P60-specific import, scheduled/cloud backups, retention cleanup or arbitrary SQLite restore. These are limitations, not partially implemented promises.
+The current architecture does not provide authentication/multi-user coordination, an overtime engine, scheduled/cloud backups, retention cleanup or arbitrary SQLite restore. These are limitations, not partially implemented promises.
 
 
 ## Schema-28 reconciliation extension
 
 `payroll_evidence` supplies the source model, transitive overlap grouping, versioned duplicate decisions, immutable submission history and signed correction ledger. `duplicate_ui` and `review_ui` provide consolidated selection and contextual review over that logic. The existing snapshot candidate/submitted/indeterminate model remains the current preparation/attachment slot; append-only submission tables preserve earlier successful sends across explicit resubmission. Final settlement uses the existing per-PA payslip delivery rule. No PDF revision naming architecture is restored. See [PAYROLL-EVIDENCE.md](PAYROLL-EVIDENCE.md) for the complete implemented workflow and audit model.
+
+
+## Schema31 payroll documents
+
+Import Payroll Documents opens and classifies the source before requesting a period. Each ordinary payslip is resolved independently: an explicit filename tax year and exact provider “for Week N for” form can identify a single stored schedule through the existing PAYE-week calculation. Otherwise, choices are restricted by the known year and/or week. For yearless documents, only periods whose first week has started are plausible; a future recurring Week 50 is not evidence of the year of a returned payslip. A chooser appears only for unresolved payslips with plausible stored candidates. The displayed choices must be applicable to all payslips needing that choice; incompatible groups require separate imports. Exact matches and archival documents are independent of this choice.
+
+When there is no plausible stored cycle, an ordinary payslip is filed as archival evidence, preserving its useful provider filename after prefix stripping. It creates no schedule, cycle status, document-delivery record or settlement. With an explicit tax year it goes to `<Payslip base>/<YYYY to YYYY>/PA <id>/<cleaned filename>`; without one it goes to `<Payslip base>/PA <id>/<cleaned filename>`. The base removes any trailing configured `YYYY to YYYY` component. These PA areas contain no cycle directory and are outside the existing flat canonical email lookup `<Payslip base>/<schedule year>/Payslip for Week N for <name>.pdf`, which remains unchanged. No automatic emailing or promotion of archival files is implemented. The import result reports separate archival counts and this email limitation.
+
+P60/P45 continue using `imported_payroll_documents` on the email repository's connection. Their paths follow the same year-known/year-unknown PA hierarchy, with cleaned provider filenames; unknown-year files escape any configured year suffix. Their document IDs and delivery states remain cycle-independent. A P60's year, a prep sheet's year, the current date or Dashboard selection is never borrowed to date another document. Information files use their own explicit filename tax year when available, otherwise the configured information root. Prep sheets use the existing parser and update their own schedule year. P30, bank-transfer slips, memos and general files never enter PA email. Collisions never overwrite different bytes, and `[1]` remains filename data.
+
+
+Mixed bundles protect the ordinary payslip status and the specific P60/P45 IDs in one SQLite transaction before SMTP. SMTP failure restores unsent states together; success marks them sent together. Failed final persistence leaves indeterminate states that block automatic resend. Already-sent ordinary payslips are excluded from later document emails. Schedule completion and payroll settlement continue to consult only ordinary payslip status. Standalone document subjects substitute “Payroll documents” for the period token. P45 imports never update employment data.

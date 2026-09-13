@@ -2,7 +2,7 @@
 
 DirectPaymentTimesheets is a local desktop application for administering UK Direct Payment Personal Assistant timesheets and the four-week payroll-provider workflow. It imports externally recorded work, prepares payroll timesheets, generates the provider PDF, sends timesheets and payslips, imports Payroll Returns, and preserves the evidence represented by submitted payroll.
 
-The current pre-release is version `0.0.14` with SQLite schema version 29. It is a working application under active development, not an installer-packaged or general-purpose payroll product.
+The current pre-release is version `0.0.14` with SQLite schema version 31. It is a working application under active development, not an installer-packaged or general-purpose payroll product.
 
 ## Technology
 
@@ -53,8 +53,8 @@ Imported `worked_minutes` is parsed from the CSV Worked Hours field. It is not r
 - Production batches bound to the exact operational payroll period captured at confirmation.
 - Production timesheet and payslip routing from the employer to the payroll department, CC employer and BCC PA when available.
 - Test routing through configured test addresses; payslip test email targets the configured PA test address.
-- Explicit Payroll Return period selection before choosing a ZIP file.
-- UK PAYE tax-week filename calculation and payroll-year-aware payslip/information folders.
+- Import Payroll Documents classifies the source first. Ordinary payslips use an exact stored cycle, a plausible period chosen by the employer, or a PA archive fallback when no applicable cycle is stored. Unassociated archival payslips are not automatically emailed or used for settlement.
+- UK PAYE tax-week payslip filenames; P60/P45 use their own tax year and PA directory without a payroll cycle.
 - Collision-safe storage of non-payslip payroll information.
 
 ### Backup and restore
@@ -152,7 +152,7 @@ The files `data/sig-Employer.jpg` and `data/sig-PA.jpg` are deliberately blank w
 Three selections are intentionally independent:
 
 - the Dashboard operational period drives preparation, generation and email operations;
-- Payroll Return import selects the period to which a returned ZIP belongs; and
+- Import Payroll Documents selects a period only for ordinary payslips after classification; and
 - View Payroll Schedule selects an imported payroll year for display only.
 
 User-facing labels use Payroll Week, the four-week date range and pay date. Internal cycle numbers remain database identity rather than filename Payroll Week.
@@ -163,8 +163,8 @@ User-facing labels use Payroll Week, the four-week date range and pay date. Inte
 - There is no packaged installer, authentication or multi-user coordination.
 - Persisted frequency, workweek and overtime choices are not downstream configurable calculation rules; no overtime engine is implemented.
 - Payroll Prep Sheet PDF import is implemented; DOCX import is recognised but not implemented.
-- Production email batches currently include active and legacy-`NULL`-status PAs only, even though preparation/generation can retain an inactive historical PA.
-- There is no P60-specific Payroll Return processing.
+- PA payroll email includes unsent imported P60/P45 for former PAs, independent of ordinary selected-period eligibility.
+- P60/P45 import and per-document delivery are supported; P45 never changes employment data.
 - Backup/restore has no scheduling, retention cleanup, compression or cloud integration.
 - Restore accepts only recognised DirectPaymentTimesheets backup directories, not arbitrary SQLite files.
 

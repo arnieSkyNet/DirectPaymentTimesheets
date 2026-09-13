@@ -93,6 +93,141 @@ pub fn payslip_path(
         .join(payslip_filename(personal_assistant_name, schedule)?))
 }
 
+/// Accept only an explicit consecutive tax-year range, never a week/cycle guess.
+pub fn document_year(filename: &str) -> Option<String> {
+    let mut years = std::collections::HashSet::new();
+    for range in filename.split(|c: char| !c.is_ascii_digit() && c != '-' && c != '/') {
+        let range = range.trim_matches(['-', '/']);
+        let Some((start, end)) = range.split_once(['-', '/']) else {
+            continue;
+        };
+        if start.len() != 4 {
+            continue;
+        }
+        let Ok(start) = start.parse::<i32>() else {
+            continue;
+        };
+        if !(1900..=9998).contains(&start) {
+            continue;
+        }
+        if (end.len() == 2 && end.parse::<i32>().ok() == Some((start + 1) % 100))
+            || (end.len() == 4 && end.parse::<i32>().ok() == Some(start + 1))
+        {
+            years.insert(format!("{start}/{:02}", (start + 1) % 100));
+        }
+    }
+    if years.len() == 1 {
+        years.into_iter().next()
+    } else {
+        None
+    }
+}
+
+/// Reuse the canonical PAYE-week calculation only with an explicit tax year
+/// and the provider's exact "for Week N for" form on every ordinary payslip.
+pub fn infer_payslip_schedule<'a>(
+    names: &[String],
+    schedules: &'a [PayrollSchedule],
+) -> Option<&'a PayrollSchedule> {
+    let mut selected: Option<&PayrollSchedule> = None;
+    for name in names {
+        let year = document_year(name)?;
+        let week = provider_payslip_week(name)?;
+        let mut candidates = schedules
+            .iter()
+            .filter(|s| s.payroll_year == year && paye_week(s).ok() == Some(week));
+        let candidate = candidates.next()?;
+        if candidates.next().is_some() || selected.is_some_and(|s| s.id != candidate.id) {
+            return None;
+        }
+        selected = Some(candidate);
+    }
+    selected
+}
+
+pub fn provider_payslip_week(name: &str) -> Option<u32> {
+    let tokens: Vec<_> = name
+        .split(|c: char| !c.is_alphanumeric())
+        .filter(|s| !s.is_empty())
+        .collect();
+    let weeks: Vec<u32> = tokens
+        .windows(4)
+        .filter(|w| {
+            w[0].eq_ignore_ascii_case("for")
+                && w[1].eq_ignore_ascii_case("week")
+                && w[3].eq_ignore_ascii_case("for")
+        })
+        .filter_map(|w| w[2].parse().ok())
+        .filter(|w| (1..=53).contains(w))
+        .collect();
+    match weeks.as_slice() {
+        [week] => Some(*week),
+        _ => None,
+    }
+}
+
+/// A yearless document cannot establish a year by matching a week alone.
+/// Offer only compatible periods that have started; future recurring weeks do
+/// not supply evidence that an undated returned payslip belongs to a future year.
+pub fn plausible_payslip_schedules(
+    name: &str,
+    schedules: &[PayrollSchedule],
+    today: NaiveDate,
+) -> Vec<PayrollSchedule> {
+    let year = document_year(name);
+    let week = provider_payslip_week(name);
+    schedules
+        .iter()
+        .filter(|s| {
+            year.as_ref().is_none_or(|y| *y == s.payroll_year)
+                && week.is_none_or(|w| paye_week(s).ok() == Some(w))
+                && (year.is_some()
+                    || crate::date_utils::parse_legacy(&s.first_week_commencing)
+                        .is_ok_and(|start| start <= today))
+        })
+        .cloned()
+        .collect()
+}
+
+/// PA documents without cycle association never use the flat canonical payslip
+/// lookup directory. Strip a configured year suffix before applying their own year.
+pub fn independent_pa_document_directory(
+    root: &Path,
+    pa: i64,
+    year: Option<&str>,
+) -> Result<PathBuf, Box<dyn Error>> {
+    let base = root_without_payroll_year_suffix(root);
+    Ok(match year {
+        Some(year) => base.join(payroll_year_directory_name(year)?),
+        None => base.to_path_buf(),
+    }
+    .join(format!("PA {pa}")))
+}
+
+pub fn archival_payslip_filename(filename: &str) -> String {
+    // Strip only a provider prefix before an ordinary payslip heading; retain
+    // all week/year/PA/revision text. Unrecognised headings keep the full name.
+    let lower = filename.to_ascii_lowercase();
+    for heading in ["employee payslip", "payslip"] {
+        if let Some(index) = lower.match_indices(heading).find_map(|(i, _)| {
+            (i == 0 || !lower.as_bytes()[i - 1].is_ascii_alphanumeric()).then_some(i)
+        }) {
+            return filename[index..].to_string();
+        }
+    }
+    filename.to_string()
+}
+
+/// Without explicit year evidence, keep the configured root rather than dating the document.
+pub fn document_year_directory(root: &Path, year: Option<&str>) -> Result<PathBuf, Box<dyn Error>> {
+    match year {
+        Some(year) => {
+            Ok(root_without_payroll_year_suffix(root).join(payroll_year_directory_name(year)?))
+        }
+        None => Ok(root.to_path_buf()),
+    }
+}
+
 pub fn timesheet_path(
     root: &Path,
     personal_assistant_name: &str,
@@ -150,6 +285,34 @@ fn sanitise_filename(value: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn independent_document_year_requires_unambiguous_consecutive_years() {
+        for name in [
+            "P60 year 2025-26.pdf",
+            "P60 year 2025/26.pdf",
+            "P60 year 2025-2026.pdf",
+        ] {
+            assert_eq!(document_year(name).as_deref(), Some("2025/26"));
+        }
+        for name in [
+            "P45 leaving.pdf",
+            "Week 50.pdf",
+            "Quarter End Memo April 2026.pdf",
+            "P60 2025-27.pdf",
+            "P60 2025 [26].pdf",
+            "P60 2025 26.pdf",
+            "P60 2025-26 and 2026-27.pdf",
+        ] {
+            assert_eq!(document_year(name), None);
+        }
+        let root = Path::new("payslips/2030 to 2031");
+        assert_eq!(
+            document_year_directory(root, Some("2025/26")).unwrap(),
+            Path::new("payslips/2025 to 2026")
+        );
+        assert_eq!(document_year_directory(root, None).unwrap(), root);
+    }
+
     #[test]
     fn equivalent_calendar_formats_preserve_machine_names_and_paye_week() {
         let mut item = schedule(

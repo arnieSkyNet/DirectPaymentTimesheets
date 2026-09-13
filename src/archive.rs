@@ -88,9 +88,12 @@ pub const MAX_PAYROLL_RETURN_COMPRESSION_RATIO: u64 = 200;
 pub struct PayrollReturnImportResult {
     pub payslips_imported: usize,
     pub payslips_already_present: usize,
+    pub archival_payslips_imported: usize,
+    pub archival_payslips_already_present: usize,
     pub supplements_imported: usize,
     pub supplements_already_present: usize,
     pub information_files_imported: usize,
+    pub information_files_already_present: usize,
     pub files_skipped: usize,
     pub details: Vec<String>,
     pub publication_failure: Option<String>,
@@ -103,6 +106,7 @@ pub struct PayrollReturnImportResult {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum PlannedKind {
     Payslip,
+    ArchivalPayslip,
     P60,
     P45,
     PrepSheet,
@@ -111,56 +115,11 @@ enum PlannedKind {
 
 impl PlannedKind {
     fn is_pa_document(self) -> bool {
-        matches!(self, Self::Payslip | Self::P60 | Self::P45)
+        matches!(
+            self,
+            Self::Payslip | Self::ArchivalPayslip | Self::P60 | Self::P45
+        )
     }
-}
-
-#[derive(Debug, Clone)]
-pub struct PayslipSupplement {
-    pub email_type: &'static str,
-    pub path: PathBuf,
-}
-
-/// Only inspect the imported PA/context directory, never the information folder.
-pub fn payslip_supplements(
-    root: &Path,
-    personal_assistant_id: i64,
-    schedule: &PayrollSchedule,
-) -> Result<Vec<PayslipSupplement>, Box<dyn Error>> {
-    let directory = crate::payroll_file_naming::payslip_supplement_directory(
-        root,
-        personal_assistant_id,
-        schedule,
-    )?;
-    let entries = match fs::read_dir(&directory) {
-        Ok(entries) => entries,
-        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
-        Err(error) => return Err(error.into()),
-    };
-    let mut supplements = Vec::new();
-    for entry in entries {
-        let path = entry?.path();
-        let filename = path
-            .file_name()
-            .and_then(|name| name.to_str())
-            .unwrap_or("");
-        let tokens = normalized_tokens(filename);
-        let email_type = match tokens.first().map(String::as_str) {
-            Some("p60") => "p60",
-            Some("p45") => "p45",
-            _ => continue,
-        };
-        if !path
-            .extension()
-            .is_some_and(|ext| ext.eq_ignore_ascii_case("pdf"))
-        {
-            continue;
-        }
-        validate_payslip_pdf(&path)?;
-        supplements.push(PayslipSupplement { email_type, path });
-    }
-    supplements.sort_by(|left, right| left.path.cmp(&right.path));
-    Ok(supplements)
 }
 
 fn supplement_filename(filename: &str, token: &str, assistant: &PersonalAssistant) -> String {
@@ -231,67 +190,165 @@ struct StagedEntry {
     temporary_path: PathBuf,
 }
 
-#[allow(dead_code)] // Retain the importer API for callers without delivery records.
+trait ReadSeek: Read + Seek {}
+impl<T: Read + Seek> ReadSeek for T {}
+type SourceArchive = ZipArchive<Box<dyn ReadSeek>>;
+
+fn source_archive(path: &Path) -> Result<SourceArchive, Box<dyn Error>> {
+    let size = fs::metadata(path)?.len();
+    if path
+        .extension()
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("zip"))
+    {
+        if size > MAX_PAYROLL_RETURN_ARCHIVE_BYTES {
+            return Err("Payroll Return ZIP is too large".into());
+        }
+        let declared = standard_zip_entry_count(path)?;
+        let archive = ZipArchive::new(Box::new(fs::File::open(path)?) as Box<dyn ReadSeek>)?;
+        if declared != archive.len() {
+            return Err(
+                "Payroll Return ZIP contains duplicate or ambiguously decoded entry names.".into(),
+            );
+        }
+        if archive.len() > MAX_PAYROLL_RETURN_ENTRIES {
+            return Err("Payroll Return ZIP contains too many entries.".into());
+        }
+        Ok(archive)
+    } else {
+        // Use the same validation, staging and no-clobber publication for a single file.
+        if size > MAX_PAYROLL_RETURN_ENTRY_BYTES {
+            return Err("Payroll document exceeds the per-entry size limit.".into());
+        }
+        let mut writer = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+        writer.start_file(
+            path.file_name()
+                .and_then(|v| v.to_str())
+                .ok_or("Invalid source filename")?,
+            zip::write::SimpleFileOptions::default()
+                .compression_method(zip::CompressionMethod::Stored),
+        )?;
+        let copied = io::copy(
+            &mut fs::File::open(path)?.take(MAX_PAYROLL_RETURN_ENTRY_BYTES + 1),
+            &mut writer,
+        )?;
+        if copied > MAX_PAYROLL_RETURN_ENTRY_BYTES {
+            return Err("Payroll document exceeds the per-entry size limit.".into());
+        }
+        Ok(ZipArchive::new(
+            Box::new(writer.finish()?) as Box<dyn ReadSeek>
+        )?)
+    }
+}
+
+fn classify_filename(
+    name: &str,
+    assistants: &[PersonalAssistant],
+) -> Result<(PlannedKind, Option<i64>), Box<dyn Error>> {
+    let normalized = normalized_assistants(assistants)?;
+    let matches = matching_assistants(name, &normalized);
+    let tokens = normalized_tokens(
+        Path::new(name)
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or(name),
+    );
+    let has = |token: &str| tokens.iter().any(|s| s == token);
+    let pdf = name.to_ascii_lowercase().ends_with(".pdf");
+    if has("p30")
+        || contains_token_sequence(&tokens, &normalized_tokens("bank transfer"))
+        || contains_token_sequence(&tokens, &normalized_tokens("quarter end"))
+    {
+        return Ok((PlannedKind::Information, None));
+    }
+    if crate::payroll_prep_sheet_import_service::is_prep_sheet_filename(Path::new(name)) {
+        return Ok((PlannedKind::PrepSheet, None));
+    }
+    if has("p60") || has("p45") {
+        if !pdf || matches.len() != 1 || (has("p60") && has("p45")) {
+            return Err(format!("P60/P45 document '{name}' must be a PDF matching exactly one maintained Personal Assistant and one document type.").into());
+        }
+        return Ok((
+            if has("p60") {
+                PlannedKind::P60
+            } else {
+                PlannedKind::P45
+            },
+            Some(matches[0].0.id),
+        ));
+    }
+    if pdf && (has("payslip") || matches.iter().any(|(_, n)| tokens == **n)) {
+        if matches.len() > 1 {
+            return Err(format!("Payslip PDF '{name}' matches more than one Personal Assistant; no files were imported.").into());
+        }
+        if matches.len() != 1 {
+            return Err(format!("Payslip PDF '{name}' does not match exactly one maintained Personal Assistant; no files were imported.").into());
+        }
+        return Ok((PlannedKind::Payslip, Some(matches[0].0.id)));
+    }
+    Ok((PlannedKind::Information, None))
+}
+
+/// Read/classify every entry before the GUI decides whether a period is needed.
+/// Week numbers recur each year; they alone do not select a reliable schedule.
+pub fn source_payslip_filenames(
+    path: &Path,
+    assistants: &[PersonalAssistant],
+) -> Result<Vec<String>, Box<dyn Error>> {
+    let mut archive = source_archive(path)?;
+    let mut total = 0;
+    let mut payslips = Vec::new();
+    for index in 0..archive.len() {
+        let entry = archive.by_index(index)?;
+        if entry.is_dir() {
+            continue;
+        }
+        if !entry.is_file() || entry.encrypted() {
+            return Err("ZIP entry is encrypted or not a regular file.".into());
+        }
+        validate_archive_name(entry.name(), entry.name_raw())?;
+        validate_entry_sizes(entry.name(), entry.compressed_size(), entry.size())?;
+        total = checked_total_size(total, entry.size())?;
+        let filename = portable_basename(entry.name())?;
+        if classify_filename(&filename, assistants)?.0 == PlannedKind::Payslip {
+            payslips.push(filename);
+        }
+    }
+    Ok(payslips)
+}
+
+#[cfg(test)]
 pub fn import_payroll_return(
-    zip_path: &Path,
+    path: &Path,
     payslip_root: &Path,
     information_root: &Path,
     assistants: &[PersonalAssistant],
     schedule: &PayrollSchedule,
 ) -> Result<PayrollReturnImportResult, Box<dyn Error>> {
-    import_payroll_return_with_delivery_check(
-        zip_path,
+    import_payroll_documents(
+        path,
         payslip_root,
         information_root,
         assistants,
-        schedule,
-        |_, _| Ok(()),
+        |_| Ok(Some(schedule.clone())),
+        |_, _, _, _| Ok(()),
     )
 }
 
-pub fn import_payroll_return_with_delivery_check(
-    zip_path: &Path,
+pub fn import_payroll_documents(
+    path: &Path,
     payslip_root: &Path,
     information_root: &Path,
     assistants: &[PersonalAssistant],
-    schedule: &PayrollSchedule,
-    check_new_supplement: impl Fn(i64, &str) -> Result<(), Box<dyn Error>>,
+    resolve_payslip: impl Fn(&str) -> Result<Option<PayrollSchedule>, Box<dyn Error>>,
+    register_document: impl Fn(i64, &str, &Path, Option<&str>) -> Result<(), Box<dyn Error>>,
 ) -> Result<PayrollReturnImportResult, Box<dyn Error>> {
-    let archive_size = fs::metadata(zip_path)?.len();
-    if archive_size > MAX_PAYROLL_RETURN_ARCHIVE_BYTES {
-        return Err(format!(
-            "Payroll Return ZIP is too large ({archive_size} bytes; maximum is {MAX_PAYROLL_RETURN_ARCHIVE_BYTES})."
-        )
-        .into());
-    }
-    let declared_entry_count = standard_zip_entry_count(zip_path)?;
-
-    crate::payroll_file_naming::payroll_year_directory(payslip_root, schedule)?;
-    let information_folder =
-        crate::payroll_file_naming::payroll_year_directory(information_root, schedule)?;
-    let file = fs::File::open(zip_path)?;
-    let mut archive = ZipArchive::new(file)?;
-    if declared_entry_count != archive.len() {
-        return Err(
-            "Payroll Return ZIP contains duplicate or ambiguously decoded entry names.".into(),
-        );
-    }
-    if archive.len() > MAX_PAYROLL_RETURN_ENTRIES {
-        return Err(format!(
-            "Payroll Return ZIP contains {} entries; maximum is {}.",
-            archive.len(),
-            MAX_PAYROLL_RETURN_ENTRIES
-        )
-        .into());
-    }
-
+    let mut archive = source_archive(path)?;
     let normalized_assistants = normalized_assistants(assistants)?;
     let mut plans = Vec::new();
     let mut details = Vec::new();
     let mut files_skipped = 0;
     let mut total_size = 0u64;
     let mut payslip_destinations = HashSet::new();
-    let mut information_destinations = HashSet::new();
     let mut supplement_destinations = HashSet::new();
 
     for index in 0..archive.len() {
@@ -320,112 +377,87 @@ pub fn import_payroll_return_with_delivery_check(
         total_size = checked_total_size(total_size, entry.size())?;
 
         let source_filename = portable_basename(entry.name())?;
-        let is_pdf = source_filename.to_ascii_lowercase().ends_with(".pdf");
-        let matches = matching_assistants(&source_filename, &normalized_assistants);
-        let stem_tokens = normalized_tokens(
-            Path::new(&source_filename)
-                .file_stem()
-                .and_then(|value| value.to_str())
-                .unwrap_or(&source_filename),
-        );
-        let has_payslip_cue = stem_tokens.iter().any(|token| token == "payslip");
-
-        let has = |token: &str| stem_tokens.iter().any(|value| value == token);
-        let prep_sheet = crate::payroll_prep_sheet_import_service::is_prep_sheet_filename(
-            Path::new(&source_filename),
-        );
-        let general = has("p30")
-            || contains_token_sequence(&stem_tokens, &normalized_tokens("bank transfer"))
-            || contains_token_sequence(&stem_tokens, &normalized_tokens("quarter end"))
-            || prep_sheet;
-        let supplement = if has("p60") {
-            Some((PlannedKind::P60, "p60"))
-        } else if has("p45") {
-            Some((PlannedKind::P45, "p45"))
-        } else {
-            None
-        };
-
-        let (kind, destination) = if general {
-            (
-                if prep_sheet && !has("p30") {
-                    PlannedKind::PrepSheet
+        let (mut kind, pa_id) = classify_filename(&source_filename, assistants)?;
+        let year = crate::payroll_file_naming::document_year(&source_filename);
+        let information_folder =
+            crate::payroll_file_naming::document_year_directory(information_root, year.as_deref())?;
+        let destination = match kind {
+            PlannedKind::P60 | PlannedKind::P45 => {
+                let assistant = assistants.iter().find(|pa| Some(pa.id) == pa_id).unwrap();
+                let token = if kind == PlannedKind::P60 {
+                    "p60"
                 } else {
-                    PlannedKind::Information
-                },
-                allocate_information_path(
-                    &information_folder,
-                    &source_filename,
-                    &mut information_destinations,
-                )?,
-            )
-        } else if let Some((kind, token)) = supplement {
-            if !is_pdf || matches.len() != 1 || (has("p60") && has("p45")) {
-                return Err(format!("{token} document '{source_filename}' must be a PDF matching exactly one maintained Personal Assistant and one document type.").into());
-            }
-            let assistant = matches[0].0;
-            let destination = crate::payroll_file_naming::payslip_supplement_directory(
-                payslip_root,
-                assistant.id,
-                schedule,
-            )?
-            .join(supplement_filename(&source_filename, token, assistant));
-            if !supplement_destinations.insert(destination.clone()) {
-                return Err(format!(
-                    "Payroll Return contains duplicate {token} destination '{}'.",
+                    "p45"
+                };
+                let destination = crate::payroll_file_naming::independent_pa_document_directory(
+                    payslip_root,
+                    assistant.id,
+                    year.as_deref(),
+                )?
+                .join(supplement_filename(&source_filename, token, assistant));
+                if !supplement_destinations.insert(destination.clone()) {
+                    return Err(format!(
+                        "Payroll Return contains duplicate {token} destination '{}'.",
+                        destination.display()
+                    )
+                    .into());
+                }
+                details.push(format!(
+                    "{token} for {} {}: '{}'.",
+                    assistant.first_name,
+                    assistant.surname,
                     destination.display()
-                )
-                .into());
+                ));
+                destination
             }
-            details.push(format!("{token} for {} {}: '{}'. Available through Email Payslips, alone or with other unsent PA documents.", assistant.first_name, assistant.surname, destination.display()));
-            (kind, destination)
-        } else if is_pdf && matches.len() == 1 && (has_payslip_cue || stem_tokens == *matches[0].1)
-        {
-            let assistant = matches[0].0;
-            let full_name = format!(
-                "{} {}",
-                assistant.first_name.trim(),
-                assistant.surname.trim()
-            );
-            let destination =
-                crate::payroll_file_naming::payslip_path(payslip_root, &full_name, schedule)?;
-            if !payslip_destinations.insert(destination.clone()) {
-                return Err(format!(
-                    "Payroll Return contains more than one payslip for {full_name}."
-                )
-                .into());
+            PlannedKind::Payslip => {
+                let assistant = assistants.iter().find(|pa| Some(pa.id) == pa_id).unwrap();
+                let destination = if let Some(schedule) = resolve_payslip(&source_filename)? {
+                    crate::payroll_file_naming::payslip_path(
+                        payslip_root,
+                        &format!(
+                            "{} {}",
+                            assistant.first_name.trim(),
+                            assistant.surname.trim()
+                        ),
+                        &schedule,
+                    )?
+                } else {
+                    kind = PlannedKind::ArchivalPayslip;
+                    let path = crate::payroll_file_naming::independent_pa_document_directory(
+                        payslip_root,
+                        assistant.id,
+                        year.as_deref(),
+                    )?
+                    .join(
+                        crate::payroll_file_naming::archival_payslip_filename(&source_filename),
+                    );
+                    details.push(format!("Archived ordinary payslip without cycle association: '{}'. Not eligible for automatic Email Payslips or payroll settlement; no year was inferred from other documents in the package.", path.display()));
+                    path
+                };
+                if !payslip_destinations.insert(destination.clone()) {
+                    return Err(
+                        "Payroll Return contains more than one payslip for the same destination."
+                            .into(),
+                    );
+                }
+                destination
             }
-            (PlannedKind::Payslip, destination)
-        } else if is_pdf
-            && matches.len() > 1
-            && (has_payslip_cue || matches.iter().any(|(_, name)| stem_tokens == **name))
-        {
-            return Err(format!(
-                "PDF '{}' matches more than one Personal Assistant; no files were imported.",
-                source_filename
-            )
-            .into());
-        } else if is_pdf && has_payslip_cue {
-            return Err(format!(
-                "Payslip PDF '{}' does not match exactly one maintained Personal Assistant.",
-                source_filename
-            )
-            .into());
-        } else if !is_pdf && !matches.is_empty() {
-            files_skipped += 1;
-            details.push(format!(
-                "Skipped non-PDF file '{}' that contains a Personal Assistant name.",
-                source_filename
-            ));
-            continue;
-        } else {
-            let destination = allocate_information_path(
-                &information_folder,
-                &source_filename,
-                &mut information_destinations,
-            )?;
-            details.push(format!("Payroll information file: '{source_filename}'."));
-            (PlannedKind::Information, destination)
+            PlannedKind::ArchivalPayslip => {
+                unreachable!("only assigned after payslip classification")
+            }
+            PlannedKind::Information | PlannedKind::PrepSheet => {
+                if kind == PlannedKind::Information
+                    && !source_filename.to_ascii_lowercase().ends_with(".pdf")
+                    && !matching_assistants(&source_filename, &normalized_assistants).is_empty()
+                {
+                    files_skipped += 1;
+                    details.push(format!("Skipped non-PDF file '{source_filename}' that contains a Personal Assistant name."));
+                    continue;
+                }
+                // Resolve collisions after staging, when incoming bytes are available.
+                information_folder.join(&source_filename)
+            }
         };
 
         plans.push(PlannedEntry {
@@ -435,25 +467,8 @@ pub fn import_payroll_return_with_delivery_check(
             kind,
             declared_size: entry.size(),
             supplement_pa_id: matches!(kind, PlannedKind::P60 | PlannedKind::P45)
-                .then(|| matches[0].0.id),
+                .then(|| pa_id.unwrap()),
         });
-    }
-
-    // Refuse a newly added file covered by an already protected/sent type record.
-    // Identical existing files still pass through the usual byte comparison.
-    for plan in &plans {
-        if let Some(pa_id) = plan.supplement_pa_id {
-            if !plan.destination.exists() {
-                check_new_supplement(
-                    pa_id,
-                    if plan.kind == PlannedKind::P60 {
-                        "p60"
-                    } else {
-                        "p45"
-                    },
-                )?;
-            }
-        }
     }
 
     let mut staged = Vec::new();
@@ -478,12 +493,56 @@ pub fn import_payroll_return_with_delivery_check(
         ..PayrollReturnImportResult::default()
     };
     let mut remaining = staged.into_iter();
-    while let Some(entry) = remaining.next() {
+    while let Some(mut entry) = remaining.next() {
+        if matches!(
+            entry.plan.kind,
+            PlannedKind::Information | PlannedKind::PrepSheet
+        ) {
+            match allocate_information_path(
+                entry
+                    .plan
+                    .destination
+                    .parent()
+                    .expect("planned destination has a parent"),
+                &entry.plan.source_name,
+                &entry.temporary_path,
+            ) {
+                Ok((destination, identical)) => {
+                    entry.plan.destination = destination;
+                    if identical {
+                        result.information_files_already_present += 1;
+                        result.details.push(format!(
+                            "Payroll information already present and unchanged: '{}'.",
+                            entry.plan.destination.display()
+                        ));
+                        if entry.plan.kind == PlannedKind::PrepSheet {
+                            // Re-run the existing parser against the existing physical copy.
+                            result.prep_sheet_paths.push(entry.plan.destination.clone());
+                        }
+                        cleanup_staged_entry(&entry);
+                        continue;
+                    }
+                }
+                Err(error) => {
+                    result.publication_failure = Some(format!(
+                        "Could not resolve information document '{}': {error}",
+                        entry.plan.source_name
+                    ));
+                    cleanup_staged_entry(&entry);
+                    for pending in remaining {
+                        cleanup_staged_entry(&pending);
+                    }
+                    return Ok(result);
+                }
+            }
+        }
         if entry.plan.kind.is_pa_document() && entry.plan.destination.exists() {
             match files_equal(&entry.temporary_path, &entry.plan.destination) {
                 Ok(true) => {
                     if entry.plan.kind == PlannedKind::Payslip {
                         result.payslips_already_present += 1;
+                    } else if entry.plan.kind == PlannedKind::ArchivalPayslip {
+                        result.archival_payslips_already_present += 1;
                     } else {
                         result.supplements_already_present += 1;
                     }
@@ -491,6 +550,14 @@ pub fn import_payroll_return_with_delivery_check(
                         "Payslip already present and unchanged: '{}'.",
                         entry.plan.destination.display()
                     ));
+                    if let Err(error) = register_staged_document(&entry, &register_document) {
+                        result.publication_failure = Some(format!("Document is stored but registration failed; re-import to retry: {error}"));
+                        cleanup_staged_entry(&entry);
+                        for pending in remaining {
+                            cleanup_staged_entry(&pending);
+                        }
+                        return Ok(result);
+                    }
                     cleanup_staged_entry(&entry);
                     continue;
                 }
@@ -522,6 +589,7 @@ pub fn import_payroll_return_with_delivery_check(
             Ok(()) => {
                 match entry.plan.kind {
                     PlannedKind::Payslip => result.payslips_imported += 1,
+                    PlannedKind::ArchivalPayslip => result.archival_payslips_imported += 1,
                     PlannedKind::P60 | PlannedKind::P45 => result.supplements_imported += 1,
                     PlannedKind::Information => result.information_files_imported += 1,
                     PlannedKind::PrepSheet => {
@@ -530,6 +598,16 @@ pub fn import_payroll_return_with_delivery_check(
                     }
                 }
                 result.published_paths.push(entry.plan.destination.clone());
+                if let Err(error) = register_staged_document(&entry, &register_document) {
+                    result.publication_failure = Some(format!(
+                        "Document is stored but registration failed; re-import to retry: {error}"
+                    ));
+                    cleanup_staged_entry(&entry);
+                    for pending in remaining {
+                        cleanup_staged_entry(&pending);
+                    }
+                    return Ok(result);
+                }
                 cleanup_staged_entry(&entry);
             }
             Err(error) => {
@@ -548,6 +626,25 @@ pub fn import_payroll_return_with_delivery_check(
         }
     }
     Ok(result)
+}
+
+fn register_staged_document(
+    entry: &StagedEntry,
+    register: &impl Fn(i64, &str, &Path, Option<&str>) -> Result<(), Box<dyn Error>>,
+) -> Result<(), Box<dyn Error>> {
+    if let Some(pa) = entry.plan.supplement_pa_id {
+        register(
+            pa,
+            if entry.plan.kind == PlannedKind::P60 {
+                "p60"
+            } else {
+                "p45"
+            },
+            &entry.plan.destination,
+            crate::payroll_file_naming::document_year(&entry.plan.source_name).as_deref(),
+        )?;
+    }
+    Ok(())
 }
 
 fn normalized_assistants(
@@ -740,14 +837,20 @@ fn validate_existing_payslips(entries: &[StagedEntry]) -> Result<(), Box<dyn Err
 fn allocate_information_path(
     directory: &Path,
     filename: &str,
-    reserved: &mut HashSet<PathBuf>,
-) -> Result<PathBuf, Box<dyn Error>> {
+    incoming: &Path,
+) -> Result<(PathBuf, bool), Box<dyn Error>> {
     let path = Path::new(filename);
     let stem = path
         .file_stem()
         .and_then(|value| value.to_str())
         .unwrap_or(filename);
     let extension = path.extension().and_then(|value| value.to_str());
+    // Inspect all existing candidates before choosing a free suffix, including
+    // candidates beyond a gap left by a removed/renamed earlier copy.
+    let existing = fs::read_dir(directory)?
+        .map(|entry| entry.map(|entry| entry.path()))
+        .collect::<io::Result<HashSet<_>>>()?;
+    let mut first_free = None;
     for suffix in 1..=10_000usize {
         let candidate_name = if suffix == 1 {
             filename.to_string()
@@ -758,15 +861,21 @@ fn allocate_information_path(
             }
         };
         let candidate = directory.join(candidate_name);
-        if !candidate.exists() && reserved.insert(candidate.clone()) {
-            return Ok(candidate);
+        if existing.contains(&candidate) {
+            if files_equal(incoming, &candidate)? {
+                return Ok((candidate, true));
+            }
+        } else if first_free.is_none() {
+            first_free = Some(candidate);
         }
     }
-    Err(format!("Could not allocate a collision-safe destination for '{filename}'.").into())
+    first_free.map(|path| (path, false)).ok_or_else(|| {
+        format!("Could not allocate a collision-safe destination for '{filename}'.").into()
+    })
 }
 
 fn stage_entry(
-    archive: &mut ZipArchive<fs::File>,
+    archive: &mut SourceArchive,
     mut plan: PlannedEntry,
 ) -> Result<StagedEntry, Box<dyn Error>> {
     let parent = plan
@@ -1018,19 +1127,11 @@ mod tests {
                 .unwrap();
         assert!(ordinary.ends_with("2026 to 2027/Payslip for Week 22 for Cedar Fixture.pdf"));
         assert_eq!(fs::read(ordinary).unwrap(), b"%PDF-1.4 payslip");
-        let supplements = payslip_supplements(&payslips, 1, &period).unwrap();
-        assert_eq!(supplements.len(), 2);
-        assert!(supplements.iter().any(|doc| doc.path.file_name().unwrap()
-            == "P60 End of Year Summary for year 2025-26 for Cedar_Fixture.pdf"));
-        assert!(supplements
-            .iter()
-            .any(|doc| doc.path.file_name().unwrap()
-                == "P45 Leaving details for Cedar Fixture.pdf"));
-        assert!(supplements
-            .iter()
-            .all(|doc| matches!(doc.email_type, "p60" | "p45")));
-        let info_year =
-            crate::payroll_file_naming::payroll_year_directory(&information, &period).unwrap();
+        assert!(payslips.join("2025 to 2026/PA 1/P60 End of Year Summary for year 2025-26 for Cedar_Fixture.pdf").is_file());
+        assert!(payslips
+            .join("PA 1/P45 Leaving details for Cedar Fixture.pdf")
+            .is_file());
+        let info_year = information.clone();
         for name in general.iter().copied().chain([p30, p30_variant]) {
             assert!(info_year.join(name).is_file());
         }
@@ -1039,14 +1140,17 @@ mod tests {
             &[(p30, b"%PDF-1.4 p30"), (p30_variant, b"%PDF-1.4 variant")],
         );
         let result = import_payroll_return(&zip, &payslips, &information, &pas, &period).unwrap();
-        assert_eq!(result.information_files_imported, 2);
-        assert!(info_year
+        assert_eq!(result.information_files_imported, 0);
+        assert_eq!(result.information_files_already_present, 2);
+        assert!(!info_year
             .join("Example Employer - P30 Employer's Payslip for Week 48 to 52 (2).pdf")
             .exists());
-        assert!(info_year
+        assert!(!info_year
             .join("Example Employer - P30 Employer's Payslip for Week 48 to 52 [1] (2).pdf")
             .exists());
-        assert_eq!(payslip_supplements(&payslips, 1, &period).unwrap().len(), 2);
+        assert!(!payslips
+            .join("2026 to 2027/Payroll return cycle 6")
+            .exists());
     }
 
     #[test]
@@ -1071,24 +1175,29 @@ mod tests {
             .unwrap();
             assert_eq!(before, format!("{pa:?}"));
             assert_eq!(result.supplements_imported, 1);
-            let documents = payslip_supplements(root.path(), pa.id, &period).unwrap();
-            assert_eq!(
-                documents[0].path.file_name().unwrap().to_str().unwrap(),
-                format!("{token} Provider details for Cedar Fixture.pdf")
-            );
-            assert!(payslip_supplements(root.path(), 999, &period)
-                .unwrap()
-                .is_empty());
-            let mut other_cycle = period.clone();
-            other_cycle.cycle_number += 1;
-            assert!(payslip_supplements(root.path(), pa.id, &other_cycle)
-                .unwrap()
-                .is_empty());
+            assert!(root
+                .path()
+                .join(format!(
+                    "PA {}/{token} Provider details for Cedar Fixture.pdf",
+                    pa.id
+                ))
+                .is_file());
+            assert!(!root.path().join("PA 999").exists());
             let mut other_year = period.clone();
             other_year.payroll_year = "2027/28".into();
-            assert!(payslip_supplements(root.path(), pa.id, &other_year)
+            other_year.cycle_number += 1;
+            assert_eq!(
+                import_payroll_return(
+                    &zip,
+                    root.path(),
+                    &root.path().join("info"),
+                    &[pa],
+                    &other_year
+                )
                 .unwrap()
-                .is_empty());
+                .supplements_already_present,
+                1
+            );
         }
     }
 
@@ -1139,10 +1248,9 @@ mod tests {
             };
             assert_eq!(run().unwrap().supplements_imported, 1);
             assert_eq!(run().unwrap().supplements_already_present, 1);
-            let path = payslip_supplements(root.path(), 1, &period)
-                .unwrap()
-                .remove(0)
-                .path;
+            let path = root
+                .path()
+                .join(format!("PA 1/{token} for Cedar Fixture.pdf"));
             create_zip(
                 &zip,
                 &[
@@ -1152,7 +1260,7 @@ mod tests {
             );
             assert!(run().is_err());
             assert_eq!(fs::read(path).unwrap(), b"%PDF-1.4 original");
-            assert!(!root.path().join("info/2026 to 2027/general.pdf").exists());
+            assert!(!root.path().join("info/general.pdf").exists());
         }
     }
 
@@ -1370,9 +1478,9 @@ mod tests {
         )
         .unwrap();
 
-        let year = information_root.join("2026 to 2027");
+        let year = information_root.clone();
         assert!(year.join("Bulletin.pdf").exists());
-        assert!(year.join("Bulletin (2).pdf").exists());
+        assert!(!year.join("Bulletin (2).pdf").exists());
         assert!(!email_archive.exists());
 
         fs::remove_dir_all(root).unwrap();
@@ -1759,7 +1867,7 @@ mod tests {
         .unwrap();
         assert_eq!(result.files_skipped, 1);
         assert_eq!(result.information_files_imported, 2);
-        let year = root.join("information/2026 to 2027");
+        let year = root.join("information");
         assert_eq!(
             fs::read_to_string(year.join("Bulletin.txt")).unwrap(),
             "one"

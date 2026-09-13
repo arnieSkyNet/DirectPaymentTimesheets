@@ -222,7 +222,7 @@ mod tests {
             connection
                 .query_row::<i64, _, _>("SELECT version FROM schema_version", [], |r| r.get(0))
                 .unwrap(),
-            30
+            crate::database::CURRENT_SCHEMA_VERSION
         );
         assert_eq!(
             connection

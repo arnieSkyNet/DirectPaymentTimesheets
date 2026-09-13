@@ -5,6 +5,24 @@ use chrono::NaiveDate;
 
 use crate::payroll_schedule_repository::{PayrollSchedule, PayrollScheduleRepository};
 
+pub fn is_prep_sheet_filename(path: &Path) -> bool {
+    let name: String = path
+        .file_stem()
+        .unwrap_or_default()
+        .to_string_lossy()
+        .chars()
+        .filter(|c| c.is_alphanumeric())
+        .flat_map(char::to_lowercase)
+        .collect();
+    name.contains("payrollprepsheet") || name.contains("payrollpreparationsheet")
+}
+
+/// An otherwise unrecognised PDF can still be a preparation sheet. The actual
+/// import and validation stay in the existing service below.
+pub fn has_prep_sheet_heading(path: &Path) -> bool {
+    pdf_extract::extract_text(path).is_ok_and(|text| text.contains("PAYROLL PREPARATION SHEET"))
+}
+
 pub struct PayrollPrepSheetImportService<'a> {
     repository: &'a PayrollScheduleRepository,
 }
@@ -189,7 +207,7 @@ fn parse_schedule_date(
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use chrono::Duration;
     use rusqlite::Connection;
@@ -231,6 +249,140 @@ mod tests {
             "direct-payment-timesheets-{label}-{}-{unique}.sqlite",
             std::process::id()
         ))
+    }
+
+    pub(crate) fn pdf_sheet() -> Vec<u8> {
+        use printpdf::{
+            BuiltinFont, Mm, Op, PdfDocument, PdfPage, PdfSaveOptions, Point, Pt, TextItem,
+        };
+        let text = sheet("2026/27", date(2026, 3, 23));
+        let mut ops = vec![
+            Op::StartTextSection,
+            Op::SetFontSizeBuiltinFont {
+                size: Pt(10.0),
+                font: BuiltinFont::Helvetica,
+            },
+        ];
+        for (index, line) in text.lines().enumerate() {
+            ops.push(Op::SetTextCursor {
+                pos: Point {
+                    x: Pt(30.0),
+                    y: Pt(790.0 - index as f32 * 20.0),
+                },
+            });
+            ops.push(Op::WriteTextBuiltinFont {
+                items: vec![TextItem::Text(line.into())],
+                font: BuiltinFont::Helvetica,
+            });
+        }
+        ops.push(Op::EndTextSection);
+        let mut document = PdfDocument::new("Payroll preparation sheet test");
+        document.with_pages(vec![PdfPage::new(Mm(210.0), Mm(297.0), ops)]);
+        document.save(&PdfSaveOptions::default(), &mut Vec::new())
+    }
+
+    #[test]
+    fn unified_individual_and_zipped_prep_sheets_use_existing_schedule_import() {
+        use std::io::Write;
+        let (dir, mut application) = crate::payroll_timesheet_screen::tests::test_application();
+        application.context.config.folders.payslip_folder = dir.path().join("payslips");
+        application
+            .context
+            .config
+            .folders
+            .payroll_information_folder = dir.path().join("information");
+        let bytes = pdf_sheet();
+        let pdf = dir.path().join("Payroll Prep Sheet.pdf");
+        std::fs::write(&pdf, &bytes).unwrap();
+        assert!(has_prep_sheet_heading(&pdf));
+        // Individual input bootstraps an empty schedule repository through the unified entrypoint.
+        let result = application.import_payroll_documents(&pdf, None).unwrap();
+        assert_eq!(result.schedule_entries_imported, 13);
+        let schedule = application
+            .payroll_schedule_repository
+            .get_all_for_year("2026/27")
+            .unwrap()[0]
+            .clone();
+        application
+            .payroll_schedule_repository
+            .mark_payslips_sent(schedule.id)
+            .unwrap();
+        // Both recognised names and a generic filename whose PDF has the heading.
+        for name in [
+            "Payroll Preparation Sheet 2026-27.pdf",
+            "Provider attachment.pdf",
+        ] {
+            let zip_path = dir.path().join("documents.zip");
+            let mut zip = zip::ZipWriter::new(std::fs::File::create(&zip_path).unwrap());
+            zip.start_file(name, zip::write::SimpleFileOptions::default())
+                .unwrap();
+            zip.write_all(&bytes).unwrap();
+            zip.finish().unwrap();
+            assert!(!application
+                .payroll_source_requires_period(&zip_path)
+                .unwrap());
+            let result = application
+                .import_payroll_documents(&zip_path, None)
+                .unwrap();
+            assert_eq!(result.payslips_imported, 0);
+            assert_eq!(result.information_files_imported, 1);
+            assert_eq!(result.prep_sheet_paths.len(), 1);
+            assert_eq!(result.schedule_entries_imported, 13);
+            assert!(result.prep_sheet_failures.is_empty());
+            assert!(result.prep_sheet_paths[0].starts_with(dir.path().join("information")));
+            let stored = application
+                .payroll_schedule_repository
+                .get_all_for_year("2026/27")
+                .unwrap();
+            assert_eq!(stored.len(), 13);
+            assert_eq!(stored[0].first_week_commencing, "23/03/2026");
+            assert!(stored[0].payslips_sent);
+        }
+    }
+
+    #[test]
+    fn invalid_zipped_prep_sheet_reports_failure_without_changing_schedule() {
+        use std::io::Write;
+        let (dir, mut application) = crate::payroll_timesheet_screen::tests::test_application();
+        application.context.config.folders.payslip_folder = dir.path().join("payslips");
+        application
+            .context
+            .config
+            .folders
+            .payroll_information_folder = dir.path().join("information");
+        PayrollPrepSheetImportService::new(&application.payroll_schedule_repository)
+            .import_text(&sheet("2026/27", date(2026, 3, 23)))
+            .unwrap();
+        let schedules = application
+            .payroll_schedule_repository
+            .get_all_for_year("2026/27")
+            .unwrap();
+        let before = format!("{schedules:?}");
+        let path = dir.path().join("documents.zip");
+        let mut zip = zip::ZipWriter::new(std::fs::File::create(&path).unwrap());
+        zip.start_file(
+            "Payroll Prep Sheet.pdf",
+            zip::write::SimpleFileOptions::default(),
+        )
+        .unwrap();
+        zip.write_all(b"not a valid preparation PDF").unwrap();
+        zip.finish().unwrap();
+        let result = application
+            .import_payroll_documents(&path, Some(&schedules[0]))
+            .unwrap();
+        assert_eq!(result.schedule_entries_imported, 0);
+        assert_eq!(result.prep_sheet_failures.len(), 1);
+        assert!(result.prep_sheet_paths[0].exists());
+        assert_eq!(
+            before,
+            format!(
+                "{:?}",
+                application
+                    .payroll_schedule_repository
+                    .get_all_for_year("2026/27")
+                    .unwrap()
+            )
+        );
     }
 
     #[test]
