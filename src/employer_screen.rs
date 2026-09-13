@@ -83,99 +83,97 @@ impl EmployerScreen {
         }
 
         if let Some(employer) = &mut self.employer {
-            ui.columns(3, |columns| {
-                // LEFT COLUMN
+            let column_width = (ui.available_width() - ui.spacing().item_spacing.x).max(0.0);
+            ui.horizontal_top(|ui| {
+                ui.allocate_ui_with_layout(
+                    egui::vec2(column_width * 0.75, 0.0),
+                    egui::Layout::top_down(egui::Align::Min),
+                    |ui| {
+                        ui.columns(3, |columns| {
+                            columns[0].label("Employer Name");
+                            columns[0].add(
+                                egui::TextEdit::singleline(&mut employer.name)
+                                    .desired_width(columns[0].available_width()),
+                            );
 
-                columns[0].label("Employer Name");
+                            columns[1].label("Date of Birth");
+                            let dob = employer.date_of_birth.get_or_insert(String::new());
+                            crate::date_utils::edit(
+                                &mut columns[1],
+                                dob,
+                                application.context.config.date_display_format,
+                            );
 
-                columns[0].text_edit_singleline(&mut employer.name);
+                            columns[2].label("National Insurance Number");
+                            let ni = employer
+                                .national_insurance_number
+                                .get_or_insert(String::new());
+                            columns[2].add(
+                                egui::TextEdit::singleline(ni)
+                                    .desired_width(columns[2].available_width()),
+                            );
+                        });
 
-                columns[0].add_space(15.0);
+                        ui.add_space(ui.spacing().item_spacing.y);
+                        ui.columns(3, |columns| {
+                            columns[0].label("Email Address");
+                            let email = employer.email.get_or_insert(String::new());
+                            columns[0].add(
+                                egui::TextEdit::singleline(email)
+                                    .desired_width(columns[0].available_width()),
+                            );
 
-                columns[0].label("Email Address");
+                            columns[1].label("DP Account");
+                            let account = employer
+                                .reference_account_number
+                                .get_or_insert(String::new());
+                            columns[1].add(
+                                egui::TextEdit::singleline(account)
+                                    .desired_width(columns[1].available_width()),
+                            );
 
-                let email = employer.email.get_or_insert(String::new());
+                            columns[2].label("Telephone Number");
+                            let telephone = employer.telephone.get_or_insert(String::new());
+                            columns[2].add(
+                                egui::TextEdit::singleline(telephone)
+                                    .desired_width(columns[2].available_width()),
+                            );
+                        });
 
-                columns[0].text_edit_singleline(email);
-
-                if columns[0].button("Edit Email Signature").clicked() {
-                    if has_unsaved_changes {
-                        self.confirm_open_email_settings = true;
-                    } else {
-                        open_email_settings = true;
-                    }
-                }
-
-                columns[0].add_space(15.0);
-
-                columns[0].label("Telephone Number");
-
-                let telephone = employer.telephone.get_or_insert(String::new());
-
-                columns[0].text_edit_singleline(telephone);
-
-                // MIDDLE COLUMN
-
-                columns[1].label("Date of Birth");
-
-                let dob = employer.date_of_birth.get_or_insert(String::new());
-
-                crate::date_utils::edit(
-                    &mut columns[1],
-                    dob,
-                    application.context.config.date_display_format,
+                        ui.add_space(ui.spacing().item_spacing.y);
+                        if ui.button("Edit Email Signature").clicked() {
+                            if has_unsaved_changes {
+                                self.confirm_open_email_settings = true;
+                            } else {
+                                open_email_settings = true;
+                            }
+                        }
+                    },
                 );
 
-                columns[1].add_space(15.0);
-
-                columns[1].label("National Insurance Number");
-
-                let ni = employer
-                    .national_insurance_number
-                    .get_or_insert(String::new());
-
-                columns[1].add_sized([140.0, 20.0], egui::TextEdit::singleline(ni));
-
-                columns[1].add_space(15.0);
-
-                columns[1].label("DP Account");
-
-                let account = employer
-                    .reference_account_number
-                    .get_or_insert(String::new());
-
-                columns[1].add_sized([140.0, 20.0], egui::TextEdit::singleline(account));
-
-                // RIGHT COLUMN
-
-                columns[2].label("Address");
-
-                let address = employer.address.get_or_insert(String::new());
-
-                columns[2].add_sized([250.0, 140.0], egui::TextEdit::multiline(address));
+                ui.allocate_ui_with_layout(
+                    egui::vec2(column_width * 0.25, 0.0),
+                    egui::Layout::top_down(egui::Align::Min),
+                    |ui| {
+                        ui.label("Address");
+                        let address = employer.address.get_or_insert(String::new());
+                        ui.add_sized(
+                            [ui.available_width(), 140.0],
+                            egui::TextEdit::multiline(address),
+                        );
+                    },
+                );
             });
 
             ui.separator();
-
             ui.heading("Signature");
-
-            ui.horizontal(|ui| {
-                ui.label("Employer Signature");
-
-                let signature_text = employer
-                    .employer_signature
-                    .as_deref()
-                    .unwrap_or("No signature selected");
-
-                ui.label(signature_text);
-
+            ui.horizontal_wrapped(|ui| {
                 if ui.button("Select Signature...").clicked() {
                     if let Some(path) = rfd::FileDialog::new()
                         .add_filter("Signature Image", &["png", "jpg", "jpeg"])
                         .pick_file()
                     {
                         employer.employer_signature = Some(path.to_string_lossy().to_string());
-
                         self.status_message = "Employer signature selected.".to_string();
                     }
                 }
@@ -184,17 +182,20 @@ impl EmployerScreen {
                     employer.employer_signature = None;
                     self.status_message = "Employer signature cleared.".to_string();
                 }
+                if let Some(path) = employer.employer_signature.as_deref() {
+                    if let Some(error) =
+                        crate::folder_opener::button(ui, std::path::Path::new(path))
+                    {
+                        self.status_message = error;
+                    }
+                }
             });
 
-            ui.separator();
-
-            ui.heading("Enable PA Features");
-
-            ui.horizontal(|ui| {
-                ui.checkbox(&mut employer.sick_pay_enabled, "Sickness / SSP");
-
-                ui.checkbox(&mut employer.mileage_enabled, "Mileage Claims");
-            });
+            let signature_text = employer
+                .employer_signature
+                .as_deref()
+                .unwrap_or("No signature selected");
+            ui.label(format!("Employer Signature: {}", signature_text));
 
             ui.separator();
 
