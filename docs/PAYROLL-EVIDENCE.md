@@ -1,5 +1,7 @@
 # Payroll evidence and reconciliation (schema 29)
 
+Schema29 is the evidence-migration milestone described here; the current application is v0.0.14/schema31.
+
 ## Sources and possible duplicates
 
 Hours Keeper CSV rows remain in `timesheets`, with original CSV bytes archived and the existing atomic import audit. Imported correction events project effective values without rewriting the original row. Completed Hours Shift rows remain in `direct_shifts`; running rows are excluded, and soft-deleted completed rows remain available for audit but not payable work. Direct duration is actual end minus start minus break. Imported worked duration remains independently authoritative. Payroll rounding settings do not change either source's duplicate identity.
@@ -8,7 +10,7 @@ Hours Keeper CSV rows remain in `timesheets`, with original CSV bytes archived a
 
 The consolidated resolver requires one radio-button selection per displayed group. It never selects a candidate by source, length or recency. Original records remain intact. `payroll_duplicate_decisions` and `payroll_duplicate_members` retain the selected identity, complete candidate descriptions, material fingerprints, actor/time and invalidation. A changed PA, interval, break, duration, deletion or group membership invalidates the old decision during preflight. Notes and displayed names are excluded from material fingerprints. An excluded shift corrected to a non-overlapping interval becomes eligible again.
 
-Import retains conflicting same-start and within-file duplicate candidates instead of refusing the file. Exact existing source rows in repeated exports remain idempotent; their CSV evidence is still archived. Import results identify the affected PA/dates for the consolidated resolver. Returning to preparation checks currently stored evidence, without importing files. Duplicate preflight does not regenerate PDFs. Unchanged preparation and correction reservations remain unchanged.
+Import retains conflicting same-start and within-file duplicate candidates instead of refusing the file. For newly processed paths, exact existing source rows in repeated exports remain idempotent and their CSV evidence is archived. A pathname already recorded as successfully imported is skipped before reading/archiving again, even if its contents changed; durable CSV content identity remains future work. Import results identify the affected PA/dates for the consolidated resolver. Returning to preparation checks currently stored evidence, without importing files. Duplicate preflight does not regenerate PDFs. Unchanged preparation and correction reservations remain unchanged.
 
 ## Submission and settlement
 
@@ -16,7 +18,7 @@ Milestones are per PA/payroll period, not schedule-wide:
 
 1. Editable preparation uses current eligible evidence and explicit manual adjustments.
 2. A successfully emailed timesheet preserves submitted evidence. Differences are reviewed inside that period's preparation. **Correct / Resubmit Timesheet** explicitly opens a replacement preparation; **Carry correction forward** explicitly records the discrepancy instead. The replacement is generated and emailed through the existing normal workflow. Other submitted/settled PAs are skipped during batch PDF generation.
-3. A definitively Sent per-PA `email_type='payslip'` status establishes settlement. Indeterminate delivery remains protected. Settled preparation cannot be silently recalculated or saved.
+3. A definitively Sent per-PA `email_type='payslip'` status establishes settlement. Indeterminate delivery remains protected. P60/P45 per-document delivery does not settle payroll or complete a schedule; see [schema31 documents](DATABASE-SCHEMA.md#schema-31-cycle-independent-pa-payroll-documents). Settled preparation cannot be silently recalculated or saved.
 
 `payroll_submissions` and its item/week/leave/holiday child tables preserve submission history. Successful resubmission links to the prior submission with `supersedes_id`; the latest successful submission is the expected submitted baseline. Production submissions retain the attachment bytes and digest. Migration copies only retained submitted data; an unavailable legacy attachment or submission timestamp remains unavailable. There are no user-facing PDF revision numbers and normal filenames are unchanged.
 
