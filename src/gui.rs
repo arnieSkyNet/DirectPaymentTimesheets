@@ -174,6 +174,7 @@ pub struct DirectPaymentApp {
     status_message: String,
     file_status: Option<(String, Vec<std::path::PathBuf>)>,
     last_import: Option<ImportSummary>,
+    payroll_document_import: Option<crate::archive::PayrollReturnImportResult>,
     timesheets: Vec<TimesheetEntry>,
     timesheet_sort: TimesheetSortState,
     payroll_schedules: Vec<PayrollSchedule>,
@@ -218,6 +219,7 @@ impl DirectPaymentApp {
             status_message: "Application ready.".to_string(),
             file_status: None,
             last_import: None,
+            payroll_document_import: None,
             timesheets: Vec::new(),
             timesheet_sort: TimesheetSortState::default(),
             payroll_schedules: Vec::new(),
@@ -1411,6 +1413,7 @@ impl DirectPaymentApp {
     }
 
     fn begin_payroll_return_import(&mut self) {
+        self.payroll_document_import = None;
         let Some(path) = rfd::FileDialog::new()
             .add_filter(
                 "Payroll Documents (ZIP, PDF or Prep Sheet DOCX)",
@@ -1546,11 +1549,12 @@ impl DirectPaymentApp {
         path: &std::path::Path,
         schedule: Option<&PayrollSchedule>,
     ) {
+        self.payroll_document_import = None;
+        self.file_status = None;
         match self.application.import_payroll_documents(path, schedule) {
             Ok(result) => {
                 self.status_message = payroll_return_status_message(&result);
-                self.file_status =
-                    Some((self.status_message.clone(), result.published_paths.clone()));
+                self.payroll_document_import = Some(result);
                 if let Err(error) = self.refresh_operational_payroll_schedules() {
                     self.operational_payroll_period_error = Some(format!(
                         "Could not refresh operational payroll periods: {error}"
@@ -1794,6 +1798,14 @@ impl DirectPaymentApp {
                         }
                     }
                 });
+                if let Some(result) = &self.payroll_document_import {
+                    ui.separator();
+                    // This is independently labelled history, not a link attached
+                    // to whichever unrelated status message was set most recently.
+                    if let Some(error) = draw_payroll_document_import_result(ui, result) {
+                        open_error = Some(error);
+                    }
+                }
                 if let Some(error) = open_error {
                     self.status_message = error;
                     self.file_status = None;
@@ -2942,48 +2954,101 @@ fn selected_payroll_return_schedule(
 }
 
 fn payroll_return_status_message(result: &crate::archive::PayrollReturnImportResult) -> String {
-    let summary = format!(
-        "{} payslip(s) imported, {} already present unchanged, {} information file(s) imported, {} information file(s) already present unchanged, {} entry/entries skipped; {} P60/P45 imported, {} already present unchanged",
-        result.payslips_imported,
-        result.payslips_already_present,
-        result.information_files_imported,
-        result.information_files_already_present,
-        result.files_skipped,
-        result.supplements_imported,
-        result.supplements_already_present
-    );
-    let mut summary = format!(
-        "{summary}; {} schedule entries imported",
-        result.schedule_entries_imported
-    );
-    if result.archival_payslips_imported + result.archival_payslips_already_present > 0 {
-        summary.push_str(&format!(" Archived payslips without a cycle: {} imported, {} already present. These files are not automatically email-eligible and do not settle payroll.", result.archival_payslips_imported, result.archival_payslips_already_present));
-    }
-    if !result.prep_sheet_failures.is_empty() {
-        return format!(
-            "Payroll documents stored with schedule import errors ({summary}). {} {}",
-            result.prep_sheet_failures.join(" "),
-            result.publication_failure.as_deref().unwrap_or("")
-        );
-    }
-    if let Some(failure) = &result.publication_failure {
-        format!(
-            "Payroll return was only partially published ({summary}). {failure} Published paths: {}",
-            result
-                .published_paths
-                .iter()
-                .map(|path| path.display().to_string())
-                .collect::<Vec<_>>()
-                .join(", ")
-        )
+    if result.publication_failure.is_some() || !result.prep_sheet_failures.is_empty() {
+        "Payroll document import completed with issues. See the result below.".into()
     } else {
-        let details = if result.details.is_empty() {
-            String::new()
-        } else {
-            format!(" Details: {}", result.details.join(" "))
-        };
-        format!("Payroll return imported safely: {summary}.{details}")
+        "Payroll document import completed. See the result below.".into()
     }
+}
+
+fn payroll_document_count_rows(
+    result: &crate::archive::PayrollReturnImportResult,
+) -> [(&'static str, usize, usize); 4] {
+    [
+        (
+            "Cycle-associated ordinary payslips",
+            result.payslips_imported,
+            result.payslips_already_present,
+        ),
+        (
+            "Historical / unassociated payslip archives",
+            result.archival_payslips_imported,
+            result.archival_payslips_already_present,
+        ),
+        (
+            "P60/P45 supplements",
+            result.supplements_imported,
+            result.supplements_already_present,
+        ),
+        (
+            "Information documents (includes Payroll Prep Sheets)",
+            result.information_files_imported,
+            result.information_files_already_present,
+        ),
+    ]
+}
+
+fn draw_payroll_document_import_result(
+    ui: &mut egui::Ui,
+    result: &crate::archive::PayrollReturnImportResult,
+) -> Option<String> {
+    ui.heading("Last payroll-document import");
+    for failure in result
+        .publication_failure
+        .iter()
+        .chain(result.prep_sheet_failures.iter())
+    {
+        ui.colored_label(ui.visuals().error_fg_color, failure);
+    }
+    egui::Grid::new("payroll_document_import_counts").show(ui, |ui| {
+        ui.label("Files");
+        ui.label("Imported / stored");
+        ui.label("Already present");
+        ui.end_row();
+        for (label, imported, present) in payroll_document_count_rows(result) {
+            ui.label(label);
+            ui.label(imported.to_string());
+            ui.label(present.to_string());
+            ui.end_row();
+        }
+    });
+    ui.label(format!(
+        "Entries skipped: {} · Payroll schedule entries imported: {}",
+        result.files_skipped, result.schedule_entries_imported
+    ));
+    ui.label("File counts describe storage, not overall import success. Schedule entries may come from parsing an already-present prep sheet.");
+    if result.archival_payslips_imported > 0 || result.archival_payslips_already_present > 0 {
+        ui.label("Unassociated payslips are archived only: not automatically email-eligible and do not settle payroll.");
+    }
+    let mut open_error = None;
+    egui::CollapsingHeader::new("Details")
+        .id_salt("payroll_document_import_details")
+        .default_open(false)
+        .show(ui, |ui| {
+            for detail in &result.details {
+                ui.label(detail);
+            }
+            for (heading, paths) in [
+                ("Published files", &result.published_paths),
+                (
+                    "Payroll Prep Sheets available for parsing (new or already present)",
+                    &result.prep_sheet_paths,
+                ),
+            ] {
+                if !paths.is_empty() {
+                    ui.strong(heading);
+                    for path in paths {
+                        ui.horizontal_wrapped(|ui| {
+                            ui.label(path.display().to_string());
+                            if let Some(error) = crate::folder_opener::button(ui, path) {
+                                open_error = Some(error);
+                            }
+                        });
+                    }
+                }
+            }
+        });
+    open_error
 }
 
 fn display_email_status_time(value: &str) -> String {
@@ -3807,42 +3872,36 @@ mod payroll_return_schedule_selection_tests {
     }
 
     #[test]
-    fn payroll_return_reporting_distinguishes_safe_and_partial_results() {
-        let safe = crate::archive::PayrollReturnImportResult {
-            archival_payslips_imported: 0,
-            archival_payslips_already_present: 0,
-            payslips_imported: 2,
-            payslips_already_present: 1,
-            supplements_imported: 0,
-            supplements_already_present: 0,
-            prep_sheet_paths: Vec::new(),
-            schedule_entries_imported: 0,
-            prep_sheet_failures: Vec::new(),
-            information_files_imported: 3,
-            information_files_already_present: 4,
-            files_skipped: 1,
-            details: vec!["Ignored directory entry 'provider/'.".to_string()],
-            publication_failure: None,
-            published_paths: Vec::new(),
+    fn payroll_document_summary_preserves_grouped_counts_and_issue_status() {
+        let mut result = crate::archive::PayrollReturnImportResult {
+            payslips_imported: 1,
+            payslips_already_present: 2,
+            archival_payslips_imported: 3,
+            archival_payslips_already_present: 4,
+            supplements_imported: 5,
+            supplements_already_present: 6,
+            information_files_imported: 7,
+            information_files_already_present: 8,
+            details: vec!["Planning detail, not a success claim".into()],
+            ..Default::default()
         };
-        let safe_message = payroll_return_status_message(&safe);
-        assert!(safe_message.contains("imported safely"));
-        assert!(safe_message.contains("2 payslip(s) imported"));
-        assert!(safe_message.contains("1 already present unchanged"));
-        assert!(safe_message.contains("3 information file(s) imported"));
-        assert!(safe_message.contains("4 information file(s) already present unchanged"));
-        assert!(safe_message.contains("1 entry/entries skipped"));
-
-        let partial = crate::archive::PayrollReturnImportResult {
-            publication_failure: Some("destination appeared during publication".to_string()),
-            published_paths: vec![std::path::PathBuf::from("/payslips/first.pdf")],
-            ..crate::archive::PayrollReturnImportResult::default()
-        };
-        let partial_message = payroll_return_status_message(&partial);
-        assert!(partial_message.contains("only partially published"));
-        assert!(partial_message.contains("destination appeared"));
-        assert!(partial_message.contains("/payslips/first.pdf"));
-        assert!(!partial_message.contains("imported safely"));
+        let counts = payroll_document_count_rows(&result);
+        assert_eq!(
+            counts.map(|(_, a, b)| (a, b)),
+            [(1, 2), (3, 4), (5, 6), (7, 8)]
+        );
+        assert!(counts[2].0.contains("P60/P45"));
+        assert!(counts[3].0.contains("includes Payroll Prep Sheets"));
+        assert_eq!(
+            payroll_return_status_message(&result),
+            "Payroll document import completed. See the result below."
+        );
+        result.prep_sheet_failures.push("Parsing failed".into());
+        assert!(payroll_return_status_message(&result).contains("with issues"));
+        result.prep_sheet_failures.clear();
+        result.publication_failure = Some("Registration failed".into());
+        assert!(payroll_return_status_message(&result).contains("with issues"));
+        assert!(!payroll_return_status_message(&result).contains(&result.details[0]));
     }
 
     fn schedule(
@@ -4545,6 +4604,33 @@ mod payroll_period_eligibility_tests {
     #[test]
     fn test_payslip_email_selects_production_bundle_without_writing_delivery_state() {
         payroll_document_email_composition_cases(true);
+    }
+
+    #[test]
+    fn payroll_document_result_is_independent_of_status_and_cleared_on_failed_import() {
+        let (dir, application, _, _) = employment_period_fixture();
+        let mut app = DirectPaymentApp::new(application);
+        app.payroll_document_import = Some(crate::archive::PayrollReturnImportResult {
+            supplements_imported: 2,
+            details: vec!["Stored result detail".into()],
+            ..Default::default()
+        });
+        app.status_message = "Unrelated status".into();
+        assert_eq!(
+            app.payroll_document_import
+                .as_ref()
+                .unwrap()
+                .supplements_imported,
+            2
+        );
+        assert!(app.file_status.is_none());
+        app.import_selected_payroll_documents(&dir.path().join("missing.zip"), None);
+        assert!(app
+            .status_message
+            .starts_with("Payroll document import failed:"));
+        assert!(app.payroll_document_import.is_none());
+        assert!(app.file_status.is_none());
+        assert!(app.last_import.is_none());
     }
 
     #[test]
