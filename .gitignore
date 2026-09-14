@@ -1,4 +1,5 @@
 /target
+/dist/
 *.swp
 
 # Runtime databases, journals and user configuration (never fixtures).
