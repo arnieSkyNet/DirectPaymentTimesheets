@@ -136,7 +136,9 @@ cargo run
 
 #### Debian/Ubuntu `.deb` package
 
-The GitHub release provides an amd64 `.deb` built on Debian 12 for compatible Debian, Ubuntu and Linux Mint systems. Download `direct-payment-timesheets_1.0.0_amd64.deb` from the GitHub release, then run the following command from the download directory:
+[![Download .deb (Debian/Ubuntu/Mint)](https://img.shields.io/badge/Download%20.deb%20%28Debian%2FUbuntu%2FMint%29-blue?logo=debian&logoColor=white)](https://github.com/ArnieSkyNet/DirectPaymentTimesheets/releases/download/v1.0.0/direct-payment-timesheets_1.0.0_amd64.deb)
+
+The amd64 `.deb` is built on Debian 12 for compatible Debian, Ubuntu and Linux Mint systems. After downloading `direct-payment-timesheets_1.0.0_amd64.deb` using the button above, run the following command from the download directory:
 
 ```bash
 sudo apt-get install ./direct-payment-timesheets_1.0.0_amd64.deb
@@ -144,7 +146,9 @@ sudo apt-get install ./direct-payment-timesheets_1.0.0_amd64.deb
 
 #### AppImage
 
-Download `Direct_Payments_Timesheets-1.0.0-x86_64.AppImage` from the GitHub release. From the download directory, make it executable and run it:
+[![Download AppImage (Linux)](https://img.shields.io/badge/Download%20AppImage%20%28Linux%29-green?logo=linux&logoColor=white)](https://github.com/ArnieSkyNet/DirectPaymentTimesheets/releases/download/v1.0.0/Direct_Payments_Timesheets-1.0.0-x86_64.AppImage)
+
+After downloading `Direct_Payments_Timesheets-1.0.0-x86_64.AppImage` using the button above, run the following commands from the download directory to make it executable and launch it:
 
 ```bash
 chmod 755 Direct_Payments_Timesheets-1.0.0-x86_64.AppImage
