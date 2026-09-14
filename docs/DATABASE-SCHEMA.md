@@ -2,7 +2,7 @@
 
 ## Scope and versioning
 
-This is the implemented SQLite schema at version 31 (application `0.0.14`). It is derived from `create_schema` and migrations in `src/database.rs`; those migrations are authoritative.
+This is the implemented SQLite schema at version 31 (application `1.0.0`). It is derived from `create_schema` and migrations in `src/database.rs`; those migrations are authoritative.
 
 `schema_version` contains the current integer version. A new database begins at version 1 and receives each ordered migration through `CURRENT_SCHEMA_VERSION` 31. Existing databases are upgraded in place. Migration 23 removes the short-lived revision-only tables introduced by migration 22 while retaining the operational legacy snapshot tables. Migration 24 adds an explicit contracted/variable hours basis to effective-dated Personal Assistant contracted-hours history while preserving existing records as contracted.
 
@@ -397,7 +397,7 @@ The table checks `end_date >= start_date`; repository validation additionally re
 
 ## Schema 31: cycle-independent PA payroll documents
 
-Migration 31 creates the following table and index in one transaction and advances `schema_version` to 31. It does not read, rewrite or migrate `payroll_timesheet_email_status`: existing payslip/timesheet rows and settlement semantics remain unchanged. There are no historical P60/P45 delivery associations to invent or backfill. Application version remains `0.0.14`.
+Migration 31 creates the following table and index in one transaction and advances `schema_version` to 31. It does not read, rewrite or migrate `payroll_timesheet_email_status`: existing payslip/timesheet rows and settlement semantics remain unchanged. There are no historical P60/P45 delivery associations to invent or backfill. Application version remains `1.0.0`.
 
 ### `imported_payroll_documents`
 
@@ -416,4 +416,4 @@ Indexes: the primary-key row identity, SQLite's unique index on `stored_path`, a
 P60/P45 and an optional ordinary payslip transition atomically across their separate tables on one connection. Documents are definitively marked sent only after successful SMTP. Failed SMTP restores unsent state; failures persisting the final result leave durable indeterminate protection. P60/P45 states never count towards `payroll_schedules.payslips_sent` or evidence settlement. File publication precedes document registration; a registration failure is reported with stored-file paths, and reimport retries registration without overwriting the files.
 
 
-Ordinary payslips with no applicable stored cycle may be archived in the PA's year-specific or general Payslip area. They are filesystem evidence only: they are not inserted into `imported_payroll_documents` (which remains P60/P45-only), `payroll_timesheet_email_status`, or payroll settlement tables. Their archival counts and paths are reported by the importer. This fallback requires no additional migration; schema31 and application `0.0.14` remain unchanged.
+Ordinary payslips with no applicable stored cycle may be archived in the PA's year-specific or general Payslip area. They are filesystem evidence only: they are not inserted into `imported_payroll_documents` (which remains P60/P45-only), `payroll_timesheet_email_status`, or payroll settlement tables. Their archival counts and paths are reported by the importer. This fallback requires no additional migration; schema31 and application `1.0.0` remain unchanged.

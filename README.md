@@ -2,7 +2,7 @@
 
 DirectPaymentTimesheets is a local desktop application for administering UK Direct Payment Personal Assistant timesheets and the four-week payroll-provider workflow. It imports externally recorded work, prepares payroll timesheets, generates the provider PDF, sends timesheets and payslips, imports payroll documents, and preserves the evidence represented by submitted payroll.
 
-The current pre-release is version `0.0.14` with SQLite schema version 31. It is a working application under active development, not an installer-packaged or general-purpose payroll product.
+The current application version is `1.0.0` with SQLite schema version 31. It is a single-user local desktop application for the documented Direct Payment payroll workflow, not a general-purpose payroll product.
 
 ## Technology
 
@@ -82,9 +82,11 @@ The Dashboard groups the workflow into three rows:
 
 ## Install, build and run
 
-DirectPaymentTimesheets is currently a pre-release application. Building from source is presently the supported way to run it.
+DirectPaymentTimesheets version 1.0.0 can be installed using a Linux `.deb` package or run using the AppImage. Building from source remains available for development.
 
 ### Linux
+
+These Linux packages currently support 64-bit Intel/AMD systems. ARM packages, including Raspberry Pi armhf, are not currently provided.
 
 #### Build and run from source
 
@@ -120,11 +122,20 @@ cargo run
 
 #### Debian/Ubuntu `.deb` package
 
-Not yet available. A packaged `.deb` release is planned for a future version.
+The GitHub release provides an amd64 `.deb` built on Debian 12 for compatible Debian, Ubuntu and Linux Mint systems. Download `direct-payment-timesheets_1.0.0_amd64.deb` from the GitHub release, then run the following command from the download directory:
+
+```bash
+sudo apt-get install ./direct-payment-timesheets_1.0.0_amd64.deb
+```
 
 #### AppImage
 
-Not yet available. An AppImage release is planned for a future version.
+Download `Direct_Payments_Timesheets-1.0.0-x86_64.AppImage` from the GitHub release. From the download directory, make it executable and run it:
+
+```bash
+chmod 755 Direct_Payments_Timesheets-1.0.0-x86_64.AppImage
+./Direct_Payments_Timesheets-1.0.0-x86_64.AppImage
+```
 
 ### Windows
 
@@ -175,8 +186,8 @@ User-facing labels use Payroll Week, the four-week date range and pay date. Inte
 
 ## Current limitations
 
-- This is a pre-release, single-user local desktop application.
-- There is no packaged installer, authentication or multi-user coordination.
+- This is a single-user local desktop application.
+- Authentication and multi-user coordination are not implemented.
 - Persisted frequency, workweek and overtime choices are not downstream configurable calculation rules; no overtime engine is implemented.
 - Payroll Prep Sheet PDF import is implemented; DOCX import is recognised but not implemented.
 - Backup/restore has no scheduling, retention cleanup, compression or cloud integration.
@@ -185,7 +196,7 @@ User-facing labels use Payroll Week, the four-week date range and pay date. Inte
 - Durable CSV content identity/row-to-import provenance, automatic promotion/emailing of archival ordinary payslips, and user-facing indeterminate-email recovery remain future work.
 - Authentication, roles and web/mobile access are not implemented. `email_archive` has no actual email-archiving consumer.
 
-The existing user-triggered GitHub **Check for updates** reports newer versions and installation guidance; it does not download/install updates. Packaged installers/AppImage and automatic update installation remain future work.
+The existing user-triggered GitHub **Check for updates** reports newer versions and installation guidance; it does not download or install updates. Users must manually download and install the appropriate GitHub release asset.
 
 ## Annual leave and employment
 
