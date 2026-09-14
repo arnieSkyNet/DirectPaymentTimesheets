@@ -35,6 +35,7 @@ cargo build --release
 
 BUILD_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/direct-payment-timesheets-appimage.XXXXXX")"
 APPDIR="${BUILD_ROOT}/DirectPaymentsTimesheets.AppDir"
+APP_BINARY="${BUILD_ROOT}/direct-payment-timesheets"
 OUTPUT_FILE="${OUTPUT_DIRECTORY}/Direct_Payments_Timesheets-${VERSION}-x86_64.AppImage"
 
 cleanup() {
@@ -44,6 +45,8 @@ trap cleanup EXIT
 
 mkdir -p "${OUTPUT_DIRECTORY}"
 rm -f -- "${OUTPUT_FILE}"
+
+install -m755 "${SOURCE_BINARY}" "${APP_BINARY}"
 
 LINUXDEPLOY_COMMAND=("${LINUXDEPLOY}")
 if [[ "${LINUXDEPLOY}" == *.AppImage ]]; then
@@ -56,7 +59,7 @@ VERSION="${VERSION}" \
 OUTPUT="${OUTPUT_FILE}" \
 "${LINUXDEPLOY_COMMAND[@]}" \
     --appdir "${APPDIR}" \
-    --executable "${SOURCE_BINARY}" \
+    --executable "${APP_BINARY}" \
     --desktop-file "${PROJECT_ROOT}/packaging/linux/direct-payment-timesheets.desktop" \
     --icon-file "${PROJECT_ROOT}/assets/direct-payment-timesheets.png" \
     --output appimage
