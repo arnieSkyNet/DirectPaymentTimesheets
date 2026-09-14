@@ -470,7 +470,7 @@ mod tests {
         let config = AppConfig::load(&path).unwrap();
         let serialized = fs::read_to_string(path).unwrap();
 
-        assert!(!serialized.contains("/home/example"));
+        assert!(!serialized.contains("/home/"));
         assert!(!serialized.contains("NCC"));
         assert_eq!(
             config.folders.csv_import,
@@ -523,7 +523,7 @@ mod tests {
         config.folders.csv_import = PathBuf::from("/existing/import");
         config.folders.pdf_output = PathBuf::from("/existing/pdf");
         config.folders.email_archive = PathBuf::from("/existing/email-archive");
-        config.folders.payslip_folder = PathBuf::from("/home/example/user-selected/payslips");
+        config.folders.payslip_folder = PathBuf::from("/srv/example-user/user-selected/payslips");
         config.folders.payroll_information_folder = PathBuf::from("/existing/payroll-information");
 
         config.save(&path).unwrap();
@@ -539,7 +539,7 @@ mod tests {
         );
         assert_eq!(
             reloaded.folders.payslip_folder,
-            Path::new("/home/example/user-selected/payslips")
+            Path::new("/srv/example-user/user-selected/payslips")
         );
         assert_eq!(
             reloaded.folders.payroll_information_folder,

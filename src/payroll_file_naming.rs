@@ -327,10 +327,7 @@ mod tests {
             item.first_week_commencing =
                 format.format(NaiveDate::from_ymd_opt(2026, 8, 10).unwrap());
             item.pay_date = format.format(NaiveDate::from_ymd_opt(2026, 9, 4).unwrap());
-            assert_eq!(
-                timesheet_filename("Birch Sample", &item).unwrap(),
-                original
-            );
+            assert_eq!(timesheet_filename("Birch Sample", &item).unwrap(), original);
             assert_eq!(paye_week(&item).unwrap(), week);
         }
     }

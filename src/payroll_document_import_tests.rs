@@ -136,15 +136,15 @@ fn mixed_cross_year_package_classification_and_routing_match_real_filename_model
             crate::payroll_prep_sheet_import_service::tests::pdf_sheet(),
         ),
         entry("AAAA Quarter End Memo April 2026.pdf"),
-        entry("Example Employer - P30 Employer's Payslip for Week 48 to 52.pdf"),
-        entry("Example Employer - P30 Employer's Payslip for Week 48 to 52 [1].pdf"),
+        entry("Robin Placeholder - P30 Employer's Payslip for Week 48 to 52.pdf"),
+        entry("Robin Placeholder - P30 Employer's Payslip for Week 48 to 52 [1].pdf"),
     ];
     for name in ["Alder Example", "Birch Sample", "Cedar Fixture"] {
         entries.push(entry(&format!(
-            "Example Employer - Employee Payslip for Week 50 for {name}.pdf"
+            "Robin Placeholder - Employee Payslip for Week 50 for {name}.pdf"
         )));
         entries.push(entry(&format!(
-            "Example Employer - P60 End of Year Summary for year 2025-26 for {name}.pdf"
+            "Robin Placeholder - P60 End of Year Summary for year 2025-26 for {name}.pdf"
         )));
     }
     zip(&path, &entries);
@@ -490,7 +490,12 @@ fn cycle_choice_contains_only_plausible_periods_and_cannot_contaminate_archival_
         .path()
         .join("payslips/2025 to 2026/Payslip for Week 50 for Alder Example.pdf")
         .exists());
-    assert!(dir.path().join("payslips/2024 to 2025/PA 2/Employee Payslip for Week 50 for Birch Sample 2024-25.pdf").exists());
+    assert!(dir
+        .path()
+        .join(
+            "payslips/2024 to 2025/PA 2/Employee Payslip for Week 50 for Birch Sample 2024-25.pdf"
+        )
+        .exists());
 }
 
 #[test]
@@ -561,7 +566,7 @@ fn information_reimport_is_unchanged(name: &str) {
 #[test]
 fn identical_p30_reimport_keeps_one_physical_file() {
     information_reimport_is_unchanged(
-        "Example Employer - P30 Employer's Payslip for Week 48 to 52.pdf",
+        "Robin Placeholder - P30 Employer's Payslip for Week 48 to 52.pdf",
     );
 }
 
