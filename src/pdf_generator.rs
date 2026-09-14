@@ -1391,17 +1391,17 @@ mod tests {
     #[test]
     fn generates_four_week_timesheet_pdf() {
         let output_dir = env::temp_dir().join("direct_payment_timesheets_test");
-        let schedule = schedule("23/03/2026", "17/04/2026");
+        let schedule = schedule("05/04/2032", "30/04/2032");
 
         let mut data = TimesheetPdfData {
             schedule: &schedule,
-            employer_name: "Morgan",
+            employer_name: "Robin Placeholder",
             personal_assistant_name: "Birch Sample",
             national_insurance_number: "AB123456C",
-            contracted_weekly_hours: "25",
-            week_commencing_dates: ["2026-03-23", "30 Mar 2026", "06/04/2026", "13/04/2026"],
+            contracted_weekly_hours: "16",
+            week_commencing_dates: ["2032-04-05", "12 Apr 2032", "19/04/2032", "26/04/2032"],
 
-            hours_worked: ["26.5", "21", "6.25", "0"],
+            hours_worked: ["14.75", "18.5", "9.25", "0"],
 
             annual_leave_hours: ["0", "0", "0", "0"],
 
@@ -1410,8 +1410,8 @@ mod tests {
             public_holidays: [
                 vec![],
                 vec![PublicHolidayPdfEntry {
-                    hours: "7.5".to_string(),
-                    date: "2026-04-03".to_string(),
+                    hours: "4.25".to_string(),
+                    date: "2032-04-16".to_string(),
                 }],
                 vec![],
                 vec![],
@@ -1419,7 +1419,7 @@ mod tests {
 
             travel_miles: ["0", "0", "0", "0"],
 
-            previous_cycle_hours: Some("1.25"),
+            previous_cycle_hours: Some("2.75"),
 
             employer_signature_path: None,
 
@@ -1460,22 +1460,22 @@ mod tests {
         assert_eq!(fs::read(&path).unwrap(), original_pdf);
 
         assert!(!normalised.contains("Total"));
-        assert!(normalised.contains("23/03/2026"));
-        assert!(normalised.contains("30/03/2026"));
+        assert!(normalised.contains("05/04/2032"));
+        assert!(normalised.contains("12/04/2032"));
         assert!(normalised.contains(&format!(
             "Date: {}",
             crate::date_utils::formal(Local::now().date_naive())
         )));
-        assert!(normalised.contains("26.5"));
-        assert!(normalised.contains("21"));
-        assert!(normalised.contains("6.25"));
-        assert!(normalised.contains("(Info only +1.25 hours)"));
-        assert!(normalised.contains("(03/04/2026)"));
+        assert!(normalised.contains("14.75"));
+        assert!(normalised.contains("18.5"));
+        assert!(normalised.contains("9.25"));
+        assert!(normalised.contains("(Info only +2.75 hours)"));
+        assert!(normalised.contains("(16/04/2032)"));
         assert!(!normalised.contains('£'));
-        assert!(!normalised.contains("from 01/04/2026"));
+        assert!(!normalised.contains("from 01/04/2032"));
         assert!(!normalised.contains("see note"));
         assert!(!normalised.contains("historical work date"));
-        assert!(normalised.contains("Contracted Weekly Hours: 25"));
+        assert!(normalised.contains("Contracted Weekly Hours: 16"));
 
         data.hours_worked = ["15.75", "0", "0", "0"];
         data.previous_cycle_hours = Some("-3.00");
@@ -1608,12 +1608,12 @@ mod tests {
         let schedule = schedule("10/08/2026", "04/09/2026");
         let data = TimesheetPdfData {
             schedule: &schedule,
-            employer_name: "Morgan",
+            employer_name: "Robin Placeholder",
             personal_assistant_name: "Boundary Test",
             national_insurance_number: "AB123456C",
             contracted_weekly_hours: &summary,
             week_commencing_dates: ["10/08/2026", "17/08/2026", "24/08/2026", "31/08/2026"],
-            hours_worked: ["26.5", "21", "28.5", "6.25"],
+            hours_worked: ["11.75", "19.5", "13.25", "8.75"],
             annual_leave_hours: ["0", "0", "0", "0"],
             sickness_periods: std::array::from_fn(|_| Vec::new()),
             public_holidays: std::array::from_fn(|_| Vec::new()),
@@ -1634,10 +1634,10 @@ mod tests {
         let normalised = extracted.split_whitespace().collect::<Vec<_>>().join(" ");
         assert!(normalised.contains("16 (w/c 10/08, 17/08)"));
         assert!(normalised.contains("20 (w/c 24/08, 31/08)"));
-        assert!(normalised.contains("26.5"));
-        assert!(normalised.contains("21"));
-        assert!(normalised.contains("28.5"));
-        assert!(normalised.contains("6.25"));
+        assert!(normalised.contains("11.75"));
+        assert!(normalised.contains("19.5"));
+        assert!(normalised.contains("13.25"));
+        assert!(normalised.contains("8.75"));
 
         let _ = fs::remove_file(path);
         let _ = fs::remove_dir_all(output_dir);

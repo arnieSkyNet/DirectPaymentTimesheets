@@ -1025,18 +1025,19 @@ mod tests {
     }
 
     #[test]
-    fn verified_week_two_six_and_ten_figures_reconcile_without_historical_rates() {
+    fn fictional_legacy_adjustments_reconcile_across_periods_without_historical_rates() {
         let (_file, pay_rates, worked_items) = shared_repositories(&[]);
+        // Independently invented weekly minutes, including zero and partial weeks.
         let cases = [
-            (201, date("2026-03-23"), [165, 225, 0, 315]),
-            (202, date("2026-04-20"), [75, 255, 0, 0]),
-            (203, date("2026-05-18"), [0, 135, 285, 345]),
-            (204, date("2026-03-23"), [615, 735, 525, 645]),
-            (205, date("2026-04-20"), [705, 555, 825, 465]),
-            (206, date("2026-05-18"), [585, 765, 675, 435]),
-            (207, date("2026-03-23"), [195, 330, 270, 210]),
-            (208, date("2026-04-20"), [360, 180, 240, 300]),
-            (209, date("2026-05-18"), [405, 150, 390, 120]),
+            (201, date("2032-04-05"), [165, 225, 0, 315]),
+            (202, date("2032-05-03"), [75, 255, 0, 0]),
+            (203, date("2032-05-31"), [0, 135, 285, 345]),
+            (204, date("2032-04-05"), [615, 735, 525, 645]),
+            (205, date("2032-05-03"), [705, 555, 825, 465]),
+            (206, date("2032-05-31"), [585, 765, 675, 435]),
+            (207, date("2032-04-05"), [195, 330, 270, 210]),
+            (208, date("2032-05-03"), [360, 180, 240, 300]),
+            (209, date("2032-05-31"), [405, 150, 390, 120]),
         ];
 
         for (timesheet_id, first_week, expected) in cases {

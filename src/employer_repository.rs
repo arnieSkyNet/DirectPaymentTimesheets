@@ -185,7 +185,7 @@ mod tests {
 
         let employer = Employer {
             id: 0,
-            name: "Morgan".to_string(),
+            name: "Robin Placeholder".to_string(),
             date_of_birth: None,
             national_insurance_number: None,
             reference_account_number: None,
@@ -204,6 +204,6 @@ mod tests {
         let employers = repository.get_all().unwrap();
 
         assert_eq!(employers.len(), 1);
-        assert_eq!(employers[0].name, "Morgan");
+        assert_eq!(employers[0].name, "Robin Placeholder");
     }
 }

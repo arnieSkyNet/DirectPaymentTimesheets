@@ -525,6 +525,7 @@ impl DirectPaymentApp {
                     "Database schema version: {}",
                     self.about_schema_version
                 ));
+                ui.label("Developed by Mark Worsdall");
                 ui.label("Development: ArnieSkyNet / DirectPaymentTimesheets project on GitHub.");
                 ui.label(format!("License: {}", env!("CARGO_PKG_LICENSE")));
                 ui.separator();

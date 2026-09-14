@@ -1083,10 +1083,10 @@ mod tests {
         let root = tempfile::TempDir::new().unwrap();
         let zip = root.path().join("return.zip");
         let p60 =
-            "Example Employer - P60 End of Year Summary for year 2025-26 for Cedar_Fixture.pdf";
-        let p45 = "Example Employer - P45 Leaving details for Cedar Fixture.pdf";
-        let p30 = "Example Employer - P30 Employer's Payslip for Week 48 to 52.pdf";
-        let p30_variant = "Example Employer - P30 Employer's Payslip for Week 48 to 52 [1].pdf";
+            "Robin Placeholder - P60 End of Year Summary for year 2025-26 for CEDar_Fixture.pdf";
+        let p45 = "Robin Placeholder - P45 Leaving details for Cedar Fixture.pdf";
+        let p30 = "Robin Placeholder - P30 Employer's Payslip for Week 48 to 52.pdf";
+        let p30_variant = "Robin Placeholder - P30 Employer's Payslip for Week 48 to 52 [1].pdf";
         let general = [
             "Bank-transfer slip for Cedar Fixture.pdf",
             "Quarter-end memo for Cedar Fixture.pdf",
@@ -1094,10 +1094,7 @@ mod tests {
             "Unknown report for Cedar Fixture.pdf",
         ];
         let mut entries = vec![
-            (
-                "Payslip Cedar Fixture.pdf",
-                b"%PDF-1.4 payslip".as_slice(),
-            ),
+            ("Payslip Cedar Fixture.pdf", b"%PDF-1.4 payslip".as_slice()),
             (p60, b"%PDF-1.4 p60".as_slice()),
             (p45, b"%PDF-1.4 p45".as_slice()),
             (p30, b"%PDF-1.4 p30".as_slice()),
@@ -1113,7 +1110,7 @@ mod tests {
         let information = root.path().join("information");
         let period = schedule("2026/27", "10/08/2026", "04/09/2026");
         // Include the employer as a maintained PA: P30 wins over name/payslip cues.
-        let pas = [assistant(), named_assistant(2, "Morgan", "Worsdall")];
+        let pas = [assistant(), named_assistant(2, "Robin", "Placeholder")];
         // The employer prefix is not an employee identifier in this fixture's P60/P45.
         // Use the actual PA list for supplements, then test P30 independently below.
         let result =
@@ -1123,11 +1120,14 @@ mod tests {
         assert_eq!(result.information_files_imported, 6);
         assert!(result.publication_failure.is_none());
         let ordinary =
-            crate::payroll_file_naming::payslip_path(&payslips, "Cedar Fixture", &period)
-                .unwrap();
+            crate::payroll_file_naming::payslip_path(&payslips, "Cedar Fixture", &period).unwrap();
         assert!(ordinary.ends_with("2026 to 2027/Payslip for Week 22 for Cedar Fixture.pdf"));
         assert_eq!(fs::read(ordinary).unwrap(), b"%PDF-1.4 payslip");
-        assert!(payslips.join("2025 to 2026/PA 1/P60 End of Year Summary for year 2025-26 for Cedar_Fixture.pdf").is_file());
+        assert!(payslips
+            .join(
+                "2025 to 2026/PA 1/P60 End of Year Summary for year 2025-26 for CEDar_Fixture.pdf"
+            )
+            .is_file());
         assert!(payslips
             .join("PA 1/P45 Leaving details for Cedar Fixture.pdf")
             .is_file());
@@ -1143,10 +1143,10 @@ mod tests {
         assert_eq!(result.information_files_imported, 0);
         assert_eq!(result.information_files_already_present, 2);
         assert!(!info_year
-            .join("Example Employer - P30 Employer's Payslip for Week 48 to 52 (2).pdf")
+            .join("Robin Placeholder - P30 Employer's Payslip for Week 48 to 52 (2).pdf")
             .exists());
         assert!(!info_year
-            .join("Example Employer - P30 Employer's Payslip for Week 48 to 52 [1] (2).pdf")
+            .join("Robin Placeholder - P30 Employer's Payslip for Week 48 to 52 [1] (2).pdf")
             .exists());
         assert!(!payslips
             .join("2026 to 2027/Payroll return cycle 6")
@@ -1628,10 +1628,7 @@ mod tests {
         let payslip_root = root.join("payslips");
         let information_root = root.join("information");
         let first_zip = root.join("first.zip");
-        create_zip(
-            &first_zip,
-            &[("Cedar Fixture.pdf", b"%PDF-1.4\noriginal")],
-        );
+        create_zip(&first_zip, &[("Cedar Fixture.pdf", b"%PDF-1.4\noriginal")]);
         import_payroll_return(
             &first_zip,
             &payslip_root,
@@ -1657,10 +1654,7 @@ mod tests {
         assert_eq!(unchanged.payslips_imported, 0);
 
         let changed_zip = root.join("changed.zip");
-        create_zip(
-            &changed_zip,
-            &[("Cedar Fixture.pdf", b"%PDF-1.4\nchanged")],
-        );
+        create_zip(&changed_zip, &[("Cedar Fixture.pdf", b"%PDF-1.4\nchanged")]);
         assert!(import_payroll_return(
             &changed_zip,
             &payslip_root,

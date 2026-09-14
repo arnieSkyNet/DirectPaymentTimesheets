@@ -297,12 +297,12 @@ fn unresolved_duplicate_selects_pa_without_blocking_other_pas_or_rendering_their
 }
 
 #[test]
-fn resolved_catherine_and_invalidated_laura_audits_preserve_history_and_payable_one_point_five() {
+fn resolved_birch_and_invalidated_dune_audits_preserve_history_and_payable_one_point_five() {
     let (_dir, mut app, schedule, mut screen) = two_pa_preparation();
     setup_connection(&app)
         .execute_batch(
             "UPDATE personal_assistants SET first_name='Birch' WHERE id=1;
-        UPDATE personal_assistants SET first_name='Robin',start_date='01/01/2024' WHERE id=2;",
+        UPDATE personal_assistants SET first_name='Dune',start_date='01/01/2024' WHERE id=2;",
         )
         .unwrap();
     insert_pa(&app, 3, "Longest", Some("Active"));
@@ -338,13 +338,13 @@ fn resolved_catherine_and_invalidated_laura_audits_preserve_history_and_payable_
     screen.load(&app, &schedule, "period").unwrap();
     assert_eq!(screen.selected_pa, Some(3));
     assert_eq!(screen.dropdown_pas, vec![3, 2, 1]);
-    let laura = screen
+    let dune = screen
         .weeks
         .iter()
         .find(|(r, _, _)| r.personal_assistant_id == 2)
         .unwrap();
-    assert_eq!(laura.1[0].worked_hours, 1.50);
-    let before = crate::payroll_evidence::reconciliation::audit_lines(&app, &laura.0).unwrap();
+    assert_eq!(dune.1[0].worked_hours, 1.50);
+    let before = crate::payroll_evidence::reconciliation::audit_lines(&app, &dune.0).unwrap();
     assert!(before
         .iter()
         .any(|l| l.contains("winner imported:149") && l.contains("direct:6")));
@@ -356,7 +356,7 @@ fn resolved_catherine_and_invalidated_laura_audits_preserve_history_and_payable_
     render_preparation(&ctx, &app, &schedule, &mut screen);
     let text = render_preparation(&ctx, &app, &schedule, &mut screen).join("\n");
     assert!(
-        text.contains("Payroll audit/details — Robin Placeholder"),
+        text.contains("Payroll audit/details — Dune Test"),
         "{text}"
     );
     assert!(!text.contains("Payroll audit/details — PA"));
@@ -364,23 +364,23 @@ fn resolved_catherine_and_invalidated_laura_audits_preserve_history_and_payable_
     screen.request_pa(Some(1));
     screen.request_pa(Some(2));
     let text = render_preparation(&ctx, &app, &schedule, &mut screen).join("\n");
-    assert!(text.contains("Payroll audit/details — Birch Sample"));
+    assert!(text.contains("Payroll audit/details — Birch Test"));
     assert!(
-        text.find("Payroll audit/details — Robin Placeholder").unwrap()
-            < text.find("Payroll audit/details — Birch Sample").unwrap()
+        text.find("Payroll audit/details — Dune Test").unwrap()
+            < text.find("Payroll audit/details — Birch Test").unwrap()
     );
-    assert!(!text.contains("Save Birch Sample"));
+    assert!(!text.contains("Save Birch Test"));
 
     screen.save_current(&app).unwrap();
     screen.load(&app, &schedule, "period").unwrap();
-    let laura = screen
+    let dune = screen
         .weeks
         .iter()
         .find(|(r, _, _)| r.personal_assistant_id == 2)
         .unwrap();
-    assert_eq!(laura.1[0].worked_hours, 1.50);
+    assert_eq!(dune.1[0].worked_hours, 1.50);
     assert_eq!(
-        crate::payroll_evidence::reconciliation::audit_lines(&app, &laura.0).unwrap(),
+        crate::payroll_evidence::reconciliation::audit_lines(&app, &dune.0).unwrap(),
         before
     );
     assert_eq!(

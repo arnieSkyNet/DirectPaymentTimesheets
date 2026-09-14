@@ -1,11 +1,48 @@
 /target
-*.db
 *.swp
 
-# Private user data
-/data/signatures/
-/data/generated/
+# Runtime databases, journals and user configuration (never fixtures).
+*.db
+*.db-*
+*.sqlite
+*.sqlite3
+*.sqlite-*
+*.sqlite3-*
+config.toml
+.env
+.env.*
+*.pem
+*.key
+*.p12
+*.pfx
+*.log
+*.bak
+*.backup
 
+# Business exports are created in disposable test directories, not tracked.
+# Any future sanitised file fixture needs a documented, exact-path exception.
+*.pdf
+*.docx
+*.csv
+*.zip
+*.eml
 
-# Local pre-change backup
+# Repository-local runtime/output directories.
+/.directpaymenttimesheets/
+/import/
+/archive/
+/backups/
+/logs/
+/generated/
+/signatures/
+/payslips/
+/payroll-information/
+/screenshots/
+
+# Only the two audited blank image placeholders belong in tracked data.
+/data/*
+!/data/sig-Employer.jpg
+!/data/sig-PA.jpg
+
+# Local pre-change source backup; never distribute as a release artifact.
 src.before-email-timesheets/
