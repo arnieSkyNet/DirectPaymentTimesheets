@@ -217,7 +217,9 @@ pub fn reconcile_payroll_hours(
         .map_err(repository_error)?
     {
         let is_historical_backfill =
-            crate::historical_payroll_backfill::is_backfill_reason(adjustment.reason.as_deref());
+            crate::historical_adjustment_compatibility::is_historical_adjustment_reason(
+                adjustment.reason.as_deref(),
+            );
         excludes_previous_cycle_from_week_totals |= is_historical_backfill;
         if adjustment.adjustment_minutes == 0 || !(1..=4).contains(&adjustment.week_number) {
             continue;

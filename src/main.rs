@@ -21,7 +21,7 @@ mod error;
 mod folder_opener;
 mod gui;
 mod gui_controls;
-mod historical_payroll_backfill;
+mod historical_adjustment_compatibility;
 mod import_service;
 mod models;
 mod paths;

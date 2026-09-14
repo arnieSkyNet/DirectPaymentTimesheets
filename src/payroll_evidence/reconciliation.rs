@@ -703,7 +703,11 @@ pub(crate) fn calculate_prepared(
         .payroll_worked_item_repository
         .get_manual_adjustments(record.id)?
         .iter()
-        .any(|a| crate::historical_payroll_backfill::is_backfill_reason(a.reason.as_deref()));
+        .any(|a| {
+            crate::historical_adjustment_compatibility::is_historical_adjustment_reason(
+                a.reason.as_deref(),
+            )
+        });
     let legacy = if historical_backfill { legacy } else { None };
     let mut result = crate::pay_rate_allocation::reconcile_payroll_hours(
         &app.pay_rate_repository,
