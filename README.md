@@ -4,6 +4,20 @@ DirectPaymentTimesheets is a local desktop application for administering UK Dire
 
 The current application version is `1.0.0` with SQLite schema version 31. It is a single-user local desktop application for the documented Direct Payment payroll workflow, not a general-purpose payroll product.
 
+## Download
+
+**Current version: 1.0.0**
+
+[![Download .deb (Debian/Ubuntu/Mint)](https://img.shields.io/badge/Download%20.deb%20%28Debian%2FUbuntu%2FMint%29-blue?logo=debian&logoColor=white)](https://github.com/ArnieSkyNet/DirectPaymentTimesheets/releases/download/v1.0.0/direct-payment-timesheets_1.0.0_amd64.deb)
+[![Download AppImage (Linux)](https://img.shields.io/badge/Download%20AppImage%20%28Linux%29-green?logo=linux&logoColor=white)](https://github.com/ArnieSkyNet/DirectPaymentTimesheets/releases/download/v1.0.0/Direct_Payments_Timesheets-1.0.0-x86_64.AppImage)
+
+![Windows planned](https://img.shields.io/badge/Windows%20planned-lightgrey?logo=windows11&logoColor=white)
+![macOS planned](https://img.shields.io/badge/macOS%20planned-lightgrey?logo=apple&logoColor=white)
+
+These Linux downloads support 64-bit Intel/AMD computers. ARM packages, including Raspberry Pi `armhf`, are planned separately.
+
+[Installation instructions](#install-build-and-run) · [View all releases](https://github.com/ArnieSkyNet/DirectPaymentTimesheets/releases)
+
 ## Technology
 
 - Rust 2021
