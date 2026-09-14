@@ -1185,3 +1185,129 @@ fn equivalent_period_and_holiday_dates_do_not_reload_or_duplicate_rows() {
     assert_eq!(reloaded.len(), holidays.len());
     assert_eq!(reloaded[0].holiday_date, holidays[0].holiday_date);
 }
+
+#[test]
+fn switching_preparation_period_refreshes_dropdown_cards_and_active_pa() {
+    let (_dir, app, historical, current) = employment_period_fixture();
+    let mut screen = load_period_for_eligibility_test(&app, &current);
+    screen.loaded = true;
+    screen.request_pa(Some(2));
+    screen.request_pa(Some(4));
+    assert_eq!(screen.selected_pa, Some(4));
+    assert!(screen.visited_pas.contains(&2));
+    assert!(!screen.has_unsaved_changes());
+
+    for (schedule, expected) in [
+        (&historical, vec![1, 3, 5, 8]),
+        (&current, vec![2, 4, 5]),
+        (&historical, vec![1, 3, 5, 8]),
+    ] {
+        assert!(screen.rebind_if_operational_period_changed(schedule));
+        assert!(!screen.loaded);
+        assert_eq!(screen.selected_pa, None);
+        assert_eq!(screen.pending_pa, None);
+        assert!(screen.visited_pas.is_empty());
+        assert!(screen.dropdown_pas.is_empty());
+        assert!(screen.weeks.is_empty());
+        assert!(screen.records.is_empty());
+        screen.load(&app, schedule, "selected period").unwrap();
+        screen.loaded = true;
+
+        let mut dropdown = screen.dropdown_pas.clone();
+        dropdown.sort();
+        assert_eq!(dropdown, expected);
+        let mut cards = screen.weeks.iter()
+            .map(|(record, _, _)| record.personal_assistant_id)
+            .collect::<Vec<_>>();
+        cards.sort();
+        assert_eq!(cards, expected);
+        let stored = app.payroll_timesheet_repository
+            .get_all_for_cycle(&schedule.payroll_year, schedule.cycle_number).unwrap();
+        let mut stored_pas = stored.iter().map(|r| r.personal_assistant_id).collect::<Vec<_>>();
+        stored_pas.sort();
+        assert_eq!(stored_pas, expected);
+        for record in stored {
+            assert_eq!(app.payroll_timesheet_repository.get_weeks(record.id).unwrap().len(), 4);
+        }
+        assert!(expected.contains(&screen.selected_pa.unwrap()));
+        assert!(screen.visited_pas.iter().all(|id| expected.contains(id)));
+    }
+}
+
+#[test]
+fn preparation_cards_and_selector_share_inclusive_employment_boundaries() {
+    let (_dir, app, historical, _) = employment_period_fixture();
+    // Fixture 2 starts the day after the end; 3 starts exactly on the end;
+    // 6 leaves the day before the start; 8 leaves exactly on the start;
+    // 1 is currently inactive but was employed during the historical period.
+    let screen = load_period_for_eligibility_test(&app, &historical);
+    for (id, included) in [(2, false), (3, true), (6, false), (8, true), (1, true)] {
+        assert_eq!(screen.dropdown_pas.contains(&id), included, "dropdown PA {id}");
+        assert_eq!(screen.weeks.iter().any(|(r, _, _)| r.personal_assistant_id == id), included, "card PA {id}");
+        assert_eq!(screen.records.iter().any(|r| r.personal_assistant_id == id), included, "record PA {id}");
+    }
+}
+
+#[test]
+fn repository_creation_enforces_employment_dates_without_a_ui_filter() {
+    let (_dir, app) = test_application();
+    let schedule = insert_schedule(&app, "2032/33", 1, "05/04/2032", "30/04/2032");
+    let db = setup_connection(&app);
+    for (id, start, leaving, status, eligible) in [
+        (1, "03/05/2032", None, "Active", false),
+        (2, "02/05/2032", None, "Active", true),
+        (3, "01/01/2032", Some("04/04/2032"), "Active", false),
+        (4, "01/01/2032", Some("05/04/2032"), "Inactive", true),
+        (5, "01/01/2032", None, "Inactive", true),
+        (6, "01/01/2032", Some("  "), "Inactive", true),
+    ] {
+        insert_pa(&app, id, &format!("Fictional{id}"), Some(status));
+        db.execute("UPDATE personal_assistants SET start_date=?1, leaving_date=?2 WHERE id=?3", params![start, leaving, id]).unwrap();
+        let before = std::fs::read(&app.context.environment.database_path).unwrap();
+        let result = app.payroll_timesheet_repository.insert(
+            &schedule.payroll_year, schedule.cycle_number, id, None, "test",
+        );
+        assert_eq!(result.is_ok(), eligible, "PA {id}: {result:?}");
+        assert_eq!(app.payroll_timesheet_repository.get_for_cycle_and_pa(
+            &schedule.payroll_year, schedule.cycle_number, id,
+        ).unwrap().is_some(), eligible);
+        if !eligible {
+            assert_eq!(std::fs::read(&app.context.environment.database_path).unwrap(), before);
+        }
+    }
+    let weeks: i64 = db.query_row("SELECT COUNT(*) FROM payroll_timesheet_weeks", [], |r| r.get(0)).unwrap();
+    assert_eq!(weeks, 0);
+}
+
+#[test]
+fn creation_rechecks_stored_facts_after_caller_loaded_an_eligible_pa() {
+    let (_dir, app) = test_application();
+    let schedule = insert_schedule(&app, "2032/33", 1, "05/04/2032", "30/04/2032");
+    insert_pa(&app, 1, "Fictional", Some("Active"));
+    let cached_pa = app.personal_assistant_repository.get_all().unwrap().remove(0);
+    let start = parse_date(&schedule.first_week_commencing).unwrap();
+    assert!(cached_pa.employment_overlaps(start, start + chrono::Duration::days(27)).unwrap());
+    setup_connection(&app).execute("UPDATE personal_assistants SET start_date='03/05/2032' WHERE id=1", []).unwrap();
+    assert!(app.payroll_timesheet_repository.insert("2032/33", 1, 1, None, "test").is_err());
+    assert!(app.payroll_timesheet_repository.get_all_for_cycle("2032/33", 1).unwrap().is_empty());
+    assert!(app.payroll_timesheet_repository.insert("2032/33", 2, 1, None, "test").is_err());
+}
+
+#[test]
+fn creation_guard_does_not_rewrite_or_block_reads_of_existing_historical_records() {
+    let (_dir, app) = test_application();
+    insert_schedule(&app, "2032/33", 1, "05/04/2032", "30/04/2032");
+    insert_pa(&app, 1, "Fictional", Some("Inactive"));
+    let db = setup_connection(&app);
+    db.execute_batch("UPDATE personal_assistants SET start_date='03/05/2032' WHERE id=1;
+        INSERT INTO payroll_timesheets (personal_assistant_id, payroll_year, cycle_number, created_at, updated_at)
+        VALUES (1, '2032/33', 1, 'historical', 'historical');").unwrap();
+    let before = std::fs::read(&app.context.environment.database_path).unwrap();
+    let record = app.payroll_timesheet_repository.get_for_cycle_and_pa("2032/33", 1, 1).unwrap().unwrap();
+    let pa = app.personal_assistant_repository.get_all().unwrap().remove(0);
+    let start = parse_date("05/04/2032").unwrap();
+    assert!(pa.eligible_for_period(start, start + chrono::Duration::days(27), true).unwrap());
+    assert_eq!(record.created_at, "historical");
+    assert!(app.payroll_timesheet_repository.insert("2032/33", 1, 1, None, "new").is_err());
+    assert_eq!(std::fs::read(&app.context.environment.database_path).unwrap(), before);
+}

@@ -243,7 +243,34 @@ impl PayrollTimesheetRepository {
         previous_cycle_hours: Option<f64>,
         created_at: &str,
     ) -> Result<i64> {
-        self.connection.execute(
+        // Creation must never use the stored-history eligibility exception.
+        // Read current employment and schedule facts in the insertion transaction,
+        // rather than trusting a caller's previously loaded PA/period selection.
+        let transaction = self.connection.unchecked_transaction()?;
+        let assistant =
+            crate::personal_assistant_repository::PersonalAssistantRepository::get_by_id_on(
+                &transaction,
+                personal_assistant_id,
+            )?;
+        let first_week: String = transaction.query_row(
+            "SELECT first_week_commencing FROM payroll_schedules
+             WHERE payroll_year = ?1 AND cycle_number = ?2",
+            params![payroll_year, cycle_number],
+            |row| row.get(0),
+        )?;
+        let start = crate::date_utils::parse_legacy(&first_week)
+            .map_err(|e| rusqlite::Error::InvalidParameterName(e.to_string()))?;
+        let end = start
+            .checked_add_signed(chrono::Duration::days(27))
+            .ok_or_else(|| {
+                rusqlite::Error::InvalidParameterName("Invalid payroll period end".into())
+            })?;
+        if !assistant.employment_overlaps(start, end)? {
+            return Err(rusqlite::Error::InvalidParameterName(
+                "Cannot create payroll preparation outside the PA's employment dates.".into(),
+            ));
+        }
+        transaction.execute(
             "
             INSERT INTO payroll_timesheets (
                 personal_assistant_id,
@@ -264,7 +291,9 @@ impl PayrollTimesheetRepository {
             ],
         )?;
 
-        Ok(self.connection.last_insert_rowid())
+        let id = transaction.last_insert_rowid();
+        transaction.commit()?;
+        Ok(id)
     }
 
     pub fn get_weeks(&self, payroll_timesheet_id: i64) -> Result<Vec<PayrollTimesheetWeek>> {
