@@ -2541,7 +2541,7 @@ impl DirectPaymentApp {
                 .get_manual_adjustments(payroll_timesheet.id)?
                 .iter()
                 .any(|adjustment| {
-                    crate::historical_payroll_backfill::is_backfill_reason(
+                    crate::historical_adjustment_compatibility::is_historical_adjustment_reason(
                         adjustment.reason.as_deref(),
                     )
                 });
