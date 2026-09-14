@@ -31,7 +31,7 @@ if [[ -z "${LINUXDEPLOY}" || ! -x "${LINUXDEPLOY}" ]]; then
 fi
 
 printf 'Building Direct Payments Timesheets %s AppImage\n' "${VERSION}"
-cargo build --release
+DPT_INSTALLATION_KIND=appimage cargo build --release
 
 BUILD_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/direct-payment-timesheets-appimage.XXXXXX")"
 APPDIR="${BUILD_ROOT}/DirectPaymentsTimesheets.AppDir"
