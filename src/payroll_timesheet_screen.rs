@@ -2735,10 +2735,11 @@ pub(crate) mod tests {
             UPDATE personal_assistants SET start_date='07/09/2026' WHERE id=4;",
             )
             .unwrap();
-        application
-            .payroll_timesheet_repository
-            .insert("2026/27", 6, 2, None, "created")
-            .unwrap();
+        // Seed retained historical evidence, bypassing normal creation deliberately.
+        setup_connection(&application).execute(
+            "INSERT INTO payroll_timesheets (personal_assistant_id, payroll_year, cycle_number, created_at, updated_at)
+             VALUES (2, '2026/27', 6, 'created', 'created')", [],
+        ).unwrap();
         let mut screen = PayrollTimesheetScreen::new();
         screen.load(&application, &schedule, "period").unwrap();
         let ids = screen
@@ -2772,10 +2773,11 @@ pub(crate) mod tests {
                 [],
             )
             .unwrap();
-        application
-            .payroll_timesheet_repository
-            .insert("2026/27", 6, 2, None, "created")
-            .unwrap();
+        // Seed retained historical evidence, bypassing normal creation deliberately.
+        setup_connection(&application).execute(
+            "INSERT INTO payroll_timesheets (personal_assistant_id, payroll_year, cycle_number, created_at, updated_at)
+             VALUES (2, '2026/27', 6, 'created', 'created')", [],
+        ).unwrap();
         let mut screen = PayrollTimesheetScreen::new();
         screen.load(&application, &schedule, "period").unwrap();
         let names = screen

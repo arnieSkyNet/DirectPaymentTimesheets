@@ -160,24 +160,7 @@ FROM personal_assistants
 ",
         )?;
 
-        let assistants = statement.query_map([], |row| {
-            Ok(PersonalAssistant {
-                id: row.get(0)?,
-                first_name: row.get(1)?,
-                surname: row.get(2)?,
-                date_of_birth: row.get(3)?,
-                national_insurance_number: row.get(4)?,
-                address: row.get(5)?,
-                postcode: row.get(6)?,
-                telephone: row.get(7)?,
-                email: row.get(8)?,
-                employment_status: row.get(9)?,
-                mileage_enabled: row.get::<_, i64>(10)? != 0,
-                start_date: row.get(11)?,
-                leaving_date: row.get(13)?,
-                signature: row.get(12)?,
-            })
-        })?;
+        let assistants = statement.query_map([], personal_assistant_from_row)?;
 
         let mut results = Vec::new();
 
@@ -186,6 +169,16 @@ FROM personal_assistants
         }
 
         Ok(results)
+    }
+
+    pub(crate) fn get_by_id_on(connection: &Connection, id: i64) -> Result<PersonalAssistant> {
+        connection.query_row(
+            "SELECT id, first_name, surname, date_of_birth, national_insurance_number,
+             address, postcode, telephone, email, employment_status, mileage_enabled,
+             start_date, signature, leaving_date FROM personal_assistants WHERE id = ?1",
+            [id],
+            personal_assistant_from_row,
+        )
     }
 
     pub fn get_active(&self) -> Result<Vec<PersonalAssistant>> {
@@ -300,6 +293,25 @@ fn validated_leaving_date(assistant: &PersonalAssistant) -> Result<Option<String
         }
     }
     Ok(Some(leaving.format("%d/%m/%Y").to_string()))
+}
+
+fn personal_assistant_from_row(row: &rusqlite::Row<'_>) -> Result<PersonalAssistant> {
+    Ok(PersonalAssistant {
+        id: row.get(0)?,
+        first_name: row.get(1)?,
+        surname: row.get(2)?,
+        date_of_birth: row.get(3)?,
+        national_insurance_number: row.get(4)?,
+        address: row.get(5)?,
+        postcode: row.get(6)?,
+        telephone: row.get(7)?,
+        email: row.get(8)?,
+        employment_status: row.get(9)?,
+        mileage_enabled: row.get::<_, i64>(10)? != 0,
+        start_date: row.get(11)?,
+        leaving_date: row.get(13)?,
+        signature: row.get(12)?,
+    })
 }
 
 #[cfg(test)]

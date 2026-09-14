@@ -416,7 +416,9 @@ mod tests {
     ) {
         let (dir, app) = crate::payroll_timesheet_screen::tests::test_application();
         crate::payroll_evidence::open(&app).unwrap().execute_batch(
-            "INSERT INTO personal_assistants (id, first_name, surname) VALUES (1, 'Test', 'PA');"
+            "INSERT INTO personal_assistants (id, first_name, surname) VALUES (1, 'Test', 'PA');
+             INSERT INTO payroll_schedules (payroll_year, cycle_number, first_week_commencing, latest_posting_date, pay_date, created_at)
+             VALUES ('2026/27', 7, '31/08/2026', 'test', 'test', 'test');"
         ).unwrap();
         let repo = &app.payroll_timesheet_repository;
         let id = repo.insert("2026/27", 7, 1, None, "test").unwrap();
