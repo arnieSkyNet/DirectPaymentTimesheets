@@ -26,7 +26,7 @@ fi
 printf 'Building Direct Payments Timesheets %s for %s\n' \
     "${VERSION}" "${ARCHITECTURE}"
 
-cargo build --release
+DPT_INSTALLATION_KIND=deb cargo build --release
 
 BUILD_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/direct-payment-timesheets-deb.XXXXXX")"
 PACKAGE_ROOT="${BUILD_ROOT}/${PACKAGE_NAME}"
