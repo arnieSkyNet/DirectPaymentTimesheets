@@ -29,8 +29,13 @@ fn initialise_database(database_path: &std::path::Path) -> Result<(), Box<dyn Er
 }
 
 fn launch_gui(app: Application) -> Result<(), Box<dyn Error>> {
+    let application_icon = eframe::icon_data::from_png_bytes(include_bytes!(
+        "../assets/direct-payment-timesheets.png"
+    ))?;
+
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
+            .with_icon(application_icon)
             .with_inner_size([1000.0, 800.0])
             .with_clamp_size_to_monitor_size(true),
         ..Default::default()
