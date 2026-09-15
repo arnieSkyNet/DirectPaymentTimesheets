@@ -90,6 +90,31 @@ fn validate_sickness_layout(
 
 pub struct PdfGenerator;
 
+fn load_pdf_font(path: &Path) -> Result<ParsedFont, Box<dyn std::error::Error>> {
+    let bytes = match fs::read(path) {
+        Ok(bytes) => bytes,
+        Err(error) => {
+            let defaults = crate::config::PdfConfig::default();
+            if error.kind() == std::io::ErrorKind::NotFound && path == defaults.regular_font {
+                include_bytes!("../assets/fonts/DejaVuSans.ttf").to_vec()
+            } else if error.kind() == std::io::ErrorKind::NotFound && path == defaults.bold_font {
+                include_bytes!("../assets/fonts/DejaVuSans-Bold.ttf").to_vec()
+            } else {
+                return Err(std::io::Error::new(
+                    error.kind(),
+                    format!(
+                        "Could not read configured PDF font {}: {error}",
+                        path.display()
+                    ),
+                )
+                .into());
+            }
+        }
+    };
+    ParsedFont::from_bytes(&bytes, 0, &mut Vec::new())
+        .ok_or_else(|| format!("Could not parse configured PDF font {}", path.display()).into())
+}
+
 impl PdfGenerator {
     pub fn timesheet_output_path(
         output_dir: &Path,
@@ -145,16 +170,8 @@ impl PdfGenerator {
 
         let mut document = PdfDocument::new("Direct Payment Timesheet");
 
-        let regular_bytes = fs::read(&pdf_config.regular_font)?;
-        let bold_bytes = fs::read(&pdf_config.bold_font)?;
-
-        let mut font_warnings = Vec::new();
-
-        let regular_font = ParsedFont::from_bytes(&regular_bytes, 0, &mut font_warnings)
-            .ok_or("Could not parse configured regular PDF font")?;
-
-        let bold_font = ParsedFont::from_bytes(&bold_bytes, 0, &mut font_warnings)
-            .ok_or("Could not parse configured bold PDF font")?;
+        let regular_font = load_pdf_font(&pdf_config.regular_font)?;
+        let bold_font = load_pdf_font(&pdf_config.bold_font)?;
 
         validate_sickness_layout(
             &data.sickness_periods,
@@ -1076,12 +1093,7 @@ mod tests {
     use std::env;
 
     fn footer_font() -> ParsedFont {
-        ParsedFont::from_bytes(
-            &fs::read(crate::config::PdfConfig::default().regular_font).unwrap(),
-            0,
-            &mut Vec::new(),
-        )
-        .unwrap()
+        load_pdf_font(&crate::config::PdfConfig::default().regular_font).unwrap()
     }
 
     #[test]

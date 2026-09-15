@@ -190,9 +190,12 @@ fn mixed_cross_year_package_classification_and_routing_match_real_filename_model
         assert_eq!(docs.len(), 1);
         assert_eq!(docs[0].document_type, "p60");
         assert_eq!(docs[0].document_year.as_deref(), Some("2025/26"));
-        assert!(docs[0]
-            .path
-            .starts_with(dir.path().join(format!("payslips/2025 to 2026/PA {id}"))));
+        let expected_directory = dir
+            .path()
+            .join(format!("payslips/2025 to 2026/PA {id}"))
+            .canonicalize()
+            .unwrap();
+        assert!(docs[0].path.starts_with(expected_directory));
         // A P60 in the same package does not prove this payslip's year.
         assert!(dir
             .path()

@@ -3,6 +3,9 @@ Upstream-Name: DejaVu fonts
 Upstream-Author: Stepan Roh <src@users.sourceforge.net> (original author),
                   see /usr/share/doc/fonts-dejavu-core/AUTHORS for full list
 Source: https://dejavu-fonts.github.io/
+Comment: This notice covers the bundled DejaVuSans.ttf and DejaVuSans-Bold.ttf.
+ Both fonts match Debian fonts-dejavu-core 2.37-8:
+ https://deb.debian.org/debian/pool/main/f/fonts-dejavu/fonts-dejavu-core_2.37-8_all.deb
 
 Files: *
 Copyright: Copyright (c) 2003 by Bitstream, Inc. All Rights Reserved. 
