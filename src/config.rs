@@ -59,7 +59,24 @@ pub struct FolderConfig {
 }
 
 fn portable_business_folder(name: &str) -> PathBuf {
-    PathBuf::from("~/Documents/DirectPaymentTimesheets").join(name)
+    #[cfg(windows)]
+    {
+        let documents =
+            dirs::document_dir().expect("Could not resolve the Windows Documents known folder");
+        business_folder(name, Some(&documents))
+    }
+    #[cfg(not(windows))]
+    {
+        business_folder(name, None)
+    }
+}
+
+fn business_folder(name: &str, windows_documents: Option<&Path>) -> PathBuf {
+    match windows_documents {
+        Some(documents) => documents.join("DirectPaymentTimesheets"),
+        None => PathBuf::from("~/Documents/DirectPaymentTimesheets"),
+    }
+    .join(name)
 }
 
 fn default_csv_import_folder() -> PathBuf {
@@ -470,27 +487,64 @@ mod tests {
         let config = AppConfig::load(&path).unwrap();
         let serialized = fs::read_to_string(path).unwrap();
 
-        assert!(!serialized.contains("/home/"));
-        assert!(!serialized.contains("NCC"));
-        assert_eq!(
-            config.folders.csv_import,
-            Path::new("~/Documents/DirectPaymentTimesheets/import")
-        );
-        assert_eq!(
-            config.folders.pdf_output,
-            Path::new("~/Documents/DirectPaymentTimesheets/pdf")
-        );
-        assert_eq!(
-            config.folders.email_archive,
-            Path::new("~/Documents/DirectPaymentTimesheets/emails")
-        );
+        #[cfg(not(windows))]
+        {
+            assert!(!serialized.contains("/home/"));
+            assert!(!serialized.contains("NCC"));
+        }
+        let _: AppConfig = toml::from_str(&serialized).unwrap();
+        let expected_root = portable_business_folder("");
+        assert_eq!(config.folders.csv_import, expected_root.join("import"));
+        assert_eq!(config.folders.pdf_output, expected_root.join("pdf"));
+        assert_eq!(config.folders.email_archive, expected_root.join("emails"));
         assert_eq!(
             config.folders.payslip_folder,
-            Path::new("~/Documents/DirectPaymentTimesheets/payslips")
+            expected_root.join("payslips")
         );
         assert_eq!(
             config.folders.payroll_information_folder,
-            Path::new("~/Documents/DirectPaymentTimesheets/payroll-information")
+            expected_root.join("payroll-information")
+        );
+    }
+
+    #[test]
+    fn business_defaults_use_supplied_windows_documents_and_preserve_non_windows_paths() {
+        for name in ["import", "pdf", "emails", "payslips", "payroll-information"] {
+            for documents in [
+                Path::new("D:/Profiles/Zoë/OneDrive - Example/Documents"),
+                Path::new(r"\\fileserver\users\Synthetic User\Documents"),
+            ] {
+                assert_eq!(
+                    business_folder(name, Some(documents)),
+                    documents.join("DirectPaymentTimesheets").join(name)
+                );
+            }
+            assert_eq!(
+                business_folder(name, None),
+                PathBuf::from("~/Documents/DirectPaymentTimesheets").join(name)
+            );
+        }
+    }
+
+    #[test]
+    fn explicit_windows_business_paths_deserialize_and_round_trip_verbatim() {
+        let source = r#"
+csv_import = 'E:\Chosen\Import'
+pdf_output = 'F:\Payroll PDFs'
+email_archive = '\\server\share\Emails'
+payslip_folder = 'D:\Zoë\Payslips'
+payroll_information_folder = 'relative\Chosen Information'
+"#;
+        let config: FolderConfig = toml::from_str(source).unwrap();
+        let encoded = toml::to_string(&config).unwrap();
+        let reloaded: FolderConfig = toml::from_str(&encoded).unwrap();
+        assert_eq!(reloaded.csv_import, Path::new(r"E:\Chosen\Import"));
+        assert_eq!(reloaded.pdf_output, Path::new(r"F:\Payroll PDFs"));
+        assert_eq!(reloaded.email_archive, Path::new(r"\\server\share\Emails"));
+        assert_eq!(reloaded.payslip_folder, Path::new(r"D:\Zoë\Payslips"));
+        assert_eq!(
+            reloaded.payroll_information_folder,
+            Path::new(r"relative\Chosen Information")
         );
     }
 
