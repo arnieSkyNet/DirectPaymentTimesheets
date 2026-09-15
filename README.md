@@ -2,16 +2,16 @@
 
 DirectPaymentTimesheets is a local desktop application for administering UK Direct Payment Personal Assistant timesheets and the four-week payroll-provider workflow. It imports externally recorded work, prepares payroll timesheets, generates the provider PDF, sends timesheets and payslips, imports payroll documents, and preserves the evidence represented by submitted payroll.
 
-The current application version is `1.0.0` with SQLite schema version 31. It is a single-user local desktop application for the documented Direct Payment payroll workflow, not a general-purpose payroll product.
+The available download versions are `1.0.1` for Windows and `1.0.0` for Linux, with SQLite schema version 31. It is a single-user local desktop application for the documented Direct Payment payroll workflow, not a general-purpose payroll product.
 
 ## Download
 
-**Current version: 1.0.0**
+**Download versions: Windows 1.0.1 - Linux 1.0.0**
 
 [![Download .deb (Debian/Ubuntu/Mint)](https://img.shields.io/badge/Download%20.deb%20%28Debian%2FUbuntu%2FMint%29-blue?logo=debian&logoColor=white)](https://github.com/ArnieSkyNet/DirectPaymentTimesheets/releases/download/v1.0.0/direct-payment-timesheets_1.0.0_amd64.deb)
 [![Download AppImage (Linux)](https://img.shields.io/badge/Download%20AppImage%20%28Linux%29-green?logo=linux&logoColor=white)](https://github.com/ArnieSkyNet/DirectPaymentTimesheets/releases/download/v1.0.0/Direct_Payments_Timesheets-1.0.0-x86_64.AppImage)
 
-![Windows planned](https://img.shields.io/badge/Windows%20planned-lightgrey?logo=windows11&logoColor=white)
+[![Download Windows 10 and later (64-bit) - v1.0.1](https://img.shields.io/badge/Download%20Windows%2010%20and%20later%20%2864--bit%29-v1.0.1-blue?logo=windows11&logoColor=white)](https://github.com/arnieSkyNet/DirectPaymentTimesheets/releases/download/v1.0.1/DirectPaymentTimesheets-1.0.1-windows-x86_64-setup.exe)
 ![macOS planned](https://img.shields.io/badge/macOS%20planned-lightgrey?logo=apple&logoColor=white)
 
 These Linux downloads support 64-bit Intel/AMD computers. ARM packages, including Raspberry Pi `armhf`, are planned separately.
@@ -96,7 +96,7 @@ The Dashboard groups the workflow into three rows:
 
 ## Install, build and run
 
-DirectPaymentTimesheets version 1.0.0 can be installed using a Linux `.deb` package or run using the AppImage. Building from source remains available for development.
+DirectPaymentTimesheets version 1.0.1 can be installed using the Windows installer. Version 1.0.0 can be installed using a Linux `.deb` package or run using the AppImage. Building from source remains available for development.
 
 ### Linux
 
@@ -157,7 +157,15 @@ chmod 755 Direct_Payments_Timesheets-1.0.0-x86_64.AppImage
 
 ### Windows
 
-Windows installation instructions and packaged releases are planned for a future version.
+[![Download Windows 10 and later (64-bit) - v1.0.1](https://img.shields.io/badge/Download%20Windows%2010%20and%20later%20%2864--bit%29-v1.0.1-blue?logo=windows11&logoColor=white)](https://github.com/arnieSkyNet/DirectPaymentTimesheets/releases/download/v1.0.1/DirectPaymentTimesheets-1.0.1-windows-x86_64-setup.exe)
+
+For Windows 10 and later, 64-bit:
+
+1. Download and run `DirectPaymentTimesheets-1.0.1-windows-x86_64-setup.exe` using the button above.
+2. The installer is unsigned. If Windows shows **Windows protected your PC**, click **More info**, confirm the filename is `DirectPaymentTimesheets-1.0.1-windows-x86_64-setup.exe`, then click **Run anyway**.
+3. Follow the installer prompts. This is a per-user installation and does not require administrator access.
+
+Upgrades and uninstall preserve application data and payroll documents.
 
 ### macOS
 
