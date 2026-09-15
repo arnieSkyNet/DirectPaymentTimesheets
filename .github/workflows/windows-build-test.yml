@@ -1,0 +1,39 @@
+name: Windows build test
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - windows-1.0.1
+
+permissions:
+  contents: read
+
+jobs:
+  build-windows:
+    name: Test and build Windows executable
+    runs-on: windows-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v5
+
+      - name: Select stable Windows MSVC Rust
+        run: rustup default stable-x86_64-pc-windows-msvc
+
+      - name: Run Rust test suite
+        run: cargo test --locked
+
+      - name: Build Windows executable
+        env:
+          DPT_INSTALLATION_KIND: windows
+        run: cargo build --release --locked
+
+      - name: Upload test executable
+        uses: actions/upload-artifact@v6
+        with:
+          name: DirectPaymentTimesheets-windows-x86_64-test
+          path: target/release/direct_payment_timesheets.exe
+          if-no-files-found: error
+          retention-days: 7
