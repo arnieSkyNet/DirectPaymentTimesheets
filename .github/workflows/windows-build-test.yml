@@ -22,29 +22,10 @@ jobs:
       - name: Select stable Windows MSVC Rust
         run: rustup default stable-x86_64-pc-windows-msvc
 
-      - name: Download and verify portable NSIS 3.12
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = 'Stop'
-          $toolRoot = Join-Path $env:RUNNER_TEMP ('nsis-3.12-' + [Guid]::NewGuid().ToString('N'))
-          New-Item -ItemType Directory -Path $toolRoot | Out-Null
-          $archive = Join-Path $toolRoot 'nsis-3.12.zip'
-          $url = 'https://prdownloads.sourceforge.net/nsis/nsis-3.12.zip'
-          # Fixed archive SHA-256; also recorded in https://github.com/baulk/bucket/blob/master/bucket/nsis.json
-          $expectedSha256 = '56581f90db321581c5381193d796fffcf2d24b2f8fed2160a6c6a3baa67f2c4f'
-          Invoke-WebRequest -Uri $url -OutFile $archive -TimeoutSec 120
-          $actualSha256 = (Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash
-          if ($actualSha256 -ne $expectedSha256) {
-            throw "NSIS archive SHA-256 mismatch: expected $expectedSha256, got $actualSha256"
-          }
-          Expand-Archive -LiteralPath $archive -DestinationPath $toolRoot
-          $nsisDir = Join-Path $toolRoot 'nsis-3.12'
-          $nsis = Join-Path $nsisDir 'Bin/makensis.exe'
-          if (-not (Test-Path -LiteralPath $nsis -PathType Leaf)) {
-            throw 'The verified NSIS archive did not contain Bin/makensis.exe.'
-          }
-          "NSISDIR=$nsisDir" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-          "NSIS_COMPILER=$nsis" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+      - name: Install NSIS 3.12
+        uses: repolevedavaj/install-nsis@v1.3.0
+        with:
+          nsis-version: '3.12'
 
       - name: Run Rust test suite
         run: cargo test --locked
@@ -63,7 +44,7 @@ jobs:
 
       - name: Build unsigned per-user installer candidate
         shell: pwsh
-        run: ./packaging/windows/build-installer.ps1 -MakeNsisPath $env:NSIS_COMPILER
+        run: ./packaging/windows/build-installer.ps1
 
       - name: Upload unpublished Windows test candidates and licences
         uses: actions/upload-artifact@v6
