@@ -1,90 +1,43 @@
 #!/usr/bin/env bash
 set -euo pipefail
-
-PROJECT_ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)"
-PACKAGE_NAME="direct-payment-timesheets"
-SOURCE_BINARY="${PROJECT_ROOT}/target/release/direct_payment_timesheets"
-OUTPUT_DIRECTORY="${PROJECT_ROOT}/dist"
-
-cd "${PROJECT_ROOT}"
-
-VERSION="$(
-    sed -n 's/^version = "\([^"]*\)"/\1/p' Cargo.toml |
-        head -n 1
-)"
-ARCHITECTURE="$(dpkg --print-architecture)"
-LIBC_VERSION="$(
-    dpkg-query -W -f='${Version}' libc6 |
-        cut -d- -f1
-)"
-
-if [[ -z "${VERSION}" ]]; then
-    printf 'ERROR: Could not read the package version from Cargo.toml\n' >&2
-    exit 1
-fi
-
-printf 'Building Direct Payments Timesheets %s for %s\n' \
-    "${VERSION}" "${ARCHITECTURE}"
-
-DPT_INSTALLATION_KIND=deb cargo build --release
-
-BUILD_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/direct-payment-timesheets-deb.XXXXXX")"
-PACKAGE_ROOT="${BUILD_ROOT}/${PACKAGE_NAME}"
-OUTPUT_FILE="${OUTPUT_DIRECTORY}/${PACKAGE_NAME}_${VERSION}_${ARCHITECTURE}.deb"
-
-cleanup() {
-    rm -rf -- "${BUILD_ROOT}"
-}
-trap cleanup EXIT
-
-install -Dm755 \
-    "${SOURCE_BINARY}" \
-    "${PACKAGE_ROOT}/usr/bin/direct-payment-timesheets"
-
-strip "${PACKAGE_ROOT}/usr/bin/direct-payment-timesheets"
-
-install -Dm644 \
-    assets/direct-payment-timesheets.png \
-    "${PACKAGE_ROOT}/usr/share/icons/hicolor/512x512/apps/direct-payment-timesheets.png"
-
-install -Dm644 \
-    packaging/linux/direct-payment-timesheets.desktop \
-    "${PACKAGE_ROOT}/usr/share/applications/direct-payment-timesheets.desktop"
-
-install -Dm644 \
-    LICENSE \
-    "${PACKAGE_ROOT}/usr/share/doc/${PACKAGE_NAME}/copyright"
-
-install -Dm644 \
-    THIRD_PARTY_LICENSES.md \
-    "${PACKAGE_ROOT}/usr/share/doc/${PACKAGE_NAME}/THIRD_PARTY_LICENSES.md"
-
-INSTALLED_SIZE="$(du -sk "${PACKAGE_ROOT}" | cut -f1)"
-
-install -d -m755 "${PACKAGE_ROOT}/DEBIAN"
-
-printf '%s\n' \
-    "Package: ${PACKAGE_NAME}" \
-    "Version: ${VERSION}" \
-    "Section: office" \
-    "Priority: optional" \
-    "Architecture: ${ARCHITECTURE}" \
-    "Maintainer: Mark Worsdall <atrayzee@gmail.com>" \
-    "Homepage: https://github.com/ArnieSkyNet/DirectPaymentTimesheets" \
-    "Installed-Size: ${INSTALLED_SIZE}" \
-    "Depends: libc6 (>= ${LIBC_VERSION}), libssl3 | libssl3t64, libgcc-s1, zlib1g, libzstd1, ca-certificates" \
-    "Description: Manage direct payment payroll timesheets" \
-    " Desktop application for preparing, generating and managing" \
-    " direct payment payroll timesheets and related payroll documents." \
-    > "${PACKAGE_ROOT}/DEBIAN/control"
-
-mkdir -p "${OUTPUT_DIRECTORY}"
-rm -f -- "${OUTPUT_FILE}"
-
-dpkg-deb \
-    --root-owner-group \
-    --build \
-    "${PACKAGE_ROOT}" \
-    "${OUTPUT_FILE}"
-
-printf '\nCreated package:\n%s\n' "${OUTPUT_FILE}"
+# shellcheck source=packaging/linux/common.sh
+source "$(dirname -- "${BASH_SOURCE[0]}")/common.sh"
+prepare_binary deb
+BUILD_ROOT="$(mktemp -d)"
+trap 'rm -rf -- "$BUILD_ROOT"' EXIT
+PACKAGE_ROOT="$BUILD_ROOT/package"
+install -Dm755 "$SOURCE_BINARY" "$PACKAGE_ROOT/usr/bin/direct-payment-timesheets"
+"$STRIP" "$PACKAGE_ROOT/usr/bin/direct-payment-timesheets"
+install -Dm644 "$PROJECT_ROOT/assets/direct-payment-timesheets.png" "$PACKAGE_ROOT/usr/share/icons/hicolor/512x512/apps/direct-payment-timesheets.png"
+install -Dm644 "$PROJECT_ROOT/packaging/linux/direct-payment-timesheets.desktop" "$PACKAGE_ROOT/usr/share/applications/direct-payment-timesheets.desktop"
+python3 "$PROJECT_ROOT/packaging/package.py" licenses "$PACKAGE_ROOT/usr/share/doc/direct-payment-timesheets"
+cp "$PACKAGE_ROOT/usr/share/doc/direct-payment-timesheets/LICENSE" "$PACKAGE_ROOT/usr/share/doc/direct-payment-timesheets/copyright"
+mkdir -p "$BUILD_ROOT/debian" "$PACKAGE_ROOT/DEBIAN"
+printf 'Source: direct-payment-timesheets\nSection: office\nPriority: optional\nMaintainer: Mark Worsdall <atrayzee@gmail.com>\n\nPackage: direct-payment-timesheets\nArchitecture: %s\nDescription: Direct Payments Timesheets\n' "$DEB_ARCH" > "$BUILD_ROOT/debian/control"
+# Run in the target Bookworm userspace: shlibdeps resolves actual target libraries.
+DEPENDS="$(cd "$BUILD_ROOT" && dpkg-shlibdeps -O -e"$PACKAGE_ROOT/usr/bin/direct-payment-timesheets")"
+DEPENDS="${DEPENDS#shlibs:Depends=}"
+[[ -n "$DEPENDS" ]] || { echo 'No shared-library dependencies detected' >&2; exit 1; }
+cat > "$PACKAGE_ROOT/DEBIAN/control" <<CONTROL
+Package: direct-payment-timesheets
+Version: $VERSION
+Section: office
+Priority: optional
+Architecture: $DEB_ARCH
+Maintainer: Mark Worsdall <atrayzee@gmail.com>
+Homepage: https://github.com/ArnieSkyNet/DirectPaymentTimesheets
+Installed-Size: $(du -sk "$PACKAGE_ROOT" | cut -f1)
+Depends: $DEPENDS, ca-certificates, libx11-6, libx11-xcb1, libxcb1, libxkbcommon0, libxkbcommon-x11-0, libwayland-client0, libegl1, libgl1, xdg-utils, xdg-desktop-portal
+Recommends: xdg-desktop-portal-gtk | xdg-desktop-portal-kde
+Description: Manage direct payment payroll timesheets
+ Desktop application for preparing and managing payroll documents.
+CONTROL
+OUTPUT_FILE="$OUTPUT_DIRECTORY/direct-payment-timesheets_${VERSION}_${DEB_ARCH}.deb"
+dpkg-deb --root-owner-group --build "$PACKAGE_ROOT" "$OUTPUT_FILE"
+[[ "$(dpkg-deb -f "$OUTPUT_FILE" Architecture)" == "$DEB_ARCH" ]]
+[[ "$(dpkg-deb -f "$OUTPUT_FILE" Version)" == "$VERSION" ]]
+dpkg-deb -x "$OUTPUT_FILE" "$BUILD_ROOT/verify"
+python3 "$PROJECT_ROOT/packaging/package.py" elf "$TARGET" "$BUILD_ROOT/verify/usr/bin/direct-payment-timesheets"
+test -f "$BUILD_ROOT/verify/usr/share/doc/direct-payment-timesheets/DejaVu-LICENSE.txt"
+test -d "$BUILD_ROOT/verify/usr/share/doc/direct-payment-timesheets/third-party"
+python3 "$PROJECT_ROOT/packaging/package.py" record "$OUTPUT_FILE" "$TARGET" deb

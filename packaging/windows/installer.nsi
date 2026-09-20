@@ -2,6 +2,8 @@ Unicode true
 RequestExecutionLevel user
 !include "MUI2.nsh"
 !include "x64.nsh"
+!include "WinVer.nsh"
+ManifestSupportedOS all
 
 !define PRODUCT_NAME "Direct Payments Timesheets"
 !define PUBLISHER "Mark Worsdall"
@@ -34,6 +36,10 @@ VIAddVersionKey /LANG=1033 "ProductVersion" "${VERSION}"
 
 Function .onInit
     SetShellVarContext current
+    ${IfNot} ${AtLeastWin10}
+        MessageBox MB_OK|MB_ICONSTOP "This installer requires Windows 10 or later."
+        Abort
+    ${EndIf}
     ${IfNot} ${RunningX64}
         MessageBox MB_OK|MB_ICONSTOP "This installer requires 64-bit Windows."
         Abort
@@ -47,7 +53,7 @@ Section "Application"
     SetShellVarContext current
     SetRegView 64
     SetOutPath "$INSTDIR"
-    File /oname=DirectPaymentTimesheets.exe "${PROJECT_ROOT}\target\release\direct_payment_timesheets.exe"
+    File /oname=DirectPaymentTimesheets.exe "${SOURCE_BINARY}"
     File "${PROJECT_ROOT}\assets\direct-payment-timesheets.ico"
     File "${PROJECT_ROOT}\LICENSE"
     File "${PROJECT_ROOT}\THIRD_PARTY_LICENSES.md"

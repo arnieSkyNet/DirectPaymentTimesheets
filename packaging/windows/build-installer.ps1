@@ -1,4 +1,8 @@
-param([string]$MakeNsisPath = 'makensis.exe')
+param(
+    [string]$MakeNsisPath = 'makensis.exe',
+    [string]$SourceBinary = '',
+    [string]$OutputDirectory = ''
+)
 
 $ErrorActionPreference = 'Stop'
 $root = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot '../..'))
@@ -7,7 +11,7 @@ $package = [regex]::Match($manifest, '(?ms)^\[package\]\s*\r?\n(.*?)(?=^\[|\z)')
 $version = [regex]::Match($package, '(?m)^version\s*=\s*"(\d+\.\d+\.\d+)"\s*$').Groups[1].Value
 if (-not $version) { throw 'Cargo.toml must contain a numeric package version.' }
 $compiler = (Get-Command $MakeNsisPath -ErrorAction Stop).Source
-$binary = Join-Path $root 'target/release/direct_payment_timesheets.exe'
+$binary = if ($SourceBinary) { [System.IO.Path]::GetFullPath($SourceBinary) } else { Join-Path $root 'target/release/direct_payment_timesheets.exe' }
 $metadata = [System.Diagnostics.FileVersionInfo]::GetVersionInfo($binary)
 if ($metadata.ProductVersion -ne $version -or $metadata.FileVersion -ne $version -or
     $metadata.ProductName -ne 'Direct Payments Timesheets' -or $metadata.CompanyName -ne 'Mark Worsdall') {
@@ -32,7 +36,7 @@ try {
 }
 
 $buildDir = Join-Path $root 'dist/windows-installer-build'
-$artifactDir = Join-Path $root 'dist/windows-test'
+$artifactDir = if ($OutputDirectory) { [System.IO.Path]::GetFullPath($OutputDirectory) } else { Join-Path $root 'dist/windows-test' }
 New-Item -ItemType Directory -Path $buildDir, $artifactDir -Force | Out-Null
 $output = Join-Path $artifactDir "DirectPaymentTimesheets-$version-windows-x86_64-setup.exe"
 
@@ -64,12 +68,12 @@ $utf8 = [System.Text.UTF8Encoding]::new($false)
 [System.IO.File]::WriteAllLines((Join-Path $buildDir 'third-party-install.nsh'), $install, $utf8)
 [System.IO.File]::WriteAllLines((Join-Path $buildDir 'third-party-uninstall.nsh'), $uninstall, $utf8)
 
-& $compiler /NOCONFIG /INPUTCHARSET UTF8 "/DPROJECT_ROOT=$root" "/DBUILD_DIR=$buildDir" "/DVERSION=$version" "/DOUTPUT_FILE=$output" (Join-Path $PSScriptRoot 'installer.nsi')
+& $compiler /NOCONFIG /INPUTCHARSET UTF8 "/DSOURCE_BINARY=$binary" "/DPROJECT_ROOT=$root" "/DBUILD_DIR=$buildDir" "/DVERSION=$version" "/DOUTPUT_FILE=$output" (Join-Path $PSScriptRoot 'installer.nsi')
 if ($LASTEXITCODE -ne 0) { throw "NSIS failed with exit code $LASTEXITCODE" }
 if (-not (Test-Path -LiteralPath $output -PathType Leaf)) { throw 'NSIS did not produce the installer.' }
 
-# Keep the ordinary Cargo executable and all licence notices beside the installer candidate.
-Copy-Item -LiteralPath $binary -Destination (Join-Path $artifactDir 'direct_payment_timesheets.exe')
+# Keep licence notices beside the installer candidate as well as inside it.
+# The validated executable is distributed only inside the installer.
 Copy-Item -LiteralPath (Join-Path $root 'LICENSE'), (Join-Path $root 'THIRD_PARTY_LICENSES.md'), (Join-Path $root 'assets/fonts/DejaVu-LICENSE.txt') -Destination $artifactDir
 foreach ($notice in $notices) {
     $relative = $notice.FullName.Substring($noticeRoot.Length + 1)
@@ -78,3 +82,6 @@ foreach ($notice in $notices) {
     Copy-Item -LiteralPath $notice.FullName -Destination $destination
 }
 Write-Output $output
+
+python (Join-Path $root 'packaging/package.py') record $output x86_64-pc-windows-msvc windows
+if ($LASTEXITCODE -ne 0) { throw 'Could not record installer provenance.' }
