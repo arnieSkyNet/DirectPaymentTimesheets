@@ -1,0 +1,100 @@
+name: Multi-platform package rehearsal (artifacts only)
+
+on:
+  workflow_dispatch:
+    inputs:
+      target:
+        description: Build all nine packages, or prove one architecture first
+        type: choice
+        default: all
+        options: [all, linux-x86_64, linux-armv7, linux-aarch64, windows-x86_64, macos-arm64, macos-x86_64]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: package-rehearsal-${{ github.ref }}-${{ inputs.target }}
+  cancel-in-progress: false
+
+jobs:
+  source:
+    runs-on: ubuntu-24.04
+    outputs:
+      sha: ${{ steps.source.outputs.sha }}
+      version: ${{ steps.source.outputs.version }}
+      linux: ${{ steps.source.outputs.linux }}
+      macos: ${{ steps.source.outputs.macos }}
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+      - id: source
+        env:
+          SELECTED_TARGET: ${{ inputs.target }}
+        run: |
+          python3 - <<'PY'
+          import json, os, subprocess
+          selected = os.environ['SELECTED_TARGET']
+          linux = [a for a in ['x86_64', 'armv7', 'aarch64'] if selected in ['all', 'linux-' + a]]
+          macos = [a for a in ['arm64', 'x86_64'] if selected in ['all', 'macos-' + a]]
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as out:
+              out.write('sha=' + subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip() + '\n')
+              out.write('version=' + subprocess.check_output(['python3', 'packaging/package.py', 'version'], text=True).strip() + '\n')
+              out.write('linux=' + json.dumps(linux or ['skip']) + '\n')
+              out.write('macos=' + json.dumps(macos or ['skip']) + '\n')
+          PY
+      - name: Validate packaging metadata and tests
+        run: python3 -B -m unittest discover -s packaging/tests -v
+  linux:
+    needs: source
+    if: inputs.target == 'all' || startsWith(inputs.target, 'linux-')
+    strategy:
+      fail-fast: false
+      matrix:
+        architecture: ${{ fromJSON(needs.source.outputs.linux) }}
+    uses: ./.github/workflows/linux-packages-test.yml
+    with:
+      architecture: ${{ matrix.architecture }}
+      source_sha: ${{ needs.source.outputs.sha }}
+  macos:
+    needs: source
+    if: inputs.target == 'all' || startsWith(inputs.target, 'macos-')
+    strategy:
+      fail-fast: false
+      matrix:
+        architecture: ${{ fromJSON(needs.source.outputs.macos) }}
+    uses: ./.github/workflows/macos-packages-test.yml
+    with:
+      architecture: ${{ matrix.architecture }}
+      source_sha: ${{ needs.source.outputs.sha }}
+  windows:
+    needs: source
+    if: inputs.target == 'all' || inputs.target == 'windows-x86_64'
+    uses: ./.github/workflows/windows-build-test.yml
+    with:
+      source_sha: ${{ needs.source.outputs.sha }}
+  verify-all:
+    needs: [source, linux, macos, windows]
+    if: inputs.target == 'all'
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          ref: ${{ needs.source.outputs.sha }}
+          persist-credentials: false
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        with:
+          pattern: rehearsal-*
+          path: dist/rehearsal
+      - name: Verify all nine packages share source and version
+        env:
+          SOURCE_SHA: ${{ needs.source.outputs.sha }}
+          PACKAGE_VERSION: ${{ needs.source.outputs.version }}
+        run: python3 packaging/package.py collect dist/rehearsal "$SOURCE_SHA" "$PACKAGE_VERSION"
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: rehearsal-complete-${{ needs.source.outputs.version }}-${{ needs.source.outputs.sha }}
+          path: dist/rehearsal/
+          if-no-files-found: error
+          retention-days: 30
+# Intentionally no tags/push/release trigger, write token, gh release or publisher.

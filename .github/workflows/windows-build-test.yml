@@ -1,55 +1,62 @@
-name: Windows build test
+name: Windows installer (reusable, artifacts only)
 
 on:
   workflow_dispatch:
-  push:
-    branches:
-      - windows-1.0.1
+  workflow_call:
+    inputs:
+      source_sha:
+        type: string
+        required: true
 
 permissions:
   contents: read
 
 jobs:
-  build-windows:
-    name: Test and build Windows executable
-    runs-on: windows-latest
-    timeout-minutes: 90
-
+  installer:
+    runs-on: windows-2022
+    timeout-minutes: 120
+    env:
+      SOURCE_SHA: ${{ inputs.source_sha || github.sha }}
+      DPT_INSTALLATION_KIND: windows
+      RUSTFLAGS: -C target-feature=+crt-static
+      CARGO_TARGET_DIR: target/packages/x86_64-pc-windows-msvc/windows
+      CARGO_INCREMENTAL: '0'
+      CARGO_PROFILE_TEST_DEBUG: '0'
     steps:
-      - name: Check out repository
-        uses: actions/checkout@v5
-
-      - name: Select stable Windows MSVC Rust
-        run: rustup default stable-x86_64-pc-windows-msvc
-
-      - name: Install NSIS 3.12
-        uses: repolevedavaj/install-nsis@v1.3.0
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          ref: ${{ env.SOURCE_SHA }}
+          persist-credentials: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: '3.12'
+      - uses: repolevedavaj/install-nsis@65a75ea79c3d1ddde868e98b7f9447e2e623401c # v1.3.0
         with:
           nsis-version: '3.12'
-
-      - name: Run Rust test suite
-        run: cargo test --locked
-
-      - name: Build Windows executable
-        env:
-          DPT_INSTALLATION_KIND: windows
-          RUSTFLAGS: -C target-feature=+crt-static
+      - name: Test and build pinned Windows MSVC executable
         shell: pwsh
         run: |
+          rustup toolchain install 1.98.1-x86_64-pc-windows-msvc --profile minimal
+          if ($LASTEXITCODE -ne 0) { throw 'Rust installation failed' }
+          $env:RUSTUP_TOOLCHAIN = '1.98.1-x86_64-pc-windows-msvc'
           $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
           $visualStudio = & $vswhere -latest -products '*' -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
           if (-not $visualStudio) { throw 'Visual Studio C++ build tools were not found.' }
           & "$visualStudio\Common7\Tools\Launch-VsDevShell.ps1" -Arch amd64 -HostArch amd64 -SkipAutomaticLocation
-          cargo build --release --locked
-
-      - name: Build unsigned per-user installer candidate
+          cargo test --locked --target x86_64-pc-windows-msvc
+          if ($LASTEXITCODE -ne 0) { throw 'Tests failed' }
+          cargo build --release --locked --target x86_64-pc-windows-msvc
+          if ($LASTEXITCODE -ne 0) { throw 'Release build failed' }
+      - name: Build unsigned Windows 10+ per-user installer
         shell: pwsh
-        run: ./packaging/windows/build-installer.ps1
-
-      - name: Upload unpublished Windows test candidates and licences
-        uses: actions/upload-artifact@v6
+        run: |
+          ./packaging/windows/build-installer.ps1 -SourceBinary "$env:CARGO_TARGET_DIR/x86_64-pc-windows-msvc/release/direct_payment_timesheets.exe" -OutputDirectory dist/x86_64-pc-windows-msvc
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
         with:
-          name: DirectPaymentTimesheets-windows-x86_64-test
-          path: dist/windows-test/
+          name: rehearsal-windows-x86_64-${{ env.SOURCE_SHA }}
+          path: |
+            dist/x86_64-pc-windows-msvc/*.exe
+            dist/x86_64-pc-windows-msvc/*.json
+            dist/x86_64-pc-windows-msvc/*.sha256
           if-no-files-found: error
-          retention-days: 7
+          retention-days: 30

@@ -4,8 +4,8 @@ This document describes the implementation on `main`. Source code, migrations an
 
 ## Current release and platform
 
-- Application version: `1.0.0`.
-- Database schema: version 31, upgraded in place by ordered SQLite migrations.
+- Application version: `1.0.1`.
+- Database schema: version 32, upgraded in place by ordered SQLite migrations.
 - Desktop UI: Rust with `eframe`/`egui`.
 - Persistence: SQLite through `rusqlite` (bundled SQLite).
 - Documents and integration: `printpdf`, PDF text extraction, ZIP import and SMTP via `lettre`.

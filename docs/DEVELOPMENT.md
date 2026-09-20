@@ -333,3 +333,10 @@ in-lieu hours, source shift notes and individual production are unaffected.
 `src/payroll_leaving_note_tests.rs` covers date boundaries/formatting, blank and
 nonblank notes, editing/deletion, navigation choices, PA/period isolation,
 protected records, persistence/reopen and candidate invalidation on deliberate Save.
+
+## Artifact-only package rehearsals
+
+See [Release-build rehearsals](RELEASE-BUILDS.md) for the six architecture targets,
+nine packages, explicit target/tool pins, local validation and required GitHub
+proof runs. This infrastructure does not publish releases or change application
+version/schema. Public downloads remain those documented in README.

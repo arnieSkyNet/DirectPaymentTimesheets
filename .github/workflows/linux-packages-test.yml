@@ -1,77 +1,75 @@
-name: Linux package test
+name: Linux packages (reusable, artifacts only)
 
 on:
   workflow_dispatch:
+    inputs:
+      architecture:
+        type: choice
+        default: x86_64
+        options: [x86_64, armv7, aarch64]
+  workflow_call:
+    inputs:
+      architecture:
+        type: string
+        required: true
+      source_sha:
+        type: string
+        required: true
 
 permissions:
   contents: read
 
 jobs:
-  build-linux-packages:
-    name: Build Debian package and AppImage
-    runs-on: ubuntu-latest
-    container: rust:1.98.1-bookworm
-    timeout-minutes: 45
-
+  packages:
+    runs-on: ${{ inputs.architecture == 'aarch64' && 'ubuntu-24.04-arm' || 'ubuntu-24.04' }}
+    timeout-minutes: 240
+    env:
+      SOURCE_SHA: ${{ inputs.source_sha || github.sha }}
+      ARCHITECTURE: ${{ inputs.architecture }}
+      CARGO_INCREMENTAL: '0'
+      CARGO_PROFILE_TEST_DEBUG: '0'
+      CARGO_PROFILE_DEV_DEBUG: '0'
     steps:
-      - name: Install Linux build tools
-        run: |
-          apt-get update
-          DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-            build-essential \
-            ca-certificates \
-            curl \
-            desktop-file-utils \
-            file \
-            libfuse2 \
-            libssl-dev \
-            patchelf \
-            pkg-config
-
-      - name: Check out repository
-        uses: actions/checkout@v5
-
-      - name: Validate packaging files
-        run: |
-          bash -n packaging/linux/build-deb.sh
-          bash -n packaging/linux/build-appimage.sh
-          desktop-file-validate packaging/linux/direct-payment-timesheets.desktop
-
-      - name: Run Rust test suite
-        run: cargo test --locked
-
-      - name: Build Debian package
-        run: packaging/linux/build-deb.sh
-
-      - name: Download pinned linuxdeploy
-        env:
-          LINUXDEPLOY_VERSION: 1-alpha-20251107-1
-        run: |
-          curl --fail --location --retry 3 \
-            --output /usr/local/bin/linuxdeploy-x86_64.AppImage \
-            "https://github.com/linuxdeploy/linuxdeploy/releases/download/${LINUXDEPLOY_VERSION}/linuxdeploy-x86_64.AppImage"
-          chmod 755 /usr/local/bin/linuxdeploy-x86_64.AppImage
-
-      - name: Build AppImage
-        env:
-          LINUXDEPLOY: /usr/local/bin/linuxdeploy-x86_64.AppImage
-        run: packaging/linux/build-appimage.sh
-
-      - name: Inspect packages
-        run: |
-          dpkg-deb --info dist/direct-payment-timesheets_*_amd64.deb
-          file dist/Direct_Payments_Timesheets-*-x86_64.AppImage
-          cd dist
-          sha256sum *.deb *.AppImage > SHA256SUMS
-          cat SHA256SUMS
-
-      - name: Upload test packages
-        uses: actions/upload-artifact@v6
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
-          name: linux-packages-test
-          path: |
-            dist/*.deb
-            dist/*.AppImage
-            dist/SHA256SUMS
+          ref: ${{ env.SOURCE_SHA }}
+          persist-credentials: false
+      - name: Map explicit target
+        run: |
+          case "$ARCHITECTURE" in
+            x86_64) target=x86_64-unknown-linux-gnu; platform=linux/amd64 ;;
+            armv7) target=armv7-unknown-linux-gnueabihf; platform=linux/arm/v7 ;;
+            aarch64) target=aarch64-unknown-linux-gnu; platform=linux/arm64 ;;
+            *) exit 1 ;;
+          esac
+          echo "TARGET=$target" >> "$GITHUB_ENV"
+          echo "TARGET_PLATFORM=$platform" >> "$GITHUB_ENV"
+      - uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130 # v3
+        if: inputs.architecture == 'armv7'
+        with:
+          platforms: arm
+          image: tonistiigi/binfmt@sha256:400a4873b838d1b89194d982c45e5fb3cda4593fbfd7e08a02e76b03b21166f0
+      - name: Validate scripts and desktop entry inputs
+        run: |
+          for script in packaging/linux/*.sh; do bash -n "$script"; done
+          python3 -B -m unittest discover -s packaging/tests -v
+      - name: Build native or cross-compiled Bookworm binaries
+        run: |
+          docker run --rm --init \
+            -v "$GITHUB_WORKSPACE:/workspace" -w /workspace \
+            -e TARGET -e SOURCE_SHA -e CARGO_INCREMENTAL -e CARGO_PROFILE_TEST_DEBUG -e CARGO_PROFILE_DEV_DEBUG \
+            rust:1.98.1-bookworm@sha256:93ce27a88655056a51dbdd8f5f2d7ddc071c7b0070fb288a37b5a285fc83971e \
+            bash -c 'set -euo pipefail; mode=""; if [[ "$TARGET" == armv7-* ]]; then mode=cross-armv7; fi; bash packaging/linux/install-dependencies.sh "$mode"; bash packaging/linux/build-binaries.sh'
+      - name: Run target tests and create target packages (ARMv7 uses QEMU)
+        run: |
+          docker run --rm --init --platform "$TARGET_PLATFORM" \
+            -v "$GITHUB_WORKSPACE:/workspace" -w /workspace \
+            -e TARGET -e SOURCE_SHA -e GITHUB_RUN_ID \
+            debian:bookworm-slim@sha256:3783cc01769c7b2b1b83a5c5ad96c815348e28ed7da68e2e3687004faa906251 \
+            bash -c 'set -euo pipefail; bash packaging/linux/install-dependencies.sh; bash packaging/linux/package-and-test.sh'
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: rehearsal-linux-${{ inputs.architecture }}-${{ env.SOURCE_SHA }}
+          path: dist/${{ env.TARGET }}/
           if-no-files-found: error
-          retention-days: 7
+          retention-days: 30
