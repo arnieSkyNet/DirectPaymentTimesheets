@@ -53,6 +53,8 @@ def squashfs_offset(path, arch):
 
 def extract(path, arch, destination):
     offset = squashfs_offset(path, arch)
+    # Bookworm unsquashfs creates the destination, but not missing parents.
+    Path(destination).parent.mkdir(parents=True, exist_ok=True)
     subprocess.run(['unsquashfs', '-no-progress', '-o', str(offset),
                     '-d', str(destination), str(path)], check=True)
 
