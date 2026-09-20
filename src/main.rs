@@ -56,6 +56,16 @@ mod theme;
 mod update_check;
 
 fn main() {
+    // Set Mesa's default before application initialisation can start any threads
+    // or initialise graphics. An explicit user setting remains authoritative.
+    if application::use_packaged_arm_software_rendering(
+        std::env::consts::OS,
+        std::env::consts::ARCH,
+        option_env!("DPT_INSTALLATION_KIND"),
+        std::env::var_os("LIBGL_ALWAYS_SOFTWARE").is_some(),
+    ) {
+        std::env::set_var("LIBGL_ALWAYS_SOFTWARE", "1");
+    }
     if let Err(error) = application::run() {
         eprintln!("Application error: {}", error);
     }

@@ -3,6 +3,51 @@ use std::error::Error;
 use crate::app::Application;
 use crate::database;
 
+// Both package formats use the same executable entry point. Keep this policy
+// pure so tests never mutate the process environment while running in parallel.
+pub(crate) fn use_packaged_arm_software_rendering(
+    os: &str,
+    arch: &str,
+    installation_kind: Option<&str>,
+    explicitly_configured: bool,
+) -> bool {
+    os == "linux"
+        && matches!(arch, "arm" | "aarch64")
+        && matches!(installation_kind, Some("deb" | "appimage"))
+        && !explicitly_configured
+}
+
+#[cfg(test)]
+mod rendering_tests {
+    #[test]
+    fn software_default_is_limited_to_both_arm_linux_package_kinds() {
+        for os in ["linux", "windows", "macos"] {
+            for arch in ["arm", "aarch64", "x86_64", "x86"] {
+                for kind in [
+                    None,
+                    Some("source"),
+                    Some("deb"),
+                    Some("appimage"),
+                    Some("windows"),
+                    Some("macos"),
+                    Some("unknown"),
+                ] {
+                    let expected = os == "linux"
+                        && matches!(arch, "arm" | "aarch64")
+                        && matches!(kind, Some("deb" | "appimage"));
+                    assert_eq!(
+                        super::use_packaged_arm_software_rendering(os, arch, kind, false),
+                        expected
+                    );
+                    assert!(!super::use_packaged_arm_software_rendering(
+                        os, arch, kind, true
+                    ));
+                }
+            }
+        }
+    }
+}
+
 pub fn run() -> Result<(), Box<dyn Error>> {
     let app = Application::initialise()?;
 
