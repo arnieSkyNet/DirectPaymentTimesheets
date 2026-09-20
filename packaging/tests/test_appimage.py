@@ -38,9 +38,15 @@ class AppImageTests(unittest.TestCase):
                 path = Path(tmp) / 'tool'
                 path.write_bytes(fixture(arch) + b'hsqs')
                 self.assertEqual(appimage.squashfs_offset(path, arch), 256)
-                with patch.object(appimage.subprocess, 'run') as run:
-                    appimage.extract(path, arch, Path(tmp) / 'out')
-                    self.assertEqual(run.call_args.args[0], ['unsquashfs', '-no-progress', '-o', '256', '-d', str(Path(tmp) / 'out'), str(path)])
+                destination = Path(tmp) / 'missing' / 'deploy' / 'squashfs-root'
+                self.assertFalse(destination.parent.exists())
+                def require_parent(*args, **kwargs):
+                    # Model Bookworm, even when the host unsquashfs creates parents.
+                    self.assertTrue(destination.parent.is_dir())
+                    self.assertFalse(destination.exists())
+                with patch.object(appimage.subprocess, 'run', side_effect=require_parent) as run:
+                    appimage.extract(path, arch, destination)
+                    self.assertEqual(run.call_args.args[0], ['unsquashfs', '-no-progress', '-o', '256', '-d', str(destination), str(path)])
                     self.assertTrue(run.call_args.kwargs['check'])
                 for wrong in {'armhf', 'aarch64', 'x86_64'} - {arch}:
                     with self.assertRaises(ValueError): appimage.elf_header(path, wrong)
@@ -76,8 +82,11 @@ class AppImageTests(unittest.TestCase):
             for arch in ['armhf', 'aarch64', 'x86_64']:
                 path = root / arch
                 path.write_bytes(fixture(arch) + squashfs.read_bytes())
-                appimage.extract(path, arch, root / (arch + '-out'))
-                self.assertEqual((root / (arch + '-out') / 'payload').read_text(), 'verified payload')
+                for stage in ['deploy', 'image', 'verify']:
+                    destination = root / (arch + '-out') / stage / 'squashfs-root'
+                    self.assertFalse(destination.parent.exists())
+                    appimage.extract(path, arch, destination)
+                    self.assertEqual((destination / 'payload').read_text(), 'verified payload')
             # Extraction failures must propagate rather than validate an empty tree.
             path.write_bytes(fixture('x86_64') + b'hsqs')
             with self.assertRaises(subprocess.CalledProcessError):
