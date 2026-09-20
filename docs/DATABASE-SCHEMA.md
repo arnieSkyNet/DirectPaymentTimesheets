@@ -2,7 +2,7 @@
 
 ## Scope and versioning
 
-This is the implemented SQLite schema at version 32 (development application version remains `1.0.1`). It is derived from `create_schema` and migrations in `src/database.rs`; those migrations are authoritative.
+This is the implemented SQLite schema at version 32 (development application version remains `1.0.2`). It is derived from `create_schema` and migrations in `src/database.rs`; those migrations are authoritative.
 
 `schema_version` contains the current integer version. A new database begins at version 1 and receives each ordered migration through `CURRENT_SCHEMA_VERSION` 32. Existing databases are upgraded in place. Migration 23 removes the short-lived revision-only tables introduced by migration 22 while retaining the operational legacy snapshot tables. Migration 24 adds an explicit contracted/variable hours basis to effective-dated Personal Assistant contracted-hours history while preserving existing records as contracted.
 

@@ -1,8 +1,8 @@
 # Artifact-only packaging rehearsals
 
 This infrastructure is a rehearsal, not a release publisher. The application is
-still 1.0.1 and its schema is 32. No new downloadable release is claimed. All
-package versions come from Cargo.toml; filenames below use 1.0.1 intentionally.
+now 1.0.2 and its schema is 32. No new downloadable release is claimed. All
+package versions come from Cargo.toml; filenames below use 1.0.2 intentionally.
 
 ## Entry point and source identity
 
@@ -163,8 +163,10 @@ Do not trigger any run until the operator authorises pushing these workflow file
 
 ## Future release phase (not enabled)
 
-Only after successful rehearsals and approval: bump Cargo.toml once, update the
-root Cargo.lock version and require tag `vVERSION` to equal the manifest version.
+Cargo.toml and the root Cargo.lock package are now 1.0.2 for all subsequent
+release-candidate rehearsals. After successful rehearsals and approval, require
+tag `vVERSION` to equal that manifest version; do not bump again merely to publish
+the tested 1.0.2 candidate.
 Schema remains separately versioned. A future tag workflow can call these same
 reusable builders with one captured commit and add one publishing job after all
 nine artifacts verify. Builders must retain read-only permissions; only that

@@ -129,6 +129,13 @@ impl Smtp {
                     std::thread::sleep(std::time::Duration::from_millis(5));
                     continue;
                 };
+                // Exercise the inherited-nonblocking case on Linux too, so
+                // removing the normalisation below breaks local regression tests.
+                stream.set_nonblocking(true).unwrap();
+                // Accepted sockets can inherit the listener's nonblocking mode
+                // on Windows/macOS (Linux does not). This protocol loop uses
+                // blocking reads with a timeout, never readiness polling.
+                stream.set_nonblocking(false).unwrap();
                 attempts += 1;
                 stream
                     .set_read_timeout(Some(std::time::Duration::from_secs(2)))
@@ -150,9 +157,10 @@ impl Smtp {
                             let mut message = String::new();
                             loop {
                                 let mut content = String::new();
-                                if !matches!(reader.read_line(&mut content),Ok(n) if n>0)
-                                    || content == ".\r\n"
-                                {
+                                let bytes = reader.read_line(&mut content)
+                                    .expect("SMTP DATA must complete before the read timeout");
+                                assert!(bytes > 0, "SMTP connection closed before DATA terminator");
+                                if content == ".\r\n" {
                                     break;
                                 }
                                 message.push_str(&content);
@@ -624,4 +632,45 @@ fn historical_departed_and_retained_preparation_eligibility_use_existing_rules()
         2
     );
     assert_eq!(smtp.count(), 2);
+}
+
+#[test]
+fn smtp_fixture_completes_data_and_quit_from_nonblocking_accepted_socket() {
+    use std::io::{BufRead, BufReader, Write};
+    let (_dir, mut app, _schedule) = fixture();
+    let smtp = Smtp::new(&mut app);
+    let mut stream = std::net::TcpStream::connect((
+        "127.0.0.1",
+        app.application.context.config.email.smtp_port,
+    )).unwrap();
+    stream.set_read_timeout(Some(std::time::Duration::from_secs(2))).unwrap();
+    let mut reader = BufReader::new(stream.try_clone().unwrap());
+    let mut response = String::new();
+    reader.read_line(&mut response).unwrap();
+    assert_eq!(response, "220 localhost test\r\n");
+    for (command, expected) in [
+        ("EHLO localhost\r\n", "250 localhost\r\n"),
+        ("MAIL FROM:<sender@example.test>\r\n", "250 ok\r\n"),
+        ("RCPT TO:<payroll@example.test>\r\n", "250 ok\r\n"),
+        ("DATA\r\n", "354 send message\r\n"),
+    ] {
+        stream.write_all(command.as_bytes()).unwrap();
+        response.clear();
+        reader.read_line(&mut response).unwrap();
+        assert_eq!(response, expected);
+    }
+    stream.write_all(b"Subject: test\r\n\r\nbody\r\n").unwrap();
+    assert_eq!(smtp.count(), 0);
+    stream.write_all(b".\r\n").unwrap();
+    response.clear();
+    reader.read_line(&mut response).unwrap();
+    assert_eq!(response, "250 queued\r\n");
+    assert_eq!(smtp.count(), 1);
+    assert_eq!(smtp.messages.lock().unwrap()[0], "Subject: test\r\n\r\nbody\r\n");
+    stream.write_all(b"QUIT\r\n").unwrap();
+    response.clear();
+    reader.read_line(&mut response).unwrap();
+    assert_eq!(response, "221 bye\r\n");
+    response.clear();
+    assert_eq!(reader.read_line(&mut response).unwrap(), 0);
 }
