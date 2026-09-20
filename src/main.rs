@@ -1,4 +1,7 @@
-#![cfg_attr(all(windows, windows_release, not(test)), windows_subsystem = "windows")]
+#![cfg_attr(
+    all(windows, windows_release, not(test)),
+    windows_subsystem = "windows"
+)]
 
 mod annual_leave_settings_repository;
 mod annual_leave_summary;

@@ -1195,6 +1195,11 @@ fn switching_preparation_period_refreshes_dropdown_cards_and_active_pa() {
     screen.request_pa(Some(4));
     assert_eq!(screen.selected_pa, Some(4));
     assert!(screen.visited_pas.contains(&2));
+    assert!(screen.has_unsaved_changes());
+    let record = &screen.weeks.iter().find(|(r, _, _)| r.personal_assistant_id == 4).unwrap().0;
+    assert!(record.payroll_department_notes.starts_with("Leaving date "));
+    assert_eq!(stored_note(&app, record), "");
+    assert!(screen.resolve_unsaved(&app, UnsavedChoice::Discard).unwrap());
     assert!(!screen.has_unsaved_changes());
 
     for (schedule, expected) in [
@@ -1202,6 +1207,13 @@ fn switching_preparation_period_refreshes_dropdown_cards_and_active_pa() {
         (&current, vec![2, 4, 5]),
         (&historical, vec![1, 3, 5, 8]),
     ] {
+        if screen.has_unsaved_changes() {
+            let record = &screen.weeks.iter().find(|(r, _, _)| Some(r.personal_assistant_id) == screen.selected_pa).unwrap().0;
+            assert!(record.payroll_department_notes.starts_with("Leaving date "));
+            assert_eq!(stored_note(&app, record), "");
+            assert!(screen.resolve_unsaved(&app, UnsavedChoice::Discard).unwrap());
+        }
+        assert!(!screen.has_unsaved_changes());
         assert!(screen.rebind_if_operational_period_changed(schedule));
         assert!(!screen.loaded);
         assert_eq!(screen.selected_pa, None);

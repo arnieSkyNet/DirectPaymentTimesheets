@@ -25,12 +25,22 @@ fn main() {
     let version = env::var("CARGO_PKG_VERSION").unwrap();
     let parts: Vec<u16> = version
         .split('.')
-        .map(|part| part.parse().expect("Windows resources require a numeric major.minor.patch version"))
+        .map(|part| {
+            part.parse()
+                .expect("Windows resources require a numeric major.minor.patch version")
+        })
         .collect();
-    assert_eq!(parts.len(), 3, "Windows resources require major.minor.patch");
+    assert_eq!(
+        parts.len(),
+        3,
+        "Windows resources require major.minor.patch"
+    );
     let numeric_version = format!("{},{},{},0", parts[0], parts[1], parts[2]);
     let icon = root.join("assets/direct-payment-timesheets.ico");
-    let icon = icon.to_str().expect("Icon path must be UTF-8").replace('\\', "\\\\");
+    let icon = icon
+        .to_str()
+        .expect("Icon path must be UTF-8")
+        .replace('\\', "\\\\");
     let resource = include_str!("packaging/windows/application.rc")
         .replace("@VERSION@", &version)
         .replace("@NUMERIC_VERSION@", &numeric_version)
@@ -47,6 +57,9 @@ fn main() {
         .status()
         .expect("Could not run Windows SDK rc.exe; use a Visual Studio developer shell or set RC");
     assert!(status.success(), "Windows resource compilation failed");
-    println!("cargo:rustc-link-arg-bin=direct_payment_timesheets={}", compiled.display());
+    println!(
+        "cargo:rustc-link-arg-bin=direct_payment_timesheets={}",
+        compiled.display()
+    );
     println!("cargo:rustc-cfg=windows_release");
 }

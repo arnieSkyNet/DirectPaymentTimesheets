@@ -10,6 +10,9 @@ pub struct PayrollTimesheet {
     pub payroll_year: String,
     pub cycle_number: i64,
     pub previous_cycle_hours: Option<f64>,
+    pub payroll_department_notes: String,
+    pub actual_in_lieu_hours: Option<f64>,
+    pub actual_in_lieu_updated_at: Option<String>,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -156,7 +159,7 @@ impl PayrollTimesheetRepository {
                 cycle_number,
                 previous_cycle_hours,
                 created_at,
-                updated_at
+                updated_at, payroll_department_notes, actual_in_lieu_hours, actual_in_lieu_updated_at
             FROM payroll_timesheets
             WHERE payroll_year = ?1
               AND cycle_number = ?2
@@ -177,6 +180,9 @@ impl PayrollTimesheetRepository {
                 previous_cycle_hours: row.get(4)?,
                 created_at: row.get(5)?,
                 updated_at: row.get(6)?,
+                payroll_department_notes: row.get(7)?,
+                actual_in_lieu_hours: row.get(8)?,
+                actual_in_lieu_updated_at: row.get(9)?,
             }))
         } else {
             Ok(None)
@@ -188,7 +194,7 @@ impl PayrollTimesheetRepository {
         personal_assistant_id: i64,
     ) -> Result<Vec<PayrollTimesheet>> {
         let mut statement = self.connection.prepare(
-            "SELECT id, personal_assistant_id, payroll_year, cycle_number, previous_cycle_hours, created_at, updated_at
+            "SELECT id, personal_assistant_id, payroll_year, cycle_number, previous_cycle_hours, created_at, updated_at, payroll_department_notes, actual_in_lieu_hours, actual_in_lieu_updated_at
              FROM payroll_timesheets WHERE personal_assistant_id = ?1 ORDER BY payroll_year, cycle_number, id"
         )?;
         let rows = statement
@@ -201,6 +207,9 @@ impl PayrollTimesheetRepository {
                     previous_cycle_hours: row.get(4)?,
                     created_at: row.get(5)?,
                     updated_at: row.get(6)?,
+                    payroll_department_notes: row.get(7)?,
+                    actual_in_lieu_hours: row.get(8)?,
+                    actual_in_lieu_updated_at: row.get(9)?,
                 })
             })?
             .collect();
@@ -214,7 +223,7 @@ impl PayrollTimesheetRepository {
     ) -> Result<Vec<PayrollTimesheet>> {
         let mut statement = self.connection.prepare(
             "SELECT id, personal_assistant_id, payroll_year, cycle_number,
-                    previous_cycle_hours, created_at, updated_at
+                    previous_cycle_hours, created_at, updated_at, payroll_department_notes, actual_in_lieu_hours, actual_in_lieu_updated_at
              FROM payroll_timesheets
              WHERE payroll_year = ?1 AND cycle_number = ?2
              ORDER BY personal_assistant_id",
@@ -229,6 +238,9 @@ impl PayrollTimesheetRepository {
                     previous_cycle_hours: row.get(4)?,
                     created_at: row.get(5)?,
                     updated_at: row.get(6)?,
+                    payroll_department_notes: row.get(7)?,
+                    actual_in_lieu_hours: row.get(8)?,
+                    actual_in_lieu_updated_at: row.get(9)?,
                 })
             })?
             .collect();
@@ -294,6 +306,23 @@ impl PayrollTimesheetRepository {
         let id = transaction.last_insert_rowid();
         transaction.commit()?;
         Ok(id)
+    }
+
+    /// Returned information only: deliberately independent of preparation and delivery state.
+    pub fn save_actual_in_lieu_hours(&self, record_id: i64, value: Option<f64>) -> Result<()> {
+        if value.is_some_and(|hours| !hours.is_finite() || hours < 0.0) {
+            return Err(rusqlite::Error::InvalidParameterName(
+                "Enter finite, non-negative in-lieu hours, or leave blank until known".into(),
+            ));
+        }
+        let changed = self.connection.execute(
+            "UPDATE payroll_timesheets SET actual_in_lieu_hours = ?1, actual_in_lieu_updated_at = ?2 WHERE id = ?3",
+            params![value, chrono::Local::now().to_rfc3339(), record_id],
+        )?;
+        if changed != 1 {
+            return Err(rusqlite::Error::QueryReturnedNoRows);
+        }
+        Ok(())
     }
 
     pub fn get_weeks(&self, payroll_timesheet_id: i64) -> Result<Vec<PayrollTimesheetWeek>> {
@@ -607,6 +636,7 @@ impl PayrollTimesheetRepository {
     ) -> Result<bool> {
         use rusqlite::OptionalExtension;
 
+        validate_payroll_department_notes(&record.payroll_department_notes)?;
         if weeks.len() != 4 || adjustments.len() != weeks.len() {
             return Err(rusqlite::Error::InvalidParameterName(
                 "Preparation save requires exactly four matched payroll weeks and adjustments."
@@ -673,9 +703,14 @@ impl PayrollTimesheetRepository {
 
         transaction.execute(
             "UPDATE payroll_timesheets
-             SET previous_cycle_hours = ?1, updated_at = ?2
+             SET previous_cycle_hours = ?1, updated_at = ?2, payroll_department_notes = ?4
              WHERE id = ?3",
-            params![record.previous_cycle_hours, updated_at, record.id],
+            params![
+                record.previous_cycle_hours,
+                updated_at,
+                record.id,
+                record.payroll_department_notes
+            ],
         )?;
 
         for (week, adjustment) in weeks.iter().zip(adjustments) {
@@ -803,4 +838,14 @@ impl PayrollTimesheetRepository {
 
         Ok(())
     }
+}
+
+/// Character limit counts Unicode scalar values, not UTF-8 bytes. Never truncate.
+pub fn validate_payroll_department_notes(value: &str) -> Result<()> {
+    if value.chars().count() > 256 {
+        return Err(rusqlite::Error::InvalidParameterName(
+            "Notes for Payroll Department must contain at most 256 characters".into(),
+        ));
+    }
+    Ok(())
 }

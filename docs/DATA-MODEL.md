@@ -2,7 +2,7 @@
 
 ## Purpose
 
-This document describes the implemented business entities and their relationships. It is intentionally conceptual; [DATABASE-SCHEMA.md](DATABASE-SCHEMA.md) is the exact schema31 table/column reference and the Rust source remains authoritative.
+This document describes the implemented business entities and their relationships. It is intentionally conceptual; [DATABASE-SCHEMA.md](DATABASE-SCHEMA.md) is the exact schema32 table/column reference and the Rust source remains authoritative.
 
 The model preserves imported facts, effective-dated employment terms, prepared payroll values and the exact worked-item evidence represented by a generated or submitted timesheet.
 
@@ -190,3 +190,21 @@ These relationships are implemented through stored IDs/business keys and reposit
 - Schedule replacement is per payroll year and transactional.
 - Submitted snapshot membership is immutable.
 - Opaque pre-schema-19 aggregates remain explicitly unallocated rather than receiving invented dates or rates.
+
+
+## Outgoing payroll notes and returned results (schema 32)
+
+Each PA/payroll-period preparation can retain a free-form **Notes for Payroll
+Department** string of at most 256 Unicode characters. It is not a permanent PA
+attribute or a worked-shift note, and has no calculation meaning. It participates
+in preparation Save/Discard/Cancel and submission protections. Each new retained
+submission captures its own structured note; older historical submissions retain
+NULL rather than an invented note.
+
+The same PA/period record separately holds optional **actual in-lieu hours awarded
+by Payroll**, and the timestamp of its last independent save/clear. NULL means the
+result is unknown; 0.00 is a confirmed zero award. Only the user records the actual
+returned figure. The application never derives entitlement, adds the award to
+worked hours, or includes it in outgoing timesheet PDFs. A later manual correction
+to this result leaves all outgoing/submitted payroll facts intact. Result storage
+is available to a future importer without coupling it to preparation saving.
