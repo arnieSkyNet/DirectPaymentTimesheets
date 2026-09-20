@@ -6,7 +6,7 @@ source /etc/os-release
 export DEBIAN_FRONTEND=noninteractive
 apt-get update
 apt-get install -y --no-install-recommends build-essential ca-certificates curl git python3 \
-    pkg-config dpkg-dev binutils file patchelf desktop-file-utils libssl-dev \
+    pkg-config dpkg-dev binutils file squashfs-tools patchelf desktop-file-utils libssl-dev \
     libx11-6 libx11-xcb1 libxcb1 libxkbcommon0 libxkbcommon-x11-0 libwayland-client0 \
     libegl1 libgl1 xdg-utils xdg-desktop-portal xdg-desktop-portal-gtk
 if [[ "${1:-}" == cross-armv7 ]]; then

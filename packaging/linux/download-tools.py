@@ -6,6 +6,8 @@ from pathlib import Path
 import subprocess
 import sys
 
+from appimage import elf_header
+
 arch, output = sys.argv[1:]
 output = Path(output)
 output.mkdir(parents=True, exist_ok=True)
@@ -17,4 +19,6 @@ for name, (url, expected) in json.loads(Path(__file__).with_name('tools.json').r
     if actual != expected:
         path.unlink()
         raise SystemExit(f'Checksum mismatch for {name}; refusing to execute it')
+    if name != 'runtime-license':
+        elf_header(path, arch)
     path.chmod(0o644 if name == 'runtime-license' else 0o755)
