@@ -170,3 +170,32 @@ reusable builders with one captured commit and add one publishing job after all
 nine artifacts verify. Builders must retain read-only permissions; only that
 future publisher would gain release-write permission. No current workflow creates,
 uploads to or publishes a GitHub Release.
+
+### ARM Linux runtime validation
+
+Packaged `arm` and `aarch64` executables (`deb`/`appimage` installation markers)
+default `LIBGL_ALWAYS_SOFTWARE` to `1` at the beginning of `main`, before threads
+or graphics initialisation. An explicit environment value is preserved. This
+covers desktop, AppImage and direct executable launches without machine-specific
+launcher edits. Source builds, x86-64 Linux, Windows and macOS keep their defaults.
+The policy also applies to ARM64 packages, but ARM64 hardware validation remains
+outstanding; it is not evidence that all ARM GPUs require software rendering.
+
+On the tested ARMv7 Pi 3B+ / X11 / LXDE-pi, both package formats render black with
+the normal graphics environment and correctly with software Mesa. The precise
+driver/context fault has not been isolated. Rebuilt packages must be tested
+without manually setting the variable, including a fresh desktop launch.
+
+The separate taskbar-only initial window remains unresolved: it also occurs with
+software rendering and becomes visible after Maximise. The locked eframe 0.33.3
+starts its window hidden and shows it after the first render. Our initial viewport
+is 1000x800 with monitor clamping, no explicit position or minimisation; the first
+UI update requests the existing monitor-relative size once. Eframe persistence
+is not enabled by the current default features. Neither stale saved geometry nor
+a specific X11 mapping fault has been established. No speculative centering,
+forced maximisation, focus stealing or LXDE menu changes are applied.
+
+On real hardware, compare X11 map state, geometry, `_NET_WM_STATE` and desktop
+assignment before and after Maximise (for example using `xwininfo` and `xprop`).
+This distinguishes an unmapped window from off-screen placement, minimisation or
+a first-frame presentation/resize problem before choosing an application fix.
