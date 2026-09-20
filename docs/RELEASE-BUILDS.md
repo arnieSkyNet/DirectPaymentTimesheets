@@ -77,7 +77,14 @@ checked-in licence/font/native notice tree.
 
 AppImage tools are version- and SHA256-pinned in `packaging/linux/tools.json`:
 linuxdeploy 1-alpha-20251107-1, appimagetool 1.9.1 and runtime 20251108. Tools are
-extracted before execution; building requires no FUSE device or mount. AppDir
+extracted as data using Bookworm's `squashfs-tools` before execution; building
+requires no FUSE device or mount. `appimage.py` checks the explicit target ELF
+architecture (including ARM EABI5 hard-float), locates SquashFS from ELF section
+bounds and invokes `unsquashfs`. It never executes the wrapper, including during
+final package verification. This matters under QEMU: the AppImage `AI\x02`
+identifier at ELF bytes 8–10 does not match the ARM binfmt rule's zero bytes,
+even though the pinned ARMHF runtime and payload are the correct architecture.
+Downloads retain their existing SHA256 pins and also receive ELF checks. AppDir
 creation and AppImage assembly are separate, passing the pinned runtime explicitly
 instead of allowing output-plugin runtime downloads. The runtime licence is also checksum-pinned and included. Copied distribution
 libraries include their package copyright notices. The resulting image is extracted and

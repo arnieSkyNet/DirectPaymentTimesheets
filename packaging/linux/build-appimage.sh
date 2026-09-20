@@ -8,9 +8,10 @@ trap 'rm -rf -- "$BUILD_ROOT"' EXIT
 APPDIR="$BUILD_ROOT/DirectPaymentsTimesheets.AppDir"
 python3 "$PROJECT_ROOT/packaging/linux/download-tools.py" "$APPIMAGE_ARCH" "$BUILD_ROOT/tools"
 # Extract tools explicitly: no /dev/fuse, nested mounts or output-plugin downloads.
-mkdir "$BUILD_ROOT/deploy" "$BUILD_ROOT/image"
-(cd "$BUILD_ROOT/deploy" && "$BUILD_ROOT/tools/linuxdeploy" --appimage-extract >/dev/null)
-(cd "$BUILD_ROOT/image" && "$BUILD_ROOT/tools/appimagetool" --appimage-extract >/dev/null)
+# AppImage ELF identification bytes do not match QEMU's binfmt registration.
+# Extract as data; execute only the ordinary target-architecture payload ELF.
+python3 "$PROJECT_ROOT/packaging/linux/appimage.py" "$BUILD_ROOT/tools/linuxdeploy" "$APPIMAGE_ARCH" "$BUILD_ROOT/deploy/squashfs-root"
+python3 "$PROJECT_ROOT/packaging/linux/appimage.py" "$BUILD_ROOT/tools/appimagetool" "$APPIMAGE_ARCH" "$BUILD_ROOT/image/squashfs-root"
 install -Dm755 "$SOURCE_BINARY" "$BUILD_ROOT/direct-payment-timesheets"
 "$STRIP" "$BUILD_ROOT/direct-payment-timesheets"
 "$BUILD_ROOT/deploy/squashfs-root/AppRun" \
@@ -36,8 +37,7 @@ OUTPUT_FILE="$OUTPUT_DIRECTORY/DirectPaymentTimesheets-${VERSION}-linux-${APPIMA
 ARCH="$APPIMAGE_ARCH" VERSION="$VERSION" "$BUILD_ROOT/image/squashfs-root/AppRun" \
     --runtime-file "$BUILD_ROOT/tools/runtime" "$APPDIR" "$OUTPUT_FILE"
 chmod 755 "$OUTPUT_FILE"
-mkdir "$BUILD_ROOT/verify"
-(cd "$BUILD_ROOT/verify" && "$OUTPUT_FILE" --appimage-extract >/dev/null)
+python3 "$PROJECT_ROOT/packaging/linux/appimage.py" "$OUTPUT_FILE" "$APPIMAGE_ARCH" "$BUILD_ROOT/verify/squashfs-root"
 EXTRACTED="$BUILD_ROOT/verify/squashfs-root"
 python3 "$PROJECT_ROOT/packaging/package.py" elf "$TARGET" "$EXTRACTED/usr/bin/direct-payment-timesheets"
 # Verify the outer runtime architecture without requiring Rust ARMv7 attributes.
