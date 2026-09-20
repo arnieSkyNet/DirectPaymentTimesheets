@@ -266,7 +266,9 @@ impl eframe::App for DirectPaymentApp {
                 if input.viewport().maximized == Some(true) {
                     None
                 } else {
-                    crate::application::initial_window_size(input.viewport().monitor_size)
+                    Some(crate::application::initial_window_size(
+                        input.viewport().monitor_size,
+                    ))
                 }
             });
             if let Some(size) = initial_size {

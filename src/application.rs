@@ -81,7 +81,7 @@ fn launch_gui(app: Application) -> Result<(), Box<dyn Error>> {
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_icon(application_icon)
-            .with_inner_size([1000.0, 800.0])
+            .with_inner_size(DEFAULT_WINDOW_SIZE)
             .with_clamp_size_to_monitor_size(true),
         ..Default::default()
     };
@@ -99,32 +99,62 @@ fn launch_gui(app: Application) -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
+const DEFAULT_WINDOW_SIZE: egui::Vec2 = egui::vec2(1000.0, 800.0);
+
 // egui exposes monitor dimensions, not the desktop work area. Leave room for
-// decorations and desktop panels; apply only once before normal interaction.
-pub(crate) fn initial_window_size(monitor: Option<egui::Vec2>) -> Option<egui::Vec2> {
-    let monitor = monitor?;
+// decorations and panels, but never resize to transient startup geometry. This
+// is a startup-policy floor, not a minimum size imposed on later user resizing.
+pub(crate) fn initial_window_size(monitor: Option<egui::Vec2>) -> egui::Vec2 {
+    let Some(monitor) = monitor else {
+        return DEFAULT_WINDOW_SIZE;
+    };
     if !monitor.is_finite() || monitor.x <= 0.0 || monitor.y <= 0.0 {
-        return None;
+        return DEFAULT_WINDOW_SIZE;
     }
-    Some(egui::vec2(
-        1000.0_f32.min(monitor.x * 0.9),
-        monitor.y * 0.85,
-    ))
+    let size = egui::vec2(1000.0_f32.min(monitor.x * 0.9), monitor.y * 0.85);
+    if size.x < 320.0 || size.y < 240.0 {
+        return DEFAULT_WINDOW_SIZE;
+    }
+    size
 }
 
 #[cfg(test)]
 mod window_tests {
     #[test]
-    fn initial_size_leaves_monitor_margin_and_handles_missing_dimensions() {
-        assert_eq!(super::initial_window_size(None), None);
-        assert_eq!(
-            super::initial_window_size(Some(egui::vec2(0.0, 768.0))),
-            None
-        );
-        for monitor in [egui::vec2(1024.0, 768.0), egui::vec2(1920.0, 1080.0)] {
-            let size = super::initial_window_size(Some(monitor)).unwrap();
-            assert!(size.x < monitor.x && size.y < monitor.y);
-            assert_eq!(size.y, monitor.y * 0.85);
+    fn startup_unavailable_invalid_or_tiny_geometry_uses_sensible_default() {
+        assert_eq!(super::initial_window_size(None), super::DEFAULT_WINDOW_SIZE);
+        for monitor in [
+            egui::vec2(0.0, 768.0),
+            egui::vec2(1024.0, 0.0),
+            egui::vec2(-1.0, 768.0),
+            egui::vec2(f32::NAN, 768.0),
+            egui::vec2(1024.0, f32::INFINITY),
+            egui::vec2(1.0, 1.0),
+            egui::vec2(0.5, 0.5),
+            egui::vec2(1.0, 768.0),
+            egui::vec2(1024.0, 1.0),
+            egui::vec2(320.0, 240.0),
+        ] {
+            assert_eq!(
+                super::initial_window_size(Some(monitor)),
+                super::DEFAULT_WINDOW_SIZE
+            );
+        }
+    }
+
+    #[test]
+    fn usable_geometry_preserves_existing_monitor_relative_sizing() {
+        for monitor in [
+            egui::vec2(640.0, 480.0),
+            egui::vec2(800.0, 600.0),
+            egui::vec2(1024.0, 768.0),
+            egui::vec2(1920.0, 1080.0),
+        ] {
+            let size = super::initial_window_size(Some(monitor));
+            assert_eq!(
+                size,
+                egui::vec2(1000.0_f32.min(monitor.x * 0.9), monitor.y * 0.85)
+            );
         }
     }
 }
