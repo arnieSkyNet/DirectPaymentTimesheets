@@ -18,12 +18,12 @@ spec.loader.exec_module(package)
 
 class PackagingTests(unittest.TestCase):
     def test_explicit_target_mapping_and_nine_unique_packages(self):
-        names = package.expected_packages('1.0.1')
+        names = package.expected_packages('1.0.2')
         self.assertEqual(len(names), 9)
         self.assertEqual(len(set(names.values())), 9)
-        self.assertIn('direct-payment-timesheets_1.0.1_armhf.deb', names)
-        self.assertEqual(names['DirectPaymentTimesheets-1.0.1-linux-armhf.AppImage'], ('armv7-unknown-linux-gnueabihf', 'appimage'))
-        self.assertIn('DirectPaymentTimesheets-1.0.1-macos-arm64.dmg', names)
+        self.assertIn('direct-payment-timesheets_1.0.2_armhf.deb', names)
+        self.assertEqual(names['DirectPaymentTimesheets-1.0.2-linux-armhf.AppImage'], ('armv7-unknown-linux-gnueabihf', 'appimage'))
+        self.assertIn('DirectPaymentTimesheets-1.0.2-macos-arm64.dmg', names)
 
     def test_elf_rejects_wrong_arch_soft_float_and_new_glibc(self):
         arm = 'Class: ELF32\nMachine: ARM\nFlags: hard-float ABI\nTag_CPU_arch: v7\nTag_ABI_VFP_args: VFP registers\nGLIBC_2.36'
@@ -41,18 +41,18 @@ class PackagingTests(unittest.TestCase):
                 self.assertTrue((Path(tmp) / path).is_file(), path)
 
     def fixture(self, directory):
-        for index, (name, (target, kind)) in enumerate(package.expected_packages('1.0.1').items()):
+        for index, (name, (target, kind)) in enumerate(package.expected_packages('1.0.2').items()):
             path = directory / str(index) / name
             path.parent.mkdir()
             path.write_bytes(b'disposable package')
-            data = dict(source_sha='a' * 40, version='1.0.1', target=target, installation_kind=kind, file=name, sha256=package.digest(path))
+            data = dict(source_sha='a' * 40, version='1.0.2', target=target, installation_kind=kind, file=name, sha256=package.digest(path))
             path.with_name(name + '.json').write_text(json.dumps(data))
             path.with_name(name + '.sha256').write_text(f"{data['sha256']}  {name}\n")
 
     def test_collection_checks_and_flattens_all_nine_packages(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp); self.fixture(root)
-            package.collect(root, 'a' * 40, '1.0.1')
+            package.collect(root, 'a' * 40, '1.0.2')
             self.assertEqual(len(json.loads((root / 'rehearsal-manifest.json').read_text())), 9)
             for line in (root / 'SHA256SUMS').read_text().splitlines():
                 sha, name = line.split('  ')
@@ -72,7 +72,7 @@ class PackagingTests(unittest.TestCase):
                     data = json.loads(meta.read_text())
                     data[{'source': 'source_sha', 'kind': 'installation_kind', 'version': 'version'}[defect]] = 'wrong'
                     meta.write_text(json.dumps(data))
-                with self.assertRaises((ValueError, FileNotFoundError)): package.collect(root, 'a' * 40, '1.0.1')
+                with self.assertRaises((ValueError, FileNotFoundError)): package.collect(root, 'a' * 40, '1.0.2')
                 self.assertFalse((root / 'rehearsal-manifest.json').exists())
 
     def test_binary_handoff_refuses_wrong_kind_or_changed_binary(self):

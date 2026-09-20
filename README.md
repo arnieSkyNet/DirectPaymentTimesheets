@@ -4,6 +4,8 @@ DirectPaymentTimesheets is a local desktop application for administering UK Dire
 
 The available download versions are `1.0.1` for Windows and `1.0.0` for Linux, with SQLite schema version 31. It is a single-user local desktop application for the documented Direct Payment payroll workflow, not a general-purpose payroll product.
 
+Current source is the **1.0.2 release candidate**, using schema **32**. The download links below remain the previously published releases; 1.0.2 packages are not yet published.
+
 ## Download
 
 [![Download Windows 10 and later (64-bit) - v1.0.1](https://img.shields.io/badge/Download%20Windows%2010%20and%20later%20%2864--bit%29-v1.0.1-blue?logo=windows11&logoColor=white)](https://github.com/arnieSkyNet/DirectPaymentTimesheets/releases/download/v1.0.1/DirectPaymentTimesheets-1.0.1-windows-x86_64-setup.exe)<br>
