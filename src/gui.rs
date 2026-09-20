@@ -100,6 +100,7 @@ enum PayrollEmailKind {
 
 #[derive(Clone, Copy)]
 enum EmailBatchNoteStage {
+    SelectRecipients,
     ChooseAdditionalNote,
     EditAdditionalNotes,
     ConfirmDispatch,
@@ -110,6 +111,7 @@ struct PendingEmailBatch {
     kind: PayrollEmailKind,
     stage: EmailBatchNoteStage,
     selected_personal_assistant_ids: Vec<i64>,
+    choices: Vec<ProductionChoice>,
     payroll_period: Option<CapturedOperationalPayrollPeriod>,
     operational_selection_revision: u64,
 }
@@ -188,6 +190,8 @@ pub struct DirectPaymentApp {
     additional_notes_by_personal_assistant: HashMap<i64, String>,
     note_enabled_personal_assistant_ids: HashSet<i64>,
     pending_email_batch: Option<PendingEmailBatch>,
+    pending_generation: Option<PendingGeneration>,
+    production_report: Option<ProductionReport>,
     pending_payroll_return_import: Option<PendingPayrollReturnImport>,
     email_settings_employer: Option<crate::models::Employer>,
     email_settings_payroll_provider: Option<crate::payroll_provider_repository::PayrollProvider>,
@@ -233,6 +237,8 @@ impl DirectPaymentApp {
             additional_notes_by_personal_assistant: HashMap::new(),
             note_enabled_personal_assistant_ids: HashSet::new(),
             pending_email_batch: None,
+            pending_generation: None,
+            production_report: None,
             pending_payroll_return_import: None,
             email_settings_employer: None,
             email_settings_payroll_provider: None,
@@ -569,15 +575,38 @@ impl DirectPaymentApp {
         };
         self.additional_notes_by_personal_assistant.clear();
         self.note_enabled_personal_assistant_ids.clear();
-        let selected_personal_assistant_ids = self
-            .email_assistants(kind)
-            .unwrap_or_default()
-            .into_iter()
-            .map(|assistant| assistant.id)
-            .collect();
+        let choices = if matches!(kind, PayrollEmailKind::Timesheet) {
+            match self.production_choices(schedule.as_ref().unwrap(), true) {
+                Ok(choices) => choices,
+                Err(error) => {
+                    self.status_message = error.to_string();
+                    return;
+                }
+            }
+        } else {
+            Vec::new()
+        };
+        let selected_personal_assistant_ids = if matches!(kind, PayrollEmailKind::Timesheet) {
+            choices
+                .iter()
+                .filter(|c| c.available)
+                .map(|c| c.id)
+                .collect()
+        } else {
+            self.email_assistants(kind)
+                .unwrap_or_default()
+                .into_iter()
+                .map(|pa| pa.id)
+                .collect()
+        };
         self.pending_email_batch = Some(PendingEmailBatch {
             kind,
-            stage: EmailBatchNoteStage::ChooseAdditionalNote,
+            stage: if matches!(kind, PayrollEmailKind::Timesheet) {
+                EmailBatchNoteStage::SelectRecipients
+            } else {
+                EmailBatchNoteStage::ChooseAdditionalNote
+            },
+            choices,
             selected_personal_assistant_ids,
             payroll_period: schedule.as_ref().map(capture_operational_payroll_period),
             operational_selection_revision: self.operational_payroll_period.revision,
@@ -585,6 +614,7 @@ impl DirectPaymentApp {
     }
 
     fn draw_additional_note_prompt(&mut self, ui: &mut egui::Ui) {
+        self.draw_recipient_selection(ui);
         let stage = self.pending_email_batch.as_ref().map(|batch| batch.stage);
         if matches!(stage, Some(EmailBatchNoteStage::ChooseAdditionalNote)) {
             ui.label("Additional note for this email batch?");
@@ -613,12 +643,17 @@ impl DirectPaymentApp {
         if let Some(ids) = ids {
             ui.separator();
             ui.label("Additional notes by Personal Assistant");
-            let assistants = self
+            let assistants = if self
                 .pending_email_batch
                 .as_ref()
-                .map(|batch| batch.kind)
-                .map(|kind| self.email_assistants(kind).unwrap_or_default())
-                .unwrap_or_default();
+                .is_some_and(|b| matches!(b.kind, PayrollEmailKind::Timesheet))
+            {
+                crate::payroll_evidence::open(&self.application).ok().map(|db| ids.iter()
+                    .filter_map(|id| crate::personal_assistant_repository::PersonalAssistantRepository::get_by_id_on(&db,*id).ok()).collect::<Vec<_>>()).unwrap_or_default()
+            } else {
+                self.email_assistants(PayrollEmailKind::Payslip)
+                    .unwrap_or_default()
+            };
             for assistant in assistants
                 .into_iter()
                 .filter(|assistant| ids.contains(&assistant.id))
@@ -671,6 +706,12 @@ impl DirectPaymentApp {
                 .resizable(false)
                 .show(ui.ctx(), |ui| {
                     ui.label(format!("Ready to send {}.", email_type));
+                    if matches!(batch.kind, PayrollEmailKind::Timesheet) {
+                        for choice in batch.choices.iter().filter(|c| batch.selected_personal_assistant_ids.contains(&c.id)) {
+                            ui.label(format!("{} — {}", choice.name, choice.detail));
+                        }
+                        ui.label("Only these PAs will be sent. Current candidate evidence is checked again before each send.");
+                    }
                     if let Some(period) = &batch.payroll_period {
                         ui.label(format!(
                             "Payroll period: {}",
@@ -709,16 +750,22 @@ impl DirectPaymentApp {
             if cancel {
                 self.clear_pending_email_batch();
             } else if send {
+                if matches!(batch.kind, PayrollEmailKind::Timesheet) {
+                    match self.dispatch_timesheet_selection(&batch) {
+                        Ok(report) => {
+                            self.status_message = report.summary();
+                            self.production_report = Some(report);
+                            self.clear_pending_email_batch();
+                        }
+                        Err(error) => {
+                            self.status_message = format!("Timesheet email refused: {error}");
+                        }
+                    }
+                    return;
+                }
                 let result = self
                     .validated_schedule_for_email_batch(&batch)
-                    .and_then(|schedule| match batch.kind {
-                        PayrollEmailKind::Timesheet => self.email_timesheets(
-                            schedule
-                                .as_ref()
-                                .ok_or("Timesheets require a payroll period")?,
-                        ),
-                        PayrollEmailKind::Payslip => self.email_payslips(schedule.as_ref()),
-                    });
+                    .and_then(|schedule| self.email_payslips(schedule.as_ref()));
                 match result {
                     Ok(count) => {
                         self.status_message =
@@ -1710,24 +1757,7 @@ impl DirectPaymentApp {
                 }
 
                 if actions.generate_timesheets {
-                    match self.generate_payroll_timesheets() {
-                        Ok(count) => {
-                            self.status_message =
-                                format!("Payroll timesheets generated: {} PDF(s).", count);
-                            self.file_status = Some((
-                                self.status_message.clone(),
-                                vec![crate::paths::expand_path(
-                                    &self.application.context.config.folders.pdf_output,
-                                )],
-                            ));
-                        }
-
-                        Err(error) => {
-                            self.status_message =
-                                format!("Payroll timesheet generation failed: {}", error);
-                            self.file_status = None;
-                        }
-                    }
+                    self.begin_generation();
                 }
 
                 if actions.email_timesheets {
@@ -1746,6 +1776,8 @@ impl DirectPaymentApp {
                     self.begin_view_payroll_schedule();
                 }
 
+            self.draw_generation_selection(ui);
+            self.draw_production_report(ui);
             self.draw_additional_note_prompt(ui);
 
             ui.separator();
@@ -2190,10 +2222,11 @@ impl DirectPaymentApp {
         Ok(sent)
     }
 
-    fn email_timesheets(
+    fn email_timesheet(
         &self,
         schedule: &PayrollSchedule,
-    ) -> Result<usize, Box<dyn std::error::Error>> {
+        assistant: &crate::models::PersonalAssistant,
+    ) -> Result<bool, Box<dyn std::error::Error>> {
         let employers = self.application.employer_repository.get_all()?;
 
         let employer = employers
@@ -2223,93 +2256,85 @@ impl DirectPaymentApp {
 
         let payroll_year = schedule.payroll_year.clone();
 
-        let assistants = self.selected_period_assistants()?;
-
         let pdf_output_folder =
             crate::paths::expand_path(&self.application.context.config.folders.pdf_output);
 
-        let mut sent = 0usize;
+        let personal_assistant_name = format!("{} {}", assistant.first_name, assistant.surname);
 
-        for assistant in &assistants {
-            let personal_assistant_name = format!("{} {}", assistant.first_name, assistant.surname);
-
-            let existing_status = self
-                .application
-                .payroll_timesheet_email_repository
-                .get_for_pa_and_cycle(
-                    assistant.id,
-                    &payroll_year,
-                    schedule.cycle_number,
-                    "timesheet",
-                )?;
-
-            if existing_status
-                .as_ref()
-                .and_then(|status| status.sent_at.as_ref())
-                .is_some()
-            {
-                continue;
-            }
-
-            let personal_assistant_email = assistant.email.as_deref();
-
-            let timesheet_path = PdfGenerator::timesheet_output_path(
-                &pdf_output_folder,
-                &personal_assistant_name,
-                schedule,
-            )?;
-
-            if !timesheet_path.exists() {
-                return Err(format!(
-                    "Timesheet PDF not found for {}: {}",
-                    personal_assistant_name,
-                    timesheet_path.display()
-                )
-                .into());
-            }
-
-            let payroll_timesheet = self
-                .application
-                .payroll_timesheet_repository
-                .get_for_cycle_and_pa(&payroll_year, schedule.cycle_number, assistant.id)?
-                .ok_or_else(|| {
-                    format!(
-                        "No Payroll Timesheet Preparation record exists for {}.",
-                        personal_assistant_name
-                    )
-                })?;
-            let attempted_at = chrono::Local::now().to_rfc3339();
-            crate::payroll_snapshot_service::send_production_candidate(
-                &self.application.payroll_worked_item_repository,
-                payroll_timesheet.id,
+        let existing_status = self
+            .application
+            .payroll_timesheet_email_repository
+            .get_for_pa_and_cycle(
                 assistant.id,
                 &payroll_year,
                 schedule.cycle_number,
-                &timesheet_path,
-                &attempted_at,
-                || {
-                    self.application.send_payroll_email(
-                        payroll_department_email,
-                        employer_email,
-                        personal_assistant_email,
-                        &personal_assistant_name,
-                        assistant.date_of_birth.as_deref(),
-                        assistant.national_insurance_number.as_deref(),
-                        schedule,
-                        &timesheet_path,
-                        &self.application.context.config.payroll.timesheet_email_body,
-                        self.additional_notes_by_personal_assistant
-                            .get(&assistant.id)
-                            .map(String::as_str),
-                        employer.email_signature.as_deref(),
-                    )
-                },
+                "timesheet",
             )?;
 
-            sent += 1;
+        if existing_status
+            .as_ref()
+            .and_then(|status| status.sent_at.as_ref())
+            .is_some()
+        {
+            return Ok(false);
         }
 
-        Ok(sent)
+        let personal_assistant_email = assistant.email.as_deref();
+
+        let timesheet_path = PdfGenerator::timesheet_output_path(
+            &pdf_output_folder,
+            &personal_assistant_name,
+            schedule,
+        )?;
+
+        if !timesheet_path.exists() {
+            return Err(format!(
+                "Timesheet PDF not found for {}: {}",
+                personal_assistant_name,
+                timesheet_path.display()
+            )
+            .into());
+        }
+
+        let payroll_timesheet = self
+            .application
+            .payroll_timesheet_repository
+            .get_for_cycle_and_pa(&payroll_year, schedule.cycle_number, assistant.id)?
+            .ok_or_else(|| {
+                format!(
+                    "No Payroll Timesheet Preparation record exists for {}.",
+                    personal_assistant_name
+                )
+            })?;
+        let attempted_at = chrono::Local::now().to_rfc3339();
+        crate::payroll_snapshot_service::send_production_candidate(
+            &self.application.payroll_worked_item_repository,
+            payroll_timesheet.id,
+            assistant.id,
+            &payroll_year,
+            schedule.cycle_number,
+            &timesheet_path,
+            &attempted_at,
+            || {
+                self.application.send_payroll_email(
+                    payroll_department_email,
+                    employer_email,
+                    personal_assistant_email,
+                    &personal_assistant_name,
+                    assistant.date_of_birth.as_deref(),
+                    assistant.national_insurance_number.as_deref(),
+                    schedule,
+                    &timesheet_path,
+                    &self.application.context.config.payroll.timesheet_email_body,
+                    self.additional_notes_by_personal_assistant
+                        .get(&assistant.id)
+                        .map(String::as_str),
+                    employer.email_signature.as_deref(),
+                )
+            },
+        )?;
+
+        Ok(true)
     }
 
     fn draw_timesheet_email_status(&self, ui: &mut egui::Ui) {
@@ -2452,7 +2477,11 @@ impl DirectPaymentApp {
             });
     }
 
-    fn generate_payroll_timesheets(&self) -> Result<usize, Box<dyn std::error::Error>> {
+    fn generate_payroll_timesheet(
+        &self,
+        current_schedule: &PayrollSchedule,
+        assistant: &crate::models::PersonalAssistant,
+    ) -> Result<bool, Box<dyn std::error::Error>> {
         let employers = self.application.employer_repository.get_all()?;
 
         let employer = employers
@@ -2460,7 +2489,6 @@ impl DirectPaymentApp {
             .next()
             .ok_or("No employer has been configured.")?;
 
-        let current_schedule = self.selected_operational_payroll_schedule()?;
         let payroll_year = current_schedule.payroll_year.clone();
         let previous_schedule = self
             .application
@@ -2484,281 +2512,268 @@ impl DirectPaymentApp {
             format_date(week_dates[3]),
         ];
 
-        let assistants = self.selected_period_assistants()?;
         let output_dir =
             crate::paths::expand_path(&self.application.context.config.folders.pdf_output);
 
-        let mut generated = 0usize;
+        let personal_assistant_name = format!("{} {}", assistant.first_name, assistant.surname);
 
-        for assistant in &assistants {
-            let personal_assistant_name = format!("{} {}", assistant.first_name, assistant.surname);
-
-            let payroll_timesheet = self
-                .application
-                .payroll_timesheet_repository
-                .get_for_cycle_and_pa(&payroll_year, current_schedule.cycle_number, assistant.id)?
-                .ok_or_else(|| {
-                    format!(
-                        "No Payroll Timesheet Preparation record exists for {}.",
-                        personal_assistant_name
-                    )
-                })?;
-
-            if crate::payroll_evidence::lifecycle::stage(
-                &crate::payroll_evidence::open(&self.application)?,
-                &payroll_timesheet,
-            )? != crate::payroll_evidence::lifecycle::Stage::Editable
-            {
-                continue;
-            }
-            let payroll_weeks = self
-                .application
-                .payroll_timesheet_repository
-                .get_weeks(payroll_timesheet.id)?;
-
-            if payroll_weeks.len() != 4 {
-                return Err(format!(
-                    "Expected 4 payroll weeks for {}, found {}.",
-                    personal_assistant_name,
-                    payroll_weeks.len()
+        let payroll_timesheet = self
+            .application
+            .payroll_timesheet_repository
+            .get_for_cycle_and_pa(&payroll_year, current_schedule.cycle_number, assistant.id)?
+            .ok_or_else(|| {
+                format!(
+                    "No Payroll Timesheet Preparation record exists for {}.",
+                    personal_assistant_name
                 )
-                .into());
-            }
-
-            let previous_record = if let Some(previous_schedule) = &previous_schedule {
-                self.application
-                    .payroll_timesheet_repository
-                    .get_for_cycle_and_pa(
-                        &previous_schedule.payroll_year,
-                        previous_schedule.cycle_number,
-                        assistant.id,
-                    )?
-            } else {
-                None
-            };
-            let historical_backfill = self
-                .application
-                .payroll_worked_item_repository
-                .get_manual_adjustments(payroll_timesheet.id)?
-                .iter()
-                .any(|adjustment| {
-                    crate::historical_adjustment_compatibility::is_historical_adjustment_reason(
-                        adjustment.reason.as_deref(),
-                    )
-                });
-            let previous_context = if let Some(previous_record) = &previous_record {
-                let previous_weeks = self
-                    .application
-                    .payroll_timesheet_repository
-                    .get_weeks(previous_record.id)?;
-                previous_weeks.get(2).and_then(|week| {
-                    parse_date_checked(&week.week_commencing).map(|week_three_start| {
-                        crate::pay_rate_allocation::PreviousCycleContext {
-                            payroll_timesheet_id: previous_record.id,
-                            week_three_start,
-                            legacy_adjustment_minutes: payroll_timesheet
-                                .previous_cycle_hours
-                                .map(|hours| (hours * 60.0).round() as i64)
-                                .unwrap_or(0),
-                        }
-                    })
-                })
-            } else if historical_backfill && payroll_timesheet.previous_cycle_hours.is_some() {
-                Some(crate::pay_rate_allocation::PreviousCycleContext {
-                    payroll_timesheet_id: payroll_timesheet.id,
-                    week_three_start: week_dates[0],
-                    legacy_adjustment_minutes: payroll_timesheet
-                        .previous_cycle_hours
-                        .map(|hours| (hours * 60.0).round() as i64)
-                        .unwrap_or(0),
-                })
-            } else {
-                None
-            };
-            let reconciled = crate::payroll_evidence::reconciliation::calculate(
-                &self.application,
-                &payroll_timesheet,
-                &week_dates,
-                previous_context.as_ref(),
-            )
-            .map_err(|error| {
-                format!("Cannot generate payroll timesheet for {personal_assistant_name}: {error}")
             })?;
 
-            let contracted_for_week = |week_date| -> rusqlite::Result<String> {
-                Ok(self
-                    .application
-                    .contracted_hours_repository
-                    .get_for_personal_assistant_as_of(assistant.id, week_date)?
-                    .map(|hours| hours.summary_value().to_string())
-                    .unwrap_or_else(|| "Unavailable".to_string()))
-            };
-            let contracted_hours_by_week = [
-                contracted_for_week(week_dates[0])?,
-                contracted_for_week(week_dates[1])?,
-                contracted_for_week(week_dates[2])?,
-                contracted_for_week(week_dates[3])?,
-            ];
-            let contracted_weekly_hours = crate::pdf_generator::contracted_hours_summary(
-                &contracted_hours_by_week,
-                &week_date_strings,
-            );
+        if crate::payroll_evidence::lifecycle::stage(
+            &crate::payroll_evidence::open(&self.application)?,
+            &payroll_timesheet,
+        )? != crate::payroll_evidence::lifecycle::Stage::Editable
+        {
+            return Ok(false);
+        }
+        let payroll_weeks = self
+            .application
+            .payroll_timesheet_repository
+            .get_weeks(payroll_timesheet.id)?;
 
-            let hours_worked: [String; 4] = std::array::from_fn(|index| {
-                crate::pay_rate_allocation::format_total_minutes(
-                    reconciled.week_totals_minutes[index],
-                )
-            });
-
-            let annual_leave_hours = [
-                format_pdf_hours(payroll_weeks[0].annual_leave_hours),
-                format_pdf_hours(payroll_weeks[1].annual_leave_hours),
-                format_pdf_hours(payroll_weeks[2].annual_leave_hours),
-                format_pdf_hours(payroll_weeks[3].annual_leave_hours),
-            ];
-
-            let sickness_periods = crate::pdf_generator::sickness_periods_for_weeks(
-                &crate::sickness_period_repository::SicknessPeriodRepository::new(
-                    crate::payroll_evidence::open(&self.application)?,
-                ),
-                assistant.id,
-                &week_dates,
-            )?;
-
-            let public_holidays = self
-                .application
-                .payroll_timesheet_repository
-                .get_public_holidays(payroll_timesheet.id)?;
-
-            validate_public_holidays_for_generation(
-                &payroll_weeks,
-                &public_holidays,
-                snapshot_state_for_generation(
-                    &self.application.payroll_worked_item_repository,
-                    payroll_timesheet.id,
-                )?,
-            )?;
-            let public_holiday_entries = std::array::from_fn(|index| {
-                public_holidays
-                    .iter()
-                    .filter(|holiday| {
-                        holiday.week_number == (index + 1) as i64 && holiday.hours > 0.0
-                    })
-                    .map(|holiday| PublicHolidayPdfEntry {
-                        hours: format_pdf_hours(holiday.hours),
-                        date: holiday.holiday_date.clone(),
-                    })
-                    .collect::<Vec<_>>()
-            });
-
-            let travel_miles = [
-                format_pdf_hours(payroll_weeks[0].travel_miles),
-                format_pdf_hours(payroll_weeks[1].travel_miles),
-                format_pdf_hours(payroll_weeks[2].travel_miles),
-                format_pdf_hours(payroll_weeks[3].travel_miles),
-            ];
-
-            let previous_cycle_hours = (reconciled.previous_cycle_minutes != 0).then(|| {
-                crate::pay_rate_allocation::format_total_minutes(reconciled.previous_cycle_minutes)
-            });
-
-            let employer_signature_path = employer
-                .employer_signature
-                .as_deref()
-                .map(|path| crate::paths::expand_path(&std::path::PathBuf::from(path)))
-                .filter(|path| path.exists());
-
-            let pa_signature_path = assistant
-                .signature
-                .as_deref()
-                .map(|path| crate::paths::expand_path(&std::path::PathBuf::from(path)))
-                .filter(|path| path.exists());
-
-            let data = TimesheetPdfData {
-                schedule: &current_schedule,
-                employer_name: &employer.name,
-
-                personal_assistant_name: &personal_assistant_name,
-
-                national_insurance_number: assistant
-                    .national_insurance_number
-                    .as_deref()
-                    .unwrap_or(""),
-
-                contracted_weekly_hours: &contracted_weekly_hours,
-
-                week_commencing_dates: [
-                    &week_date_strings[0],
-                    &week_date_strings[1],
-                    &week_date_strings[2],
-                    &week_date_strings[3],
-                ],
-
-                hours_worked: [
-                    &hours_worked[0],
-                    &hours_worked[1],
-                    &hours_worked[2],
-                    &hours_worked[3],
-                ],
-
-                annual_leave_hours: [
-                    &annual_leave_hours[0],
-                    &annual_leave_hours[1],
-                    &annual_leave_hours[2],
-                    &annual_leave_hours[3],
-                ],
-
-                sickness_periods,
-
-                public_holidays: public_holiday_entries,
-
-                travel_miles: [
-                    &travel_miles[0],
-                    &travel_miles[1],
-                    &travel_miles[2],
-                    &travel_miles[3],
-                ],
-
-                previous_cycle_hours: previous_cycle_hours.as_deref(),
-
-                employer_signature_path: employer_signature_path.as_deref(),
-
-                pa_signature_path: pa_signature_path.as_deref(),
-            };
-
-            let captured_at = chrono::Local::now().to_rfc3339();
-            let final_pdf_path = PdfGenerator::output_path(&output_dir, &data)?;
-            let week_ids = [
-                payroll_weeks[0].id,
-                payroll_weeks[1].id,
-                payroll_weeks[2].id,
-                payroll_weeks[3].id,
-            ];
-            crate::payroll_snapshot_service::publish_candidate(
-                &self.application.payroll_worked_item_repository,
-                crate::payroll_snapshot_service::CandidatePublication {
-                    payroll_timesheet_id: payroll_timesheet.id,
-                    items: &reconciled.snapshot_items,
-                    final_pdf_path: &final_pdf_path,
-                    generated_at: &captured_at,
-                    previous_cycle_minutes: reconciled.previous_cycle_minutes,
-                    week_ids: &week_ids,
-                    week_totals_minutes: &reconciled.week_totals_minutes,
-                },
-                |temporary_path| {
-                    PdfGenerator::generate_to_path(
-                        temporary_path,
-                        &data,
-                        &self.application.context.config.pdf,
-                        &self.application.context.config.payroll,
-                    )
-                },
-            )?;
-
-            generated += 1;
+        if payroll_weeks.len() != 4 {
+            return Err(format!(
+                "Expected 4 payroll weeks for {}, found {}.",
+                personal_assistant_name,
+                payroll_weeks.len()
+            )
+            .into());
         }
 
-        Ok(generated)
+        let previous_record = if let Some(previous_schedule) = &previous_schedule {
+            self.application
+                .payroll_timesheet_repository
+                .get_for_cycle_and_pa(
+                    &previous_schedule.payroll_year,
+                    previous_schedule.cycle_number,
+                    assistant.id,
+                )?
+        } else {
+            None
+        };
+        let historical_backfill = self
+            .application
+            .payroll_worked_item_repository
+            .get_manual_adjustments(payroll_timesheet.id)?
+            .iter()
+            .any(|adjustment| {
+                crate::historical_adjustment_compatibility::is_historical_adjustment_reason(
+                    adjustment.reason.as_deref(),
+                )
+            });
+        let previous_context = if let Some(previous_record) = &previous_record {
+            let previous_weeks = self
+                .application
+                .payroll_timesheet_repository
+                .get_weeks(previous_record.id)?;
+            previous_weeks.get(2).and_then(|week| {
+                parse_date_checked(&week.week_commencing).map(|week_three_start| {
+                    crate::pay_rate_allocation::PreviousCycleContext {
+                        payroll_timesheet_id: previous_record.id,
+                        week_three_start,
+                        legacy_adjustment_minutes: payroll_timesheet
+                            .previous_cycle_hours
+                            .map(|hours| (hours * 60.0).round() as i64)
+                            .unwrap_or(0),
+                    }
+                })
+            })
+        } else if historical_backfill && payroll_timesheet.previous_cycle_hours.is_some() {
+            Some(crate::pay_rate_allocation::PreviousCycleContext {
+                payroll_timesheet_id: payroll_timesheet.id,
+                week_three_start: week_dates[0],
+                legacy_adjustment_minutes: payroll_timesheet
+                    .previous_cycle_hours
+                    .map(|hours| (hours * 60.0).round() as i64)
+                    .unwrap_or(0),
+            })
+        } else {
+            None
+        };
+        let reconciled = crate::payroll_evidence::reconciliation::calculate(
+            &self.application,
+            &payroll_timesheet,
+            &week_dates,
+            previous_context.as_ref(),
+        )
+        .map_err(|error| {
+            format!("Cannot generate payroll timesheet for {personal_assistant_name}: {error}")
+        })?;
+
+        let contracted_for_week = |week_date| -> rusqlite::Result<String> {
+            Ok(self
+                .application
+                .contracted_hours_repository
+                .get_for_personal_assistant_as_of(assistant.id, week_date)?
+                .map(|hours| hours.summary_value().to_string())
+                .unwrap_or_else(|| "Unavailable".to_string()))
+        };
+        let contracted_hours_by_week = [
+            contracted_for_week(week_dates[0])?,
+            contracted_for_week(week_dates[1])?,
+            contracted_for_week(week_dates[2])?,
+            contracted_for_week(week_dates[3])?,
+        ];
+        let contracted_weekly_hours = crate::pdf_generator::contracted_hours_summary(
+            &contracted_hours_by_week,
+            &week_date_strings,
+        );
+
+        let hours_worked: [String; 4] = std::array::from_fn(|index| {
+            crate::pay_rate_allocation::format_total_minutes(reconciled.week_totals_minutes[index])
+        });
+
+        let annual_leave_hours = [
+            format_pdf_hours(payroll_weeks[0].annual_leave_hours),
+            format_pdf_hours(payroll_weeks[1].annual_leave_hours),
+            format_pdf_hours(payroll_weeks[2].annual_leave_hours),
+            format_pdf_hours(payroll_weeks[3].annual_leave_hours),
+        ];
+
+        let sickness_periods = crate::pdf_generator::sickness_periods_for_weeks(
+            &crate::sickness_period_repository::SicknessPeriodRepository::new(
+                crate::payroll_evidence::open(&self.application)?,
+            ),
+            assistant.id,
+            &week_dates,
+        )?;
+
+        let public_holidays = self
+            .application
+            .payroll_timesheet_repository
+            .get_public_holidays(payroll_timesheet.id)?;
+
+        validate_public_holidays_for_generation(
+            &payroll_weeks,
+            &public_holidays,
+            snapshot_state_for_generation(
+                &self.application.payroll_worked_item_repository,
+                payroll_timesheet.id,
+            )?,
+        )?;
+        let public_holiday_entries = std::array::from_fn(|index| {
+            public_holidays
+                .iter()
+                .filter(|holiday| holiday.week_number == (index + 1) as i64 && holiday.hours > 0.0)
+                .map(|holiday| PublicHolidayPdfEntry {
+                    hours: format_pdf_hours(holiday.hours),
+                    date: holiday.holiday_date.clone(),
+                })
+                .collect::<Vec<_>>()
+        });
+
+        let travel_miles = [
+            format_pdf_hours(payroll_weeks[0].travel_miles),
+            format_pdf_hours(payroll_weeks[1].travel_miles),
+            format_pdf_hours(payroll_weeks[2].travel_miles),
+            format_pdf_hours(payroll_weeks[3].travel_miles),
+        ];
+
+        let previous_cycle_hours = (reconciled.previous_cycle_minutes != 0).then(|| {
+            crate::pay_rate_allocation::format_total_minutes(reconciled.previous_cycle_minutes)
+        });
+
+        let employer_signature_path = employer
+            .employer_signature
+            .as_deref()
+            .map(|path| crate::paths::expand_path(&std::path::PathBuf::from(path)))
+            .filter(|path| path.exists());
+
+        let pa_signature_path = assistant
+            .signature
+            .as_deref()
+            .map(|path| crate::paths::expand_path(&std::path::PathBuf::from(path)))
+            .filter(|path| path.exists());
+
+        let data = TimesheetPdfData {
+            payroll_department_notes: &payroll_timesheet.payroll_department_notes,
+            schedule: &current_schedule,
+            employer_name: &employer.name,
+
+            personal_assistant_name: &personal_assistant_name,
+
+            national_insurance_number: assistant.national_insurance_number.as_deref().unwrap_or(""),
+
+            contracted_weekly_hours: &contracted_weekly_hours,
+
+            week_commencing_dates: [
+                &week_date_strings[0],
+                &week_date_strings[1],
+                &week_date_strings[2],
+                &week_date_strings[3],
+            ],
+
+            hours_worked: [
+                &hours_worked[0],
+                &hours_worked[1],
+                &hours_worked[2],
+                &hours_worked[3],
+            ],
+
+            annual_leave_hours: [
+                &annual_leave_hours[0],
+                &annual_leave_hours[1],
+                &annual_leave_hours[2],
+                &annual_leave_hours[3],
+            ],
+
+            sickness_periods,
+
+            public_holidays: public_holiday_entries,
+
+            travel_miles: [
+                &travel_miles[0],
+                &travel_miles[1],
+                &travel_miles[2],
+                &travel_miles[3],
+            ],
+
+            previous_cycle_hours: previous_cycle_hours.as_deref(),
+
+            employer_signature_path: employer_signature_path.as_deref(),
+
+            pa_signature_path: pa_signature_path.as_deref(),
+        };
+
+        let captured_at = chrono::Local::now().to_rfc3339();
+        let final_pdf_path = PdfGenerator::output_path(&output_dir, &data)?;
+        let week_ids = [
+            payroll_weeks[0].id,
+            payroll_weeks[1].id,
+            payroll_weeks[2].id,
+            payroll_weeks[3].id,
+        ];
+        crate::payroll_snapshot_service::publish_candidate(
+            &self.application.payroll_worked_item_repository,
+            crate::payroll_snapshot_service::CandidatePublication {
+                payroll_timesheet_id: payroll_timesheet.id,
+                items: &reconciled.snapshot_items,
+                final_pdf_path: &final_pdf_path,
+                generated_at: &captured_at,
+                previous_cycle_minutes: reconciled.previous_cycle_minutes,
+                week_ids: &week_ids,
+                week_totals_minutes: &reconciled.week_totals_minutes,
+            },
+            |temporary_path| {
+                PdfGenerator::generate_to_path(
+                    temporary_path,
+                    &data,
+                    &self.application.context.config.pdf,
+                    &self.application.context.config.payroll,
+                )
+            },
+        )?;
+
+        Ok(true)
     }
 }
 
@@ -2810,18 +2825,18 @@ fn validate_captured_email_batch_period(
     if operational_state.revision != captured_revision
         || operational_state.selected.as_ref() != Some(&captured.key)
     {
-        return Err("The operational payroll period selection changed after this email batch began. Cancel this batch and start it again for the intended payroll period.".into());
+        return Err("The operational payroll period selection changed after this payroll operation began. Cancel this operation and start it again for the intended payroll period.".into());
     }
 
     let stored_schedule = stored_schedule.ok_or_else(|| {
-        "The payroll period captured for this email batch no longer exists. Cancel this batch and select an available payroll period."
+        "The payroll period captured for this payroll operation no longer exists. Cancel this operation and select an available payroll period."
     })?;
     if !crate::date_utils::same(
         &stored_schedule.first_week_commencing,
         &captured.first_week_commencing,
     ) || !crate::date_utils::same(&stored_schedule.pay_date, &captured.pay_date)
     {
-        return Err("The payroll schedule dates changed after this email batch began. Nothing was sent; cancel this batch and start it again using the updated payroll period.".into());
+        return Err("The payroll schedule dates changed after this payroll operation began. Nothing was processed; cancel this operation and start it again using the updated payroll period.".into());
     }
 
     Ok(())
@@ -5315,18 +5330,31 @@ mod payroll_period_eligibility_tests {
                 .is_empty());
             for kind in [PayrollEmailKind::Timesheet, PayrollEmailKind::Payslip] {
                 app.begin_email_batch(kind);
-                assert_eq!(
-                    app.pending_email_batch
-                        .as_ref()
-                        .unwrap()
-                        .selected_personal_assistant_ids,
-                    expected
-                );
+                let pending = app.pending_email_batch.as_ref().unwrap();
+                if matches!(kind, PayrollEmailKind::Timesheet) {
+                    assert_eq!(
+                        pending.choices.iter().map(|p| p.id).collect::<Vec<_>>(),
+                        expected
+                    );
+                    assert!(pending.selected_personal_assistant_ids.is_empty());
+                    assert!(pending.choices.iter().all(|p| !p.available));
+                } else {
+                    assert_eq!(pending.selected_personal_assistant_ids, expected);
+                }
                 app.clear_pending_email_batch();
             }
             app.payroll_timesheet_screen =
                 load_period_for_eligibility_test(&app.application, schedule);
             assert_eq!(app.generate_payroll_timesheets().unwrap(), expected.len());
+            app.begin_email_batch(PayrollEmailKind::Timesheet);
+            assert_eq!(
+                app.pending_email_batch
+                    .as_ref()
+                    .unwrap()
+                    .selected_personal_assistant_ids,
+                expected
+            );
+            app.clear_pending_email_batch();
             let records = app
                 .application
                 .payroll_timesheet_repository
@@ -5383,12 +5411,9 @@ mod payroll_period_eligibility_tests {
             vec![1, 3, 5, 8]
         );
         app.begin_email_batch(PayrollEmailKind::Timesheet);
-        assert!(app
-            .pending_email_batch
-            .as_ref()
-            .unwrap()
-            .selected_personal_assistant_ids
-            .contains(&1));
+        let pending = app.pending_email_batch.as_ref().unwrap();
+        assert!(pending.choices.iter().any(|p| p.id == 1 && !p.available));
+        assert!(!pending.selected_personal_assistant_ids.contains(&1));
         assert_eq!(app.generate_payroll_timesheets().unwrap(), 3);
         assert_eq!(
             app.application
@@ -5416,3 +5441,5 @@ mod payroll_period_eligibility_tests {
         );
     }
 }
+
+include!("payroll_production_workflow.rs");

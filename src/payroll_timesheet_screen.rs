@@ -47,6 +47,7 @@ impl From<&PayrollSchedule> for BoundPayrollPeriod {
 
 #[derive(Clone)]
 struct PreparationBaseline {
+    payroll_department_notes: String,
     previous_cycle_hours: Option<f64>,
     weeks: Vec<PayrollTimesheetWeek>,
     public_holidays: Vec<PayrollTimesheetPublicHoliday>,
@@ -85,9 +86,12 @@ pub(crate) enum UnsavedChoice {
 }
 
 pub struct PayrollTimesheetScreen {
+    returned_hours_text: HashMap<i64, String>,
+    returned_hours_status: HashMap<i64, String>,
     mileage_editor: Option<mileage_editor::MileageEditor>,
     sickness_ui: sickness_editor::SicknessUi,
     selected_pa: Option<i64>,
+    leaving_note_suggestions: HashMap<i64, String>,
     pending_pa: Option<i64>,
     // Active PA first, followed by previously active PAs. Unvisited PAs
     // remain in the dropdown until activated.
@@ -121,9 +125,12 @@ pub struct PayrollTimesheetScreen {
 impl PayrollTimesheetScreen {
     pub fn new() -> Self {
         Self {
+            returned_hours_text: HashMap::new(),
+            returned_hours_status: HashMap::new(),
             mileage_editor: None,
             sickness_ui: Default::default(),
             selected_pa: None,
+            leaving_note_suggestions: HashMap::new(),
             pending_pa: None,
             visited_pas: Vec::new(),
             dropdown_pas: Vec::new(),
@@ -154,9 +161,12 @@ impl PayrollTimesheetScreen {
     }
 
     pub fn reload(&mut self) {
+        self.returned_hours_text.clear();
+        self.returned_hours_status.clear();
         self.mileage_editor = None;
         self.sickness_ui = Default::default();
         self.selected_pa = None;
+        self.leaving_note_suggestions.clear();
         self.pending_pa = None;
         self.visited_pas.clear();
         self.dropdown_pas.clear();
@@ -345,6 +355,7 @@ impl PayrollTimesheetScreen {
                 ui.separator();
                 continue;
             }
+            self.show_returned_information(ui, application, record_index);
             if self.duplicate_ui.show_scoped(ui, application, Some(pa)) {
                 finish_active_panel(ui, active_panel);
                 self.reload_evidence_preserving_visits();
@@ -505,7 +516,15 @@ impl PayrollTimesheetScreen {
                             });
                     });
 
-                    if !read_only && ui.button(format!("Save {}", assistant_name)).clicked() {
+                    ui.label("Notes for Payroll Department");
+                    ui.add_enabled(!read_only, egui::TextEdit::multiline(&mut record.payroll_department_notes)
+                        .id_salt(("payroll_department_notes", record.id)).desired_rows(3).desired_width(f32::INFINITY));
+                    let notes_valid = crate::payroll_timesheet_repository::validate_payroll_department_notes(&record.payroll_department_notes).is_ok();
+                    ui.label(format!("{} / 256 characters", record.payroll_department_notes.chars().count()));
+                    if !notes_valid {
+                        ui.colored_label(ui.visuals().error_fg_color, "Maximum 256 characters; shorten the note before saving. Input has not been truncated.");
+                    }
+                    if !read_only && ui.add_enabled(notes_valid, egui::Button::new(format!("Save {}", assistant_name))).clicked() {
                         save_requested = true;
                     }
 
@@ -543,6 +562,50 @@ impl PayrollTimesheetScreen {
             None => {}
         }
         ui.label(&self.status_message);
+    }
+
+    fn show_returned_information(&mut self, ui: &mut egui::Ui, app: &Application, index: usize) {
+        let record = &mut self.weeks[index].0;
+        let text = self
+            .returned_hours_text
+            .entry(record.id)
+            .or_insert_with(|| {
+                record
+                    .actual_in_lieu_hours
+                    .map(|v| format!("{v:.2}"))
+                    .unwrap_or_default()
+            });
+        egui::Frame::group(ui.style()).show(ui, |ui| {
+            ui.strong("Returned payroll information");
+            ui.label("Actual in-lieu hours awarded by Payroll");
+            ui.label("Leave blank until Payroll confirms the figure. This does not change the outgoing timesheet or worked hours.");
+            ui.add(egui::TextEdit::singleline(text).id_salt(("actual_in_lieu", record.id)).desired_width(100.0));
+            let mut save = false;
+            let mut clear = false;
+            ui.horizontal(|ui| {
+                save = ui.button("Save returned hours").clicked();
+                clear = ui.button("Clear returned hours").clicked();
+            });
+            if save || clear {
+                let saved_text = record.actual_in_lieu_hours.map(|v| format!("{v:.2}")).unwrap_or_default();
+                let value = if clear { Ok(None) } else if *text == saved_text {
+                    // Formatting to two decimals is display-only, not a precision-changing edit.
+                    Ok(record.actual_in_lieu_hours)
+                } else { parse_actual_in_lieu(text) };
+                match value.and_then(|value| {
+                    app.payroll_timesheet_repository.save_actual_in_lieu_hours(record.id, value).map_err(|e| e.to_string())?;
+                    Ok(value)
+                }) {
+                    Ok(value) => {
+                        record.actual_in_lieu_hours = value;
+                        *text = value.map(|v| format!("{v:.2}")).unwrap_or_default();
+                        self.returned_hours_status.insert(record.id, "Returned hours saved. Outgoing payroll unchanged.".into());
+                    }
+                    Err(error) => { self.returned_hours_status.insert(record.id, error); }
+                }
+            }
+            if let Some(message) = self.returned_hours_status.get(&record.id) { ui.label(message); }
+        });
     }
 
     fn save_mileage(
@@ -600,6 +663,19 @@ impl PayrollTimesheetScreen {
     fn activate_pa(&mut self, selected: Option<i64>) {
         self.selected_pa = selected;
         if let Some(pa) = selected {
+            // Consume once per load, after the persisted baseline was captured.
+            // Rendering, editing or deleting a suggestion must not recreate it.
+            if let Some(note) = self.leaving_note_suggestions.remove(&pa) {
+                if let Some((record, _, _)) = self
+                    .weeks
+                    .iter_mut()
+                    .find(|(r, _, _)| r.personal_assistant_id == pa)
+                {
+                    if record.payroll_department_notes.trim().is_empty() {
+                        record.payroll_department_notes = note;
+                    }
+                }
+            }
             self.visited_pas.retain(|id| *id != pa);
             self.visited_pas.insert(0, pa);
         }
@@ -779,6 +855,7 @@ impl PayrollTimesheetScreen {
             .iter()
             .any(|holiday| pending(NumericEditorKey::PublicHoliday(holiday.id), holiday.hours));
         pending_numeric
+            || baseline.payroll_department_notes != record.payroll_department_notes
             || !weeks_equal(&baseline.weeks, weeks)
             || !public_holidays_equal(&baseline.public_holidays, holidays)
             || !annual_leave_equal(
@@ -798,6 +875,7 @@ impl PayrollTimesheetScreen {
             .find(|(r, _, _)| Some(r.personal_assistant_id) == self.selected_pa)
         {
             if let Some(baseline) = self.preparation_baselines.get(&record.id) {
+                record.payroll_department_notes = baseline.payroll_department_notes.clone();
                 record.previous_cycle_hours = baseline.previous_cycle_hours;
                 *weeks = baseline.weeks.clone();
                 let index = self.records.iter().position(|r| r.id == record.id).unwrap();
@@ -1307,6 +1385,37 @@ impl PayrollTimesheetScreen {
             self.public_holidays.push(holidays);
         }
 
+        self.leaving_note_suggestions.clear();
+        for assistant in &assistants {
+            let Some(leaving) = assistant
+                .leaving_date
+                .as_deref()
+                .and_then(crate::models::parse_employment_date)
+            else {
+                continue;
+            };
+            if leaving < first_week || leaving > first_week + chrono::Duration::days(27) {
+                continue;
+            }
+            if self.weeks.iter().any(|(record, _, _)| {
+                record.personal_assistant_id == assistant.id
+                    && record.payroll_department_notes.trim().is_empty()
+                    && !self.blocked(record.id, assistant.id)
+                    && !matches!(
+                        self.snapshot_states.get(&record.id),
+                        Some(SnapshotState::Submitted | SnapshotState::Indeterminate)
+                    )
+            }) {
+                self.leaving_note_suggestions.insert(
+                    assistant.id,
+                    format!(
+                        "Leaving date {}. Please include any hours in lieu in final pay.",
+                        leaving.format("%d/%m/%Y")
+                    ),
+                );
+            }
+        }
+
         self.dropdown_pas = ordered_pas(
             &assistants,
             &self
@@ -1378,6 +1487,7 @@ fn preparation_baseline(
     public_holidays: &[PayrollTimesheetPublicHoliday],
 ) -> Result<PreparationBaseline, rusqlite::Error> {
     Ok(PreparationBaseline {
+        payroll_department_notes: record.payroll_department_notes.clone(),
         previous_cycle_hours: record.previous_cycle_hours,
         weeks: weeks.to_vec(),
         public_holidays: public_holidays.to_vec(),
@@ -1401,6 +1511,9 @@ fn save_preparation_record(
     worked_hours_baselines: &HashMap<(i64, i64), i64>,
     baseline: Option<&PreparationBaseline>,
 ) -> Result<SaveResult, Box<dyn std::error::Error>> {
+    crate::payroll_timesheet_repository::validate_payroll_department_notes(
+        &record.payroll_department_notes,
+    )?;
     let bound = bound_period.ok_or(
         "Payroll Timesheet Preparation is not bound to a payroll period. Reload the screen.",
     )?;
@@ -1484,7 +1597,8 @@ fn save_preparation_record(
         .collect::<Vec<_>>();
 
     let changed = baseline.is_none_or(|baseline| {
-        !optional_hours_equal(baseline.previous_cycle_hours, record.previous_cycle_hours)
+        baseline.payroll_department_notes != record.payroll_department_notes
+            || !optional_hours_equal(baseline.previous_cycle_hours, record.previous_cycle_hours)
             || !weeks_equal(&baseline.weeks, &weeks)
             || !public_holidays_equal(&baseline.public_holidays, public_holidays)
             || !annual_leave_equal(&baseline.annual_leave, &annual_leave)
@@ -2130,6 +2244,8 @@ pub(crate) mod tests {
     }
 
     include!("payroll_preparation_tests.rs");
+    include!("payroll_notes_return_tests.rs");
+    include!("payroll_leaving_note_tests.rs");
 
     fn setup_connection(application: &Application) -> Connection {
         Connection::open(&application.context.environment.database_path).unwrap()
@@ -3426,4 +3542,18 @@ fn format_decimal_hours(value: f64) -> String {
             .trim_end_matches('.')
             .to_string()
     }
+}
+
+fn parse_actual_in_lieu(text: &str) -> Result<Option<f64>, String> {
+    if text.trim().is_empty() {
+        return Ok(None);
+    }
+    let value = text
+        .trim()
+        .parse::<f64>()
+        .map_err(|_| "Enter a number or leave blank".to_string())?;
+    if !value.is_finite() || value < 0.0 {
+        return Err("Enter finite, non-negative in-lieu hours".into());
+    }
+    Ok(Some(value))
 }

@@ -59,7 +59,7 @@ pub fn archive_submission(db: &Connection, record: i64, at: &str) -> Result<()> 
     {
         return Err("Submission attachment changed".into());
     }
-    db.execute("INSERT INTO payroll_submissions(payroll_timesheet_id,submitted_at,supersedes_id,pdf_path,pdf_sha256,pdf_bytes) VALUES (?1,?2,?3,?4,?5,?6)",params![record,at,latest(db,record)?,path,digest,bytes])?;
+    db.execute("INSERT INTO payroll_submissions(payroll_timesheet_id,submitted_at,supersedes_id,pdf_path,pdf_sha256,pdf_bytes,payroll_department_notes) VALUES (?1,?2,?3,?4,?5,?6,(SELECT payroll_department_notes FROM payroll_timesheets WHERE id=?1))",params![record,at,latest(db,record)?,path,digest,bytes])?;
     let id = db.last_insert_rowid();
     for (target, source) in [
         (
@@ -298,8 +298,13 @@ pub fn verify_candidate_evidence(db: &Connection, record: i64) -> Result<()> {
     if captured.is_empty() {
         return Ok(());
     } // Existing schema-19 candidates have no clock capture.
-    let current = load_connection(db)?;
-    let pre = preflight(db, &current)?;
+    let pa: i64 = db.query_row(
+        "SELECT personal_assistant_id FROM payroll_timesheets WHERE id=?1",
+        [record],
+        |r| r.get(0),
+    )?;
+    let current = load_for_pa(db, pa)?;
+    let pre = preflight_for_pa(db, &current, pa)?;
     for e in &captured {
         if !pre
             .eligible
@@ -332,7 +337,7 @@ pub fn verify_candidate_evidence(db: &Connection, record: i64) -> Result<()> {
 }
 
 pub fn ensure_editable(db: &Connection, id: i64) -> Result<()> {
-    let record:Option<PayrollTimesheet>=db.query_row("SELECT id,personal_assistant_id,payroll_year,cycle_number,previous_cycle_hours,created_at,updated_at FROM payroll_timesheets WHERE id=?1",[id],|r|Ok(PayrollTimesheet{id:r.get(0)?,personal_assistant_id:r.get(1)?,payroll_year:r.get(2)?,cycle_number:r.get(3)?,previous_cycle_hours:r.get(4)?,created_at:r.get(5)?,updated_at:r.get(6)?})).optional()?;
+    let record:Option<PayrollTimesheet>=db.query_row("SELECT id,personal_assistant_id,payroll_year,cycle_number,previous_cycle_hours,created_at,updated_at,payroll_department_notes,actual_in_lieu_hours,actual_in_lieu_updated_at FROM payroll_timesheets WHERE id=?1",[id],|r|Ok(PayrollTimesheet{id:r.get(0)?,personal_assistant_id:r.get(1)?,payroll_year:r.get(2)?,cycle_number:r.get(3)?,previous_cycle_hours:r.get(4)?,created_at:r.get(5)?,updated_at:r.get(6)?,payroll_department_notes:r.get(7)?,actual_in_lieu_hours:r.get(8)?,actual_in_lieu_updated_at:r.get(9)?})).optional()?;
     if let Some(record) = record {
         if stage(db, &record)? != Stage::Editable {
             return Err("Submitted, settled or indeterminate payroll is protected".into());
@@ -356,7 +361,7 @@ pub fn candidate_signature(db: &Connection, id: i64) -> Result<String> {
         .as_deref()
         .and_then(crate::models::parse_employment_date)
         .map(|d| d + chrono::Duration::days(27));
-    let relevant = load_connection(db)?
+    let relevant = load_for_pa(db, pa)?
         .into_iter()
         .filter(|e| e.pa == pa && through.is_none_or(|end| e.date().is_ok_and(|d| d <= end)))
         .collect::<Vec<_>>();
@@ -369,8 +374,13 @@ pub fn candidate_signature(db: &Connection, id: i64) -> Result<String> {
         .map(WorkEvidence::fingerprint)
         .collect::<Vec<_>>();
     values.push(format!("period:{first:?}"));
-    let mut statement=db.prepare("SELECT group_fingerprint,winner_source,winner_id FROM payroll_duplicate_decisions WHERE invalidated_at IS NULL ORDER BY id")?;
-    for row in statement.query_map([], |r| {
+    let mut statement=db.prepare("SELECT group_fingerprint,winner_source,winner_id FROM payroll_duplicate_decisions WHERE invalidated_at IS NULL AND id IN (
+        SELECT m.decision_id FROM payroll_duplicate_members m
+        LEFT JOIN timesheets t ON m.source='imported' AND t.id=m.source_id
+        LEFT JOIN direct_shifts d ON m.source='direct' AND d.id=m.source_id
+        WHERE t.personal_assistant_id=?1 OR d.personal_assistant_id=?1
+    ) ORDER BY id")?;
+    for row in statement.query_map([pa], |r| {
         Ok((
             r.get::<_, String>(0)?,
             r.get::<_, String>(1)?,

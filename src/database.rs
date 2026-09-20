@@ -2,7 +2,7 @@ use std::path::Path;
 
 use rusqlite::{Connection, Result};
 
-pub const CURRENT_SCHEMA_VERSION: i64 = 31;
+pub const CURRENT_SCHEMA_VERSION: i64 = 32;
 
 pub fn initialise_database(database_path: &Path) -> Result<()> {
     let connection = Connection::open(database_path)?;
@@ -220,7 +220,23 @@ fn apply_migrations(connection: &Connection) -> Result<()> {
         migrate_to_version_31(connection)?;
     }
 
+    if current_version < 32 {
+        migrate_to_version_32(connection)?;
+    }
+
     Ok(())
+}
+
+fn migrate_to_version_32(connection: &Connection) -> Result<()> {
+    let transaction = connection.unchecked_transaction()?;
+    transaction.execute_batch(
+        "ALTER TABLE payroll_timesheets ADD COLUMN payroll_department_notes TEXT NOT NULL DEFAULT '' CHECK(length(payroll_department_notes) <= 256);
+         ALTER TABLE payroll_timesheets ADD COLUMN actual_in_lieu_hours REAL CHECK(actual_in_lieu_hours IS NULL OR (actual_in_lieu_hours >= 0 AND actual_in_lieu_hours <= 1.7976931348623157e308));
+         ALTER TABLE payroll_timesheets ADD COLUMN actual_in_lieu_updated_at TEXT;
+         ALTER TABLE payroll_submissions ADD COLUMN payroll_department_notes TEXT;
+         UPDATE schema_version SET version = 32;",
+    )?;
+    transaction.commit()
 }
 
 fn migrate_to_version_31(connection: &Connection) -> Result<()> {
@@ -1160,7 +1176,17 @@ fn table_has_column(connection: &Connection, table: &str, column: &str) -> Resul
 
 #[cfg(test)]
 pub(crate) mod tests {
+    pub(crate) fn remove_schema_32_fixture(db: &rusqlite::Connection) {
+        db.execute_batch(
+            "ALTER TABLE payroll_timesheets DROP COLUMN payroll_department_notes;
+            ALTER TABLE payroll_timesheets DROP COLUMN actual_in_lieu_hours;
+            ALTER TABLE payroll_timesheets DROP COLUMN actual_in_lieu_updated_at;
+            ALTER TABLE payroll_submissions DROP COLUMN payroll_department_notes;",
+        )
+        .unwrap();
+    }
     pub(crate) fn remove_schema_28_fixture(db: &rusqlite::Connection) {
+        remove_schema_32_fixture(db);
         for table in [
             "payroll_legacy_cutover",
             "payroll_legacy_evidence",

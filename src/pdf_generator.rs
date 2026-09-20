@@ -25,6 +25,7 @@ pub struct TimesheetPdfData<'a> {
     pub travel_miles: [&'a str; 4],
 
     pub previous_cycle_hours: Option<&'a str>,
+    pub payroll_department_notes: &'a str,
 
     pub employer_signature_path: Option<&'a Path>,
     pub pa_signature_path: Option<&'a Path>,
@@ -80,7 +81,7 @@ fn validate_sickness_layout(
                     || size * 25.4 / 72.0 > 3.0
                     || sickness_line_offset(block, line, size) > 18.5
                 {
-                    return Err(format!("Sickness dates for week {} do not fit in the Sick / SSP cell at the configured information font size. No dates have been omitted; PDF generation stopped.", week + 1));
+                    return Err(format!("Sickness dates for week {} do not fit in the Sick / SSP cell at the timesheet body font size. No dates have been omitted; PDF generation stopped.", week + 1));
                 }
             }
         }
@@ -305,13 +306,50 @@ impl PdfGenerator {
         // Signatures / declaration
         // ------------------------------------------------------------
 
-        let signature_y = 90.0;
+        let notes_layout = layout_payroll_notes(
+            data.payroll_department_notes,
+            8.0, // Match the declaration body; never shrink the note to make it fit.
+            &regular_font,
+            &bold_font,
+        )?;
+        if let Some(layout) = &notes_layout {
+            write_text(
+                &mut ops,
+                "Notes for Payroll Department",
+                20.0,
+                layout.heading_y,
+                9.0,
+                true,
+                TextAlignment::Left,
+                &bold_id,
+                &regular_id,
+            );
+            for line in &layout.lines {
+                let left =
+                    footer_line_metrics(&line.text, layout.size, &regular_font)?.0 * 25.4 / 72.0;
+                write_text(
+                    &mut ops,
+                    &line.text,
+                    20.0 - left,
+                    line.baseline,
+                    layout.size,
+                    false,
+                    TextAlignment::Left,
+                    &bold_id,
+                    &regular_id,
+                );
+            }
+        }
+        let declaration_y = notes_layout.as_ref().map_or(107.0, |l| l.declaration_y);
+        let sentence_y = notes_layout.as_ref().map_or(97.0, |l| l.sentence_y);
+        let signature_y = notes_layout.as_ref().map_or(90.0, |l| l.signature_y);
+        let image_y = notes_layout.as_ref().map_or(68.0, |l| l.image_y);
 
         write_text(
             &mut ops,
             "DECLARATION",
             20.0,
-            107.0,
+            declaration_y,
             9.0,
             true,
             TextAlignment::Left,
@@ -323,7 +361,7 @@ impl PdfGenerator {
             &mut ops,
             "I confirm that the hours and information recorded above are correct.",
             20.0,
-            97.0,
+            sentence_y,
             8.0,
             false,
             TextAlignment::Left,
@@ -336,9 +374,9 @@ impl PdfGenerator {
         // ------------------------------------------------------------
 
         let employer_signature_bottom = if let Some(path) = data.employer_signature_path {
-            add_signature(&mut document, &mut ops, path, 20.0, 68.0, 55.25, 17.0)?
+            add_signature(&mut document, &mut ops, path, 20.0, image_y, 55.25, 17.0)?
         } else {
-            68.0
+            image_y
         };
 
         write_text(
@@ -358,9 +396,9 @@ impl PdfGenerator {
         // ------------------------------------------------------------
 
         let pa_signature_bottom = if let Some(path) = data.pa_signature_path {
-            add_signature(&mut document, &mut ops, path, 115.0, 68.0, 55.25, 17.0)?
+            add_signature(&mut document, &mut ops, path, 115.0, image_y, 55.25, 17.0)?
         } else {
-            68.0
+            image_y
         };
 
         write_text(
@@ -385,7 +423,9 @@ impl PdfGenerator {
             &mut ops,
             &format!("Date: {}", current_date),
             20.0,
-            employer_signature_bottom - 4.0,
+            notes_layout
+                .as_ref()
+                .map_or(employer_signature_bottom - 4.0, |l| l.date_y),
             8.0,
             false,
             TextAlignment::Left,
@@ -397,7 +437,9 @@ impl PdfGenerator {
             &mut ops,
             &format!("Date: {}", current_date),
             115.0,
-            pa_signature_bottom - 4.0,
+            notes_layout
+                .as_ref()
+                .map_or(pa_signature_bottom - 4.0, |l| l.date_y),
             8.0,
             false,
             TextAlignment::Left,
@@ -483,6 +525,175 @@ fn write_text(
     });
 
     ops.push(Op::EndTextSection);
+}
+
+#[derive(Debug)]
+struct PayrollNotesLayout {
+    heading_y: f32,
+    lines: Vec<FooterLine>,
+    size: f32,
+    declaration_y: f32,
+    sentence_y: f32,
+    signature_y: f32,
+    image_y: f32,
+    date_y: f32,
+}
+
+// Preserve text and explicit breaks. Prefer a space boundary, then split an
+// overlong token at a UTF-8 character boundary. Measurement matches PDF advances.
+fn wrap_payroll_notes(text: &str, size: f32, font: &ParsedFont) -> Result<Vec<String>, String> {
+    let width = |s: &str| {
+        footer_line_metrics(s, size, font).map(|(left, right)| (right - left) * 25.4 / 72.0)
+    };
+    let mut lines = Vec::new();
+    for explicit in text.split('\n') {
+        let mut remaining = explicit.strip_suffix('\r').unwrap_or(explicit);
+        if remaining.is_empty() {
+            lines.push(String::new());
+            continue;
+        }
+        while !remaining.is_empty() {
+            if width(remaining)? <= 170.0 {
+                lines.push(remaining.into());
+                break;
+            }
+            let mut fit = 0;
+            let mut space = None;
+            for (offset, ch) in remaining.char_indices() {
+                let end = offset + ch.len_utf8();
+                if width(&remaining[..end])? > 170.0 {
+                    break;
+                }
+                fit = end;
+                if ch == ' ' {
+                    space = Some(end);
+                }
+            }
+            let end = space.unwrap_or(fit);
+            if end == 0 {
+                return Err(
+                    "A payroll note character cannot fit at the timesheet body font size".into(),
+                );
+            }
+            lines.push(remaining[..end].into());
+            remaining = &remaining[end..];
+        }
+    }
+    Ok(lines)
+}
+
+fn text_vertical_bounds(text: &str, size: f32, font: &ParsedFont) -> Result<(f32, f32), String> {
+    // Validate glyph support using the same advances as wrapping, then measure
+    // actual ink rather than the font-wide extremes (which include unused glyphs).
+    footer_line_metrics(text, size, font)?;
+    let scale = size * 25.4 / 72.0 / font.font_metrics.units_per_em as f32;
+    let mut bottom = 0.0_f32;
+    let mut top = 0.0_f32;
+    for ch in text.chars() {
+        if let Some(record) = font
+            .lookup_glyph_index(ch as u32)
+            .and_then(|glyph| font.glyph_records_decoded.get(&glyph))
+        {
+            bottom = bottom.min(record.bounding_box.min_y as f32 * scale);
+            top = top.max(record.bounding_box.max_y as f32 * scale);
+        }
+    }
+    Ok((bottom, top))
+}
+
+fn layout_payroll_notes(
+    text: &str,
+    size: f32,
+    regular: &ParsedFont,
+    bold: &ParsedFont,
+) -> Result<Option<PayrollNotesLayout>, String> {
+    crate::payroll_timesheet_repository::validate_payroll_department_notes(text)
+        .map_err(|e| e.to_string())?;
+    if text.trim().is_empty() {
+        return Ok(None);
+    }
+    if !size.is_finite() || size <= 0.0 {
+        return Err("Invalid payroll note font size".into());
+    }
+    let lines = wrap_payroll_notes(text, size, regular)
+        .map_err(|e| format!("Notes for Payroll Department: {e}"))?;
+    let (heading_bottom, heading_top) =
+        text_vertical_bounds("Notes for Payroll Department", 9.0, bold)?;
+    let bounds = lines
+        .iter()
+        .map(|line| text_vertical_bounds(line, size, regular))
+        .collect::<Result<Vec<_>, _>>()?;
+    let note_top = bounds.iter().map(|b| b.1).fold(0.0_f32, f32::max);
+    let note_descender = bounds.iter().map(|b| b.0).fold(0.0_f32, f32::min);
+    let leading = footer_line_spacing(size, regular).max(note_top - note_descender + 0.5);
+    // Keep the existing 2 mm below the table (bottom at 116 mm), plus
+    // half a measured note line before the heading's ink begins.
+    let heading_y = 114.0 - 0.5 * leading - heading_top;
+    let first_y = heading_y + heading_bottom - 1.0 - note_top;
+    let lines: Vec<_> = lines
+        .into_iter()
+        .enumerate()
+        .map(|(i, text)| FooterLine {
+            text,
+            baseline: first_y - i as f32 * leading,
+        })
+        .collect();
+    let note_bottom = lines.last().unwrap().baseline + note_descender;
+    let (declaration_bottom, declaration_top) = text_vertical_bounds("DECLARATION", 9.0, bold)?;
+    let (sentence_bottom, sentence_top) = text_vertical_bounds(
+        "I confirm that the hours and information recorded above are correct.",
+        8.0,
+        regular,
+    )?;
+    let (label_bottom, label_top) =
+        text_vertical_bounds("Employer signature PA signature", 8.0, regular)?;
+    for (text, font, size, available) in [
+        ("Notes for Payroll Department", bold, 9.0, 170.0),
+        ("DECLARATION", bold, 9.0, 170.0),
+        (
+            "I confirm that the hours and information recorded above are correct.",
+            regular,
+            8.0,
+            170.0,
+        ),
+        ("Employer signature", regular, 8.0, 73.0),
+        ("PA signature", regular, 8.0, 73.0),
+    ] {
+        let (left, right) = footer_line_metrics(text, size, font)?;
+        if left < 0.0 || right * 25.4 / 72.0 > available {
+            return Err(
+                "The declaration/signature text cannot fit safely with the configured font".into(),
+            );
+        }
+    }
+    let current_date = format!(
+        "Date: {}",
+        crate::date_utils::formal(Local::now().date_naive())
+    );
+    let (date_bottom, date_top) = text_vertical_bounds(&current_date, 8.0, regular)?;
+    // Separate the three sections with font-aware blank-line space, measured
+    // between ink bounds rather than baselines. Blank notes return above and
+    // retain their original fixed declaration/signature positions.
+    let body_line = footer_line_spacing(8.0, regular);
+    let declaration_y = note_bottom - 1.5 * leading - declaration_top;
+    let sentence_y = declaration_y + declaration_bottom - body_line - sentence_top;
+    let signature_y = sentence_y + sentence_bottom - 1.25 * body_line - label_top;
+    let image_y = signature_y + label_bottom - 1.0 - 17.0;
+    let date_y = image_y - 1.0 - date_top;
+    // Existing footer has a hard upper bound of 54 mm. Reserve a 2 mm gap.
+    if date_y + date_bottom < 56.0 {
+        return Err("Notes for Payroll Department do not fit on one page at the timesheet body font size. Reduce line breaks or shorten the note. No text has been omitted.".into());
+    }
+    Ok(Some(PayrollNotesLayout {
+        heading_y,
+        lines,
+        size,
+        declaration_y,
+        sentence_y,
+        signature_y,
+        image_y,
+        date_y,
+    }))
 }
 
 fn write_footer(
@@ -1089,6 +1300,7 @@ fn draw_horizontal_line(ops: &mut Vec<Op>, left: f32, right: f32, y: f32) {
 
 #[cfg(test)]
 mod tests {
+    include!("payroll_notes_pdf_tests.rs");
     use super::*;
     use std::env;
 
@@ -1431,6 +1643,7 @@ mod tests {
 
             travel_miles: ["0", "0", "0", "0"],
 
+            payroll_department_notes: "",
             previous_cycle_hours: Some("2.75"),
 
             employer_signature_path: None,
@@ -1543,6 +1756,7 @@ mod tests {
                 vec![],
             ],
             travel_miles: ["0", "0", "0", "0"],
+            payroll_department_notes: "",
             previous_cycle_hours: None,
             employer_signature_path: None,
             pa_signature_path: None,
@@ -1630,6 +1844,7 @@ mod tests {
             sickness_periods: std::array::from_fn(|_| Vec::new()),
             public_holidays: std::array::from_fn(|_| Vec::new()),
             travel_miles: ["0", "0", "0", "0"],
+            payroll_department_notes: "",
             previous_cycle_hours: None,
             employer_signature_path: None,
             pa_signature_path: None,

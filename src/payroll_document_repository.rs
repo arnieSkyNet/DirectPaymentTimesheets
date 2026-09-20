@@ -138,6 +138,7 @@ mod tests {
         let path = dir.path().join("schema.sqlite");
         let connection = Connection::open(&path).unwrap();
         create_schema(&connection).unwrap();
+        crate::database::tests::remove_schema_32_fixture(&connection);
         connection
             .execute_batch(
                 "DROP TABLE imported_payroll_documents; UPDATE schema_version SET version = 30;",
@@ -164,19 +165,20 @@ mod tests {
             connection
                 .query_row::<i64, _, _>("SELECT version FROM schema_version", [], |r| r.get(0))
                 .unwrap(),
-            31
+            CURRENT_SCHEMA_VERSION
         );
         drop(connection);
         let reopened = Connection::open(path).unwrap();
         create_schema(&reopened).unwrap();
         assert_eq!(statuses(&reopened), before);
-        assert_eq!(CURRENT_SCHEMA_VERSION, 31);
+        assert_eq!(CURRENT_SCHEMA_VERSION, 32);
     }
 
     #[test]
     fn schema31_migration_is_atomic_on_version_write_failure() {
         let connection = Connection::open_in_memory().unwrap();
         create_schema(&connection).unwrap();
+        crate::database::tests::remove_schema_32_fixture(&connection);
         connection.execute_batch("DROP TABLE imported_payroll_documents; UPDATE schema_version SET version = 30;
             CREATE TRIGGER refuse_schema BEFORE UPDATE ON schema_version BEGIN SELECT RAISE(ABORT, 'test failure'); END;").unwrap();
         assert!(create_schema(&connection).is_err());
@@ -198,6 +200,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let connection = Connection::open_in_memory().unwrap();
         create_schema(&connection).unwrap();
+        crate::database::tests::remove_schema_32_fixture(&connection);
         connection.execute_batch("INSERT INTO personal_assistants(id, first_name, surname) VALUES (1, 'Test', 'One'), (2, 'Test', 'Two');").unwrap();
         let repository = PayrollTimesheetEmailRepository::new(connection);
         let path = dir.path().join("P60.pdf");

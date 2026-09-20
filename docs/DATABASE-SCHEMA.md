@@ -2,9 +2,9 @@
 
 ## Scope and versioning
 
-This is the implemented SQLite schema at version 31 (application `1.0.0`). It is derived from `create_schema` and migrations in `src/database.rs`; those migrations are authoritative.
+This is the implemented SQLite schema at version 32 (development application version remains `1.0.1`). It is derived from `create_schema` and migrations in `src/database.rs`; those migrations are authoritative.
 
-`schema_version` contains the current integer version. A new database begins at version 1 and receives each ordered migration through `CURRENT_SCHEMA_VERSION` 31. Existing databases are upgraded in place. Migration 23 removes the short-lived revision-only tables introduced by migration 22 while retaining the operational legacy snapshot tables. Migration 24 adds an explicit contracted/variable hours basis to effective-dated Personal Assistant contracted-hours history while preserving existing records as contracted.
+`schema_version` contains the current integer version. A new database begins at version 1 and receives each ordered migration through `CURRENT_SCHEMA_VERSION` 32. Existing databases are upgraded in place. Migration 23 removes the short-lived revision-only tables introduced by migration 22 while retaining the operational legacy snapshot tables. Migration 24 adds an explicit contracted/variable hours basis to effective-dated Personal Assistant contracted-hours history while preserving existing records as contracted.
 
 During unreleased schema-20 development, an earlier local database shape contained `direct_shifts` without soft-deletion columns or the audit table. Startup therefore performs an idempotent schema-20 compatibility check after normal migrations. When that exact incomplete shape is found, it transactionally rebuilds `direct_shifts` into the final constrained form while preserving IDs and row values, then creates the audit table/indexes. It does not fabricate historical audit events, and repeated startup does not duplicate existing audit rows.
 
@@ -214,6 +214,9 @@ One PA's preparation record for one schedule.
 | `payroll_year` | `TEXT NOT NULL` |
 | `cycle_number` | `INTEGER NOT NULL` |
 | `previous_cycle_hours` | nullable `REAL` compatibility/display aggregate |
+| `payroll_department_notes` | `TEXT NOT NULL DEFAULT ''`; maximum 256 Unicode characters, checked by the repository and UI, with a SQLite length constraint |
+| `actual_in_lieu_hours` | nullable `REAL`; finite and non-negative; NULL means not recorded, zero means confirmed zero |
+| `actual_in_lieu_updated_at` | nullable `TEXT`; RFC3339 time of independent result save/clear |
 | `created_at`, `updated_at` | `TEXT NOT NULL` |
 
 Unique constraint: `(personal_assistant_id, payroll_year, cycle_number)`.
@@ -417,3 +420,32 @@ P60/P45 and an optional ordinary payslip transition atomically across their sepa
 
 
 Ordinary payslips with no applicable stored cycle may be archived in the PA's year-specific or general Payslip area. They are filesystem evidence only: they are not inserted into `imported_payroll_documents` (which remains P60/P45-only), `payroll_timesheet_email_status`, or payroll settlement tables. Their archival counts and paths are reported by the importer. This fallback requires no additional migration; schema31 and application `1.0.0` remain unchanged.
+
+
+## Schema 32: outgoing payroll notes and returned in-lieu hours
+
+Migration 32 atomically adds the three columns above to `payroll_timesheets` and
+nullable `payroll_department_notes TEXT` to `payroll_submissions`, then advances
+`schema_version` to 32. Existing preparation notes default to empty; existing
+returned values/timestamps and historical submission notes remain NULL. No payroll
+values, delivery statuses, candidates, or historical PDF bytes are backfilled or
+rewritten. Fresh databases and older upgrades follow the same migration chain.
+
+Notes are scoped by the existing unique PA/year/cycle identity. The repository
+counts Unicode scalar values (not UTF-8 bytes), rejects more than 256 characters,
+and retains exact text, including explicit line breaks and whitespace. A changed
+note is written in the preparation transaction that invalidates an existing PDF
+candidate; unchanged preparation saves preserve it. Submission archiving copies
+the saved note into that submission's snapshot field. Superseding a submission
+never replaces the old note or PDF. Source shift notes retain their existing,
+non-invalidating behaviour.
+
+`save_actual_in_lieu_hours(record_id, Option<f64>)` updates only the returned value
+and its dedicated timestamp. `None` clears the result; zero is a known zero award.
+The method validates finite, non-negative numbers and permits submitted, settled
+and indeterminate records. It does not change preparation `updated_at`, totals,
+corrections, snapshots, PDFs, submission/delivery state, or leave calculations.
+Preparation saves do not write either returned-result column. Future importers
+may call this same method after establishing the PA/period identity; extraction
+is not implemented. Decimal formatting is presentation-only, with no shift
+rounding or conversion to worked minutes.

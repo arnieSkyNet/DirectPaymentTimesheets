@@ -227,3 +227,109 @@ direct records, retained corrections or manual adjustments. Snapshots retain raw
 checks recognise an unchanged raw duration as retaining its submitted payable
 value, so rounding differences alone cannot produce a correction. Configuration
 changes do not recalculate submitted or settled history.
+
+
+## Payroll notes and actual in-lieu results (schema 32)
+
+In Payroll Timesheet Preparation, select the PA and period. **Notes for Payroll
+Department** appears directly beneath the weekly hours grid and above the existing
+PA Save button. It accepts multiline text up to 256 Unicode characters. Overlong
+input remains visible with an error and Save disabled; it is never silently
+truncated. Save/Discard/Cancel, period/PA switching and window-close guards include
+this draft. Saving a changed note atomically invalidates that record's PDF
+candidate. Submitted/settled/indeterminate preparation remains protected.
+
+The separate **Returned payroll information** panel has its own **Save returned
+hours** and **Clear returned hours** controls. Leave **Actual in-lieu hours awarded
+by Payroll** blank until known; an explicit zero is retained as 0.00. This panel
+remains available for protected records, historical periods and departed PAs with
+existing preparation records, including when worked-evidence review blocks the
+grid. It saves only on its own buttons, not with PA preparation Save. Save the
+returned result before leaving the screen. Stored precision is retained; display
+uses two decimal places. No entitlement calculation or document extraction occurs.
+
+PDFs remain one page. Blank/whitespace-only notes use the original layout without
+a heading or additional gap. Nonblank notes use a 9 pt heading and 8 pt body in the
+configured PDF fonts, after the hours table and before the declaration. Wrapping
+uses measured font advances/ink bounds, preserves explicit line breaks, and
+splits overlong tokens at Unicode character boundaries. The lower declaration,
+signature labels, full-size signature images and dates move together according
+to measured note height, with a reserved gap above the unchanged footer. Font
+sizes are never reduced to force a fit. Excessive line breaks or font geometry
+that cannot fit produce a clear generation error; text is retained and no
+partial replacement PDF is published. Unsupported font glyphs also fail visibly.
+
+Tests in `payroll_notes_return_tests.rs` and `payroll_notes_pdf_tests.rs` cover
+migration/reopen, note limits/navigation/invalidation/rollback, single-page
+wrapping/positioning and result isolation. The resubmission test also checks
+retained original/replacement notes. Older migration fixtures explicitly remove
+schema-32 columns before simulating older versions; their historical assertions
+remain in force. Run `cargo fmt --check`, `cargo check --locked`, and
+`cargo test --locked`; the existing mock SMTP tests require local TCP binding.
+
+The pre-existing sickness-date editor candidate-invalidation gap is unchanged by
+this work. These notes do not imply that structured sickness dates now participate
+in candidate evidence signatures.
+
+## Individual PA payroll production (schema 32)
+
+Dashboard **Generate Payroll Timesheets** opens a PA selection for the captured
+operational period. Available saved preparations are selected initially; use
+**Clear selection**, individual checkboxes or **Select all available** for one,
+some or all PAs. Missing preparation, submitted, settled and indeterminate records
+are shown with reasons and cannot be selected. **Generate selected PAs** uses the
+ordinary per-PA candidate publication, including saved Payroll Department notes.
+
+Production **Email Payroll Timesheets** starts with a separate recipient selection.
+Only PAs with a current candidate at the expected path and matching digest are
+initially selected. Continue to the existing optional email-body Additional Note
+controls, then review the selected names, period and candidate details before Send.
+The email-body note remains separate from the saved note printed in the PDF.
+Current evidence and candidate integrity are checked again for each actual send.
+
+Selected IDs and period dates/revision are captured. Changing the operational
+period (even away and back), deleting it or changing its dates rejects execution.
+Evidence loading, duplicate preflight and reconciliation are scoped to the PA
+being processed. Displaying other PAs' availability is read-only. A malformed
+unselected PA's work/preparation cannot block the selected PA or obsolete that
+other PA's duplicate decisions. Global import/review preflight remains available.
+
+Results list every selected PA as completed, skipped, failed/needs attention or
+not attempted. Processing stops on the first failure; earlier successful results
+remain committed. A new selection excludes submitted/settled PAs. Retrying a
+captured selection skips successful sends. Indeterminate delivery stays protected;
+SMTP failure restores the candidate where possible. Legitimate replacements still
+require **Correct / Resubmit Timesheet** and retain the original submission,
+attachment, evidence and structured payroll note. Returned actual in-lieu hours
+are unaffected by generation and email. Selection is transient: no schema change.
+
+`src/payroll_production_tests.rs` exercises real generation and production dispatch
+using temporary databases/PDF directories and localhost mock SMTP. It covers
+five-PA isolation, one/some/all/empty selections, changed context, malformed
+unselected evidence, scoped duplicate invalidation, candidate safety, notes and
+returned-hour isolation, partial failures/retry, uncertain finalisation, authorised
+replacement and historical/departed PA eligibility. These tests never open the
+configured real payroll database or deliver email externally.
+
+### Leaving-PA payroll note suggestion
+
+When an editable PA's preparation is activated, a leaving date within the selected
+four-week period (first and last day included) suggests:
+`Leaving date DD/MM/YYYY. Please include any hours in lieu in final pay.`
+The date comes from PA Maintenance and always uses UK date formatting. No hours
+or CSV import is required. Only a blank/whitespace-only saved Payroll Department
+note qualifies; any nonblank saved note remains exactly as entered, even if the
+leaving date changes later. Protected or evidence-blocked preparation is unchanged.
+
+The suggestion is an unsaved draft, marked dirty against the saved baseline. Edit,
+replace or delete it freely within the existing 256-character limit. Save Personal
+Assistant persists it through the normal note/candidate-invalidation transaction;
+opening the screen does not save it. Save/Discard/Cancel navigation guards apply.
+Discard writes nothing, and a later reload may suggest it again while the saved
+note remains blank. Deleting or editing the draft does not regenerate it during
+that load. Unselected PA drafts are not populated until activated. Returned
+in-lieu hours, source shift notes and individual production are unaffected.
+
+`src/payroll_leaving_note_tests.rs` covers date boundaries/formatting, blank and
+nonblank notes, editing/deletion, navigation choices, PA/period isolation,
+protected records, persistence/reopen and candidate invalidation on deliberate Save.

@@ -56,8 +56,8 @@ fn retained_actual_minutes(item: &WorkedItemSnapshot, current: Option<&WorkEvide
 
 pub fn changes(app: &Application, record: &PayrollTimesheet) -> Result<Changes> {
     let db = open(app)?;
-    let evidence = load(app)?;
-    let pre = preflight(&db, &evidence)?;
+    let evidence = load_for_pa(&db, record.personal_assistant_id)?;
+    let pre = preflight_for_pa(&db, &evidence, record.personal_assistant_id)?;
     changes_prepared(app, record, &pre)
 }
 
@@ -371,7 +371,7 @@ pub fn carry(
     }
     let decision =
         lifecycle::record_decision(&tx, record.id, sid, "carry", expected, &change.description)?;
-    let evidence = load(app)?;
+    let evidence = load_for_pa(&db, record.personal_assistant_id)?;
     let (start, _) = period(app, record)?;
     for c in &change.components {
         insert_component(&tx, record, sid, Some(decision), c, expected)?;
@@ -417,7 +417,7 @@ pub fn historical_decision(app: &Application, review: &HistoricalReview, paid: b
     if lifecycle::stage(&tx, &review.record)? != Stage::Settled {
         return Err("Historical payroll is no longer definitively settled".into());
     }
-    let current = load(app)?
+    let current = load_for_pa(&db, review.record.personal_assistant_id)?
         .into_iter()
         .find(|e| {
             e.key() == review.evidence.key()
@@ -454,8 +454,8 @@ pub struct Plan {
 }
 pub fn plan(app: &Application, record: &PayrollTimesheet) -> Result<Plan> {
     let db = open(app)?;
-    let all = load(app)?;
-    let pre = preflight(&db, &all)?;
+    let all = load_for_pa(&db, record.personal_assistant_id)?;
+    let pre = preflight_for_pa(&db, &all, record.personal_assistant_id)?;
     plan_prepared(app, record, &pre)
 }
 
@@ -828,7 +828,7 @@ pub fn sync_settled_corrections(app: &Application, pa: i64) -> Result<()> {
         }
         let changes = changes(app, &record)?;
         let exact = lifecycle::has_exact_intervals(&old);
-        let all = load(app)?;
+        let all = load_for_pa(&db, record.personal_assistant_id)?;
         let tx = db.unchecked_transaction()?;
         for c in changes.components.iter().filter(|c| !c.aggregate) {
             let known_edit = c

@@ -110,6 +110,12 @@ pub fn load(app: &Application) -> Result<Vec<WorkEvidence>> {
     load_connection(&open(app)?)
 }
 pub fn load_connection(db: &Connection) -> Result<Vec<WorkEvidence>> {
+    load_scoped(db, None)
+}
+pub fn load_for_pa(db: &Connection, pa: i64) -> Result<Vec<WorkEvidence>> {
+    load_scoped(db, Some(pa))
+}
+fn load_scoped(db: &Connection, pa: Option<i64>) -> Result<Vec<WorkEvidence>> {
     let normalise = |value: String| {
         parse_clock(&value)
             .map(|t| t.format("%Y-%m-%dT%H:%M:%S").to_string())
@@ -121,8 +127,8 @@ pub fn load_connection(db: &Connection) -> Result<Vec<WorkEvidence>> {
         COALESCE(c.after_break_minutes,t.break_minutes),COALESCE(c.after_worked_minutes,t.worked_minutes),
         CASE WHEN c.id IS NULL THEN t.notes ELSE c.after_notes END
         FROM timesheets t LEFT JOIN timesheet_correction_events c ON c.id=(SELECT MAX(id) FROM timesheet_correction_events WHERE timesheet_id=t.id)
-        WHERE t.personal_assistant_id IS NOT NULL ORDER BY t.id")?;
-    for row in stmt.query_map([], |r| {
+        WHERE t.personal_assistant_id IS NOT NULL AND (?1 IS NULL OR t.personal_assistant_id=?1) ORDER BY t.id")?;
+    for row in stmt.query_map([pa], |r| {
         Ok(WorkEvidence {
             source: "imported".into(),
             id: r.get(0)?,
@@ -138,8 +144,8 @@ pub fn load_connection(db: &Connection) -> Result<Vec<WorkEvidence>> {
     })? {
         result.push(row?);
     }
-    let mut stmt=db.prepare("SELECT d.id,d.personal_assistant_id,COALESCE(p.first_name||' '||p.surname,''),d.start_time,d.end_time,d.break_minutes,d.notes,d.deleted_at FROM direct_shifts d LEFT JOIN personal_assistants p ON p.id=d.personal_assistant_id WHERE d.end_time IS NOT NULL ORDER BY d.id")?;
-    for row in stmt.query_map([], |r| {
+    let mut stmt=db.prepare("SELECT d.id,d.personal_assistant_id,COALESCE(p.first_name||' '||p.surname,''),d.start_time,d.end_time,d.break_minutes,d.notes,d.deleted_at FROM direct_shifts d LEFT JOIN personal_assistants p ON p.id=d.personal_assistant_id WHERE d.end_time IS NOT NULL AND (?1 IS NULL OR d.personal_assistant_id=?1) ORDER BY d.id")?;
+    for row in stmt.query_map([pa], |r| {
         Ok(WorkEvidence {
             source: "direct".into(),
             id: r.get(0)?,
@@ -227,11 +233,32 @@ pub struct Preflight {
     pub eligible: Vec<WorkEvidence>,
 }
 pub fn preflight(db: &Connection, evidence: &[WorkEvidence]) -> Result<Preflight> {
+    preflight_scoped(db, evidence, None)
+}
+// Scope the decision inventory as well as the evidence. Passing a PA subset to
+// the global preflight would otherwise obsolete every omitted PA's decisions.
+// Source rows are retained (including soft-deleted direct shifts) for audit.
+pub fn preflight_for_pa(db: &Connection, evidence: &[WorkEvidence], pa: i64) -> Result<Preflight> {
+    if evidence.iter().any(|e| e.pa != pa) {
+        return Err("Evidence belongs to another PA".into());
+    }
+    preflight_scoped(db, evidence, Some(pa))
+}
+fn preflight_scoped(
+    db: &Connection,
+    evidence: &[WorkEvidence],
+    pa: Option<i64>,
+) -> Result<Preflight> {
     let groups = groups(evidence)?;
     let active: HashSet<_> = groups.iter().map(|g| g.fingerprint.clone()).collect();
     let tx = db.unchecked_transaction()?;
-    let decisions = tx.prepare("SELECT id,group_fingerprint FROM payroll_duplicate_decisions WHERE invalidated_at IS NULL")?
-        .query_map([],|r|Ok((r.get::<_,i64>(0)?,r.get::<_,String>(1)?)))?.collect::<rusqlite::Result<Vec<_>>>()?;
+    let decisions = tx.prepare("SELECT id,group_fingerprint FROM payroll_duplicate_decisions WHERE invalidated_at IS NULL AND (?1 IS NULL OR id IN (
+            SELECT m.decision_id FROM payroll_duplicate_members m
+            LEFT JOIN timesheets t ON m.source='imported' AND t.id=m.source_id
+            LEFT JOIN direct_shifts d ON m.source='direct' AND d.id=m.source_id
+            WHERE t.personal_assistant_id=?1 OR d.personal_assistant_id=?1
+        ))")?
+        .query_map([pa],|r|Ok((r.get::<_,i64>(0)?,r.get::<_,String>(1)?)))?.collect::<rusqlite::Result<Vec<_>>>()?;
     for (id, fingerprint) in decisions {
         if !active.contains(&fingerprint) {
             tx.execute("UPDATE payroll_duplicate_decisions SET invalidated_at=?1,invalidation_reason='Material evidence or overlapping membership changed' WHERE id=?2",params![now(),id])?;

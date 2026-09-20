@@ -1,6 +1,6 @@
 # Payroll evidence and reconciliation (schema 29)
 
-Schema29 is the evidence-migration milestone described here; the current application is v1.0.0/schema31.
+Schema29 is the evidence-migration milestone described here; the current application is v1.0.1/schema32.
 
 ## Sources and possible duplicates
 
@@ -25,6 +25,28 @@ Milestones are per PA/payroll period, not schedule-wide:
 The existing `submitted_at` history is displayed in discrepancy details. It identifies the submission milestone, not proof that all later shifts were estimated or that actual evidence is complete. Explicit manual preparation adjustments remain distinct from source shifts.
 
 `payroll_candidate_checks` records a material evidence signature. Production send checks source membership, duplicate decisions, rates, competing submissions and correction availability as well as the existing PDF path/digest checks. A stale candidate must be regenerated. A notes-only source edit does not require regeneration.
+
+## Selected payroll production
+
+Dashboard generation and production timesheet email capture an explicit set of
+PA IDs for the operational period. All available PAs are selected by default;
+checkboxes permit one or several. Submitted/settled and indeterminate PAs are
+unavailable. Email selection requires a current candidate, with path/digest and
+current evidence checked again at send time. Successful early submissions are
+excluded from later ordinary batches; replacements require the existing audited
+resubmission decision.
+
+`load_for_pa` filters source rows in SQL before parsing. `preflight_for_pa` scopes
+both current evidence and the retained duplicate-decision inventory by source
+ownership, so an omitted PA's decisions are not invalidated. Reconciliation and
+candidate signatures/verification use this scope. Global import/preparation
+preflight retains its original whole-inventory semantics. Selected processing
+stops at the first failure and reports completed, failed and unattempted PAs;
+previous successes remain committed and retry cannot resend submitted PAs.
+
+Saved Payroll Department notes follow the existing schema-32 PDF and retained
+submission path. Source shift notes still have no material evidence effect;
+returned actual in-lieu hours remain outside all production calculations/state.
 
 ## Historical work and review
 

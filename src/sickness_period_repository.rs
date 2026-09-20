@@ -203,6 +203,7 @@ mod tests {
         let path = dir.path().join("sickness.sqlite");
         let connection = Connection::open(&path).unwrap();
         crate::database::create_schema(&connection).unwrap();
+        crate::database::tests::remove_schema_32_fixture(&connection);
         connection.execute_batch("DROP TABLE personal_assistant_sickness_periods; UPDATE schema_version SET version = 29;
             INSERT INTO personal_assistants (id, first_name, surname, sick_pay_enabled) VALUES (1, 'Existing', 'PA', 0);
             CREATE TRIGGER refuse_version BEFORE UPDATE ON schema_version BEGIN SELECT RAISE(ABORT, 'blocked'); END;").unwrap();

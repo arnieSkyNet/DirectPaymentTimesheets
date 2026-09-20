@@ -256,6 +256,13 @@ fn submitted_then_explicit_resubmission_keeps_original_pdf_and_items() {
     let (_dir, app) = setup();
     let (r, w) = period(&app, 1, "2026-04-01", 1);
     let id = direct(&app, "2026-04-02T09:00", "2026-04-02T10:00");
+    open(&app)
+        .unwrap()
+        .execute(
+            "UPDATE payroll_timesheets SET payroll_department_notes=?1 WHERE id=?2",
+            params!["Original payroll note\nPreserved", r.id],
+        )
+        .unwrap();
     submit(&app, &r, &w);
     let db = open(&app).unwrap();
     let first = lifecycle::latest(&db, r.id).unwrap().unwrap();
@@ -275,9 +282,24 @@ fn submitted_then_explicit_resubmission_keeps_original_pdf_and_items() {
     let change = reconciliation::changes(&app, &r).unwrap();
     assert!(change.changed);
     lifecycle::authorize_resubmission(&app, &r, &change.signature).unwrap();
+    db.execute(
+        "UPDATE payroll_timesheets SET payroll_department_notes=?1 WHERE id=?2",
+        params!["Replacement payroll note", r.id],
+    )
+    .unwrap();
     submit(&app, &r, &w);
     let second = lifecycle::latest(&db, r.id).unwrap().unwrap();
     assert_ne!(first, second);
+    let note = |id| {
+        db.query_row::<String, _, _>(
+            "SELECT payroll_department_notes FROM payroll_submissions WHERE id=?1",
+            [id],
+            |r| r.get(0),
+        )
+        .unwrap()
+    };
+    assert_eq!(note(first), "Original payroll note\nPreserved");
+    assert_eq!(note(second), "Replacement payroll note");
     assert_eq!(lifecycle::items(&db, first).unwrap()[0].worked_minutes, 60);
     assert_eq!(
         lifecycle::items(&db, second).unwrap()[0].worked_minutes,
@@ -879,6 +901,7 @@ fn retained_legacy_import_membership_uses_matching_original_intervals_without_fa
 }
 
 fn restore_schema_28(db: &Connection) {
+    crate::database::tests::remove_schema_32_fixture(db);
     db.execute_batch("DROP TABLE payroll_legacy_cutover; DROP TABLE payroll_legacy_evidence; DROP TABLE payroll_legacy_settlements; UPDATE schema_version SET version=28;").unwrap();
 }
 fn write_cutover(
