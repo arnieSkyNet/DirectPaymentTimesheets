@@ -111,30 +111,18 @@ impl DirectPaymentApp {
                     .payroll_timesheet_repository
                     .get_for_cycle_and_pa(&schedule.payroll_year, schedule.cycle_number, pa.id)?
                     .ok_or("Preparation missing — prepare and save this PA first")?;
-                match stage(&db, &record)? {
-                    Stage::Submitted => {
-                        return Err(
-                            "Submitted — protected; use authorised replacement if needed".into(),
-                        )
-                    }
-                    Stage::Settled => return Err("Settled — protected".into()),
-                    Stage::Indeterminate => {
-                        return Err("Delivery uncertain — do not regenerate or resend".into())
-                    }
-                    Stage::Editable => {}
+                let current_stage = stage(&db, &record)?;
+                match current_stage {
+                    Stage::Settled if !sending => return Err("Settled — protected".into()),
+                    Stage::Indeterminate => return Err("Delivery uncertain — do not regenerate or resend".into()),
+                    _ => {}
                 }
                 let metadata = self
                     .application
                     .payroll_worked_item_repository
                     .snapshot_metadata(record.id)?;
                 if sending {
-                    let candidate =
-                        metadata.ok_or("No current candidate — generate this PA's PDF first")?;
-                    if candidate.state
-                        != crate::payroll_worked_item_repository::SnapshotState::Candidate
-                    {
-                        return Err("No editable candidate".into());
-                    }
+                    metadata.as_ref().ok_or("No current PDF — generate this PA's PDF first")?;
                     let path = PdfGenerator::timesheet_output_path(
                         &crate::paths::expand_path(
                             &self.application.context.config.folders.pdf_output,
@@ -149,11 +137,14 @@ impl DirectPaymentApp {
                         &path,
                     )?;
                     Ok(format!(
-                        "Candidate ready: {} (evidence checked on send)",
+                        "{}: {}",
+                        if metadata.as_ref().is_some_and(|m| m.state == SnapshotState::Submitted) { "Submitted / sent — resend existing PDF" } else if current_stage == Stage::Submitted { "Previously submitted / sent — regenerated PDF ready" } else { "Candidate ready (evidence checked on send)" },
                         path.display()
                     ))
                 } else {
-                    Ok(if metadata.is_some() {
+                    Ok(if current_stage == Stage::Submitted {
+                        "Submitted / sent — regenerate from current data"
+                    } else if metadata.is_some() {
                         "Editable — replaces existing candidate"
                     } else {
                         "Editable — ready to generate"
@@ -293,7 +284,7 @@ impl DirectPaymentApp {
                 let record =
                     record.ok_or("Preparation missing — prepare and save this PA first")?;
                 match stage(&db, &record)? {
-                    Stage::Submitted | Stage::Settled => {
+                    Stage::Settled if action == "Generation" => {
                         return Ok(ProductionOutcome::Skipped(
                             "Already submitted/settled — protected".into(),
                         ))
@@ -301,7 +292,7 @@ impl DirectPaymentApp {
                     Stage::Indeterminate => {
                         return Err("Delivery uncertain — automatic retry refused".into())
                     }
-                    Stage::Editable => {}
+                    _ => {}
                 }
                 Ok(if operation(&pa)? {
                     ProductionOutcome::Completed
@@ -411,7 +402,7 @@ impl DirectPaymentApp {
                     };
                     ui.label(format!("{name} (PA {id}): {text}"));
                 }
-                ui.label("Completed PAs remain processed. Start a new selection to retry; successfully sent PAs will not be sent again.");
+                ui.label("Start a new selection to regenerate or resend. Selecting a sent PA for email sends the existing PDF again.");
             });
         }
     }

@@ -2,11 +2,11 @@
 
 DirectPaymentTimesheets is a local desktop application for administering UK Direct Payment Personal Assistant timesheets and the four-week payroll-provider workflow. It imports externally recorded work, prepares payroll timesheets, generates the provider PDF, sends timesheets and payslips, imports payroll documents, and preserves the evidence represented by submitted payroll.
 
-The **1.0.2** release uses SQLite schema **32**. It is a single-user local desktop application for the documented Direct Payment payroll workflow, not a general-purpose payroll product.
+The **1.0.3** application uses SQLite schema **32**. It is a single-user local desktop application for the documented Direct Payment payroll workflow, not a general-purpose payroll product.
 
 ## Download
 
-**Current version: 1.0.2**
+**Current version: 1.0.3**
 
 Choose your computer and installed operating system below. On Linux, choose either the `.deb` installer or the portable AppImage.
 

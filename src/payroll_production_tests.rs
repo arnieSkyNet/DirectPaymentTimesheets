@@ -226,10 +226,11 @@ fn one_of_five_then_remaining_batch_preserves_early_submission_notes_and_results
     }
     let early = facts(&app, 1);
     app.begin_generation();
-    let pending = app.pending_generation.take().unwrap();
-    assert_eq!(pending.selected_ids, vec![2, 3, 4, 5]);
+    let mut pending = app.pending_generation.take().unwrap();
+    assert_eq!(pending.selected_ids, vec![1, 2, 3, 4, 5]);
+    pending.selected_ids = vec![2, 3, 4, 5];
     assert!(
-        !pending
+        pending
             .choices
             .iter()
             .find(|p| p.id == 1)
@@ -238,8 +239,9 @@ fn one_of_five_then_remaining_batch_preserves_early_submission_notes_and_results
     );
     assert_eq!(app.generate_selection(&pending).unwrap().completed(), 4);
     app.begin_email_batch(PayrollEmailKind::Timesheet);
-    let pending = app.pending_email_batch.take().unwrap();
-    assert_eq!(pending.selected_personal_assistant_ids, vec![2, 3, 4, 5]);
+    let mut pending = app.pending_email_batch.take().unwrap();
+    assert_eq!(pending.selected_personal_assistant_ids, vec![1, 2, 3, 4, 5]);
+    pending.selected_personal_assistant_ids = vec![2, 3, 4, 5];
     assert_eq!(
         app.dispatch_timesheet_selection(&pending)
             .unwrap()
@@ -253,8 +255,9 @@ fn one_of_five_then_remaining_batch_preserves_early_submission_notes_and_results
     let count:i64=db(&app).query_row("SELECT count(*) FROM payroll_submissions WHERE payroll_department_notes LIKE 'Payroll note for PA%'",[],|r|r.get(0)).unwrap();
     assert_eq!(count, 5);
     let retry = app.dispatch_timesheet_selection(&batch).unwrap();
-    assert_eq!(retry.completed(), 0);
-    assert_eq!(smtp.count(), 5);
+    assert_eq!(retry.completed(), 1);
+    assert_eq!(smtp.count(), 6);
+    assert_eq!(std::fs::read(path(&app, &schedule, 1)).unwrap(), pdf);
 }
 
 #[test]
@@ -334,7 +337,7 @@ fn unselected_broken_evidence_missing_preparation_and_stale_decisions_are_isolat
 }
 
 #[test]
-fn partial_send_failure_reports_completed_failed_unattempted_and_retry_skips_success() {
+fn partial_send_failure_reports_results_and_explicit_retry_resends_selection() {
     let (_dir, mut app, _) = fixture();
     assert_eq!(generate(&mut app, &[1, 2, 3]).completed(), 3);
     let smtp = Smtp::new(&mut app);
@@ -356,9 +359,9 @@ fn partial_send_failure_reports_completed_failed_unattempted_and_retry_skips_suc
     );
     smtp.fail_attempt.store(0, Ordering::SeqCst);
     let report = app.dispatch_timesheet_selection(&batch).unwrap();
-    assert!(matches!(report.entries[0].2, ProductionOutcome::Skipped(_)));
-    assert_eq!(report.completed(), 2);
-    assert_eq!(smtp.count(), 3);
+    assert_eq!(report.entries[0].2, ProductionOutcome::Completed);
+    assert_eq!(report.completed(), 3);
+    assert_eq!(smtp.count(), 4);
 }
 
 #[test]
@@ -673,4 +676,102 @@ fn smtp_fixture_completes_data_and_quit_from_nonblocking_accepted_socket() {
     assert_eq!(response, "221 bye\r\n");
     response.clear();
     assert_eq!(reader.read_line(&mut response).unwrap(), 0);
+}
+
+#[test]
+fn submitted_regeneration_uses_corrected_contracted_hours_and_resend_keeps_pdf() {
+    let (_dir, mut app, _) = fixture();
+    let conn = db(&app);
+    conn.execute_batch("UPDATE payroll_schedules SET first_week_commencing='30/08/2026';
+        UPDATE timesheets SET start_time='2026-08-31T09:00:00',end_time='2026-08-31T11:00:00';
+        UPDATE payroll_timesheet_weeks SET week_commencing=CASE week_number WHEN 1 THEN '30/08/2026' WHEN 2 THEN '06/09/2026' WHEN 3 THEN '13/09/2026' ELSE '20/09/2026' END;
+        INSERT INTO personal_assistant_contracted_hours(personal_assistant_id,effective_date,contracted_hours,created_at) VALUES (1,'12/09/2026','8','created');").unwrap();
+    let schedule = app
+        .application
+        .payroll_schedule_repository
+        .get_for_year_and_cycle("2026/27", 1)
+        .unwrap()
+        .unwrap();
+    app.operational_payroll_period.select(&schedule, None);
+    assert_eq!(generate(&mut app, &[1]).completed(), 1);
+    let file = path(&app, &schedule, 1);
+    let old_pdf = std::fs::read(&file).unwrap();
+    assert!(pdf_extract::extract_text(&file)
+        .unwrap()
+        .contains("Unavailable"));
+    let smtp = Smtp::new(&mut app);
+    let batch = email_batch(&mut app, &[1]);
+    assert_eq!(
+        app.dispatch_timesheet_selection(&batch)
+            .unwrap()
+            .completed(),
+        1
+    );
+    let saved = facts(&app, 1);
+    let mut hours = app
+        .application
+        .contracted_hours_repository
+        .get_all_for_personal_assistant(1)
+        .unwrap()
+        .remove(0);
+    hours.effective_date = "30/08/2026".into();
+    app.application
+        .contracted_hours_repository
+        .update(&hours)
+        .unwrap();
+    let choices = app.production_choices(&schedule, true).unwrap();
+    assert!(choices[0].available && choices[0].detail.contains("Submitted / sent"));
+    // Even with corrected source data, resend sends the original attachment.
+    let batch = email_batch(&mut app, &[1]);
+    app.additional_notes_by_personal_assistant
+        .insert(1, "Corrected timesheet attached".into());
+    assert_eq!(
+        app.dispatch_timesheet_selection(&batch)
+            .unwrap()
+            .completed(),
+        1
+    );
+    assert_eq!(std::fs::read(&file).unwrap(), old_pdf);
+    assert_eq!(facts(&app, 1), saved);
+    assert!(smtp.messages.lock().unwrap()[1].contains("Corrected timesheet attached"));
+    let choices = app.production_choices(&schedule, false).unwrap();
+    assert!(choices[0].available && choices[0].detail.contains("Submitted / sent"));
+    let report = generate(&mut app, &[1]);
+    assert_eq!(report.completed(), 1, "{report:?}");
+    let corrected_pdf = std::fs::read(&file).unwrap();
+    assert_ne!(corrected_pdf, old_pdf);
+    let text = pdf_extract::extract_text(&file).unwrap();
+    assert!(!text.contains("Unavailable"));
+    assert!(text.split_whitespace().collect::<Vec<_>>().join(" ").contains("Contracted Weekly Hours: 8"));
+    assert!(!text.contains("Corrected timesheet attached"));
+    let choices = app.production_choices(&schedule, true).unwrap();
+    assert!(choices[0].available && choices[0].detail.contains("Previously submitted / sent"));
+    let batch = email_batch(&mut app, &[1]);
+    assert_eq!(
+        app.dispatch_timesheet_selection(&batch)
+            .unwrap()
+            .completed(),
+        1
+    );
+    assert_eq!(std::fs::read(&file).unwrap(), corrected_pdf);
+    assert_eq!(smtp.count(), 3);
+    let messages = smtp.messages.lock().unwrap();
+    let attachment = |message: &String| -> String {
+        message
+            .split("Content-Type: application/pdf")
+            .nth(1)
+            .unwrap()
+            .split("\r\n\r\n")
+            .nth(1)
+            .unwrap()
+            .split("\r\n--")
+            .next()
+            .unwrap()
+            .to_string()
+    };
+    assert_eq!(attachment(&messages[0]), attachment(&messages[1]));
+    assert_ne!(attachment(&messages[1]), attachment(&messages[2]));
+    assert!(app.production_choices(&schedule, true).unwrap()[0]
+        .detail
+        .contains("Submitted / sent"));
 }

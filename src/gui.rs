@@ -2263,24 +2263,6 @@ impl DirectPaymentApp {
 
         let personal_assistant_name = format!("{} {}", assistant.first_name, assistant.surname);
 
-        let existing_status = self
-            .application
-            .payroll_timesheet_email_repository
-            .get_for_pa_and_cycle(
-                assistant.id,
-                &payroll_year,
-                schedule.cycle_number,
-                "timesheet",
-            )?;
-
-        if existing_status
-            .as_ref()
-            .and_then(|status| status.sent_at.as_ref())
-            .is_some()
-        {
-            return Ok(false);
-        }
-
         let personal_assistant_email = assistant.email.as_deref();
 
         let timesheet_path = PdfGenerator::timesheet_output_path(
@@ -2530,13 +2512,10 @@ impl DirectPaymentApp {
                 )
             })?;
 
-        if crate::payroll_evidence::lifecycle::stage(
+        crate::payroll_evidence::lifecycle::ensure_generatable(
             &crate::payroll_evidence::open(&self.application)?,
-            &payroll_timesheet,
-        )? != crate::payroll_evidence::lifecycle::Stage::Editable
-        {
-            return Ok(false);
-        }
+            payroll_timesheet.id,
+        )?;
         let payroll_weeks = self
             .application
             .payroll_timesheet_repository
@@ -2601,7 +2580,7 @@ impl DirectPaymentApp {
         } else {
             None
         };
-        let reconciled = crate::payroll_evidence::reconciliation::calculate(
+        let reconciled = crate::payroll_evidence::reconciliation::calculate_for_generation(
             &self.application,
             &payroll_timesheet,
             &week_dates,
