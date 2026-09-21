@@ -173,7 +173,7 @@ impl PayrollWorkedItemRepository {
         week_totals_minutes: &[i64; 4],
     ) -> Result<()> {
         let transaction = self.connection.unchecked_transaction()?;
-        crate::payroll_evidence::lifecycle::ensure_editable(&transaction, payroll_timesheet_id)
+        crate::payroll_evidence::lifecycle::ensure_generatable(&transaction, payroll_timesheet_id)
             .map_err(|e| rusqlite::Error::InvalidParameterName(e.to_string()))?;
         let signature = crate::payroll_evidence::lifecycle::candidate_signature(
             &transaction,
@@ -189,12 +189,9 @@ impl PayrollWorkedItemRepository {
                 |row| row.get(0),
             )
             .optional()?;
-        if matches!(
-            existing_state.as_deref(),
-            Some("submitted" | "indeterminate")
-        ) {
+        if matches!(existing_state.as_deref(), Some("indeterminate")) {
             return Err(rusqlite::Error::InvalidParameterName(
-                "A submitted or indeterminate payroll snapshot cannot be replaced.".to_string(),
+                "An indeterminate payroll snapshot cannot be replaced.".to_string(),
             ));
         }
         transaction.execute(

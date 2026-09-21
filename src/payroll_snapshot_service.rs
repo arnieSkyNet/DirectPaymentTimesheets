@@ -55,12 +55,7 @@ where
         .map_err(operation_error)?
     {
         match metadata.state {
-            SnapshotState::Candidate => {}
-            SnapshotState::Submitted => {
-                return Err(SnapshotSafetyError::Refused(
-                    "This payroll timesheet has already been submitted. Its frozen worked-item baseline cannot be regenerated or replaced.".to_string(),
-                ));
-            }
+            SnapshotState::Candidate | SnapshotState::Submitted => {}
             SnapshotState::Indeterminate => {
                 return Err(SnapshotSafetyError::Refused(
                     "This payroll timesheet has an indeterminate delivery state and is protected from regeneration until reconciled.".to_string(),
@@ -136,6 +131,15 @@ pub fn send_production_candidate<F>(
 where
     F: FnOnce() -> Result<(), Box<dyn std::error::Error>>,
 {
+    if repository
+        .snapshot_metadata(payroll_timesheet_id)
+        .map_err(operation_error)?
+        .is_some_and(|metadata| metadata.state == SnapshotState::Submitted)
+    {
+        // Resend the retained attachment without recalculation or snapshot mutation.
+        verify_preview_or_test_attachment(repository, payroll_timesheet_id, attachment_path)?;
+        return send().map_err(|error| SnapshotSafetyError::Transport(error.to_string()));
+    }
     verify_candidate(repository, payroll_timesheet_id, attachment_path)?;
     if !repository
         .protect_for_send(payroll_timesheet_id, attempted_at)
@@ -519,7 +523,7 @@ mod tests {
     }
 
     #[test]
-    fn matching_candidate_submits_and_then_cannot_be_replaced() {
+    fn matching_candidate_submits_and_can_be_regenerated() {
         let (directory, repository) = repository();
         let path = directory.path().join("timesheet.pdf");
         publish(&repository, &path, 1).unwrap();
@@ -538,11 +542,10 @@ mod tests {
             repository.snapshot_metadata(10).unwrap().unwrap().state,
             SnapshotState::Submitted
         );
-        let error = publish(&repository, &path, 2).unwrap_err().to_string();
-        assert!(error.contains("already been submitted"));
+        publish(&repository, &path, 2).unwrap();
         assert_eq!(
             repository.get_snapshot_items(10).unwrap()[0].timesheet_id,
-            Some(1)
+            Some(2)
         );
     }
 

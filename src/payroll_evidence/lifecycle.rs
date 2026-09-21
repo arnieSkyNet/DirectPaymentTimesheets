@@ -261,7 +261,7 @@ pub fn verify_candidate_evidence(db: &Connection, record: i64) -> Result<()> {
         .flatten()
         .map(|s| toml::from_str::<WorkEvidence>(&s))
         .collect::<std::result::Result<Vec<_>, _>>()?;
-    ensure_editable(db, record)?;
+    ensure_generatable(db, record)?;
     let recorded: Option<String> = db
         .query_row(
             "SELECT evidence_signature FROM payroll_candidate_checks WHERE payroll_timesheet_id=?1",
@@ -337,9 +337,19 @@ pub fn verify_candidate_evidence(db: &Connection, record: i64) -> Result<()> {
 }
 
 pub fn ensure_editable(db: &Connection, id: i64) -> Result<()> {
+    ensure_mutable(db, id, false)
+}
+
+/// Explicit PDF regeneration may replace submitted payroll; preparation stays read-only.
+pub fn ensure_generatable(db: &Connection, id: i64) -> Result<()> {
+    ensure_mutable(db, id, true)
+}
+
+fn ensure_mutable(db: &Connection, id: i64, allow_submitted: bool) -> Result<()> {
     let record:Option<PayrollTimesheet>=db.query_row("SELECT id,personal_assistant_id,payroll_year,cycle_number,previous_cycle_hours,created_at,updated_at,payroll_department_notes,actual_in_lieu_hours,actual_in_lieu_updated_at FROM payroll_timesheets WHERE id=?1",[id],|r|Ok(PayrollTimesheet{id:r.get(0)?,personal_assistant_id:r.get(1)?,payroll_year:r.get(2)?,cycle_number:r.get(3)?,previous_cycle_hours:r.get(4)?,created_at:r.get(5)?,updated_at:r.get(6)?,payroll_department_notes:r.get(7)?,actual_in_lieu_hours:r.get(8)?,actual_in_lieu_updated_at:r.get(9)?})).optional()?;
     if let Some(record) = record {
-        if stage(db, &record)? != Stage::Editable {
+        let stage = stage(db, &record)?;
+        if stage != Stage::Editable && !(allow_submitted && stage == Stage::Submitted) {
             return Err("Submitted, settled or indeterminate payroll is protected".into());
         }
     }

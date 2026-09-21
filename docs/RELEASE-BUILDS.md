@@ -1,7 +1,7 @@
 # Artifact-only packaging rehearsals
 
 This infrastructure is a rehearsal, not a release publisher. The application is
-now 1.0.2 and its schema is 32. No new downloadable release is claimed. All
+now 1.0.3 and its schema is 32. No new downloadable release is claimed. All
 package versions come from Cargo.toml; filenames below use 1.0.2 intentionally.
 
 ## Entry point and source identity
@@ -173,7 +173,7 @@ Do not trigger any run until the operator authorises pushing these workflow file
 
 ## Future release phase (not enabled)
 
-Cargo.toml and the root Cargo.lock package are now 1.0.2 for all subsequent
+Cargo.toml and the root Cargo.lock package are now 1.0.3 for all subsequent
 release-candidate rehearsals. After successful rehearsals and approval, require
 tag `vVERSION` to equal that manifest version; do not bump again merely to publish
 the tested 1.0.2 candidate.

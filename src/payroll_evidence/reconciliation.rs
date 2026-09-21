@@ -676,6 +676,22 @@ pub fn calculate(
     calculate_prepared(app, record, weeks, legacy, &plan)
 }
 
+/// Generation deliberately recalculates submitted payroll from current source data.
+pub fn calculate_for_generation(
+    app: &Application,
+    record: &PayrollTimesheet,
+    weeks: &[NaiveDate; 4],
+    legacy: Option<&crate::pay_rate_allocation::PreviousCycleContext>,
+) -> Result<crate::pay_rate_allocation::ReconciledPayrollHours> {
+    if lifecycle::stage(&open(app)?, record)? == Stage::Editable {
+        return calculate(app, record, weeks, legacy);
+    }
+    lifecycle::ensure_generatable(&open(app)?, record.id)?;
+    sync_settled_corrections(app, record.personal_assistant_id)?;
+    let plan = plan(app, record)?;
+    calculate_plan(app, record, weeks, legacy, &plan)
+}
+
 // Used only immediately after refresh_record in preparation loading. The plan
 // includes the full duplicate and historical safety checks, after settlement sync.
 pub(crate) fn calculate_prepared(
@@ -691,6 +707,17 @@ pub(crate) fn calculate_prepared(
             "Submitted, settled or uncertain payroll is protected from recalculation".into(),
         );
     }
+    calculate_plan(app, record, weeks, legacy, plan)
+}
+
+fn calculate_plan(
+    app: &Application,
+    record: &PayrollTimesheet,
+    weeks: &[NaiveDate; 4],
+    legacy: Option<&crate::pay_rate_allocation::PreviousCycleContext>,
+    plan: &Plan,
+) -> Result<crate::pay_rate_allocation::ReconciledPayrollHours> {
+    let db = open(app)?;
     if !plan.historical_reviews.is_empty() {
         return Err(
             "Historical payment status needs review in Payroll Timesheet Preparation".into(),
