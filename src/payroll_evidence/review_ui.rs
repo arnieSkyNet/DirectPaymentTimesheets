@@ -5,7 +5,17 @@ pub struct ReviewUi {
     complete: HashSet<String>,
     cached: std::collections::HashMap<i64, ReviewData>,
     error: String,
+    historical_rows: std::collections::HashMap<i64, Vec<HistoricalRow>>,
 }
+const INCLUDED: &str = "Already included in previous payroll";
+const CARRY_FORWARD: &str = "Extra hours not included in previous payroll — carry forward";
+
+struct HistoricalRow {
+    review: reconciliation::HistoricalReview,
+    saved: Option<bool>,
+    height: f32,
+}
+
 struct ReviewData {
     stage: Stage,
     replacement: bool,
@@ -36,6 +46,28 @@ impl ReviewUi {
         } else {
             None
         };
+        if let Some(plan) = &plan {
+            let rows = self.historical_rows.entry(record.id).or_default();
+            rows.retain(|row| {
+                row.saved.is_some()
+                    || plan
+                        .historical_reviews
+                        .iter()
+                        .any(|review| review.evidence.key() == row.review.evidence.key())
+            });
+            for review in &plan.historical_reviews {
+                if !rows
+                    .iter()
+                    .any(|row| row.review.evidence.key() == review.evidence.key())
+                {
+                    rows.push(HistoricalRow {
+                        review: review.clone(),
+                        saved: None,
+                        height: 0.0,
+                    });
+                }
+            }
+        }
         self.cached.insert(
             record.id,
             ReviewData {
@@ -90,15 +122,36 @@ impl ReviewUi {
                     for notice in &plan.notices {
                         ui.label(notice);
                     }
-                    for review in &plan.historical_reviews {
-                        egui::Frame::group(ui.style()).show(ui,|ui| {
-                        ui.strong(format!("Historical payment review — {}",review.evidence.pa_name));
-                        ui.label(format!("{}: {} – {}, {:.2} hours",review.evidence.label(),review.evidence.start,review.evidence.end,review.evidence.minutes as f64/60.0));
-                        ui.label("This historical payroll is settled, but retained evidence cannot establish whether this shift was included. Original payroll totals will remain unchanged.");
-                        let paid=ui.button("Already paid / included").clicked();
-                        let unpaid=ui.button("Genuinely unpaid — carry forward").clicked();
-                        if paid||unpaid {match reconciliation::historical_decision(app,&review,paid) {Ok(())=>changed=true,Err(e)=>self.error=e.to_string()}}
-                    });
+                    if let Some(rows) = self.historical_rows.get_mut(&record.id) {
+                        let remaining = rows.iter().filter(|row| row.saved.is_none()).count();
+                        ui.strong(format!("Historical payment reviews remaining: {remaining}"));
+                        for row in rows {
+                            egui::Frame::group(ui.style()).show(ui, |ui| {
+                                ui.set_min_height(row.height);
+                                let review = &row.review;
+                                ui.strong(format!("Historical payment review — {}", review.evidence.pa_name));
+                                ui.label(format!("{}: {} – {}, {:.2} hours", review.evidence.label(), review.evidence.start, review.evidence.end, review.evidence.minutes as f64 / 60.0));
+                                if let Some(paid) = row.saved {
+                                    ui.strong(format!("Saved: {}", if paid { INCLUDED } else { CARRY_FORWARD }));
+                                } else {
+                                    ui.label("This historical payroll is settled, but retained evidence cannot establish whether this shift was included. Original payroll totals will remain unchanged.");
+                                    let paid = ui.button(INCLUDED).clicked();
+                                    let unpaid = ui.button(CARRY_FORWARD).clicked();
+                                    if paid || unpaid {
+                                        match reconciliation::historical_decision(app, review, paid) {
+                                            Ok(()) => {
+                                                row.saved = Some(paid);
+                                                self.error.clear();
+                                                changed = true;
+                                                ui.ctx().request_repaint();
+                                            }
+                                            Err(e) => self.error = e.to_string(),
+                                        }
+                                    }
+                                }
+                                row.height = ui.min_rect().height();
+                            });
+                        }
                     }
                 }
             }
