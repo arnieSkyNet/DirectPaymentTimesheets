@@ -48,6 +48,7 @@ enum SortDirection {
 struct TimesheetSortState {
     column: TimesheetSortColumn,
     direction: SortDirection,
+    pa_date_direction: SortDirection,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -74,6 +75,7 @@ impl Default for TimesheetSortState {
         Self {
             column: TimesheetSortColumn::Start,
             direction: SortDirection::Descending,
+            pa_date_direction: SortDirection::Descending,
         }
     }
 }
@@ -179,6 +181,8 @@ pub struct DirectPaymentApp {
     payroll_document_import: Option<crate::archive::PayrollReturnImportResult>,
     timesheets: Vec<TimesheetEntry>,
     timesheet_sort: TimesheetSortState,
+    timesheet_pa_filter: Option<String>,
+    timesheet_all_cycles: bool,
     payroll_schedules: Vec<PayrollSchedule>,
     payroll_schedule_years: Vec<String>,
     selected_payroll_schedule_year: Option<String>,
@@ -226,6 +230,8 @@ impl DirectPaymentApp {
             payroll_document_import: None,
             timesheets: Vec::new(),
             timesheet_sort: TimesheetSortState::default(),
+            timesheet_pa_filter: None,
+            timesheet_all_cycles: false,
             payroll_schedules: Vec::new(),
             payroll_schedule_years: Vec::new(),
             selected_payroll_schedule_year: None,
@@ -1743,6 +1749,8 @@ impl DirectPaymentApp {
                         Ok(entries) => {
                             self.timesheets = entries;
                             self.timesheet_sort = TimesheetSortState::default();
+                            self.timesheet_pa_filter = None;
+                            self.timesheet_all_cycles = false;
 
                             self.status_message =
                                 format!("Loaded {} timesheets.", self.timesheets.len());
@@ -1858,7 +1866,8 @@ impl DirectPaymentApp {
                 draw_payroll_schedule(ui, &self.payroll_schedules);
             });
             dashboard_status_panel(ui, 3, theme, |ui| {
-                draw_timesheets(ui, &self.timesheets, &mut self.timesheet_sort);
+                let scope = imported_cycle_scope(&self.application.payroll_schedule_repository, chrono::Local::now().date_naive());
+                draw_timesheets(ui, &self.timesheets, &mut self.timesheet_sort, &mut self.timesheet_pa_filter, &mut self.timesheet_all_cycles, &scope);
             });
             dashboard_status_panel(ui, 4, theme, |ui| {
                 self.draw_timesheet_email_status(ui);
@@ -3347,6 +3356,9 @@ fn draw_timesheets(
     ui: &mut egui::Ui,
     timesheets: &[TimesheetEntry],
     sort_state: &mut TimesheetSortState,
+    pa_filter: &mut Option<String>,
+    all_cycles: &mut bool,
+    scope: &Result<(chrono::NaiveDate, chrono::NaiveDate), String>,
 ) {
     ui.separator();
 
@@ -3357,19 +3369,149 @@ fn draw_timesheets(
         return;
     }
 
+    let pa_names = imported_pa_names(timesheets);
+    if pa_filter
+        .as_ref()
+        .is_some_and(|name| !pa_names.contains(&name.as_str()))
+    {
+        *pa_filter = None;
+    }
+    ui.label(format!(
+        "PA filter: {}",
+        pa_filter.as_deref().unwrap_or("All PAs")
+    ));
+
+    match scope {
+        Ok((start, end)) if !*all_cycles => {
+            ui.label(format!(
+                "Cycle scope: current and previous payroll cycles — {} to {} (shift start date)",
+                start.format("%d/%m/%Y"),
+                end.format("%d/%m/%Y")
+            ));
+        }
+        Ok(_) => {
+            ui.label("Cycle scope: all cycles");
+        }
+        Err(error) => {
+            ui.label(format!(
+                "Cycle scope: all cycles — schedule information unavailable: {error}"
+            ));
+        }
+    }
+    if !*all_cycles
+        && scope.is_ok()
+        && timesheets
+            .iter()
+            .any(|entry| crate::csv_import::parse_supported_timestamp(&entry.start_time).is_none())
+    {
+        ui.label("Entries with unrecognised start dates are also shown so they are not hidden.");
+    }
+
+    if sort_state.column == TimesheetSortColumn::PaName {
+        ui.horizontal(|ui| {
+            ui.label("Dates within each PA:");
+            ui.selectable_value(
+                &mut sort_state.pa_date_direction,
+                SortDirection::Descending,
+                "Newest first",
+            );
+            ui.selectable_value(
+                &mut sort_state.pa_date_direction,
+                SortDirection::Ascending,
+                "Oldest first",
+            );
+        });
+    }
+
+    let visible_count = filtered_timesheets(timesheets, *sort_state, pa_filter.as_deref())
+        .into_iter()
+        .filter(|entry| imported_entry_in_scope(entry, *all_cycles, scope))
+        .count();
+    ui.label(format!(
+        "Showing {visible_count} of {} loaded entries",
+        timesheets.len()
+    ));
+
     egui::Grid::new("timesheet_grid")
         .num_columns(6)
         .striped(true)
         .show(ui, |ui| {
-            timesheet_sort_heading(ui, sort_state, TimesheetSortColumn::PaName, "PA Name");
-            timesheet_sort_heading(ui, sort_state, TimesheetSortColumn::Start, "Start");
+            timesheet_control_heading(
+                ui,
+                sort_state,
+                TimesheetSortColumn::PaName,
+                "PA Name",
+                28.0,
+                |ui| {
+                    let menu = ui.menu_button("   ", |ui| {
+                        if ui
+                            .selectable_label(pa_filter.is_none(), "All PAs")
+                            .clicked()
+                        {
+                            *pa_filter = None;
+                            ui.close();
+                        }
+                        for name in &pa_names {
+                            if ui
+                                .selectable_label(pa_filter.as_deref() == Some(*name), *name)
+                                .clicked()
+                            {
+                                *pa_filter = Some((*name).to_owned());
+                                ui.close();
+                            }
+                        }
+                    });
+                    let rect = egui::Rect::from_center_size(
+                        menu.response.rect.center(),
+                        egui::vec2(12.0, 12.0),
+                    );
+                    let color = if pa_filter.is_some() {
+                        ui.visuals().selection.stroke.color
+                    } else {
+                        ui.visuals().text_color()
+                    };
+                    // Draw a funnel without depending on an icon font.
+                    ui.painter().add(egui::Shape::closed_line(
+                        vec![
+                            rect.left_top(),
+                            rect.right_top(),
+                            rect.center() + egui::vec2(2.0, 0.0),
+                            rect.center() + egui::vec2(2.0, 6.0),
+                            rect.center() + egui::vec2(-2.0, 6.0),
+                            rect.center() + egui::vec2(-2.0, 0.0),
+                        ],
+                        egui::Stroke::new(1.0_f32, color),
+                    ));
+                    menu.response.widget_info(|| {
+                        egui::WidgetInfo::labeled(
+                            egui::WidgetType::Button,
+                            true,
+                            "Filter imported hours by PA",
+                        )
+                    });
+                    menu.response.on_hover_text("Filter imported hours by PA");
+                },
+            );
+            timesheet_control_heading(
+                ui,
+                sort_state,
+                TimesheetSortColumn::Start,
+                "Start",
+                133.0,
+                |ui| {
+                    ui.checkbox(all_cycles, "Include all cycles");
+                },
+            );
             timesheet_sort_heading(ui, sort_state, TimesheetSortColumn::End, "End");
             timesheet_sort_heading(ui, sort_state, TimesheetSortColumn::Worked, "Worked");
             timesheet_sort_heading(ui, sort_state, TimesheetSortColumn::Rate, "Rate");
             timesheet_sort_heading(ui, sort_state, TimesheetSortColumn::Amount, "Amount");
             ui.end_row();
 
-            for entry in sorted_timesheets(timesheets, *sort_state) {
+            for entry in filtered_timesheets(timesheets, *sort_state, pa_filter.as_deref())
+                .into_iter()
+                .filter(|entry| imported_entry_in_scope(entry, *all_cycles, scope))
+            {
                 for (text, width) in [
                     entry.pa_name.clone(),
                     entry.start_time.clone(),
@@ -3398,6 +3540,109 @@ fn draw_timesheets(
                 ui.end_row();
             }
         });
+}
+
+fn imported_cycle_scope(
+    repository: &crate::payroll_schedule_repository::PayrollScheduleRepository,
+    today: chrono::NaiveDate,
+) -> Result<(chrono::NaiveDate, chrono::NaiveDate), String> {
+    let current = repository
+        .resolve_for_date(today)
+        .map_err(|error| error.to_string())?;
+    let previous = repository
+        .resolve_previous(&current)
+        .map_err(|error| error.to_string())?
+        .ok_or_else(|| "No immediately preceding payroll cycle is available.".to_owned())?;
+    let start =
+        parse_date_checked(&previous.first_week_commencing).ok_or("Invalid previous cycle date")?;
+    let end = parse_date_checked(&current.first_week_commencing)
+        .ok_or("Invalid current cycle date")?
+        + chrono::Duration::days(27);
+    Ok((start, end))
+}
+
+fn imported_entry_in_scope(
+    entry: &TimesheetEntry,
+    all_cycles: bool,
+    scope: &Result<(chrono::NaiveDate, chrono::NaiveDate), String>,
+) -> bool {
+    if all_cycles {
+        return true;
+    }
+    match (
+        scope,
+        crate::csv_import::parse_supported_timestamp(&entry.start_time),
+    ) {
+        (Ok((start, end)), Some(date)) => *start <= date.date() && date.date() <= *end,
+        _ => true,
+    }
+}
+
+// The heading has one outer rectangle, with disjoint sort and control hit areas.
+fn timesheet_control_heading(
+    ui: &mut egui::Ui,
+    sort_state: &mut TimesheetSortState,
+    column: TimesheetSortColumn,
+    label: &str,
+    control_width: f32,
+    control: impl FnOnce(&mut egui::Ui),
+) {
+    // Allocate exactly one parent grid cell. All heading widgets must live in
+    // this child UI: put/scope_builder also advance a grid when called on it.
+    ui.allocate_ui_with_layout(
+        egui::vec2(
+            TIMESHEET_COLUMN_WIDTHS[column as usize],
+            ui.spacing().interact_size.y,
+        ),
+        egui::Layout::left_to_right(egui::Align::Center),
+        |ui| {
+            let (rect, _) = ui.allocate_exact_size(
+                egui::vec2(
+                    TIMESHEET_COLUMN_WIDTHS[column as usize],
+                    ui.spacing().interact_size.y,
+                ),
+                egui::Sense::hover(),
+            );
+            let visuals = &ui.visuals().widgets.inactive;
+            ui.painter().rect(
+                rect,
+                visuals.corner_radius,
+                visuals.weak_bg_fill,
+                visuals.bg_stroke,
+                egui::StrokeKind::Inside,
+            );
+            let split = rect.right() - control_width - 4.0;
+            let sort_rect = egui::Rect::from_min_max(rect.min, egui::pos2(split, rect.bottom()));
+            let control_rect = egui::Rect::from_min_max(
+                egui::pos2(split + 2.0, rect.top()),
+                rect.max - egui::vec2(2.0, 0.0),
+            );
+            let indicator = if sort_state.column == column {
+                match sort_state.direction {
+                    SortDirection::Ascending => " ▲",
+                    SortDirection::Descending => " ▼",
+                }
+            } else {
+                ""
+            };
+            if ui
+                .put(
+                    sort_rect,
+                    egui::Button::new((format!("{label}{indicator}"), egui::Atom::grow()))
+                        .frame(false),
+                )
+                .clicked()
+            {
+                sort_state.select(column);
+            }
+            ui.scope_builder(
+                egui::UiBuilder::new()
+                    .max_rect(control_rect)
+                    .layout(egui::Layout::right_to_left(egui::Align::Center)),
+                control,
+            );
+        },
+    );
 }
 
 fn timesheet_sort_heading(
@@ -3432,6 +3677,27 @@ fn timesheet_sort_heading(
     }
 }
 
+fn imported_pa_names(timesheets: &[TimesheetEntry]) -> Vec<&str> {
+    let mut names: Vec<_> = timesheets
+        .iter()
+        .map(|entry| entry.pa_name.as_str())
+        .collect();
+    names.sort_by_cached_key(|name| (name.to_lowercase(), *name));
+    names.dedup();
+    names
+}
+
+fn filtered_timesheets<'a>(
+    timesheets: &'a [TimesheetEntry],
+    sort_state: TimesheetSortState,
+    pa_filter: Option<&str>,
+) -> Vec<&'a TimesheetEntry> {
+    sorted_timesheets(timesheets, sort_state)
+        .into_iter()
+        .filter(|entry| pa_filter.is_none_or(|name| entry.pa_name == name))
+        .collect()
+}
+
 fn sorted_timesheets(
     timesheets: &[TimesheetEntry],
     sort_state: TimesheetSortState,
@@ -3444,7 +3710,14 @@ fn sorted_timesheets(
                     .to_lowercase()
                     .cmp(&right.pa_name.to_lowercase()),
                 sort_state.direction,
-            ),
+            )
+            .then_with(|| {
+                compare_timesheet_datetimes(
+                    &left.start_time,
+                    &right.start_time,
+                    sort_state.pa_date_direction,
+                )
+            }),
             TimesheetSortColumn::Start => compare_timesheet_datetimes(
                 &left.start_time,
                 &right.start_time,
@@ -3594,6 +3867,245 @@ mod timesheet_sort_tests {
         assert_eq!(ids(&entries(), state), vec![2, 3, 1]);
         state.select(TimesheetSortColumn::PaName);
         assert_eq!(ids(&entries(), state), vec![1, 3, 2]);
+    }
+
+    #[test]
+    fn pa_date_order_is_independent_of_name_order() {
+        let mut values = entries();
+        let mut older = values[1].clone();
+        older.id = 4;
+        older.pa_name = "alice".into();
+        older.start_time = "31 January 2026 at 09:00:00".into();
+        values.push(older);
+        let mut state = TimesheetSortState::default();
+        state.select(TimesheetSortColumn::PaName);
+        assert_eq!(ids(&values, state), vec![2, 4, 3, 1]);
+        state.pa_date_direction = SortDirection::Ascending;
+        assert_eq!(ids(&values, state), vec![4, 2, 3, 1]);
+        state.select(TimesheetSortColumn::PaName);
+        assert_eq!(ids(&values, state), vec![1, 3, 4, 2]);
+        state.pa_date_direction = SortDirection::Descending;
+        assert_eq!(ids(&values, state), vec![1, 3, 2, 4]);
+    }
+
+    #[test]
+    fn pa_filter_lists_loaded_names_and_preserves_date_order() {
+        let mut values = entries();
+        let mut older = values[1].clone();
+        older.id = 4;
+        older.start_time = "31 January 2026 at 09:00:00".into();
+        values.push(older);
+        assert_eq!(imported_pa_names(&values), vec!["Alice", "bob", "zoe"]);
+        let mut state = TimesheetSortState::default();
+        state.select(TimesheetSortColumn::PaName);
+        let filtered_ids = |state, filter| {
+            filtered_timesheets(&values, state, filter)
+                .iter()
+                .map(|entry| entry.id)
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(filtered_ids(state, Some("Alice")), vec![2, 4]);
+        state.pa_date_direction = SortDirection::Ascending;
+        assert_eq!(filtered_ids(state, Some("Alice")), vec![4, 2]);
+        assert_eq!(filtered_ids(state, Some("bob")), vec![3]);
+        assert_eq!(filtered_ids(state, None), vec![4, 2, 3, 1]);
+        state.select(TimesheetSortColumn::PaName);
+        assert_eq!(filtered_ids(state, None), vec![1, 3, 4, 2]);
+        assert_eq!(
+            values.iter().map(|entry| entry.id).collect::<Vec<_>>(),
+            vec![1, 2, 3, 4]
+        );
+        assert!(imported_pa_names(&[]).is_empty());
+    }
+
+    #[test]
+    fn imported_scope_uses_schedule_rollover_and_inclusive_work_dates() {
+        let connection = rusqlite::Connection::open_in_memory().unwrap();
+        crate::database::create_schema(&connection).unwrap();
+        let repository =
+            crate::payroll_schedule_repository::PayrollScheduleRepository::new(connection);
+        let today = chrono::NaiveDate::from_ymd_opt(2027, 3, 25).unwrap();
+        assert!(imported_cycle_scope(&repository, today).is_err());
+        // Use an independent connection fixture with year rollover before April.
+        let connection = rusqlite::Connection::open_in_memory().unwrap();
+        crate::database::create_schema(&connection).unwrap();
+        for (year, cycle, start) in [("2026/27", 13, "22/02/2027"), ("2027/28", 1, "22/03/2027")] {
+            connection.execute("INSERT INTO payroll_schedules (payroll_year, cycle_number, first_week_commencing, latest_posting_date, pay_date, created_at, payslips_sent) VALUES (?1, ?2, ?3, '01/04/2027', '08/04/2027', 'test', 0)", rusqlite::params![year, cycle, start]).unwrap();
+        }
+        let repository =
+            crate::payroll_schedule_repository::PayrollScheduleRepository::new(connection);
+        let scope = imported_cycle_scope(&repository, today);
+        assert_eq!(
+            scope,
+            Ok((
+                chrono::NaiveDate::from_ymd_opt(2027, 2, 22).unwrap(),
+                chrono::NaiveDate::from_ymd_opt(2027, 4, 18).unwrap()
+            ))
+        );
+        for (start, expected) in [
+            ("2027-02-21 at 23:59:00", false),
+            ("2027-02-22 at 00:00:00", true),
+            ("2027-04-18 at 23:59:00", true),
+            ("2027-04-19 at 00:00:00", false),
+            ("unknown", true),
+        ] {
+            let row = entry(1, "Alice", start, start, 60, 12.0, 12.0);
+            assert_eq!(
+                imported_entry_in_scope(&row, false, &scope),
+                expected,
+                "{start}"
+            );
+            assert!(imported_entry_in_scope(&row, true, &scope));
+            assert!(imported_entry_in_scope(
+                &row,
+                false,
+                &Err("No schedule".into())
+            ));
+        }
+        // The first known cycle has no previous schedule: do not silently hide data.
+        assert!(imported_cycle_scope(
+            &repository,
+            chrono::NaiveDate::from_ymd_opt(2027, 2, 25).unwrap()
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn compound_headings_each_occupy_one_grid_cell() {
+        let ctx = egui::Context::default();
+        let mut state = TimesheetSortState::default();
+        let mut headings = Vec::new();
+        let mut cells = Vec::new();
+        for _ in 0..3 {
+            headings.clear();
+            cells.clear();
+            let _ = ctx.run(
+                egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(1400.0, 600.0),
+                    )),
+                    ..Default::default()
+                },
+                |ctx| {
+                    egui::CentralPanel::default().show(ctx, |ui| {
+                        egui::Grid::new("heading_alignment_test")
+                            .num_columns(6)
+                            .show(ui, |ui| {
+                                for (column, label) in [
+                                    (TimesheetSortColumn::PaName, "PA Name"),
+                                    (TimesheetSortColumn::Start, "Start"),
+                                    (TimesheetSortColumn::End, "End"),
+                                    (TimesheetSortColumn::Worked, "Worked"),
+                                    (TimesheetSortColumn::Rate, "Rate"),
+                                    (TimesheetSortColumn::Amount, "Amount"),
+                                ] {
+                                    headings.push(ui.next_widget_position());
+                                    if matches!(
+                                        column,
+                                        TimesheetSortColumn::PaName | TimesheetSortColumn::Start
+                                    ) {
+                                        let width = if column == TimesheetSortColumn::PaName {
+                                            28.0
+                                        } else {
+                                            133.0
+                                        };
+                                        timesheet_control_heading(
+                                            ui,
+                                            &mut state,
+                                            column,
+                                            label,
+                                            width,
+                                            |ui| {
+                                                if column == TimesheetSortColumn::PaName {
+                                                    ui.menu_button("   ", |_| {});
+                                                } else {
+                                                    ui.checkbox(&mut false, "Include all cycles");
+                                                }
+                                            },
+                                        );
+                                    } else {
+                                        timesheet_sort_heading(ui, &mut state, column, label);
+                                    }
+                                }
+                                ui.end_row();
+                                for width in TIMESHEET_COLUMN_WIDTHS {
+                                    cells.push(ui.next_widget_position());
+                                    ui.allocate_ui_with_layout(
+                                        egui::vec2(width, ui.spacing().interact_size.y),
+                                        egui::Layout::left_to_right(egui::Align::Center),
+                                        |ui| {
+                                            ui.label("entry");
+                                        },
+                                    );
+                                }
+                                ui.end_row();
+                            });
+                    });
+                },
+            );
+        }
+        for (heading, cell) in headings.iter().zip(&cells) {
+            assert!(
+                (heading.x - cell.x).abs() < 0.1,
+                "heading {heading:?}, data {cell:?}"
+            );
+            assert!((heading.y - headings[0].y).abs() < 0.1);
+            assert!(cell.y > heading.y);
+        }
+    }
+
+    #[test]
+    fn heading_control_click_does_not_sort() {
+        let ctx = egui::Context::default();
+        let mut state = TimesheetSortState::default();
+        let mut enabled = false;
+        let mut control_rect = egui::Rect::NOTHING;
+        let mut frame = |events| {
+            let _ = ctx.run(
+                egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(800.0, 600.0),
+                    )),
+                    events,
+                    ..Default::default()
+                },
+                |ctx| {
+                    egui::CentralPanel::default().show(ctx, |ui| {
+                        timesheet_control_heading(
+                            ui,
+                            &mut state,
+                            TimesheetSortColumn::Start,
+                            "Start",
+                            133.0,
+                            |ui| {
+                                control_rect = ui.checkbox(&mut enabled, "Include all cycles").rect;
+                            },
+                        );
+                    });
+                },
+            );
+            control_rect
+        };
+        let pos = frame(vec![]).center();
+        frame(vec![
+            egui::Event::PointerMoved(pos),
+            egui::Event::PointerButton {
+                pos,
+                button: egui::PointerButton::Primary,
+                pressed: true,
+                modifiers: egui::Modifiers::NONE,
+            },
+        ]);
+        frame(vec![egui::Event::PointerButton {
+            pos,
+            button: egui::PointerButton::Primary,
+            pressed: false,
+            modifiers: egui::Modifiers::NONE,
+        }]);
+        assert!(enabled);
+        assert_eq!(state, TimesheetSortState::default());
     }
 
     #[test]

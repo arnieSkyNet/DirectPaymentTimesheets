@@ -234,8 +234,14 @@ impl PayrollTimesheetScreen {
             }
         }
         if !self.loaded {
+            let preserve_scroll = self.restore_visits.is_some();
             match self.load(application, operational_schedule, period_label) {
-                Ok(()) => self.loaded = true,
+                Ok(()) => {
+                    self.loaded = true;
+                    if preserve_scroll {
+                        self.scroll_to_active = false;
+                    }
+                }
                 Err(error) => {
                     self.status_message = format!("Failed loading Payroll Timesheets: {}", error);
                     ui.colored_label(ui.visuals().error_fg_color, &self.status_message);
@@ -281,6 +287,7 @@ impl PayrollTimesheetScreen {
         }
 
         let mut reactivate = None;
+        let mut review_changed = false;
         for pa in self.visited_pas.clone() {
             let record_index = self
                 .weeks
@@ -363,9 +370,7 @@ impl PayrollTimesheetScreen {
             }
             let (record, _, name) = &self.weeks[record_index];
             if self.review_ui.show_pa(ui, application, record, name) {
-                finish_active_panel(ui, active_panel);
-                self.reload_evidence_preserving_visits();
-                return;
+                review_changed = true;
             }
             if self.blocked(record.id, pa) {
                 ui.separator();
@@ -562,6 +567,14 @@ impl PayrollTimesheetScreen {
             None => {}
         }
         ui.label(&self.status_message);
+        // Finish this frame before reloading so the scroll area's content does
+        // not briefly shrink. Keep saved review rows in their original slots.
+        if review_changed {
+            let review_ui = std::mem::take(&mut self.review_ui);
+            self.reload_evidence_preserving_visits();
+            self.review_ui = review_ui;
+            ui.ctx().request_repaint();
+        }
     }
 
     fn show_returned_information(&mut self, ui: &mut egui::Ui, app: &Application, index: usize) {
