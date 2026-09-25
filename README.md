@@ -14,6 +14,12 @@ Choose your computer and installed operating system below. On Linux, choose eith
 
 [![Download Windows installer](https://img.shields.io/badge/Download%20Windows%20installer-v1.0.2-blue?logo=windows11&logoColor=white)](https://github.com/arnieSkyNet/DirectPaymentTimesheets/releases/download/v1.0.2/DirectPaymentTimesheets-1.0.2-windows-x86_64-setup.exe)<br>
 
+**Windows 10 and 11 — ARM64 (native application, upcoming 1.0.3 candidate)**
+
+Planned installer: `DirectPaymentTimesheets-1.0.3-windows-arm64-setup.exe`.
+Not yet built or published; there is no ARM64 download to offer until validation and release approval.
+The existing x86-64 download above remains separate.
+
 **Linux — Intel/AMD 64-bit (x86-64 / amd64)**
 
 [![Download Linux .deb](https://img.shields.io/badge/Download%20Linux%20.deb-v1.0.2-blue?logo=debian&logoColor=white)](https://github.com/arnieSkyNet/DirectPaymentTimesheets/releases/download/v1.0.2/direct-payment-timesheets_1.0.2_amd64.deb)<br>
@@ -91,14 +97,17 @@ No administrator installation is required. AppImage still relies on compatible h
 
 ### Windows
 
-Requires **Windows 10 or later, 64-bit Intel/AMD**. This is not a 32-bit Windows or native Windows ARM installer.
+Choose by **Settings > System > About > System type**: Intel/AMD 64-bit uses the
+`windows-x86_64` installer; an ARM-based Windows 10/11 PC needs the upcoming
+`windows-arm64` installer. Neither is for 32-bit Windows. ARM64 build and hardware
+acceptance are pending; the current x86-64 link is unchanged.
 
 1. Download `DirectPaymentTimesheets-1.0.2-windows-x86_64-setup.exe` from the official release above.
 2. Open the downloaded file. The installer is unsigned. If SmartScreen displays **Windows protected your PC**, use **More info**, check that the filename matches your official download, then choose **Run anyway** only if you trust that download.
 3. Follow the installer prompts. Installation is per-user and does not require administrator access.
 4. Launch **Direct Payments Timesheets** from the Start menu.
 
-Upgrades and uninstall preserve application data and payroll documents. The application checks for updates but does not install them automatically.
+Both Windows architectures use the same per-user application folder and uninstall entry; an ARM64 upgrade replaces the application, rather than creating a second installation. Close the application before upgrading. Upgrades and uninstall preserve application data and payroll documents. The application checks for updates but does not install them automatically.
 
 ### macOS
 

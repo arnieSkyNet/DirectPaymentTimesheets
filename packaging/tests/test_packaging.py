@@ -17,13 +17,52 @@ spec.loader.exec_module(package)
 
 
 class PackagingTests(unittest.TestCase):
-    def test_explicit_target_mapping_and_nine_unique_packages(self):
+    def test_explicit_target_mapping_and_ten_unique_packages(self):
         names = package.expected_packages('1.0.2')
-        self.assertEqual(len(names), 9)
-        self.assertEqual(len(set(names.values())), 9)
+        self.assertEqual(len(names), 10)
+        self.assertEqual(len(set(names.values())), 10)
         self.assertIn('direct-payment-timesheets_1.0.2_armhf.deb', names)
         self.assertEqual(names['DirectPaymentTimesheets-1.0.2-linux-armhf.AppImage'], ('armv7-unknown-linux-gnueabihf', 'appimage'))
         self.assertIn('DirectPaymentTimesheets-1.0.2-macos-arm64.dmg', names)
+
+    def test_windows_pe_rejects_mislabelled_and_invalid_payloads(self):
+        import struct
+        for target, machine in package.WINDOWS_MACHINES.items():
+            with self.subTest(target=target), tempfile.TemporaryDirectory() as tmp:
+                binary = Path(tmp) / 'payload.exe'
+                data = bytearray(512)
+                data[:2] = b'MZ'
+                struct.pack_into('<I', data, 0x3c, 128)
+                data[128:132] = b'PE\0\0'
+                struct.pack_into('<H', data, 132, machine)
+                struct.pack_into('<H', data, 152, 0x20B)
+                struct.pack_into('<H', data, 220, 2)
+                binary.write_bytes(data)
+                package.validate_pe(binary, target)
+                other = next(t for t in package.WINDOWS_MACHINES if t != target)
+                with self.assertRaises(ValueError): package.validate_pe(binary, other)
+                for offset, value in [(0, 0), (128, 0), (152, 0x10B), (220, 3)]:
+                    bad = bytearray(data)
+                    struct.pack_into('<H', bad, offset, value)
+                    binary.write_bytes(bad)
+                    with self.assertRaises(ValueError): package.validate_pe(binary, target)
+                binary.write_bytes(b'MZ')
+                with self.assertRaises(ValueError): package.validate_pe(binary, target)
+
+    def test_windows_arm64_inventory_and_provenance_are_distinct(self):
+        names = package.expected_packages('1.0.3')
+        self.assertEqual(names['DirectPaymentTimesheets-1.0.3-windows-arm64-setup.exe'], ('aarch64-pc-windows-msvc', 'windows'))
+        self.assertEqual(names['DirectPaymentTimesheets-1.0.3-windows-x86_64-setup.exe'], ('x86_64-pc-windows-msvc', 'windows'))
+        for defect in ['target', 'missing']:
+            with self.subTest(defect=defect), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp); self.fixture(root)
+                arm = next(root.rglob('*windows-arm64-setup.exe'))
+                if defect == 'missing': arm.unlink()
+                else:
+                    meta = arm.with_name(arm.name + '.json')
+                    data = json.loads(meta.read_text()); data['target'] = 'x86_64-pc-windows-msvc'
+                    meta.write_text(json.dumps(data))
+                with self.assertRaises(ValueError): package.collect(root, 'a' * 40, '1.0.2')
 
     def test_elf_rejects_wrong_arch_soft_float_and_new_glibc(self):
         arm = 'Class: ELF32\nMachine: ARM\nFlags: hard-float ABI\nTag_CPU_arch: v7\nTag_ABI_VFP_args: VFP registers\nGLIBC_2.36'
@@ -49,11 +88,11 @@ class PackagingTests(unittest.TestCase):
             path.with_name(name + '.json').write_text(json.dumps(data))
             path.with_name(name + '.sha256').write_text(f"{data['sha256']}  {name}\n")
 
-    def test_collection_checks_and_flattens_all_nine_packages(self):
+    def test_collection_checks_and_flattens_all_ten_packages(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp); self.fixture(root)
             package.collect(root, 'a' * 40, '1.0.2')
-            self.assertEqual(len(json.loads((root / 'rehearsal-manifest.json').read_text())), 9)
+            self.assertEqual(len(json.loads((root / 'rehearsal-manifest.json').read_text())), 10)
             for line in (root / 'SHA256SUMS').read_text().splitlines():
                 sha, name = line.split('  ')
                 self.assertEqual(package.digest(root / name), sha)
@@ -138,9 +177,17 @@ class PackagingTests(unittest.TestCase):
         init = text.split('Function .onInit', 1)[1].split('FunctionEnd', 1)[0]
         self.assertIn('${AtLeastWin10}', init)
         self.assertIn('${RunningX64}', init)
+        self.assertIn('${IsNativeARM64}', init)
+        self.assertIn('!if "${ARCHITECTURE}" == "arm64"', init)
         self.assertIn('ManifestSupportedOS all', text)
         self.assertIn('RequestExecutionLevel user', text)
         self.assertNotIn('RMDir /r', text)
+        self.assertIn('StrCpy $INSTDIR "$LOCALAPPDATA\\Programs\\DirectPaymentTimesheets"', text)
+        builder = (ROOT / 'packaging/windows/build-installer.ps1').read_text()
+        self.assertLess(builder.index('verify-binary'), builder.index('& $compiler'))
+        self.assertLess(builder.index(' pe $target $binary'), builder.index('& $compiler'))
+        self.assertIn('/DARCHITECTURE=$Architecture', builder)
+        self.assertIn('record $output $target windows', builder)
 
     def test_linux_scripts_reject_missing_or_unknown_target_before_building(self):
         if os.name == 'nt': self.skipTest('bash checks run on Linux')

@@ -2,8 +2,16 @@ name: Windows installer (reusable, artifacts only)
 
 on:
   workflow_dispatch:
+    inputs:
+      architecture:
+        type: choice
+        default: x86_64
+        options: [x86_64, arm64]
   workflow_call:
     inputs:
+      architecture:
+        type: string
+        default: x86_64
       source_sha:
         type: string
         required: true
@@ -19,7 +27,7 @@ jobs:
       SOURCE_SHA: ${{ inputs.source_sha || github.sha }}
       DPT_INSTALLATION_KIND: windows
       RUSTFLAGS: -C target-feature=+crt-static
-      CARGO_TARGET_DIR: target/packages/x86_64-pc-windows-msvc/windows
+      PACKAGE_ARCH: ${{ inputs.architecture || 'x86_64' }}
       CARGO_INCREMENTAL: '0'
       CARGO_PROFILE_TEST_DEBUG: '0'
     steps:
@@ -36,27 +44,46 @@ jobs:
       - name: Test and build pinned Windows MSVC executable
         shell: pwsh
         run: |
-          rustup toolchain install 1.98.1-x86_64-pc-windows-msvc --profile minimal
+          if ($env:PACKAGE_ARCH -eq 'arm64') {
+            $target = 'aarch64-pc-windows-msvc'
+            $vsArch = 'arm64'
+            $component = 'Microsoft.VisualStudio.Component.VC.Tools.ARM64'
+          } elseif ($env:PACKAGE_ARCH -eq 'x86_64') {
+            $target = 'x86_64-pc-windows-msvc'
+            $vsArch = 'amd64'
+            $component = 'Microsoft.VisualStudio.Component.VC.Tools.x86.x64'
+          } else { throw 'Unsupported Windows architecture' }
+          $env:CARGO_TARGET_DIR = "target/packages/$target/windows"
+          "CARGO_TARGET_DIR=$env:CARGO_TARGET_DIR" >> $env:GITHUB_ENV
+          "RUST_TARGET=$target" >> $env:GITHUB_ENV
+          rustup toolchain install 1.98.1-x86_64-pc-windows-msvc --profile minimal --target $target
           if ($LASTEXITCODE -ne 0) { throw 'Rust installation failed' }
           $env:RUSTUP_TOOLCHAIN = '1.98.1-x86_64-pc-windows-msvc'
           $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
-          $visualStudio = & $vswhere -latest -products '*' -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
-          if (-not $visualStudio) { throw 'Visual Studio C++ build tools were not found.' }
-          & "$visualStudio\Common7\Tools\Launch-VsDevShell.ps1" -Arch amd64 -HostArch amd64 -SkipAutomaticLocation
-          cargo test --locked --target x86_64-pc-windows-msvc
+          $visualStudio = & $vswhere -latest -products '*' -requires $component -property installationPath
+          if (-not $visualStudio) { throw "Visual Studio C++ tools missing: $component" }
+          & "$visualStudio\Common7\Tools\Launch-VsDevShell.ps1" -Arch $vsArch -HostArch amd64 -SkipAutomaticLocation
+          if ($env:PACKAGE_ARCH -eq 'arm64') {
+            # Cross-compile tests; this x64 runner cannot execute ARM64 tests.
+            cargo test --locked --target $target --no-run
+          } else {
+            cargo test --locked --target $target
+          }
           if ($LASTEXITCODE -ne 0) { throw 'Tests failed' }
-          cargo build --release --locked --target x86_64-pc-windows-msvc
+          cargo build --release --locked --target $target
           if ($LASTEXITCODE -ne 0) { throw 'Release build failed' }
+          python packaging/package.py stamp-binary "$env:CARGO_TARGET_DIR/$target/release/direct_payment_timesheets.exe" $target windows
+          if ($LASTEXITCODE -ne 0) { throw 'Binary provenance failed' }
       - name: Build unsigned Windows 10+ per-user installer
         shell: pwsh
         run: |
-          ./packaging/windows/build-installer.ps1 -SourceBinary "$env:CARGO_TARGET_DIR/x86_64-pc-windows-msvc/release/direct_payment_timesheets.exe" -OutputDirectory dist/x86_64-pc-windows-msvc
+          ./packaging/windows/build-installer.ps1 -Architecture $env:PACKAGE_ARCH -SourceBinary "$env:CARGO_TARGET_DIR/$env:RUST_TARGET/release/direct_payment_timesheets.exe" -OutputDirectory "dist/$env:RUST_TARGET"
       - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
         with:
-          name: rehearsal-windows-x86_64-${{ env.SOURCE_SHA }}
+          name: rehearsal-windows-${{ env.PACKAGE_ARCH }}-${{ env.SOURCE_SHA }}
           path: |
-            dist/x86_64-pc-windows-msvc/*.exe
-            dist/x86_64-pc-windows-msvc/*.json
-            dist/x86_64-pc-windows-msvc/*.sha256
+            dist/${{ env.RUST_TARGET }}/*.exe
+            dist/${{ env.RUST_TARGET }}/*.json
+            dist/${{ env.RUST_TARGET }}/*.sha256
           if-no-files-found: error
           retention-days: 30

@@ -8,6 +8,7 @@ from pathlib import Path
 import re
 import shutil
 import subprocess
+import struct
 import tomllib
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -43,6 +44,23 @@ def validate_elf(text, target):
     requirements = [tuple(map(int, v.split('.'))) for v in re.findall(r'\bGLIBC_(\d+\.\d+(?:\.\d+)?)\b', text)]
     if any(v > (2, 36) for v in requirements):
         raise ValueError('Binary exceeds the Debian 12 GLIBC 2.36 baseline')
+
+
+WINDOWS_MACHINES = {'x86_64-pc-windows-msvc': 0x8664, 'aarch64-pc-windows-msvc': 0xAA64}
+
+
+def validate_pe(binary, target):
+    data = Path(binary).read_bytes()
+    try:
+        offset = struct.unpack_from('<I', data, 0x3c)[0]
+        machine = struct.unpack_from('<H', data, offset + 4)[0]
+        magic = struct.unpack_from('<H', data, offset + 24)[0]
+        subsystem = struct.unpack_from('<H', data, offset + 24 + 68)[0]
+        if (data[:2] != b'MZ' or data[offset:offset + 4] != b'PE\0\0'
+                or machine != WINDOWS_MACHINES[target] or magic != 0x20B or subsystem != 2):
+            raise ValueError('Expected a PE32+ Windows GUI executable for ' + target)
+    except (struct.error, KeyError) as error:
+        raise ValueError('Invalid Windows executable or target') from error
 
 
 def licenses(destination):
@@ -98,7 +116,8 @@ def expected_packages(v):
     for target, (deb, arch, _, _) in TARGETS.items():
         result[f'direct-payment-timesheets_{v}_{deb}.deb'] = (target, 'deb')
         result[f'DirectPaymentTimesheets-{v}-linux-{arch}.AppImage'] = (target, 'appimage')
-    result[f'DirectPaymentTimesheets-{v}-windows-x86_64-setup.exe'] = ('x86_64-pc-windows-msvc', 'windows')
+    for arch, target in [('x86_64', 'x86_64-pc-windows-msvc'), ('arm64', 'aarch64-pc-windows-msvc')]:
+        result[f'DirectPaymentTimesheets-{v}-windows-{arch}-setup.exe'] = (target, 'windows')
     for arch, target in [('arm64', 'aarch64-apple-darwin'), ('x86_64', 'x86_64-apple-darwin')]:
         result[f'DirectPaymentTimesheets-{v}-macos-{arch}.dmg'] = (target, 'macos')
     return result
@@ -143,6 +162,7 @@ def main():
         p = sub.add_parser(command); p.add_argument('binary', type=Path); p.add_argument('target'); p.add_argument('kind', choices=KINDS)
     p = sub.add_parser('licenses'); p.add_argument('destination', type=Path)
     p = sub.add_parser('elf'); p.add_argument('target', choices=TARGETS); p.add_argument('binary', type=Path)
+    p = sub.add_parser('pe'); p.add_argument('target', choices=WINDOWS_MACHINES); p.add_argument('binary', type=Path)
     p = sub.add_parser('record'); p.add_argument('artifact', type=Path); p.add_argument('target'); p.add_argument('kind', choices=KINDS)
     p = sub.add_parser('collect'); p.add_argument('directory', type=Path); p.add_argument('source'); p.add_argument('version')
     args = parser.parse_args()
@@ -153,6 +173,7 @@ def main():
         validate_elf(text, args.target)
     elif args.command in ['stamp-binary', 'verify-binary']:
         binary_provenance(args.binary, args.target, args.kind, verify=args.command == 'verify-binary')
+    elif args.command == 'pe': validate_pe(args.binary, args.target)
     elif args.command == 'record': record(args.artifact, args.target, args.kind)
     elif args.command == 'collect': collect(args.directory, args.source, args.version)
 
