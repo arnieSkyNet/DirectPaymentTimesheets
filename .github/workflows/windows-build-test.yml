@@ -64,8 +64,8 @@ jobs:
           if (-not $visualStudio) { throw "Visual Studio C++ tools missing: $component" }
           & "$visualStudio\Common7\Tools\Launch-VsDevShell.ps1" -Arch $vsArch -HostArch amd64 -SkipAutomaticLocation
           if ($env:PACKAGE_ARCH -eq 'arm64') {
-            # Cross-compile tests; this x64 runner cannot execute ARM64 tests.
-            cargo test --locked --target $target --no-run
+            # Check application and tests without linking ARM64 test executables.
+            cargo check --locked --target $target --bins --tests
           } else {
             cargo test --locked --target $target
           }

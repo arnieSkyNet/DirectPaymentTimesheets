@@ -130,8 +130,10 @@ procedure; its instructions do not imply that hardware acceptance is complete.
 The unsigned NSIS 3.12 per-user installer now has separate x86-64 and ARM64
 payloads. `windows-arm64` uses `aarch64-pc-windows-msvc` (not ARM64EC or an
 emulated x64 application), cross-compiled on windows-2022 with the ARM64 Visual
-Studio C++ component and pinned Rust 1.98.1. ARM64 tests are compiled with
-`--no-run`; x86-64 tests still execute. Both build with static CRT and Windows SDK
+Studio C++ component and pinned Rust 1.98.1. ARM64 application and tests are checked with
+`cargo check --locked --target aarch64-pc-windows-msvc --bins --tests`, without
+linking test executables; x86-64 tests still execute. The ARM64 release build
+still links the distributable executable. Both build with static CRT and Windows SDK
 version/icon resources. Rust's [MSVC target documentation](https://doc.rust-lang.org/rustc/platform-support/windows-msvc.html)
 specifies Windows 10 or later and supports architectural cross-compilation.
 
