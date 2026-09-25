@@ -1,4 +1,6 @@
 param(
+    [ValidateSet('x86_64', 'arm64')]
+    [string]$Architecture = 'x86_64',
     [string]$MakeNsisPath = 'makensis.exe',
     [string]$SourceBinary = '',
     [string]$OutputDirectory = ''
@@ -12,33 +14,22 @@ $version = [regex]::Match($package, '(?m)^version\s*=\s*"(\d+\.\d+\.\d+)"\s*$').
 if (-not $version) { throw 'Cargo.toml must contain a numeric package version.' }
 $compiler = (Get-Command $MakeNsisPath -ErrorAction Stop).Source
 $binary = if ($SourceBinary) { [System.IO.Path]::GetFullPath($SourceBinary) } else { Join-Path $root 'target/release/direct_payment_timesheets.exe' }
+$target = if ($Architecture -eq 'arm64') { 'aarch64-pc-windows-msvc' } else { 'x86_64-pc-windows-msvc' }
+python (Join-Path $root 'packaging/package.py') verify-binary $binary $target windows
+if ($LASTEXITCODE -ne 0) { throw 'Binary provenance does not match this checkout and target.' }
 $metadata = [System.Diagnostics.FileVersionInfo]::GetVersionInfo($binary)
 if ($metadata.ProductVersion -ne $version -or $metadata.FileVersion -ne $version -or
     $metadata.ProductName -ne 'Direct Payments Timesheets' -or $metadata.CompanyName -ne 'Mark Worsdall') {
     throw 'The release executable does not contain the expected Windows version resources.'
 }
-# Reject a stale or wrong-architecture executable before labelling the installer x86_64.
-$stream = [System.IO.File]::OpenRead($binary)
-$reader = [System.IO.BinaryReader]::new($stream)
-try {
-    if ($reader.ReadUInt16() -ne 0x5a4d) { throw 'Not a Windows executable.' }
-    $stream.Position = 0x3c
-    $peOffset = $reader.ReadUInt32()
-    $stream.Position = $peOffset
-    if ($reader.ReadUInt32() -ne 0x4550 -or $reader.ReadUInt16() -ne 0x8664) {
-        throw 'The installer requires an x86_64 Windows executable.'
-    }
-    $stream.Position = $peOffset + 24 + 68
-    if ($reader.ReadUInt16() -ne 2) { throw 'The release executable must use the Windows GUI subsystem.' }
-} finally {
-    $reader.Dispose()
-    $stream.Dispose()
-}
+# Validate the payload, not the NSIS bootstrap executable (which is x86).
+python (Join-Path $root 'packaging/package.py') pe $target $binary
+if ($LASTEXITCODE -ne 0) { throw 'Wrong Windows payload architecture or subsystem.' }
 
-$buildDir = Join-Path $root 'dist/windows-installer-build'
+$buildDir = Join-Path $root "dist/windows-installer-build-$Architecture"
 $artifactDir = if ($OutputDirectory) { [System.IO.Path]::GetFullPath($OutputDirectory) } else { Join-Path $root 'dist/windows-test' }
 New-Item -ItemType Directory -Path $buildDir, $artifactDir -Force | Out-Null
-$output = Join-Path $artifactDir "DirectPaymentTimesheets-$version-windows-x86_64-setup.exe"
+$output = Join-Path $artifactDir "DirectPaymentTimesheets-$version-windows-$Architecture-setup.exe"
 
 # Generate exact install/uninstall lists from the checked-in notice files.
 # The uninstaller removes these files individually and only removes empty directories.
@@ -68,7 +59,7 @@ $utf8 = [System.Text.UTF8Encoding]::new($false)
 [System.IO.File]::WriteAllLines((Join-Path $buildDir 'third-party-install.nsh'), $install, $utf8)
 [System.IO.File]::WriteAllLines((Join-Path $buildDir 'third-party-uninstall.nsh'), $uninstall, $utf8)
 
-& $compiler /NOCONFIG /INPUTCHARSET UTF8 "/DSOURCE_BINARY=$binary" "/DPROJECT_ROOT=$root" "/DBUILD_DIR=$buildDir" "/DVERSION=$version" "/DOUTPUT_FILE=$output" (Join-Path $PSScriptRoot 'installer.nsi')
+& $compiler /NOCONFIG /INPUTCHARSET UTF8 "/DARCHITECTURE=$Architecture" "/DSOURCE_BINARY=$binary" "/DPROJECT_ROOT=$root" "/DBUILD_DIR=$buildDir" "/DVERSION=$version" "/DOUTPUT_FILE=$output" (Join-Path $PSScriptRoot 'installer.nsi')
 if ($LASTEXITCODE -ne 0) { throw "NSIS failed with exit code $LASTEXITCODE" }
 if (-not (Test-Path -LiteralPath $output -PathType Leaf)) { throw 'NSIS did not produce the installer.' }
 
@@ -83,5 +74,5 @@ foreach ($notice in $notices) {
 }
 Write-Output $output
 
-python (Join-Path $root 'packaging/package.py') record $output x86_64-pc-windows-msvc windows
+python (Join-Path $root 'packaging/package.py') record $output $target windows
 if ($LASTEXITCODE -ne 0) { throw 'Could not record installer provenance.' }

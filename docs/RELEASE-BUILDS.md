@@ -9,7 +9,7 @@ package versions come from Cargo.toml; filenames below use 1.0.2 intentionally.
 After the changes are reviewed, committed and pushed **by an authorised operator**,
 run `.github/workflows/package-rehearsal.yml` (Multi-platform package rehearsal).
 Its `target` input accepts `all`, `linux-x86_64`, `linux-armv7`, `linux-aarch64`,
-`windows-x86_64`, `macos-arm64` or `macos-x86_64`. Start with `linux-armv7` to prove
+`windows-x86_64`, `windows-arm64`, `macos-arm64` or `macos-x86_64`. Start with `linux-armv7` to prove
 the highest-risk path, then run `all` from the same reviewed revision.
 
 The preparation job captures checkout HEAD and Cargo's package version. Every
@@ -17,7 +17,7 @@ reusable workflow checks out that exact SHA with persisted credentials disabled.
 All workflows use `contents: read`, only manual/reusable triggers, and have **no
 release publisher or tag/push trigger**. No GitHub Release can be created by these
 jobs. The three platform workflows also accept independent manual dispatches for
-diagnosis, but only the `all` orchestrator verifies a complete nine-package set.
+diagnosis, but only the `all` orchestrator verifies a complete ten-package set.
 
 Each package carries adjacent `.json` provenance and `.sha256` files. They record
 source SHA, version, target, installation kind, tool pins and package digest.
@@ -35,6 +35,7 @@ the complete artifact; successful independent jobs can still be inspected.
 | linux-armv7 | ubuntu-24.04, cross compiler + QEMU | armv7-unknown-linux-gnueabihf | direct-payment-timesheets_VERSION_armhf.deb; DirectPaymentTimesheets-VERSION-linux-armhf.AppImage |
 | linux-aarch64 | ubuntu-24.04-arm | aarch64-unknown-linux-gnu | direct-payment-timesheets_VERSION_arm64.deb; DirectPaymentTimesheets-VERSION-linux-aarch64.AppImage |
 | windows-x86_64 | windows-2022 | x86_64-pc-windows-msvc | DirectPaymentTimesheets-VERSION-windows-x86_64-setup.exe |
+| windows-arm64 | windows-2022, MSVC cross compiler | aarch64-pc-windows-msvc | DirectPaymentTimesheets-VERSION-windows-arm64-setup.exe |
 | macos-arm64 | macos-15 | aarch64-apple-darwin | DirectPaymentTimesheets-VERSION-macos-arm64.dmg |
 | macos-x86_64 | macos-15-intel | x86_64-apple-darwin | DirectPaymentTimesheets-VERSION-macos-x86_64.dmg |
 
@@ -126,17 +127,40 @@ procedure; its instructions do not imply that hardware acceptance is complete.
 
 ## Windows
 
-The existing unsigned NSIS 3.12 per-user installer is retained. `.onInit` now
-requires Windows 10 or later and 64-bit Windows, with supported-OS manifest entries
-so version detection is not legacy-virtualised. Installation remains under
-LOCALAPPDATA; upgrade/uninstall still preserve payroll data and use no recursive
-uninstallation of user folders. The build uses the pinned MSVC Rust toolchain,
-Windows SDK resources and static CRT. The installer script accepts an explicit
-source binary and output directory; PE architecture, GUI subsystem and embedded
-version metadata are checked before NSIS runs. The existing pinned NSIS action is
-reused. The 1.0.2 candidate from rehearsal 35541897015 installed and ran on real
-Windows 10 hardware. Rebuilt final candidates still need acceptance checks; a
-Windows Server CI run alone is not a Windows 10 compatibility test.
+The unsigned NSIS 3.12 per-user installer now has separate x86-64 and ARM64
+payloads. `windows-arm64` uses `aarch64-pc-windows-msvc` (not ARM64EC or an
+emulated x64 application), cross-compiled on windows-2022 with the ARM64 Visual
+Studio C++ component and pinned Rust 1.98.1. ARM64 tests are compiled with
+`--no-run`; x86-64 tests still execute. Both build with static CRT and Windows SDK
+version/icon resources. Rust's [MSVC target documentation](https://doc.rust-lang.org/rustc/platform-support/windows-msvc.html)
+specifies Windows 10 or later and supports architectural cross-compilation.
+
+The builder verifies the binary handoff `.build.json` against checkout SHA,
+version, target, installation kind and SHA256 before packaging. It then checks
+PE machine (0x8664 for x64, 0xAA64 for ARM64), PE32+, GUI subsystem and embedded
+version resources. This validates the application payload, not the standard x86
+NSIS bootstrap, which runs under Windows ARM's x86 emulation. Artifact names,
+output directories and provenance targets remain architecture-specific.
+
+NSIS uses `AtLeastWin10` and `IsNativeARM64` from x64.nsh. The ARM64 installer
+rejects non-ARM64 systems; the x64 installer directs ARM64 users to the native
+installer before writing any files. The supported-OS manifest remains enabled.
+Both use the same fixed LOCALAPPDATA program directory, shortcuts and 64-bit HKCU
+uninstall key: upgrades replace the application, including an existing emulated
+x64 installation on ARM64, without creating a parallel install. No payroll-data
+paths are installed or removed. Uninstall retains its exact file list and only
+removes empty directories; never recursive user-folder deletion. Close the app
+before upgrading. No downgrade prevention or automatic update installation is added.
+
+CI must verify cross-linking, resource inspection, pinned NSIS compilation and
+both architecture branches. On actual Windows 10 ARM64 and Windows 11 ARM64,
+run the compiled tests and check fresh install, GUI startup/file dialogs/PDFs,
+upgrade from an older per-user install (including x64 on ARM where applicable),
+locked executable behaviour, and uninstall preserving disposable payroll data.
+Check wrong-architecture rejection on x64 hardware. No ARM64 runtime compatibility
+claim follows from compiling on an x64 Windows Server runner.
+The earlier 1.0.2 x64 candidate was tested on Windows 10; that does not validate
+this new ARM64 candidate or rebuilt x64 packages.
 
 ## Validation and next rehearsal runs
 
@@ -144,7 +168,7 @@ Local checks: `cargo fmt`, `cargo fmt --check`, `cargo check --locked`,
 `cargo test --locked`, `git diff --check`, `bash -n` for every shell script,
 `python3 -B -m unittest discover -s packaging/tests -v`, actionlint, shellcheck,
 and desktop-file validation. Packaging tests cover architecture/ABI rejection,
-licence staging, binary handoff isolation, all-nine aggregation, digest/source
+licence staging, binary handoff isolation, all-ten aggregation, digest/source
 mismatches and artifact-only workflow constraints. On an x86 Linux host with
 packaging tools, a disposable C executable also exercises real Debian packaging;
 it is never executed or retained as an application package.
@@ -161,7 +185,7 @@ The final reviewed revision must complete these checks:
 
 1. `package-rehearsal.yml`, target `linux-armv7`: prove cross-link, full tests under
    QEMU, ARMHF dependency discovery and both packages.
-2. Same workflow, target `all`: prove all six architectures, nine packages and
+2. Same workflow, target `all`: prove all seven platform/architecture combinations, ten packages and
    final source/version/checksum aggregation. Use individual target inputs to
    diagnose a failing architecture, then repeat `all` at the final reviewed SHA.
 3. Install/run only with disposable data on Debian 12/13, suitable Ubuntu/Mint,
@@ -179,7 +203,7 @@ tag `vVERSION` to equal that manifest version; do not bump again merely to publi
 the tested 1.0.2 candidate.
 Schema remains separately versioned. A future tag workflow can call these same
 reusable builders with one captured commit and add one publishing job after all
-nine artifacts verify. Builders must retain read-only permissions; only that
+ten artifacts verify. Builders must retain read-only permissions; only that
 future publisher would gain release-write permission. No current workflow creates,
 uploads to or publishes a GitHub Release.
 
@@ -204,14 +228,13 @@ LXDE menu configuration is part of the package.
 
 ## Public documentation and publication gate
 
-The README lists all nine intended assets using the exact names generated by
-`packaging/package.py`, with fixed `/releases/download/v1.0.2/` URLs. They are
+The README retains the nine existing 1.0.2 asset links using the existing names, with fixed `/releases/download/v1.0.2/` URLs. They are
 future links, not published assets, and may return 404 until release approval.
-The actual macOS bundle is `Direct Payments Timesheets.app` (with spaces), not
+The new ARM64 Windows entry lists its planned 1.0.3 filename without claiming a published download. The next all-platform inventory requires ten assets at the same source SHA and Cargo version. The actual macOS bundle is `Direct Payments Timesheets.app` (with spaces), not
 `DirectPaymentTimesheets.app`. Its minimum deployment target is 12.0 and its
 signature is ad-hoc, not Developer ID/notarised.
 
-Before publication, verify the final nine-package inventory, same-source
+Before publication, verify the final ten-package inventory, same-source
 provenance and checksums; confirm final ARM32 window behaviour and remaining Mac
 first-launch/minimum-OS and ARM64 hardware checks. Confirm each eventual asset
 name matches the README, then update the pending-release wording only when the

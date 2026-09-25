@@ -5,6 +5,15 @@ RequestExecutionLevel user
 !include "WinVer.nsh"
 ManifestSupportedOS all
 
+!ifndef ARCHITECTURE
+    !error "ARCHITECTURE must be x86_64 or arm64"
+!endif
+!if "${ARCHITECTURE}" != "x86_64"
+!if "${ARCHITECTURE}" != "arm64"
+    !error "Unsupported ARCHITECTURE"
+!endif
+!endif
+
 !define PRODUCT_NAME "Direct Payments Timesheets"
 !define PUBLISHER "Mark Worsdall"
 !define UNINSTALL_KEY "Software\Microsoft\Windows\CurrentVersion\Uninstall\DirectPaymentTimesheets"
@@ -40,10 +49,22 @@ Function .onInit
         MessageBox MB_OK|MB_ICONSTOP "This installer requires Windows 10 or later."
         Abort
     ${EndIf}
+!if "${ARCHITECTURE}" == "arm64"
+    ${IfNot} ${IsNativeARM64}
+        MessageBox MB_OK|MB_ICONSTOP "This installer requires Windows 10 or 11 on ARM64."
+        Abort
+    ${EndIf}
+!else
     ${IfNot} ${RunningX64}
         MessageBox MB_OK|MB_ICONSTOP "This installer requires 64-bit Windows."
         Abort
     ${EndIf}
+    # Prevent an emulated x64 installer replacing the native ARM64 installation.
+    ${If} ${IsNativeARM64}
+        MessageBox MB_OK|MB_ICONSTOP "Use the Windows ARM64 installer on this computer."
+        Abort
+    ${EndIf}
+!endif
     SetRegView 64
 FunctionEnd
 
