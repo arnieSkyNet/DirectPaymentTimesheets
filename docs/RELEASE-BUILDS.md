@@ -1,12 +1,19 @@
-# Artifact-only packaging rehearsals
+# Release builds and artifact-only packaging rehearsals
 
-This infrastructure is a rehearsal, not a release publisher. The application is
-now 1.0.3 and its schema is 32. No new downloadable release is claimed. All
-package versions come from Cargo.toml; filenames below use 1.0.2 intentionally.
+[v1.0.3](https://github.com/arnieSkyNet/DirectPaymentTimesheets/releases/tag/v1.0.3)
+was published on 25 September 2026 from commit
+`7415778d4cde1482b70102289e5ece2a33f2a235`. Its ten downloadable packages comprise
+six Linux packages, two Windows installers (x86-64 and ARM64), and two macOS DMGs.
+The application schema is 32. Package versions come from Cargo.toml; references
+to 1.0.2 below describe earlier rehearsals and hardware tests.
+
+The packaging workflows remain artifact-only: they build and validate candidates,
+but do not publish GitHub releases. Publication is a separate authorised action.
 
 ## Entry point and source identity
 
-After the changes are reviewed, committed and pushed **by an authorised operator**,
+For a future candidate, after changes are reviewed, committed and pushed
+**by an authorised operator**,
 run `.github/workflows/package-rehearsal.yml` (Multi-platform package rehearsal).
 Its `target` input accepts `all`, `linux-x86_64`, `linux-armv7`, `linux-aarch64`,
 `windows-x86_64`, `windows-arm64`, `macos-arm64` or `macos-x86_64`. Start with `linux-armv7` to prove
@@ -24,7 +31,7 @@ source SHA, version, target, installation kind, tool pins and package digest.
 An all-target run checks the exact package inventory, rejects duplicate/missing
 packages, mixed revisions/versions and digest mismatches, flattens the packages,
 and writes `rehearsal-manifest.json` and `SHA256SUMS`. Actions artifacts are retained
-for 30 days. No package is uploaded as a release asset. A failed platform prevents
+for 30 days. These workflows do not upload release assets. A failed platform prevents
 the complete artifact; successful independent jobs can still be inspected.
 
 ## Targets
@@ -156,15 +163,15 @@ before upgrading. No downgrade prevention or automatic update installation is ad
 
 CI must verify cross-linking, resource inspection, pinned NSIS compilation and
 both architecture branches. On actual Windows 10 ARM64 and Windows 11 ARM64,
-run the compiled tests and check fresh install, GUI startup/file dialogs/PDFs,
+build and run the tests natively and check fresh install, GUI startup/file dialogs/PDFs,
 upgrade from an older per-user install (including x64 on ARM where applicable),
 locked executable behaviour, and uninstall preserving disposable payroll data.
 Check wrong-architecture rejection on x64 hardware. No ARM64 runtime compatibility
 claim follows from compiling on an x64 Windows Server runner.
 The earlier 1.0.2 x64 candidate was tested on Windows 10; that does not validate
-this new ARM64 candidate or rebuilt x64 packages.
+the published 1.0.3 ARM64 or rebuilt x64 packages.
 
-## Validation and next rehearsal runs
+## Validation and future rehearsal runs
 
 Local checks: `cargo fmt`, `cargo fmt --check`, `cargo check --locked`,
 `cargo test --locked`, `git diff --check`, `bash -n` for every shell script,
@@ -178,12 +185,13 @@ it is never executed or retained as an application package.
 Florence cannot run Docker/QEMU or native macOS/Windows tools in the current setup.
 Full rehearsal 35541897015 at source
 `15bd2620a45459bce3330453c4eb8a3b8bba1eb9` produced all nine 1.0.2 packages.
-Windows 10 and both ARMHF formats have received real-hardware testing. A later
-startup-sizing change makes those existing binaries unsuitable as the final
-release set. The final ARM32 rehearsal is in progress; its result is not claimed
-here. Publication remains blocked pending final validation and explicit approval.
+Those 1.0.2 Windows 10 and ARMHF packages received real-hardware testing. A later
+startup-sizing change superseded those binaries. These are historical rehearsal
+results, not the current download inventory: v1.0.3 is now published with all ten
+packages. Publication alone does not establish completion of the remaining
+hardware and minimum-OS checks documented here.
 
-The final reviewed revision must complete these checks:
+For future releases, the reviewed revision should complete these checks:
 
 1. `package-rehearsal.yml`, target `linux-armv7`: prove cross-link, full tests under
    QEMU, ARMHF dependency discovery and both packages.
@@ -195,19 +203,20 @@ The final reviewed revision must complete these checks:
    the proposed minimum. Validate file dialogs, PDF fonts, package upgrades and
    unsigned first-launch behaviour. No production email is needed.
 
-Do not trigger any run until the operator authorises pushing these workflow files.
+Future workflow runs still require operator authorisation.
 
-## Future release phase (not enabled)
+## Publication and future automation
 
-Cargo.toml and the root Cargo.lock package are now 1.0.3 for all subsequent
-release-candidate rehearsals. After successful rehearsals and approval, require
-tag `vVERSION` to equal that manifest version; do not bump again merely to publish
-the tested 1.0.2 candidate.
-Schema remains separately versioned. A future tag workflow can call these same
-reusable builders with one captured commit and add one publishing job after all
-ten artifacts verify. Builders must retain read-only permissions; only that
-future publisher would gain release-write permission. No current workflow creates,
-uploads to or publishes a GitHub Release.
+The published v1.0.3 release corresponds to Cargo version 1.0.3 at the commit
+above. Schema versioning remains separate. For future releases, require tag
+`vVERSION` to match the tested manifest version and publish the verified package
+set from that same revision.
+
+Automated release publication is not enabled. A future tag workflow could call
+these reusable builders with one captured commit and add a publishing job after
+all ten artifacts verify. Builders must retain read-only permissions; only an
+explicitly authorised publisher would gain release-write permission. No current
+workflow creates, uploads to or publishes a GitHub Release.
 
 ### ARM Linux runtime validation
 
@@ -228,17 +237,17 @@ forcing maximisation. Final rebuilt ARMHF packages still need a normal launch
 confirming visible window dimensions without manual Maximise. No machine-specific
 LXDE menu configuration is part of the package.
 
-## Public documentation and publication gate
+## Public downloads and future publication checks
 
-The README retains the nine existing 1.0.2 asset links using the existing names, with fixed `/releases/download/v1.0.2/` URLs. They are
-future links, not published assets, and may return 404 until release approval.
-The new ARM64 Windows entry lists its planned 1.0.3 filename without claiming a published download. The next all-platform inventory requires ten assets at the same source SHA and Cargo version. The actual macOS bundle is `Direct Payments Timesheets.app` (with spaces), not
-`DirectPaymentTimesheets.app`. Its minimum deployment target is 12.0 and its
-signature is ad-hoc, not Developer ID/notarised.
+The README links to all ten actual v1.0.3 release assets using fixed
+`/releases/download/v1.0.3/` URLs, including
+`DirectPaymentTimesheets-1.0.3-windows-arm64-setup.exe`. Asset names and URLs were
+checked against the published GitHub release. The actual macOS bundle is
+`Direct Payments Timesheets.app` (with spaces), not `DirectPaymentTimesheets.app`.
+Its minimum deployment target is 12.0 and its signature is ad-hoc, not Developer
+ID/notarised.
 
-Before publication, verify the final ten-package inventory, same-source
-provenance and checksums; confirm final ARM32 window behaviour and remaining Mac
-first-launch/minimum-OS and ARM64 hardware checks. Confirm each eventual asset
-name matches the README, then update the pending-release wording only when the
-release is actually published. Documentation preparation does not authorise a
-tag, release, upload or workflow run.
+For future publication, verify the ten-package inventory, same-source provenance
+and checksums, confirm each asset name matches the README, and record the status
+of ARM32 window behaviour, Mac first-launch/minimum-OS and ARM64 hardware checks.
+Documentation edits do not authorise a tag, release change, upload or workflow run.

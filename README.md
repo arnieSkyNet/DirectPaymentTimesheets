@@ -12,35 +12,33 @@ Choose your computer and installed operating system below. On Linux, choose eith
 
 **Windows 10 and later — Intel/AMD 64-bit (x86-64)**
 
-[![Download Windows installer](https://img.shields.io/badge/Download%20Windows%20installer-v1.0.2-blue?logo=windows11&logoColor=white)](https://github.com/arnieSkyNet/DirectPaymentTimesheets/releases/download/v1.0.2/DirectPaymentTimesheets-1.0.2-windows-x86_64-setup.exe)<br>
+[![Download Windows installer](https://img.shields.io/badge/Download%20Windows%20installer-v1.0.3-blue?logo=windows11&logoColor=white)](https://github.com/arnieSkyNet/DirectPaymentTimesheets/releases/download/v1.0.3/DirectPaymentTimesheets-1.0.3-windows-x86_64-setup.exe)<br>
 
-**Windows 10 and 11 — ARM64 (native application, upcoming 1.0.3 candidate)**
+**Windows 10 and 11 — ARM64 (native application)**
 
-Planned installer: `DirectPaymentTimesheets-1.0.3-windows-arm64-setup.exe`.
-Not yet built or published; there is no ARM64 download to offer until validation and release approval.
-The existing x86-64 download above remains separate.
+[![Download Windows ARM64 installer](https://img.shields.io/badge/Download%20Windows%20ARM64%20installer-v1.0.3-blue?logo=windows11&logoColor=white)](https://github.com/arnieSkyNet/DirectPaymentTimesheets/releases/download/v1.0.3/DirectPaymentTimesheets-1.0.3-windows-arm64-setup.exe)<br>
 
 **Linux — Intel/AMD 64-bit (x86-64 / amd64)**
 
-[![Download Linux .deb](https://img.shields.io/badge/Download%20Linux%20.deb-v1.0.2-blue?logo=debian&logoColor=white)](https://github.com/arnieSkyNet/DirectPaymentTimesheets/releases/download/v1.0.2/direct-payment-timesheets_1.0.2_amd64.deb)<br>
-[![Download Linux AppImage](https://img.shields.io/badge/Download%20Linux%20AppImage-v1.0.2-green?logo=linux&logoColor=white)](https://github.com/arnieSkyNet/DirectPaymentTimesheets/releases/download/v1.0.2/DirectPaymentTimesheets-1.0.2-linux-x86_64.AppImage)<br>
+[![Download Linux .deb](https://img.shields.io/badge/Download%20Linux%20.deb-v1.0.3-blue?logo=debian&logoColor=white)](https://github.com/arnieSkyNet/DirectPaymentTimesheets/releases/download/v1.0.3/direct-payment-timesheets_1.0.3_amd64.deb)<br>
+[![Download Linux AppImage](https://img.shields.io/badge/Download%20Linux%20AppImage-v1.0.3-green?logo=linux&logoColor=white)](https://github.com/arnieSkyNet/DirectPaymentTimesheets/releases/download/v1.0.3/DirectPaymentTimesheets-1.0.3-linux-x86_64.AppImage)<br>
 
 **Raspberry Pi / Linux — ARM32 (armhf, ARMv7)**
 
-[![Download ARM32 .deb](https://img.shields.io/badge/Download%20ARM32%20.deb-v1.0.2-blue?logo=debian&logoColor=white)](https://github.com/arnieSkyNet/DirectPaymentTimesheets/releases/download/v1.0.2/direct-payment-timesheets_1.0.2_armhf.deb)<br>
-[![Download ARM32 AppImage](https://img.shields.io/badge/Download%20ARM32%20AppImage-v1.0.2-green?logo=linux&logoColor=white)](https://github.com/arnieSkyNet/DirectPaymentTimesheets/releases/download/v1.0.2/DirectPaymentTimesheets-1.0.2-linux-armhf.AppImage)<br>
+[![Download ARM32 .deb](https://img.shields.io/badge/Download%20ARM32%20.deb-v1.0.3-blue?logo=debian&logoColor=white)](https://github.com/arnieSkyNet/DirectPaymentTimesheets/releases/download/v1.0.3/direct-payment-timesheets_1.0.3_armhf.deb)<br>
+[![Download ARM32 AppImage](https://img.shields.io/badge/Download%20ARM32%20AppImage-v1.0.3-green?logo=linux&logoColor=white)](https://github.com/arnieSkyNet/DirectPaymentTimesheets/releases/download/v1.0.3/DirectPaymentTimesheets-1.0.3-linux-armhf.AppImage)<br>
 
 **Raspberry Pi / Linux — ARM64 (arm64 / aarch64)**
 
-[![Download ARM64 .deb](https://img.shields.io/badge/Download%20ARM64%20.deb-v1.0.2-blue?logo=debian&logoColor=white)](https://github.com/arnieSkyNet/DirectPaymentTimesheets/releases/download/v1.0.2/direct-payment-timesheets_1.0.2_arm64.deb)<br>
-[![Download ARM64 AppImage](https://img.shields.io/badge/Download%20ARM64%20AppImage-v1.0.2-green?logo=linux&logoColor=white)](https://github.com/arnieSkyNet/DirectPaymentTimesheets/releases/download/v1.0.2/DirectPaymentTimesheets-1.0.2-linux-aarch64.AppImage)<br>
+[![Download ARM64 .deb](https://img.shields.io/badge/Download%20ARM64%20.deb-v1.0.3-blue?logo=debian&logoColor=white)](https://github.com/arnieSkyNet/DirectPaymentTimesheets/releases/download/v1.0.3/direct-payment-timesheets_1.0.3_arm64.deb)<br>
+[![Download ARM64 AppImage](https://img.shields.io/badge/Download%20ARM64%20AppImage-v1.0.3-green?logo=linux&logoColor=white)](https://github.com/arnieSkyNet/DirectPaymentTimesheets/releases/download/v1.0.3/DirectPaymentTimesheets-1.0.3-linux-aarch64.AppImage)<br>
 
 **macOS — Apple Silicon or Intel**
 
-[![Download Apple Silicon DMG](https://img.shields.io/badge/Download%20Apple%20Silicon%20DMG-v1.0.2-blue?logo=apple&logoColor=white)](https://github.com/arnieSkyNet/DirectPaymentTimesheets/releases/download/v1.0.2/DirectPaymentTimesheets-1.0.2-macos-arm64.dmg)<br>
-[![Download Intel DMG](https://img.shields.io/badge/Download%20Intel%20DMG-v1.0.2-blue?logo=apple&logoColor=white)](https://github.com/arnieSkyNet/DirectPaymentTimesheets/releases/download/v1.0.2/DirectPaymentTimesheets-1.0.2-macos-x86_64.dmg)<br>
+[![Download Apple Silicon DMG](https://img.shields.io/badge/Download%20Apple%20Silicon%20DMG-v1.0.3-blue?logo=apple&logoColor=white)](https://github.com/arnieSkyNet/DirectPaymentTimesheets/releases/download/v1.0.3/DirectPaymentTimesheets-1.0.3-macos-arm64.dmg)<br>
+[![Download Intel DMG](https://img.shields.io/badge/Download%20Intel%20DMG-v1.0.3-blue?logo=apple&logoColor=white)](https://github.com/arnieSkyNet/DirectPaymentTimesheets/releases/download/v1.0.3/DirectPaymentTimesheets-1.0.3-macos-x86_64.dmg)<br>
 
-[Installation instructions](#install-build-and-run) · [v1.0.2 release notes](https://github.com/arnieSkyNet/DirectPaymentTimesheets/releases/tag/v1.0.2) · [All releases](https://github.com/arnieSkyNet/DirectPaymentTimesheets/releases/)
+[Installation instructions](#install-build-and-run) · [v1.0.3 release notes](https://github.com/arnieSkyNet/DirectPaymentTimesheets/releases/tag/v1.0.3) · [All releases](https://github.com/arnieSkyNet/DirectPaymentTimesheets/releases/)
 
 ### Choosing a Linux or Raspberry Pi architecture
 
@@ -68,11 +66,11 @@ Download the matching `.deb`. Open Terminal in the folder containing the downloa
 
 ```bash
 # Intel/AMD 64-bit PC:
-sudo apt-get install ./direct-payment-timesheets_1.0.2_amd64.deb
+sudo apt-get install ./direct-payment-timesheets_1.0.3_amd64.deb
 # ARM32 / 32-bit Raspberry Pi OS:
-sudo apt-get install ./direct-payment-timesheets_1.0.2_armhf.deb
+sudo apt-get install ./direct-payment-timesheets_1.0.3_armhf.deb
 # ARM64 / 64-bit Raspberry Pi OS:
-sudo apt-get install ./direct-payment-timesheets_1.0.2_arm64.deb
+sudo apt-get install ./direct-payment-timesheets_1.0.3_arm64.deb
 ```
 
 Run **only the command matching your download**. `apt-get` installs the declared dependencies. Then open **Direct Payments Timesheets** from the desktop application menu, or run `direct-payment-timesheets` in Terminal.
@@ -83,14 +81,14 @@ Download the matching AppImage and keep it somewhere convenient in your home fol
 
 ```bash
 # Intel/AMD 64-bit PC:
-chmod +x DirectPaymentTimesheets-1.0.2-linux-x86_64.AppImage
-./DirectPaymentTimesheets-1.0.2-linux-x86_64.AppImage
+chmod +x DirectPaymentTimesheets-1.0.3-linux-x86_64.AppImage
+./DirectPaymentTimesheets-1.0.3-linux-x86_64.AppImage
 # ARM32:
-chmod +x DirectPaymentTimesheets-1.0.2-linux-armhf.AppImage
-./DirectPaymentTimesheets-1.0.2-linux-armhf.AppImage
+chmod +x DirectPaymentTimesheets-1.0.3-linux-armhf.AppImage
+./DirectPaymentTimesheets-1.0.3-linux-armhf.AppImage
 # ARM64:
-chmod +x DirectPaymentTimesheets-1.0.2-linux-aarch64.AppImage
-./DirectPaymentTimesheets-1.0.2-linux-aarch64.AppImage
+chmod +x DirectPaymentTimesheets-1.0.3-linux-aarch64.AppImage
+./DirectPaymentTimesheets-1.0.3-linux-aarch64.AppImage
 ```
 
 No administrator installation is required. AppImage still relies on compatible host graphics/desktop services. If it reports a missing FUSE facility, follow your distribution's AppImage/FUSE guidance; do not run the application with `sudo`. Packaged ARM Linux builds default to software Mesa rendering automatically; no manual launcher edit is needed.
@@ -98,11 +96,12 @@ No administrator installation is required. AppImage still relies on compatible h
 ### Windows
 
 Choose by **Settings > System > About > System type**: Intel/AMD 64-bit uses the
-`windows-x86_64` installer; an ARM-based Windows 10/11 PC needs the upcoming
-`windows-arm64` installer. Neither is for 32-bit Windows. ARM64 build and hardware
-acceptance are pending; the current x86-64 link is unchanged.
+`windows-x86_64` installer; an ARM-based Windows 10/11 PC uses the
+`windows-arm64` installer. Neither is for 32-bit Windows. Publishing the ARM64
+package does not establish completion of real-hardware acceptance testing; see
+[Windows validation](docs/RELEASE-BUILDS.md#windows).
 
-1. Download `DirectPaymentTimesheets-1.0.2-windows-x86_64-setup.exe` from the official release above.
+1. Download `DirectPaymentTimesheets-1.0.3-windows-x86_64-setup.exe` for Intel/AMD or `DirectPaymentTimesheets-1.0.3-windows-arm64-setup.exe` for ARM64 from the official release above.
 2. Open the downloaded file. The installer is unsigned. If SmartScreen displays **Windows protected your PC**, use **More info**, check that the filename matches your official download, then choose **Run anyway** only if you trust that download.
 3. Follow the installer prompts. Installation is per-user and does not require administrator access.
 4. Launch **Direct Payments Timesheets** from the Start menu.
@@ -116,12 +115,12 @@ The two separate DMGs target **macOS 12 Monterey or later**. That is the configu
 #### Choose the correct DMG
 
 1. Click the **Apple menu → About This Mac**.
-2. If it lists **Chip: Apple M1, M2, M3, M4** or another Apple M-series chip, choose `DirectPaymentTimesheets-1.0.2-macos-arm64.dmg`.
-3. If it lists an **Intel processor**, choose `DirectPaymentTimesheets-1.0.2-macos-x86_64.dmg`.
+2. If it lists **Chip: Apple M1, M2, M3, M4** or another Apple M-series chip, choose `DirectPaymentTimesheets-1.0.3-macos-arm64.dmg`.
+3. If it lists an **Intel processor**, choose `DirectPaymentTimesheets-1.0.3-macos-x86_64.dmg`.
 
 #### Copy the application into Applications
 
-1. Download the matching DMG from the project's official v1.0.2 release page.
+1. Download the matching DMG from the project's official v1.0.3 release page.
 2. Open **Finder → Downloads**, then double-click the downloaded `.dmg`. This opens a temporary disk containing the application and an **Applications** shortcut.
 3. Drag **Direct Payments Timesheets.app** onto the **Applications** shortcut. Finder may hide the `.app` extension. The spaces in the application name are intentional.
 4. Wait for copying to finish. If replacing an older copy, quit the old application first and confirm replacement only for the intended application.
