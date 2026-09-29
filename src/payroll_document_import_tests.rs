@@ -163,7 +163,7 @@ fn mixed_cross_year_package_classification_and_routing_match_real_filename_model
         (0, 3, 4, 13)
     );
     assert!(result.prep_sheet_failures.is_empty());
-    assert!(result.publication_failure.is_none());
+    assert!(result.failures.is_empty());
     let schedules = app
         .payroll_schedule_repository
         .get_all_for_year("2026/27")
@@ -393,7 +393,13 @@ fn historical_year_known_archival_evidence_never_creates_email_or_settlement_sta
         &source,
         &[(name.into(), b"%PDF-1.4 different content".to_vec())],
     );
-    assert!(app.import_payroll_documents(&source, None).is_err());
+    assert_eq!(
+        app.import_payroll_documents(&source, None)
+            .unwrap()
+            .failures
+            .len(),
+        1
+    );
     assert_eq!(std::fs::read(archived).unwrap(), original);
 }
 
@@ -478,15 +484,20 @@ fn cycle_choice_contains_only_plausible_periods_and_cannot_contaminate_archival_
         .into_iter()
         .find(|s| s.id == 20)
         .unwrap();
-    assert!(app
+    let partial = app
         .import_payroll_documents(&source, Some(&unrelated))
-        .is_err());
-    assert!(!dir.path().join("payslips").exists());
+        .unwrap();
+    assert_eq!(partial.failures.len(), 1);
+    assert_eq!(partial.archival_payslips_imported, 1);
+    assert_eq!(partial.payslips_imported, 0);
     let result = app
         .import_payroll_documents(&source, Some(&choices[0]))
         .unwrap();
     assert_eq!(
-        (result.payslips_imported, result.archival_payslips_imported),
+        (
+            result.payslips_imported,
+            result.archival_payslips_already_present
+        ),
         (1, 1)
     );
     assert!(dir
@@ -719,4 +730,355 @@ fn identical_prep_sheet_reprocesses_schedule_without_another_physical_pdf() {
         );
         assert!(again.prep_sheet_failures.is_empty());
     }
+}
+
+#[test]
+fn partial_zip_reports_every_failure_and_keeps_database_and_files_consistent() {
+    let (dir, app) = fixture();
+    let db = &app.payroll_timesheet_email_repository.connection;
+    db.execute_batch("UPDATE personal_assistants SET first_name = 'Alder Middle' WHERE id = 1;
+        UPDATE personal_assistants SET first_name = 'Cedar James' WHERE id = 3;
+        INSERT INTO personal_assistants(id, first_name, surname) VALUES (4, 'Cedar John', 'Fixture');
+        CREATE TRIGGER fail_p45 BEFORE INSERT ON imported_payroll_documents
+        WHEN NEW.document_type = 'p45' AND NEW.personal_assistant_id = 2
+        BEGIN SELECT RAISE(ABORT, 'registration fixture failure'); END;").unwrap();
+    let path = dir.path().join("mixed.ZIP");
+    let bad = [
+        "Payslip Nobody Here.pdf",
+        "P45 for Cedar Fixture.pdf",
+        "P45 for Birch Sample.pdf",
+        "Payslip Birch Sample.pdf",
+    ];
+    zip(&path, &[
+        entry(bad[0]),
+        entry("Mark Worsdall - Employee Leaving Statement (P45) for year 2026-27 for Alder Example.pdf"),
+        entry(bad[1]), entry(bad[2]),
+        (bad[3].into(), b"invalid PDF".to_vec()),
+        entry("Payslip Alder Example.pdf"),
+        entry("P60 for Cedar James Fixture.pdf"),
+        entry("P30 Employer's Payslip.pdf"), entry("Quarter End Memo.pdf"),
+    ]);
+    let original = std::fs::read(&path).unwrap();
+    assert!(!app.payroll_source_requires_period(&path).unwrap());
+    let result = app.import_payroll_documents(&path, None).unwrap();
+    assert_eq!(result.imported_count(), 5);
+    assert_eq!(result.failures.len(), 4, "{:?}", result.failures);
+    for name in bad {
+        assert!(result.failures.iter().any(|failure| failure.contains(name)));
+    }
+    assert_eq!(result.open_zip_path(), Some(path.as_path()));
+    assert_eq!(std::fs::read(&path).unwrap(), original);
+    assert_eq!(result.published_paths.len(), 5);
+    for path in &result.published_paths {
+        assert!(path.is_file());
+    }
+    let docs = app
+        .payroll_timesheet_email_repository
+        .documents_for_pa(1)
+        .unwrap();
+    assert_eq!(docs.len(), 1);
+    assert!(docs[0].path.is_file());
+    assert_eq!(
+        app.payroll_timesheet_email_repository
+            .documents_for_pa(3)
+            .unwrap()
+            .len(),
+        1
+    );
+    for id in [2, 4] {
+        assert!(app
+            .payroll_timesheet_email_repository
+            .documents_for_pa(id)
+            .unwrap()
+            .is_empty());
+    }
+    assert!(!dir
+        .path()
+        .join("payslips/PA 2/P45 for Birch Sample.pdf")
+        .exists());
+    assert!(!dir
+        .path()
+        .join("payslips/PA 3/P45 for Cedar Fixture.pdf")
+        .exists());
+    assert!(!dir.path().join("payslips/PA 4").exists());
+    fn no_temporary_files(path: &Path) {
+        for entry in std::fs::read_dir(path).unwrap() {
+            let path = entry.unwrap().path();
+            if path.is_dir() {
+                no_temporary_files(&path);
+            } else {
+                assert!(!path
+                    .file_name()
+                    .unwrap()
+                    .to_string_lossy()
+                    .ends_with(".tmp"));
+            }
+        }
+    }
+    no_temporary_files(dir.path());
+    // Retry neither duplicates successful registrations nor counts them as new imports.
+    let again = app.import_payroll_documents(&path, None).unwrap();
+    assert_eq!(again.imported_count(), 0);
+    assert_eq!(again.failures.len(), 4);
+    assert_eq!(again.supplements_already_present, 2);
+}
+
+#[test]
+fn all_invalid_zip_reports_zero_and_every_filename_without_registering_or_writing() {
+    let (dir, app) = fixture();
+    let path = dir.path().join("invalid.zip");
+    let names = [
+        "P45 for Nobody Here.pdf",
+        "Payslip Nobody Here.pdf",
+        "../unsafe.txt",
+    ];
+    zip(&path, &names.map(entry));
+    assert!(!app.payroll_source_requires_period(&path).unwrap());
+    let result = app.import_payroll_documents(&path, None).unwrap();
+    assert_eq!(result.imported_count(), 0);
+    assert_eq!(result.failures.len(), names.len());
+    for name in names {
+        assert!(result.failures.iter().any(|failure| failure.contains(name)));
+    }
+    assert!(result.published_paths.is_empty());
+    assert_eq!(result.open_zip_path(), Some(path.as_path()));
+    assert!(!dir.path().join("payslips").exists());
+    assert!(!dir.path().join("information").exists());
+    assert_eq!(
+        app.payroll_timesheet_email_repository
+            .connection
+            .query_row(
+                "SELECT COUNT(*) FROM imported_payroll_documents",
+                [],
+                |row| row.get::<_, i64>(0)
+            )
+            .unwrap(),
+        0
+    );
+}
+
+#[test]
+fn existing_registration_conflict_preserves_file_and_continues_with_later_documents() {
+    let (dir, app) = fixture();
+    let path = dir.path().join("documents.zip");
+    let name = "P60 for Alder Example.pdf";
+    zip(&path, &[entry(name)]);
+    let first = app.import_payroll_documents(&path, None).unwrap();
+    let stored = first.published_paths[0].clone();
+    let original = std::fs::read(&stored).unwrap();
+    app.payroll_timesheet_email_repository
+        .connection
+        .execute(
+            "UPDATE imported_payroll_documents SET sha256 = '0000000000000000000000000000000000000000000000000000000000000000'",
+            [],
+        )
+        .unwrap();
+    zip(
+        &path,
+        &[
+            entry(name),
+            entry("P45 for Birch Sample.pdf"),
+            entry("Quarter End Memo.pdf"),
+        ],
+    );
+    let result = app.import_payroll_documents(&path, None).unwrap();
+    assert_eq!(result.failures.len(), 1);
+    assert!(result.failures[0].contains(name));
+    assert_eq!(result.imported_count(), 2);
+    assert_eq!(result.supplements_already_present, 0);
+    assert_eq!(std::fs::read(stored).unwrap(), original);
+    assert_eq!(
+        app.payroll_timesheet_email_repository
+            .documents_for_pa(1)
+            .unwrap()[0]
+            .sha256,
+        "0000000000000000000000000000000000000000000000000000000000000000"
+    );
+    assert_eq!(
+        app.payroll_timesheet_email_repository
+            .documents_for_pa(2)
+            .unwrap()
+            .len(),
+        1
+    );
+}
+
+#[test]
+fn conflicting_name_tokens_never_write_or_register_but_complete_names_import() {
+    let (dir, app) = fixture();
+    app.payroll_timesheet_email_repository.connection.execute_batch(
+        "UPDATE personal_assistants SET first_name = 'John Michael', surname = 'Smith' WHERE id = 1;
+         UPDATE personal_assistants SET first_name = 'Anne Marie', surname = 'Van Dyke' WHERE id = 2;"
+    ).unwrap();
+    let path = dir.path().join("names.zip");
+    let bad = [
+        "Payslip John John Smith.pdf",
+        "Payslip Anne Van Dyke-Smith.pdf",
+        "P45 for John John Smith.pdf",
+    ];
+    zip(
+        &path,
+        &[
+            entry(bad[0]),
+            entry(bad[1]),
+            entry(bad[2]),
+            entry("Payslip John Smith.pdf"),
+            entry("P45 for Anne Van Dyke.pdf"),
+        ],
+    );
+    let result = app.import_payroll_documents(&path, None).unwrap();
+    assert_eq!(result.failures.len(), 3);
+    for name in bad {
+        assert!(result.failures.iter().any(|f| f.contains(name)));
+    }
+    assert_eq!(result.archival_payslips_imported, 1);
+    assert_eq!(result.supplements_imported, 1);
+    assert_eq!(result.published_paths.len(), 2);
+    assert!(result.published_paths.iter().all(|p| p.is_file()));
+    assert!(app
+        .payroll_timesheet_email_repository
+        .documents_for_pa(1)
+        .unwrap()
+        .is_empty());
+    let docs = app
+        .payroll_timesheet_email_repository
+        .documents_for_pa(2)
+        .unwrap();
+    assert_eq!(docs.len(), 1);
+    assert!(docs[0].path.is_file());
+    assert!(!dir
+        .path()
+        .join("payslips/PA 1/Payslip John John Smith.pdf")
+        .exists());
+    assert!(!dir
+        .path()
+        .join("payslips/PA 2/Payslip Anne Van Dyke-Smith.pdf")
+        .exists());
+}
+
+#[test]
+fn case_only_pa_destinations_are_all_rejected_in_either_zip_order() {
+    for reverse in [false, true] {
+        let (dir, app) = fixture();
+        let path = dir.path().join("conflicts.zip");
+        let names = ["P45 for Alder Example.pdf", "p45 for Alder Example.pdf"];
+        let mut entries = names.map(entry).to_vec();
+        if reverse {
+            entries.reverse();
+        }
+        entries.push(entry("Quarter End Memo.pdf"));
+        zip(&path, &entries);
+        let result = app.import_payroll_documents(&path, None).unwrap();
+        assert_eq!(result.failures.len(), 2);
+        for name in names {
+            assert!(result.failures.iter().any(|f| f.starts_with(name)));
+        }
+        assert_eq!(result.information_files_imported, 1);
+        assert_eq!(result.supplements_imported, 0);
+        assert!(!dir.path().join("payslips").exists());
+        assert!(app
+            .payroll_timesheet_email_repository
+            .documents_for_pa(1)
+            .unwrap()
+            .is_empty());
+    }
+}
+
+#[test]
+fn archival_success_details_follow_successful_publication_only() {
+    let (dir, app) = fixture();
+    let path = dir.path().join("archival.zip");
+    let name = "Payslip Alder Example.pdf";
+    zip(&path, &[(name.into(), b"not a PDF".to_vec())]);
+    let failed = app.import_payroll_documents(&path, None).unwrap();
+    assert_eq!(failed.imported_count(), 0);
+    assert_eq!(failed.failures.len(), 1);
+    assert!(failed.failures[0].contains(name));
+    assert!(failed.published_paths.is_empty());
+    assert!(!failed
+        .details
+        .iter()
+        .any(|d| d.contains("Archived ordinary payslip")));
+    zip(&path, &[entry(name)]);
+    let success = app.import_payroll_documents(&path, None).unwrap();
+    assert_eq!(success.archival_payslips_imported, 1);
+    assert!(success
+        .details
+        .iter()
+        .any(|d| d.contains("Archived ordinary payslip")));
+    let original = std::fs::read(&success.published_paths[0]).unwrap();
+    zip(&path, &[(name.into(), b"%PDF-1.4 changed".to_vec())]);
+    let conflict = app.import_payroll_documents(&path, None).unwrap();
+    assert_eq!(conflict.failures.len(), 1);
+    assert!(conflict.failures[0].contains(name));
+    assert_eq!(conflict.imported_count(), 0);
+    assert!(!conflict
+        .details
+        .iter()
+        .any(|d| d.contains("Archived ordinary payslip")));
+    assert_eq!(
+        std::fs::read(&success.published_paths[0]).unwrap(),
+        original
+    );
+}
+
+#[test]
+fn recovery_zip_verification_rejects_replacement_even_with_same_size_and_mtime() {
+    let (dir, app) = fixture();
+    let path = dir.path().join("original.zip");
+    let unknown = "Payslip Unknown Person.pdf";
+    let write_stored_zip = |bytes: &[u8]| {
+        let mut writer = zip::ZipWriter::new(std::fs::File::create(&path).unwrap());
+        writer
+            .start_file(
+                unknown,
+                zip::write::SimpleFileOptions::default()
+                    .compression_method(zip::CompressionMethod::Stored),
+            )
+            .unwrap();
+        writer.write_all(bytes).unwrap();
+        writer.finish().unwrap();
+    };
+    write_stored_zip(&entry(unknown).1);
+    let result = app.import_payroll_documents(&path, None).unwrap();
+    assert_eq!(result.verified_zip_path().unwrap(), path.as_path());
+    let modified = std::fs::metadata(&path).unwrap().modified().unwrap();
+    let length = std::fs::metadata(&path).unwrap().len();
+    // Replace content in place to retain filesystem identity and restore mtime;
+    // only the digest can distinguish this other, still-valid ZIP.
+    write_stored_zip(&vec![b'x'; entry(unknown).1.len()]);
+    std::fs::File::options()
+        .write(true)
+        .open(&path)
+        .unwrap()
+        .set_times(std::fs::FileTimes::new().set_modified(modified))
+        .unwrap();
+    assert_eq!(std::fs::metadata(&path).unwrap().len(), length);
+    assert!(zip::ZipArchive::new(std::fs::File::open(&path).unwrap()).is_ok());
+    // Prove this reaches digest verification rather than a cheap metadata refusal.
+    assert_eq!(result.open_zip_path(), Some(path.as_path()));
+    assert!(result
+        .verified_zip_path()
+        .unwrap_err()
+        .to_string()
+        .contains("changed"));
+    std::fs::remove_file(&path).unwrap();
+    assert!(result.open_zip_path().is_none());
+    assert!(result.verified_zip_path().is_err());
+    zip(&path, &[entry(unknown)]);
+    std::fs::File::options()
+        .write(true)
+        .open(&path)
+        .unwrap()
+        .set_times(
+            std::fs::FileTimes::new().set_modified(modified + std::time::Duration::from_secs(5)),
+        )
+        .unwrap();
+    assert!(result.open_zip_path().is_none());
+    assert!(result.verified_zip_path().is_err());
+    let pdf = dir.path().join(unknown);
+    std::fs::write(&pdf, b"%PDF-1.4").unwrap();
+    let single = app.import_payroll_documents(&pdf, None).unwrap();
+    assert!(single.source_zip.is_none());
+    assert!(single.open_zip_path().is_none());
 }

@@ -230,12 +230,15 @@ impl Application {
                 chrono::Local::now().date_naive(),
             );
             let association = if let Some(exact) = exact {
-                Some(exact.clone())
+                Ok(Some(exact.clone()))
             } else if candidates.is_empty() {
-                None
+                Ok(None)
             } else {
-                Some(candidates.into_iter().find(|candidate| schedule.is_some_and(|selected| selected.id == candidate.id))
-                        .ok_or("Choose an applicable stored period for the ordinary payslips that need association.")?)
+                candidates
+                    .into_iter()
+                    .find(|candidate| schedule.is_some_and(|selected| selected.id == candidate.id))
+                    .map(Some)
+                    .ok_or("Choose an applicable stored period for this ordinary payslip.")
             };
             associations.insert(name, association);
         }
@@ -249,9 +252,11 @@ impl Application {
             &information_folder,
             &assistants,
             |name| {
-                associations.get(name).cloned().ok_or_else(|| {
-                    "Source changed after classification; choose the source again.".into()
-                })
+                associations
+                    .get(name)
+                    .cloned()
+                    .ok_or("Source changed after classification; choose the source again.")?
+                    .map_err(Into::into)
             },
             |pa, kind, path, year| {
                 self.payroll_timesheet_email_repository
@@ -304,6 +309,7 @@ impl Application {
         )?;
         let schedules = self.payroll_schedule_repository.get_all()?;
         let mut common: Option<Vec<crate::payroll_schedule_repository::PayrollSchedule>> = None;
+        let mut available = Vec::new();
         for name in names {
             if crate::payroll_file_naming::infer_payslip_schedule(
                 std::slice::from_ref(&name),
@@ -321,6 +327,13 @@ impl Application {
             if candidates.is_empty() {
                 continue;
             }
+            for candidate in &candidates {
+                if !available.iter().any(
+                    |s: &crate::payroll_schedule_repository::PayrollSchedule| s.id == candidate.id,
+                ) {
+                    available.push(candidate.clone());
+                }
+            }
             if let Some(common) = &mut common {
                 common.retain(|s| candidates.iter().any(|c| c.id == s.id));
             } else {
@@ -328,7 +341,7 @@ impl Application {
             }
         }
         if common.as_ref().is_some_and(|c| c.is_empty()) {
-            return Err("These ordinary payslips need different stored periods; import those payslips separately.".into());
+            return Ok(available);
         }
         Ok(common.unwrap_or_default())
     }

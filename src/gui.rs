@@ -1533,7 +1533,7 @@ impl DirectPaymentApp {
             .resizable(false)
             .show(ctx, |ui| {
                 ui.label(
-                    "Choose the payroll period for the ordinary payslips only. Other documents use their own information.",
+                    "Choose the payroll period for the ordinary payslips only. Other documents use their own information. Payslips incompatible with this period will be reported as not imported.",
                 );
 
                 let selected_text = selected_payroll_return_schedule(
@@ -1841,6 +1841,7 @@ impl DirectPaymentApp {
                         }
                     }
                 });
+                let mut close_import_result = false;
                 if let Some(result) = &self.payroll_document_import {
                     ui.separator();
                     // This is independently labelled history, not a link attached
@@ -1848,7 +1849,9 @@ impl DirectPaymentApp {
                     if let Some(error) = draw_payroll_document_import_result(ui, result) {
                         open_error = Some(error);
                     }
+                    close_import_result = ui.button("Close import result").clicked();
                 }
+                if close_import_result { self.payroll_document_import = None; }
                 if let Some(error) = open_error {
                     self.status_message = error;
                     self.file_status = None;
@@ -2960,8 +2963,8 @@ fn selected_payroll_return_schedule(
 }
 
 fn payroll_return_status_message(result: &crate::archive::PayrollReturnImportResult) -> String {
-    if result.publication_failure.is_some() || !result.prep_sheet_failures.is_empty() {
-        "Payroll document import completed with issues. See the result below.".into()
+    if !result.failures.is_empty() || !result.prep_sheet_failures.is_empty() {
+        format!("Payroll document import completed with issues: {} successfully imported; {} not imported. See the result below.", result.imported_count(), result.failures.len())
     } else {
         "Payroll document import completed. See the result below.".into()
     }
@@ -2999,8 +3002,11 @@ fn draw_payroll_document_import_result(
     result: &crate::archive::PayrollReturnImportResult,
 ) -> Option<String> {
     ui.heading("Last payroll-document import");
+    if !result.failures.is_empty() {
+        ui.label(format!("{} successfully imported; {} not imported. Already-present files are counted separately below.", result.imported_count(), result.failures.len()));
+    }
     for failure in result
-        .publication_failure
+        .failures
         .iter()
         .chain(result.prep_sheet_failures.iter())
     {
@@ -3027,6 +3033,16 @@ fn draw_payroll_document_import_result(
         ui.label("Unassociated payslips are archived only: not automatically email-eligible and do not settle payroll.");
     }
     let mut open_error = None;
+    if let Some(path) = result.open_zip_path() {
+        if ui.button("Open ZIP").clicked() {
+            if let Err(error) = result
+                .verified_zip_path()
+                .and_then(crate::folder_opener::open)
+            {
+                open_error = Some(format!("Could not open ZIP '{}': {error}", path.display()));
+            }
+        }
+    }
     egui::CollapsingHeader::new("Details")
         .id_salt("payroll_document_import_details")
         .default_open(false)
@@ -4381,6 +4397,52 @@ mod payroll_return_schedule_selection_tests {
     }
 
     #[test]
+    fn partial_import_summary_and_open_zip_require_problem_documents_and_original_zip() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let zip = dir.path().join("original.ZIP");
+        let mut writer = zip::ZipWriter::new(std::fs::File::create(&zip).unwrap());
+        writer
+            .start_file(
+                "Payslip Unknown Person.pdf",
+                zip::write::SimpleFileOptions::default(),
+            )
+            .unwrap();
+        std::io::Write::write_all(&mut writer, b"%PDF-1.4").unwrap();
+        writer.finish().unwrap();
+        let mut result = crate::archive::import_payroll_documents(
+            &zip,
+            &dir.path().join("pa"),
+            &dir.path().join("info"),
+            &[],
+            |_| Ok(None),
+            |_, _, _, _| Ok(()),
+        )
+        .unwrap();
+        result.failures.clear();
+        assert!(result.open_zip_path().is_none());
+        result.failures = vec![
+            "first.pdf: unmatched PA".into(),
+            "second.pdf: invalid PDF".into(),
+        ];
+        assert_eq!(result.open_zip_path(), Some(zip.as_path()));
+        assert!(payroll_return_status_message(&result)
+            .contains("0 successfully imported; 2 not imported"));
+        result.supplements_imported = 3;
+        result.supplements_already_present = 1;
+        assert!(payroll_return_status_message(&result)
+            .contains("3 successfully imported; 2 not imported"));
+        assert_eq!(result.verified_zip_path().unwrap(), zip.as_path());
+        std::fs::remove_file(&zip).unwrap();
+        assert!(result.open_zip_path().is_none());
+        assert!(result.verified_zip_path().is_err());
+        std::fs::write(&zip, b"unrelated replacement").unwrap();
+        assert!(result.open_zip_path().is_none());
+        assert!(result.verified_zip_path().is_err());
+        result.source_zip = None;
+        assert!(result.open_zip_path().is_none());
+    }
+
+    #[test]
     fn payroll_document_summary_preserves_grouped_counts_and_issue_status() {
         let mut result = crate::archive::PayrollReturnImportResult {
             payslips_imported: 1,
@@ -4408,7 +4470,7 @@ mod payroll_return_schedule_selection_tests {
         result.prep_sheet_failures.push("Parsing failed".into());
         assert!(payroll_return_status_message(&result).contains("with issues"));
         result.prep_sheet_failures.clear();
-        result.publication_failure = Some("Registration failed".into());
+        result.failures.push("Registration failed".into());
         assert!(payroll_return_status_message(&result).contains("with issues"));
         assert!(!payroll_return_status_message(&result).contains(&result.details[0]));
     }
