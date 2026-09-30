@@ -435,6 +435,16 @@ fn unregistered_lookalike_and_out_of_root_registered_paths_are_not_repaired() {
     assert!(checked_path(&temp_root(&dir).join("../escape.pdf")).is_err());
 }
 
+#[cfg(windows)]
+#[test]
+fn checked_path_rejects_dot_components_in_verbatim_windows_paths() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = temp_root(&dir);
+    assert!(root.to_string_lossy().starts_with(r"\\?\"));
+    assert!(checked_path(&root.join("..").join("escape.pdf")).is_err());
+    assert!(checked_path(&root.join(".").join("file.pdf")).is_err());
+}
+
 #[cfg(unix)]
 #[test]
 fn symlinked_archive_directory_is_refused() {
