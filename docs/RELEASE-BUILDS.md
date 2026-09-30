@@ -1,13 +1,27 @@
 # Release builds and artifact-only packaging rehearsals
 
+[v1.0.4](https://github.com/arnieSkyNet/DirectPaymentTimesheets/releases/tag/v1.0.4)
+was published on 01 October 2026 from source commit
+`20e84a54274e659a854af8959e7e23c99d13e676`. GitHub Actions rehearsal run
+`36786057831` completed successfully for that exact commit. Its validated ten-package
+inventory is:
+
+- `direct-payment-timesheets_1.0.4_amd64.deb`
+- `DirectPaymentTimesheets-1.0.4-linux-x86_64.AppImage`
+- `direct-payment-timesheets_1.0.4_armhf.deb`
+- `DirectPaymentTimesheets-1.0.4-linux-armhf.AppImage`
+- `direct-payment-timesheets_1.0.4_arm64.deb`
+- `DirectPaymentTimesheets-1.0.4-linux-aarch64.AppImage`
+- `DirectPaymentTimesheets-1.0.4-windows-x86_64-setup.exe`
+- `DirectPaymentTimesheets-1.0.4-windows-arm64-setup.exe`
+- `DirectPaymentTimesheets-1.0.4-macos-arm64.dmg`
+- `DirectPaymentTimesheets-1.0.4-macos-x86_64.dmg`
+
 [v1.0.3](https://github.com/arnieSkyNet/DirectPaymentTimesheets/releases/tag/v1.0.3)
 was published on 25 September 2026 from commit
-`7415778d4cde1482b70102289e5ece2a33f2a235`. Its ten downloadable packages comprise
-six Linux packages, two Windows installers (x86-64 and ARM64), and two macOS DMGs.
-The published 1.0.3 release used schema 32. The current unreleased 1.0.4 source
-tree has schema 35; this does not change the version or contents of the historical
-release artifacts described here. Package versions come from Cargo.toml;
-references to 1.0.2 below describe earlier rehearsals and hardware tests.
+`7415778d4cde1482b70102289e5ece2a33f2a235` and used schema 32. Package versions
+come from Cargo.toml; references to 1.0.2 below describe earlier rehearsals and
+hardware tests.
 
 The packaging workflows remain artifact-only: they build and validate candidates,
 but do not publish GitHub releases. Publication is a separate authorised action.
@@ -189,7 +203,7 @@ Full rehearsal 35541897015 at source
 `15bd2620a45459bce3330453c4eb8a3b8bba1eb9` produced all nine 1.0.2 packages.
 Those 1.0.2 Windows 10 and ARMHF packages received real-hardware testing. A later
 startup-sizing change superseded those binaries. These are historical rehearsal
-results, not the current download inventory: v1.0.3 is now published with all ten
+results, not the current download inventory: v1.0.4 is now published with all ten
 packages. Publication alone does not establish completion of the remaining
 hardware and minimum-OS checks documented here.
 
@@ -241,9 +255,9 @@ LXDE menu configuration is part of the package.
 
 ## Public downloads and future publication checks
 
-The README links to all ten actual v1.0.3 release assets using fixed
-`/releases/download/v1.0.3/` URLs, including
-`DirectPaymentTimesheets-1.0.3-windows-arm64-setup.exe`. Asset names and URLs were
+The README links to all ten actual v1.0.4 release assets using fixed
+`/releases/download/v1.0.4/` URLs, including
+`DirectPaymentTimesheets-1.0.4-windows-arm64-setup.exe`. Asset names and URLs were
 checked against the published GitHub release. The actual macOS bundle is
 `Direct Payments Timesheets.app` (with spaces), not `DirectPaymentTimesheets.app`.
 Its minimum deployment target is 12.0 and its signature is ad-hoc, not Developer
