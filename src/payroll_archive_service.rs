@@ -8,7 +8,6 @@ use rusqlite::{params, Connection};
 use std::{
     collections::BTreeMap,
     error::Error,
-    ffi::OsStr,
     fs,
     path::{Component, Path, PathBuf},
 };
@@ -24,11 +23,9 @@ struct Move {
 
 pub(crate) fn checked_path(path: &Path) -> Result<()> {
     if !path.is_absolute()
-        || path.components().any(|c| {
-            matches!(c, Component::ParentDir | Component::CurDir)
-                || c.as_os_str() == OsStr::new(".")
-                || c.as_os_str() == OsStr::new("..")
-        })
+        || path
+            .components()
+            .any(|c| matches!(c, Component::ParentDir | Component::CurDir))
     {
         return Err(format!("Unsafe payroll path: {}", path.display()).into());
     }

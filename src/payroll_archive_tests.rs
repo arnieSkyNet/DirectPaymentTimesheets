@@ -13,6 +13,11 @@ fn fixture() -> (tempfile::TempDir, Application) {
 fn temp_root(dir: &tempfile::TempDir) -> PathBuf {
     dir.path().canonicalize().unwrap()
 }
+fn append_raw_suffix(root: &Path, suffix: &str) -> PathBuf {
+    let mut path = root.as_os_str().to_os_string();
+    path.push(suffix);
+    PathBuf::from(path)
+}
 fn pa(app: &Application, id: i64) -> PersonalAssistant {
     app.personal_assistant_repository
         .get_all()
@@ -432,7 +437,19 @@ fn unregistered_lookalike_and_out_of_root_registered_paths_are_not_repaired() {
         .unwrap();
     assert!(apply(&app, &pa(&app, 4), false).is_err());
     assert!(external.exists());
-    assert!(checked_path(&temp_root(&dir).join("../escape.pdf")).is_err());
+    let root = temp_root(&dir);
+    let traversal = append_raw_suffix(
+        &root,
+        if cfg!(windows) {
+            r"\..\escape.pdf"
+        } else {
+            "/../escape.pdf"
+        },
+    );
+    assert!(traversal
+        .components()
+        .any(|component| component == Component::ParentDir));
+    assert!(checked_path(&traversal).is_err());
 }
 
 #[cfg(windows)]
@@ -441,8 +458,17 @@ fn checked_path_rejects_dot_components_in_verbatim_windows_paths() {
     let dir = tempfile::tempdir().unwrap();
     let root = temp_root(&dir);
     assert!(root.to_string_lossy().starts_with(r"\\?\"));
-    assert!(checked_path(&root.join("..").join("escape.pdf")).is_err());
-    assert!(checked_path(&root.join(".").join("file.pdf")).is_err());
+    let parent = append_raw_suffix(&root, r"\..\escape.pdf");
+    assert!(parent
+        .components()
+        .any(|component| component == Component::ParentDir));
+    assert!(checked_path(&parent).is_err());
+
+    let current = append_raw_suffix(&root, r"\.\file.pdf");
+    assert!(current
+        .components()
+        .any(|component| component == Component::CurDir));
+    assert!(checked_path(&current).is_err());
 }
 
 #[cfg(unix)]
