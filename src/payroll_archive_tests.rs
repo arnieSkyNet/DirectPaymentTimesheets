@@ -3,10 +3,15 @@ use crate::payroll_timesheet_email_repository::EmailDeliveryState;
 
 fn fixture() -> (tempfile::TempDir, Application) {
     let (dir, mut app) = crate::payroll_timesheet_screen::tests::test_application();
-    app.context.config.folders.payslip_folder = dir.path().join("payslips");
-    app.context.config.folders.payroll_information_folder = dir.path().join("info");
+    let root = temp_root(&dir);
+    app.context.config.folders.payslip_folder = root.join("payslips");
+    app.context.config.folders.payroll_information_folder = root.join("info");
+    app.context.config.folders.pdf_output = root.join("pdf_output");
     app.payroll_timesheet_email_repository.connection.execute_batch("INSERT INTO personal_assistants(id,first_name,surname,employment_status,email) VALUES (4,'Fictional Middletest','Samplepa','Active','pa4@example.test'),(5,'Imaginary Middletwo','Fixturepa','Active','pa5@example.test');").unwrap();
     (dir, app)
+}
+fn temp_root(dir: &tempfile::TempDir) -> PathBuf {
+    dir.path().canonicalize().unwrap()
 }
 fn pa(app: &Application, id: i64) -> PersonalAssistant {
     app.personal_assistant_repository
@@ -59,7 +64,7 @@ fn exact_p45_and_p60_imports_are_clean_flat_and_do_not_end_employment() {
             "Test Employer - End of Year Statement (P60) for year 2026-27 for Fictional Samplepa.pdf"
                 .into()
         };
-        let source = dir.path().join(name);
+        let source = temp_root(&dir).join(name);
         pdf(&source, b"%PDF-1.4 supplement");
         let before = format!("{:?}", pa(&app, 4));
         let result = app.import_payroll_documents(&source, None).unwrap();
@@ -217,7 +222,7 @@ fn registered_legacy_repair_preserves_every_history_state_and_leaves_active_pays
         assistant.employment_status = Some("Inactive".into());
         apply(&app, &assistant, true).unwrap();
         assert_eq!(facts(&app, 4), before);
-        let source_zip_entry = _dir.path().join(
+        let source_zip_entry = temp_root(&_dir).join(
             "Test Employer - Employee Leaving Statement (P45) for year 2026-27 for Fictional Samplepa.pdf",
         );
         let stored = app
@@ -420,14 +425,14 @@ fn unregistered_lookalike_and_out_of_root_registered_paths_are_not_repaired() {
     pdf(&lookalike, b"%PDF-1.4 user file");
     apply(&app, &pa(&app, 4), false).unwrap();
     assert!(lookalike.exists());
-    let external = dir.path().join("elsewhere/P45.pdf");
+    let external = temp_root(&dir).join("elsewhere/P45.pdf");
     pdf(&external, b"%PDF-1.4 external");
     app.payroll_timesheet_email_repository
         .register_document(4, "p45", &external, Some("2026/27"))
         .unwrap();
     assert!(apply(&app, &pa(&app, 4), false).is_err());
     assert!(external.exists());
-    assert!(checked_path(&dir.path().join("../escape.pdf")).is_err());
+    assert!(checked_path(&temp_root(&dir).join("../escape.pdf")).is_err());
 }
 
 #[cfg(unix)]
@@ -435,7 +440,7 @@ fn unregistered_lookalike_and_out_of_root_registered_paths_are_not_repaired() {
 fn symlinked_archive_directory_is_refused() {
     let (dir, app) = fixture();
     let source = register(&app, 4, "p45", "2026/27", "P45 original.pdf");
-    let elsewhere = dir.path().join("elsewhere");
+    let elsewhere = temp_root(&dir).join("elsewhere");
     fs::create_dir(&elsewhere).unwrap();
     std::os::unix::fs::symlink(
         &elsewhere,

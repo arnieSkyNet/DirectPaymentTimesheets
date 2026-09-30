@@ -409,9 +409,16 @@ mod tests {
     use super::*;
     use crate::payslip_delivery_service::{select_payroll_documents, PayslipDeliveryIdentity};
     fn fixture() -> (tempfile::TempDir, Application) {
-        let (dir, app) = crate::payroll_timesheet_screen::tests::test_application();
+        let (dir, mut app) = crate::payroll_timesheet_screen::tests::test_application();
+        let root = temp_root(&dir);
+        app.context.config.folders.payslip_folder = root.join("payslips");
+        app.context.config.folders.payroll_information_folder = root.join("info");
+        app.context.config.folders.pdf_output = root.join("pdf_output");
         app.payroll_timesheet_email_repository.connection.execute_batch("INSERT INTO personal_assistants(id,first_name,surname,employment_status) VALUES(1,'Synthetic Middle','Example','Active'); INSERT INTO payroll_schedules(id,payroll_year,cycle_number,first_week_commencing,latest_posting_date,pay_date,created_at) VALUES(1,'2026/27',7,'07/09/2026','28/09/2026','02/10/2026','fixture');").unwrap();
         (dir, app)
+    }
+    fn temp_root(dir: &tempfile::TempDir) -> PathBuf {
+        dir.path().canonicalize().unwrap()
     }
     fn pdf(path: &std::path::Path, bytes: &[u8]) {
         fs::create_dir_all(path.parent().unwrap()).unwrap();
@@ -468,7 +475,8 @@ mod tests {
             let db = &app.payroll_timesheet_email_repository.connection;
             db.execute("INSERT INTO payroll_timesheet_email_status(personal_assistant_id,payroll_year,cycle_number,email_type,sent_at) VALUES(1,'2026/27',7,'payslip',?1)",[marker]).unwrap();
             let old = targets(&app, 1).unwrap().remove(0);
-            let reviewed = review(&app, old.clone(), incoming(dir.path(), "payslip")).unwrap();
+            let reviewed =
+                review(&app, old.clone(), incoming(&temp_root(&dir), "payslip")).unwrap();
             let new = replace(&app, &reviewed).unwrap();
             assert_eq!(fs::read(&old.path).unwrap(), b"%PDF-1.4 original");
             assert_eq!(fs::read(&new).unwrap(), b"%PDF-1.4 corrected");
@@ -530,7 +538,7 @@ mod tests {
                 .unwrap();
             let new = replace(
                 &app,
-                &review(&app, old.clone(), incoming(dir.path(), "p45")).unwrap(),
+                &review(&app, old.clone(), incoming(&temp_root(&dir), "p45")).unwrap(),
             )
             .unwrap();
             let current = app
@@ -563,12 +571,12 @@ mod tests {
     fn stale_source_identity_or_database_failure_cannot_replace() {
         let (dir, app) = fixture();
         let old = seed(&app, "p45");
-        let source = incoming(dir.path(), "p45");
+        let source = incoming(&temp_root(&dir), "p45");
         let reviewed = review(&app, old.clone(), source.clone()).unwrap();
         pdf(&source, b"%PDF-1.4 changed after review");
         assert!(replace(&app, &reviewed).is_err());
-        assert!(review(&app, old.clone(), incoming(dir.path(), "p60")).is_err());
-        let source = incoming(dir.path(), "p45");
+        assert!(review(&app, old.clone(), incoming(&temp_root(&dir), "p60")).is_err());
+        let source = incoming(&temp_root(&dir), "p45");
         let reviewed = review(&app, old.clone(), source).unwrap();
         app.payroll_timesheet_email_repository.connection.execute_batch("CREATE TRIGGER fail_replacement BEFORE UPDATE OF superseded_by ON imported_payroll_documents BEGIN SELECT RAISE(ABORT,'fixture'); END;").unwrap();
         assert!(replace(&app, &reviewed).is_err());
@@ -603,12 +611,12 @@ mod tests {
     fn archive_all_revisions_timesheets_and_reactivate_without_restore() {
         let (dir, app) = fixture();
         let old = seed(&app, "payslip");
-        let source = incoming(dir.path(), "payslip");
+        let source = incoming(&temp_root(&dir), "payslip");
         replace(&app, &review(&app, old, source).unwrap()).unwrap();
         let old = seed(&app, "p45");
         replace(
             &app,
-            &review(&app, old, incoming(dir.path(), "p45")).unwrap(),
+            &review(&app, old, incoming(&temp_root(&dir), "p45")).unwrap(),
         )
         .unwrap();
         seed(&app, "p60");
@@ -641,7 +649,7 @@ mod tests {
             .payroll_information_folder
             .join("P30.pdf");
         pdf(&shared, b"%PDF-1.4 shared");
-        let signature = dir.path().join("external-signature.png");
+        let signature = temp_root(&dir).join("external-signature.png");
         fs::write(&signature, b"signature").unwrap();
         let mut pa = app
             .personal_assistant_repository
@@ -717,7 +725,7 @@ mod tests {
     fn inactive_import_replacement_and_missing_year_cannot_duplicate_current_supplement() {
         let (dir, app) = fixture();
         let old = seed(&app, "p45");
-        let yearless = dir.path().join("P45 correction for Synthetic Example.pdf");
+        let yearless = temp_root(&dir).join("P45 correction for Synthetic Example.pdf");
         pdf(&yearless, b"%PDF-1.4 different");
         let imported = app.import_payroll_documents(&yearless, None).unwrap();
         assert_eq!(imported.supplements_imported, 0);
@@ -737,7 +745,7 @@ mod tests {
         assert!(!old.path.exists());
         let new = replace(&app, &review(&app, target, yearless).unwrap()).unwrap();
         assert_eq!(new.parent().unwrap().file_name().unwrap(), "Archived");
-        let source = incoming(dir.path(), "p60");
+        let source = incoming(&temp_root(&dir), "p60");
         assert_eq!(
             app.import_payroll_documents(&source, None)
                 .unwrap()
@@ -776,7 +784,7 @@ mod tests {
         .unwrap();
         let corrected = replace(
             &app,
-            &review(&app, target.clone(), incoming(dir.path(), "payslip")).unwrap(),
+            &review(&app, target.clone(), incoming(&temp_root(&dir), "payslip")).unwrap(),
         )
         .unwrap();
         let mut invoked = false;
@@ -942,12 +950,11 @@ mod tests {
             ("P45 for Fictional Samplepa Jones REVISED.pdf", &p45_target),
             ("Test Employer - Employee Payslip for Week 22 for Fictional Samplepa.pdf", &payslip_target),
         ] {
-            let source=dir.path().join(name);pdf(&source,b"%PDF-1.4 synthetic incorrect identity");
+            let source=temp_root(&dir).join(name);pdf(&source,b"%PDF-1.4 synthetic incorrect identity");
             assert!(review(&app,target.clone(),source).is_err(),"{name}");
         }
-        let exact_p45=dir.path().join("Test Employer - Employee Leaving Statement (P45) for year 2026-27 for Fictional Samplepa REVISED.pdf");
-        let exact_payslip = dir
-            .path()
+        let exact_p45=temp_root(&dir).join("Test Employer - Employee Leaving Statement (P45) for year 2026-27 for Fictional Samplepa REVISED.pdf");
+        let exact_payslip = temp_root(&dir)
             .join("Test Employer - Employee Payslip for Week 26 for Fictional Samplepa.pdf");
         pdf(&exact_p45, b"%PDF-1.4 synthetic corrected P45");
         pdf(&exact_payslip, b"%PDF-1.4 synthetic corrected payslip");
@@ -1031,7 +1038,7 @@ mod tests {
             )
             .unwrap();
             db.execute_batch("INSERT INTO payroll_timesheet_email_status(personal_assistant_id,payroll_year,cycle_number,email_type,sent_at) VALUES(1,'2026/27',7,'payslip',NULL);").unwrap();
-            let corrected_p45=dir.path().join("Test Employer - Employee Leaving Statement (P45) for year 2026-27 for Fictional Samplepa REVISED.pdf");
+            let corrected_p45=temp_root(&dir).join("Test Employer - Employee Leaving Statement (P45) for year 2026-27 for Fictional Samplepa REVISED.pdf");
             pdf(&corrected_p45, b"%PDF-1.4 synthetic new P45");
             let target = targets(&app, 1)
                 .unwrap()
@@ -1075,8 +1082,7 @@ mod tests {
                 .unwrap();
             assert_eq!(screen.choices[index].label, "Payslip  2026/27  Week 26");
             assert_eq!(screen.choices[index].path, before_bundle.paths[0]);
-            let corrected = dir
-                .path()
+            let corrected = temp_root(&dir)
                 .join("Test Employer - Employee Payslip for Week 26 for Fictional Samplepa.pdf");
             pdf(&corrected, b"%PDF-1.4 synthetic corrected Week 26");
             assert!(screen.review_incoming(&app, corrected.clone()).is_err());
