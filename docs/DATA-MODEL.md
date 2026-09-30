@@ -2,7 +2,7 @@
 
 ## Purpose
 
-This document describes the implemented business entities and their relationships. It is intentionally conceptual; [DATABASE-SCHEMA.md](DATABASE-SCHEMA.md) is the exact schema32 table/column reference and the Rust source remains authoritative.
+This document describes the implemented business entities and their relationships. It is intentionally conceptual; [DATABASE-SCHEMA.md](DATABASE-SCHEMA.md) is the exact schema35 table/column reference and the Rust source remains authoritative.
 
 The model preserves imported facts, effective-dated employment terms, prepared payroll values and the exact worked-item evidence represented by a generated or submitted timesheet.
 
@@ -66,7 +66,7 @@ Payroll preparation and generation consume effective imported corrections alongs
 
 An import-audit record captures import time, original/archive filenames, row counts, status and optional error. Validated source bytes are written first to a unique, non-overwriting file in `archive/YYYY/MM/`; all imported rows and the SUCCESS audit are then committed in one SQLite transaction. A database failure leaves the archive as reported recoverable evidence and rolls back all rows. Failed/refused audits are best-effort.
 
-Schema31 still has no CSV imported-file content hash or row-to-import relationship. Historical successful-import detection therefore remains based on the original pathname: changed content at an already-successful pathname is conservatively skipped, while renamed identical content is preflighted again and exact already-stored raw rows are skipped. Correction events do not change raw collision identity. Durable content identity and row provenance require an explicitly approved future migration.
+The current schema35 still has no CSV imported-file content hash or row-to-import relationship. Historical successful-import detection therefore remains based on the original pathname: changed content at an already-successful pathname is conservatively skipped, while renamed identical content is preflighted again and exact already-stored raw rows are skipped. Correction events do not change raw collision identity. Durable content identity and row provenance require a future migration.
 
 ## DirectShift
 
@@ -111,9 +111,11 @@ The final Hours Worked value can be edited. Imported work remains unchanged; the
 
 `payroll_timesheet_annual_leave` stores dated weekly leave details; weekly aggregates remain for compatibility. `annual_leave_settings` stores the two recurring rule boundaries and current statutory-weeks/accrual-percentage values. Derived leave guidance is not persisted; see [Annual-leave guidance](DOMAIN.md#annual-leave-guidance).
 
-`imported_payroll_documents` holds P60/P45 IDs, PA identity, path, digest, optional own tax year and independent delivery state. Ordinary unassociated archival payslips and P30/general information remain outside this table. P60/P45 sent state does not settle payroll or complete a schedule.
+`imported_payroll_documents` holds current and superseded P60/P45 document IDs, PA identity, path, SHA-256 digest, optional own tax year, `history_state`, `sent_at` and an optional replacement link. Its history declaration (`unknown`, `external`, `needs_sending`, `application`) records how delivery history is understood; actual application delivery evidence remains in nullable `sent_at`, including the protected `indeterminate:` marker. Only `needs_sending` with NULL `sent_at` is selectable for production. Corrected supplements start with unknown history and NULL sent_at; older registrations and evidence remain. Ordinary unassociated archival payslips and P30/general information remain outside this table. P60/P45 sent state does not settle payroll or complete a schedule.
 
-Schema28 duplicate decisions, immutable submissions and signed correction components extend the current snapshot slot without restoring the removed PDF revision architecture. See [Payroll evidence](PAYROLL-EVIDENCE.md) for relationships and lifecycle.
+Schema28 duplicate decisions, immutable submissions and signed correction components extend the payroll-timesheet snapshot slot. Schema35 ordinary payslip revisions are a separate corrected-document lifecycle and do not change those submission snapshots. See [Payroll evidence](PAYROLL-EVIDENCE.md) for relationships and lifecycle.
+
+Schema35 also adds `payslip_revisions`, keyed by PA/year/cycle with immutable stored path, SHA-256, `sent_at` and `is_current`. A replacement creates a new current unsent revision and retains the old bytes and old delivery marker; current delivery updates the current revision alongside ordinary cycle status. In MIME email, ordinary payslip, P45 and P60 attachments use canonical recipient-visible names derived from PA and structured schedule/document identity; revision/hash storage basenames remain internal.
 
 ## Public-holiday detail
 
@@ -208,3 +210,11 @@ returned figure. The application never derives entitlement, adds the award to
 worked hours, or includes it in outgoing timesheet PDFs. A later manual correction
 to this result leaves all outgoing/submitted payroll facts intact. Result storage
 is available to a future importer without coupling it to preparation saving.
+
+
+## Payroll filing lifecycle
+
+Employment status, document filing and delivery history remain separate facts. Importing P45/P60 does not change employment status. An explicit Active-to-Inactive save files safely identified PA-owned documents directly into shared year-level `Archived` directories, without a PA subfolder; late documents for inactive PAs are filed there immediately. Reactivation does not restore files. Registered supplement IDs, hashes and reconciliation/delivery states survive path changes unchanged. `payroll_file_moves` tracks verified original/destination pairs until post-commit cleanup completes. P30 and other shared information, generic CSV archives and external assets are outside PA filing. Unassociated ordinary evidence remains ineligible for automatic delivery. See [filing and repair](ARCHITECTURE.md#inactive-pa-filing-and-registered-supplement-repair).
+
+
+Explicit corrections preserve superseded supplement registrations through `superseded_by`. Ordinary corrections retain immutable `payslip_revisions`, with one current revision per PA/payroll-year/cycle. Delivery evidence belongs to the bytes/revision it described; corrected supplement history starts unknown. File location changes on deactivation preserve identity, hashes, submission facts and embedded evidence. See the schema35 and architecture sections for transaction and lookup behaviour.

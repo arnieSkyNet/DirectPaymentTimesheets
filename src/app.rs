@@ -252,6 +252,21 @@ impl Application {
             &information_folder,
             &assistants,
             |name| {
+                if let Some(Ok(Some(schedule))) = associations.get(name) {
+                    let (_, pa) = crate::archive::classify_filename(name, &assistants)?;
+                    if let Some(pa) = pa {
+                        if crate::payroll_replacement::current_payslip(
+                            &self.payroll_timesheet_email_repository.connection,
+                            pa,
+                            &schedule.payroll_year,
+                            schedule.cycle_number,
+                        )?
+                        .is_some()
+                        {
+                            return Err("This payslip has revision history. Use Replace payroll document in Personal Assistant Maintenance.".into());
+                        }
+                    }
+                }
                 associations
                     .get(name)
                     .cloned()
@@ -394,6 +409,25 @@ impl Application {
             email_signature,
             subject_template,
         )?)
+    }
+
+    pub fn send_payslip_preview(
+        &self,
+        preview: crate::email_service::PayrollEmailPreview,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let config = &self.context.config.email;
+        let (host, port, username, password) = if config.smtp_transport == "SMTP Server" {
+            (
+                config.smtp_host.as_str(),
+                config.smtp_port,
+                config.smtp_username.as_str(),
+                config.smtp_password.as_str(),
+            )
+        } else {
+            ("localhost", 25, "", "")
+        };
+        let path = std::path::PathBuf::from(&preview.attachment_path);
+        crate::email_service::send_preview(host, port, username, password, preview, &path)
     }
 
     pub fn send_payroll_email(
@@ -539,6 +573,7 @@ impl Application {
         personal_assistant_ni: Option<&str>,
         schedule: Option<&crate::payroll_schedule_repository::PayrollSchedule>,
         attachment_paths: &[std::path::PathBuf],
+        attachment_filenames: &[String],
         email_body: &str,
         subject_template: &str,
         additional_note: Option<&str>,
@@ -572,6 +607,7 @@ impl Application {
                 .transpose()?
                 .unwrap_or_else(|| "Payroll documents".to_string()),
             attachment_paths,
+            attachment_filenames,
             email_body,
             additional_note,
             email_signature,

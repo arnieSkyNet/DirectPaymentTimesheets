@@ -38,8 +38,11 @@ pub struct PayslipDeliveryIdentity<'a> {
 #[derive(Debug, Default)]
 pub struct PayslipEmailBundle {
     pub paths: Vec<std::path::PathBuf>,
+    pub ordinary_attachment: Option<(std::path::PathBuf, String)>,
     pub email_types: Vec<&'static str>,
     pub document_ids: Vec<i64>,
+    /// Per-path structured identity: (document type, explicit tax year).
+    pub attachment_identity: Vec<(&'static str, Option<String>)>,
 }
 
 /// Build the same attachment set for preview and production. Sent types are
@@ -63,6 +66,20 @@ pub fn select_payroll_documents(
     ordinary: Option<(PayslipDeliveryIdentity<'_>, &std::path::Path)>,
 ) -> Result<PayslipEmailBundle, Box<dyn std::error::Error>> {
     let mut bundle = PayslipEmailBundle::default();
+    let registered = ordinary
+        .as_ref()
+        .map(|(i, _)| {
+            crate::payroll_replacement::current_payslip(
+                &repository.connection,
+                pa,
+                i.payroll_year,
+                i.cycle_number,
+            )
+        })
+        .transpose()?
+        .flatten();
+    let ordinary =
+        ordinary.map(|(i, p)| (i, registered.as_ref().map(|r| r.0.as_path()).unwrap_or(p)));
     let ordinary = match ordinary {
         Some((identity, path)) if path.try_exists()? => Some((identity, path)),
         _ => None,
@@ -79,7 +96,11 @@ pub fn select_payroll_documents(
             EmailDeliveryState::Indeterminate { attempted_at } => return Err(format!("Payslip delivery is indeterminate from {attempted_at}; automatic resend is refused.").into()),
             EmailDeliveryState::Unsent => {
                 crate::archive::validate_payslip_pdf(payslip_path)?;
+                let digest=crate::payroll_document_repository::file_digest(payslip_path)?;
+                if registered.as_ref().is_some_and(|r|r.1!=digest) {return Err("Current payslip revision has changed; delivery refused".into());}
+                bundle.ordinary_attachment=Some((payslip_path.to_path_buf(),digest));
                 bundle.paths.push(payslip_path.to_path_buf());
+                bundle.attachment_identity.push(("payslip", Some(identity.payroll_year.to_string())));
                 bundle.email_types.push("payslip");
             }
         }
@@ -91,7 +112,7 @@ pub fn select_payroll_documents(
         match document.delivery_state {
             EmailDeliveryState::Sent { .. } => continue,
             EmailDeliveryState::Indeterminate { attempted_at } => return Err(format!("{} document {} delivery is indeterminate from {attempted_at}; automatic resend is refused.", document.document_type, document.id).into()),
-            EmailDeliveryState::Unsent => {}
+            EmailDeliveryState::Unsent => { if document.history_state != "needs_sending" { continue; } }
         }
         crate::archive::validate_payslip_pdf(&document.path)?;
         if crate::payroll_document_repository::file_digest(&document.path)? != document.sha256 {
@@ -111,6 +132,9 @@ pub fn select_payroll_documents(
             _ => return Err("Only P60/P45 documents can enter PA payroll delivery.".into()),
         };
         bundle.paths.push(document.path);
+        bundle
+            .attachment_identity
+            .push((kind, document.document_year));
         bundle.document_ids.push(document.id);
         if !bundle.email_types.contains(&kind) {
             bundle.email_types.push(kind);
@@ -185,13 +209,14 @@ where
     }
     let marker = format!("indeterminate:{attempted_at}");
     let transition = |expected: Option<&str>, next: Option<&str>| {
-        repository.transition_payroll_bundle(
+        repository.transition_payroll_bundle_checked(
             pa,
             identity.as_ref(),
             payslip,
             &bundle.document_ids,
             expected,
             next,
+            bundle.ordinary_attachment.as_ref(),
         )
     };
     if !transition(None, Some(&marker)).map_err(operation_error)? {
@@ -302,9 +327,20 @@ mod tests {
     ) -> i64 {
         let path = directory.join(filename);
         std::fs::write(&path, format!("%PDF-1.4 {filename}")).unwrap();
-        repository
-            .register_document(1, kind, &path, Some("2025/26"))
-            .unwrap()
+        let id = repository
+            .register_document(
+                1,
+                kind,
+                &path,
+                Some(if filename.contains("second") {
+                    "2026/27"
+                } else {
+                    "2025/26"
+                }),
+            )
+            .unwrap();
+        assert!(repository.reconcile_document(id, true).unwrap());
+        id
     }
 
     #[test]

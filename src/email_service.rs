@@ -16,6 +16,8 @@ pub struct PayrollEmailPreview {
     pub body: String,
     pub attachment_path: String,
     pub additional_attachment_paths: Vec<std::path::PathBuf>,
+    /// Recipient-visible names, parallel to the attachment paths.
+    pub attachment_filenames: Vec<String>,
 }
 
 pub fn preview_payroll_email(
@@ -50,6 +52,107 @@ pub fn preview_payroll_email(
         "",
         "Payroll Department has no email address.",
     )
+}
+
+pub fn validate_pa_email(address: Option<&str>) -> Result<&str, Box<dyn Error>> {
+    let address = address
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .ok_or("Personal Assistant has no email address.")?;
+    address.parse::<Mailbox>()?;
+    Ok(address)
+}
+
+pub fn payslip_subject(
+    bundle: &crate::payslip_delivery_service::PayslipEmailBundle,
+    schedule: Option<&crate::payroll_schedule_repository::PayrollSchedule>,
+) -> Result<String, Box<dyn Error>> {
+    if bundle.email_types.contains(&"payslip") {
+        Ok(format!(
+            "Payslip for Week {}",
+            crate::payroll_file_naming::paye_week(
+                schedule.ok_or("Payslip requires a captured payroll period")?
+            )?
+        ))
+    } else {
+        Ok("Payroll documents - {Personal Assistant Name}".into())
+    }
+}
+
+pub fn preview_payslip_email(
+    employer_email: &str,
+    pa_email: Option<&str>,
+    name: &str,
+    bundle: &crate::payslip_delivery_service::PayslipEmailBundle,
+    schedule: Option<&crate::payroll_schedule_repository::PayrollSchedule>,
+    body: &str,
+    note: Option<&str>,
+    signature: Option<&str>,
+) -> Result<PayrollEmailPreview, Box<dyn Error>> {
+    let pa_email = validate_pa_email(pa_email)?;
+    employer_email.trim().parse::<Mailbox>()?;
+    let subject = payslip_subject(bundle, schedule)?;
+    let (subject, body) = payroll_document_wording(bundle, &subject, body);
+    let mut preview = compose_payroll_email(
+        employer_email,
+        pa_email,
+        None,
+        Some(employer_email),
+        name,
+        None,
+        None,
+        "",
+        bundle
+            .paths
+            .first()
+            .ok_or("No eligible payslip documents")?,
+        body,
+        note,
+        signature,
+        subject,
+        "",
+        "",
+        "Personal Assistant has no email address.",
+    )?;
+    preview.additional_attachment_paths = bundle.paths.iter().skip(1).cloned().collect();
+    preview.attachment_filenames = canonical_attachment_filenames(bundle, name, schedule)?;
+    Ok(preview)
+}
+
+pub fn canonical_attachment_filenames(
+    bundle: &crate::payslip_delivery_service::PayslipEmailBundle,
+    name: &str,
+    schedule: Option<&crate::payroll_schedule_repository::PayrollSchedule>,
+) -> Result<Vec<String>, Box<dyn Error>> {
+    bundle
+        .paths
+        .iter()
+        .enumerate()
+        .map(|(index, _path)| {
+            let (kind, year) = bundle
+                .attachment_identity
+                .get(index)
+                .ok_or("Payroll attachment is missing structured identity")?;
+            match *kind {
+                "payslip" => crate::payroll_file_naming::payslip_filename(
+                    name,
+                    schedule.ok_or("Payslip filename requires its payroll schedule")?,
+                ),
+                "p45" | "p60" => {
+                    let kind = kind.to_ascii_uppercase();
+                    let year = year
+                        .as_deref()
+                        .map(|year| format!(" for year {}", year.replace('/', "-")))
+                        .unwrap_or_default();
+                    Ok(format!(
+                        "{kind}{year} for {}.pdf",
+                        crate::payroll_file_naming::sanitise_filename(name)
+                    ))
+                }
+                _ => Err("Unsupported payroll attachment type".into()),
+            }
+        })
+        .collect::<Result<Vec<_>, Box<dyn Error>>>()
 }
 
 pub fn preview_test_payroll_email(
@@ -222,6 +325,11 @@ fn compose_payroll_email(
         body,
         attachment_path: attachment_path.display().to_string(),
         additional_attachment_paths: Vec::new(),
+        attachment_filenames: vec![attachment_path
+            .file_name()
+            .ok_or("Invalid attachment filename")?
+            .to_string_lossy()
+            .into_owned()],
     })
 }
 
@@ -367,6 +475,7 @@ pub fn send_test_payslip_email(
     personal_assistant_ni: Option<&str>,
     payroll_period: &str,
     attachment_paths: &[std::path::PathBuf],
+    attachment_filenames: &[String],
     email_body: &str,
     additional_note: Option<&str>,
     email_signature: Option<&str>,
@@ -390,6 +499,7 @@ pub fn send_test_payslip_email(
     )?;
 
     preview.additional_attachment_paths = additional_attachments.to_vec();
+    preview.attachment_filenames = attachment_filenames.to_vec();
     send_preview(
         smtp_host,
         smtp_port,
@@ -400,7 +510,7 @@ pub fn send_test_payslip_email(
     )
 }
 
-fn send_preview(
+pub(crate) fn send_preview(
     smtp_host: &str,
     smtp_port: u16,
     smtp_username: &str,
@@ -439,18 +549,24 @@ fn build_message(
         email = email.bcc(bcc.parse::<Mailbox>()?);
     }
     let mut multipart = MultiPart::mixed().singlepart(SinglePart::plain(preview.body.clone()));
-    for path in std::iter::once(attachment_path).chain(
-        preview
-            .additional_attachment_paths
-            .iter()
-            .map(|path| path.as_path()),
-    ) {
+    for (index, path) in std::iter::once(attachment_path)
+        .chain(
+            preview
+                .additional_attachment_paths
+                .iter()
+                .map(|path| path.as_path()),
+        )
+        .enumerate()
+    {
         let data = fs::read(path)?;
-        let filename = path
-            .file_name()
-            .ok_or("Invalid attachment filename.")?
-            .to_string_lossy()
-            .to_string();
+        let filename = match preview.attachment_filenames.get(index) {
+            Some(filename) => filename.clone(),
+            None => path
+                .file_name()
+                .ok_or("Invalid attachment filename.")?
+                .to_string_lossy()
+                .to_string(),
+        };
         multipart = multipart.singlepart(
             Attachment::new(filename).body(data, ContentType::parse("application/pdf")?),
         );
@@ -655,5 +771,197 @@ mod tests {
         .unwrap_err();
 
         assert_eq!(error.to_string(), "PA test email address is required.");
+    }
+    #[test]
+    fn payslip_preview_and_mime_have_pa_to_employer_blind_copy_only() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("p45.pdf");
+        std::fs::write(&path, b"%PDF-1.4 fixture").unwrap();
+        let bundle = crate::payslip_delivery_service::PayslipEmailBundle {
+            ordinary_attachment: None,
+            paths: vec![path.clone()],
+            email_types: vec!["p45"],
+            document_ids: vec![1],
+            attachment_identity: vec![("p45", Some("2026/27".into()))],
+        };
+        let preview = preview_payslip_email(
+            "employer@example.test",
+            Some("PA <pa@example.test>"),
+            "Fixture PA",
+            &bundle,
+            None,
+            "Configured payslip body",
+            Some("Private note"),
+            Some("Signature"),
+        )
+        .unwrap();
+        assert_eq!(preview.to, "PA <pa@example.test>");
+        assert_eq!(preview.bcc.as_deref(), Some("employer@example.test"));
+        assert_eq!(preview.cc, None);
+        assert_eq!(preview.subject, "Payroll documents - Fixture PA");
+        assert_eq!(
+            preview.body,
+            "Please find attached your payroll document.\n\nPrivate note\n\nSignature"
+        );
+        let message = build_message(&preview, &path).unwrap();
+        let mime = String::from_utf8(message.formatted()).unwrap();
+        assert!(mime.contains("To: PA <pa@example.test>"));
+        assert!(!mime.contains("Cc:") && !mime.contains("Bcc:"));
+        assert!(!mime.contains("payroll@example.test"));
+        let recipients: Vec<_> = message
+            .envelope()
+            .to()
+            .iter()
+            .map(ToString::to_string)
+            .collect();
+        assert_eq!(recipients.len(), 2);
+        assert!(recipients.contains(&"pa@example.test".to_string()));
+        assert!(recipients.contains(&"employer@example.test".to_string()));
+        for invalid in [
+            None,
+            Some(""),
+            Some("bad-address"),
+            Some("one@example.test, two@example.test"),
+        ] {
+            assert!(preview_payslip_email(
+                "employer@example.test",
+                invalid,
+                "Fixture PA",
+                &bundle,
+                None,
+                "body",
+                None,
+                None
+            )
+            .is_err());
+        }
+    }
+
+    #[test]
+    fn mime_uses_canonical_names_for_ordinary_and_replacement_payroll_files() {
+        use crate::payroll_schedule_repository::PayrollSchedule;
+        use crate::payslip_delivery_service::PayslipEmailBundle;
+
+        let dir = tempfile::tempdir().unwrap();
+        let schedule = PayrollSchedule {
+            id: 1,
+            payroll_year: "2026/27".into(),
+            cycle_number: 26,
+            first_week_commencing: "01/09/2026".into(),
+            latest_posting_date: "01/09/2026".into(),
+            pay_date: "02/10/2026".into(),
+            created_at: "fixture".into(),
+            payslips_sent: false,
+        };
+        let pa = "Fictional Middletest Samplepa";
+        let cases = [
+            ("ordinary-week-26.pdf", "payslip", None, true),
+            (
+                "payslip-revision-4-sha256-deadbeef.pdf",
+                "payslip",
+                None,
+                true,
+            ),
+            (
+                "replacement-revision-2-sha256-cafebabe.pdf",
+                "p45",
+                Some("2026/27"),
+                false,
+            ),
+            (
+                "replacement-revision-3-sha256-facefeed.pdf",
+                "p60",
+                Some("2026/27"),
+                false,
+            ),
+        ];
+        for (stored_name, kind, year, has_schedule) in cases {
+            let path = dir.path().join(stored_name);
+            std::fs::write(&path, b"%PDF-1.4 synthetic").unwrap();
+            let bundle = PayslipEmailBundle {
+                paths: vec![path.clone()],
+                email_types: vec![kind],
+                attachment_identity: vec![(kind, year.map(str::to_owned))],
+                ..Default::default()
+            };
+            let preview = preview_payslip_email(
+                "employer@example.test",
+                Some("pa@example.test"),
+                pa,
+                &bundle,
+                has_schedule.then_some(&schedule),
+                "body",
+                None,
+                None,
+            )
+            .unwrap();
+            let mime =
+                String::from_utf8(build_message(&preview, &path).unwrap().formatted()).unwrap();
+            let expected = match kind {
+                "payslip" => crate::payroll_file_naming::payslip_filename(pa, &schedule).unwrap(),
+                "p45" => "P45 for year 2026-27 for Fictional Middletest Samplepa.pdf".into(),
+                "p60" => "P60 for year 2026-27 for Fictional Middletest Samplepa.pdf".into(),
+                _ => unreachable!(),
+            };
+            assert!(mime.contains(&expected), "missing {expected} in {mime}");
+            assert!(
+                !mime.contains("revision")
+                    && !mime.contains("deadbeef")
+                    && !mime.contains("cafebabe")
+                    && !mime.contains("facefeed")
+            );
+            assert!(path.exists(), "stored path must remain unchanged");
+        }
+    }
+
+    #[test]
+    fn test_email_payslip_preview_uses_canonical_replacement_name() {
+        use crate::payroll_schedule_repository::PayrollSchedule;
+        use crate::payslip_delivery_service::PayslipEmailBundle;
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir
+            .path()
+            .join("payslip-revision-7-sha256-012345abcdef.pdf");
+        std::fs::write(&path, b"%PDF-1.4 synthetic").unwrap();
+        let schedule = PayrollSchedule {
+            id: 1,
+            payroll_year: "2026/27".into(),
+            cycle_number: 26,
+            first_week_commencing: "01/09/2026".into(),
+            latest_posting_date: "01/09/2026".into(),
+            pay_date: "02/10/2026".into(),
+            created_at: "fixture".into(),
+            payslips_sent: false,
+        };
+        let bundle = PayslipEmailBundle {
+            paths: vec![path.clone()],
+            email_types: vec!["payslip"],
+            attachment_identity: vec![("payslip", Some("2026/27".into()))],
+            ..Default::default()
+        };
+        let mut preview = preview_test_payslip_email(
+            "employer@example.test",
+            "test@example.test",
+            "Fictional Middletest Samplepa",
+            None,
+            None,
+            "202610w26",
+            &path,
+            "body",
+            None,
+            None,
+            "Payslip for {Personal Assistant Name}",
+        )
+        .unwrap();
+        preview.attachment_filenames =
+            canonical_attachment_filenames(&bundle, "Fictional Middletest Samplepa", Some(&schedule))
+                .unwrap();
+        let mime = String::from_utf8(build_message(&preview, &path).unwrap().formatted()).unwrap();
+        let expected =
+            crate::payroll_file_naming::payslip_filename("Fictional Middletest Samplepa", &schedule).unwrap();
+        assert!(mime.contains(&expected), "expected {expected} in {mime}");
+        assert!(!mime.contains("revision") && !mime.contains("012345abcdef"));
+        assert!(path.exists());
     }
 }

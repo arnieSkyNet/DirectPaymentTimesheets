@@ -2,13 +2,13 @@
 
 ## Scope and versioning
 
-This is the implemented SQLite schema at version 32 (development application version `1.0.4`). It is derived from `create_schema` and migrations in `src/database.rs`; those migrations are authoritative.
+This is the implemented SQLite schema at version 35 (development application version `1.0.4`). It is derived from `create_schema` and migrations in `src/database.rs`; those migrations are authoritative.
 
-`schema_version` contains the current integer version. A new database begins at version 1 and receives each ordered migration through `CURRENT_SCHEMA_VERSION` 32. Existing databases are upgraded in place. Migration 23 removes the short-lived revision-only tables introduced by migration 22 while retaining the operational legacy snapshot tables. Migration 24 adds an explicit contracted/variable hours basis to effective-dated Personal Assistant contracted-hours history while preserving existing records as contracted.
+`schema_version` contains the current integer version. A new database begins at version 1 and receives each ordered migration through `CURRENT_SCHEMA_VERSION` 35. Existing databases are upgraded in place. Migration 23 removes the short-lived revision-only tables introduced by migration 22 while retaining the operational legacy snapshot tables. Migration 24 adds an explicit contracted/variable hours basis to effective-dated Personal Assistant contracted-hours history while preserving existing records as contracted.
 
 During unreleased schema-20 development, an earlier local database shape contained `direct_shifts` without soft-deletion columns or the audit table. Startup therefore performs an idempotent schema-20 compatibility check after normal migrations. When that exact incomplete shape is found, it transactionally rebuilds `direct_shifts` into the final constrained form while preserving IDs and row values, then creates the audit table/indexes. It does not fabricate historical audit events, and repeated startup does not duplicate existing audit rows.
 
-Most older relationships are logical references enforced by repository/application code. Schemas 30 and 31 declare PA foreign-key references for sickness periods and imported payroll documents, without cascading deletes. SQLite enforcement depends on each connection enabling foreign keys; connections do not uniformly do so.
+Most older relationships are logical references enforced by repository/application code. Schemas 30 and 31 declare PA foreign-key references for sickness periods and imported payroll documents, without cascading deletes. Schema 35 adds a self-reference from a superseded supplement to its replacement. SQLite enforcement depends on each connection enabling foreign keys; connections do not uniformly do so.
 
 ## `schema_version`
 
@@ -400,7 +400,7 @@ The table checks `end_date >= start_date`; repository validation additionally re
 
 ## Schema 31: cycle-independent PA payroll documents
 
-Migration 31 creates the following table and index in one transaction and advances `schema_version` to 31. It does not read, rewrite or migrate `payroll_timesheet_email_status`: existing payslip/timesheet rows and settlement semantics remain unchanged. There are no historical P60/P45 delivery associations to invent or backfill. Application version remains `1.0.0`.
+Migration 31 creates the following table and index in one transaction and advances `schema_version` to 31. It does not read, rewrite or migrate `payroll_timesheet_email_status`: existing payslip/timesheet rows and settlement semantics remain unchanged. There are no historical P60/P45 delivery associations to invent or backfill. The current development application is 1.0.4; schema 31 is the introduction point for this table, subsequently extended by schemas 33 and 35 below.
 
 ### `imported_payroll_documents`
 
@@ -412,14 +412,14 @@ Migration 31 creates the following table and index in one transaction and advanc
 | `stored_path` | `TEXT NOT NULL UNIQUE`; canonical absolute file path |
 | `sha256` | `TEXT NOT NULL CHECK (length(sha256) = 64)`; imported content digest |
 | `document_year` | nullable `TEXT`; explicit filename tax year in `YYYY/YY` form, otherwise NULL |
-| `sent_at` | nullable `TEXT`; NULL = unsent, `indeterminate:<attempt timestamp>` = protected/uncertain, successful-send timestamp = sent |
+| `sent_at` | nullable `TEXT`; NULL = no application delivery evidence (consult `history_state`), `indeterminate:<attempt timestamp>` = protected/uncertain, successful-send timestamp = sent |
 
-Indexes: the primary-key row identity, SQLite's unique index on `stored_path`, and `idx_imported_payroll_documents_pa(personal_assistant_id, id)`. There is no schedule foreign key, cycle column or sentinel cycle. Reimporting the same path/content/PA/type/year retains the same ID and delivery state. A conflicting identity/content is refused; separate filename variants remain separate records. File digests are checked again when selecting email attachments.
+Indexes: the primary-key row identity, SQLite's unique index on `stored_path`, and `idx_imported_payroll_documents_pa(personal_assistant_id, id)`. There is no schedule foreign key, cycle column or sentinel cycle. Reimporting the same path/content/PA/type/year retains the same ID and delivery state. A conflicting identity/content is refused; alternate-path copies with identical PA/type/content are conservatively refused rather than creating a new delivery identity, regardless of filename year. Distinct content can be registered separately and starts unknown. File digests are checked again when selecting email attachments.
 
 P60/P45 and an optional ordinary payslip transition atomically across their separate tables on one connection. Documents are definitively marked sent only after successful SMTP. Failed SMTP restores unsent state; failures persisting the final result leave durable indeterminate protection. P60/P45 states never count towards `payroll_schedules.payslips_sent` or evidence settlement. File publication precedes document registration; a registration failure is reported with stored-file paths, and reimport retries registration without overwriting the files.
 
 
-Ordinary payslips with no applicable stored cycle may be archived in the PA's year-specific or general Payslip area. They are filesystem evidence only: they are not inserted into `imported_payroll_documents` (which remains P60/P45-only), `payroll_timesheet_email_status`, or payroll settlement tables. Their archival counts and paths are reported by the importer. This fallback requires no additional migration; schema31 and application `1.0.0` remain unchanged.
+Ordinary payslips with no applicable stored cycle may be archived in the PA's year-specific or general Payslip area. They are filesystem evidence only: they are not inserted into `imported_payroll_documents` (which remains P60/P45-only), `payroll_timesheet_email_status`, or payroll settlement tables. Their archival counts and paths are reported by the importer. This fallback requires no additional migration.
 
 
 ## Schema 32: outgoing payroll notes and returned in-lieu hours
@@ -449,3 +449,37 @@ Preparation saves do not write either returned-result column. Future importers
 may call this same method after establishing the PA/period identity; extraction
 is not implemented. Decimal formatting is presentation-only, with no shift
 rounding or conversion to worked minutes.
+
+
+## Schema 33: explicit supplement delivery history
+
+Migration 33 atomically adds `imported_payroll_documents.history_state TEXT NOT NULL DEFAULT 'unknown'`, constrained to `unknown`, `needs_sending`, `external` or `application`. It preserves every existing document column and `sent_at` value. Rows with non-NULL `sent_at` receive `application` (existing Sent or Indeterminate evidence); NULL rows receive `unknown`. No historical send dates are inferred.
+
+New registrations also start `unknown`, even when first imported today. The reconciliation UI records either `external` (Already delivered externally) or `needs_sending` (Needs sending), only from unknown and only while `sent_at IS NULL`. Neither decision changes `sent_at`. Decisions persist across restarts; Cancel does not undo saved history decisions. Sent and Indeterminate evidence always takes precedence. Only needs_sending documents with NULL `sent_at` can enter a new protected production send; protection and finalisation retain the history declaration and update only the actual application delivery marker/timestamp. Ordinary payslip status and timesheet delivery are unchanged.
+
+Unknown/external documents are omitted from attachment selection; other eligible documents may still be sent. An indeterminate supplement continues to block automatic retry. Re-registering the same identity preserves all states. Alternate-path identical PA/type/content registrations are refused conservatively, preserving the original registry entry rather than guessing which copy should inherit its history.
+
+
+## Schema 34: payroll filing cleanup journal
+
+Migration 34 atomically creates `payroll_file_moves` and advances the schema version. It neither moves files nor changes schema33 supplement history or delivery evidence.
+
+| Column | Meaning |
+|---|---|
+| `source_path TEXT PRIMARY KEY` | Original absolute application-owned path, retained until commit |
+| `destination_path TEXT NOT NULL UNIQUE` | Published verified destination |
+| `personal_assistant_id INTEGER NOT NULL` | PA whose explicit filing/repair operation owns cleanup |
+| `sha256 TEXT NOT NULL CHECK(length(sha256)=64)` | Expected content at both paths |
+
+Rows commit in the same transaction as registered-path changes and an optional explicit employment edit. After commit, cleanup verifies destination and source digests, removes the source and deletes the journal row. Missing/changed destinations or changed sources retain the row and surviving files for explicit retry. Repeated cleanup is idempotent. PA deletion is refused while registered payroll documents or pending cleanup rows reference the PA. The journal has no cascading deletion.
+
+
+## Schema 35: explicit corrected document revisions
+
+Migration 35 atomically adds nullable `imported_payroll_documents.superseded_by INTEGER REFERENCES imported_payroll_documents(id)` and creates `payslip_revisions`. Existing rows, paths, hashes, delivery history and timestamps are untouched; no files are inspected or moved.
+
+`payslip_revisions` columns: `id INTEGER PRIMARY KEY`, `personal_assistant_id INTEGER NOT NULL`, `payroll_year TEXT NOT NULL`, `cycle_number INTEGER NOT NULL`, `stored_path TEXT NOT NULL UNIQUE`, `sha256 TEXT NOT NULL CHECK(length(sha256)=64)`, nullable `sent_at TEXT`, `is_current INTEGER NOT NULL CHECK(is_current IN (0,1))`, and `created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP`. A partial unique index permits exactly at most one current revision per PA/year/cycle. Legacy ordinary files are adopted on first deliberate replacement. Old delivery markers remain on the old revision; current cycle delivery and current revision markers transition together.
+
+A supplement replacement inserts an unknown/NULL-sent registration and links the superseded row to it. Current-document readers filter `superseded_by IS NULL`; filing reads all revisions. Duplicate semantic import identities are refused conservatively at registration; the schema intentionally preserves legacy multiple registrations rather than merging their evidence.
+
+The existing move journal now supports configured payslip and PDF roots. Filing updates `stored_path` in both document registries and `pdf_path` in snapshot/submission records, preserving all hash/evidence fields. Replacements retain originals permanently; they do not enqueue deletion of superseded evidence.

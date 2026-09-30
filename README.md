@@ -2,7 +2,7 @@
 
 DirectPaymentTimesheets is a local desktop application for administering UK Direct Payment Personal Assistant timesheets and the four-week payroll-provider workflow. It imports externally recorded work, prepares payroll timesheets, generates the provider PDF, sends timesheets and payslips, imports payroll documents, and preserves the evidence represented by submitted payroll.
 
-The **1.0.4 development** application uses SQLite schema **32**. It is a single-user local desktop application for the documented Direct Payment payroll workflow, not a general-purpose payroll product.
+The **1.0.4 development** application uses SQLite schema **35**. It is a single-user local desktop application for the documented Direct Payment payroll workflow, not a general-purpose payroll product.
 
 ## Download
 
@@ -216,15 +216,15 @@ The Dashboard groups the workflow into three rows:
 
 - Timesheet and payslip preview, test and production workflows.
 - Period-associated production batches bound to the exact operational payroll period captured at confirmation; standalone P60/P45 need no period.
-- Production timesheet and payslip routing from the employer to the payroll department, CC employer and BCC PA when available.
+- Production timesheet routing from the employer to the payroll department, CC employer and BCC PA when available. Production payslips go individually to each selected PA, BCC the employer, with no CC or payroll-department recipient.
 - Test routing through configured test addresses; payslip test email targets the configured PA test address.
 - Import Payroll Documents classifies the source first. Ordinary payslips use an exact stored cycle, a plausible period chosen by the employer, or a PA archive fallback when no applicable cycle is stored. Unassociated archival payslips are not automatically emailed or used for settlement.
 - UK PAYE tax-week payslip filenames; P60/P45 use their own tax year and PA directory without a payroll cycle.
 - Collision-safe, idempotent payroll-information storage; P30/general documents never enter PA email. Each document uses its own explicit filename year, otherwise the configured information root.
-- Mixed files/ZIPs can include prep sheets, payslips and P60/P45. Results distinguish imported, already-present, archival and failures; the overall workflow is not one filesystem/database transaction. See [import architecture](docs/ARCHITECTURE.md#schema31-payroll-documents).
-- P60/P45 have schema31 document IDs and delivery tracking, including former PAs and operation without a schedule. P45 never changes employment data. Their delivery does not settle ordinary payroll or complete a schedule.
+- Mixed files/ZIPs can include prep sheets, ordinary payslips, P45/P60 supplements and shared information such as P30. Each entry is validated and staged independently; successful items remain successful when another entry fails, and results report imported, already-present, archived and failed items. ZIP path, entry-count, size and compression-ratio checks run before publication. The mixed workflow is not one filesystem/database transaction. See [import architecture](docs/ARCHITECTURE.md#payroll-document-import-and-delivery).
+- P45/P60 have cycle-independent schema31 document IDs, hashes and delivery-history reconciliation, including former PAs and operation without a schedule. P45 never changes employment data. Their delivery does not settle ordinary payroll or complete a schedule. P30 and other shared information are stored separately and never enter PA email.
 - Production and Test Payslip Email select the same eligible unsent ordinary payslip plus P60/P45 bundle; an ordinary payslip is optional. Sent documents, P30/general information and unassociated ordinary archives are excluded; uncertain delivery blocks retry.
-- Standalone P60/P45 use `Payroll documents - {Personal Assistant Name}` and singular/plural neutral body text, independent of Dashboard dates. Ordinary/combined bundles retain configured cycle wording. Test sends retain TEST markers, target only the PA test address with no CC/BCC, and never mutate delivery/settlement/evidence state. See [exact email rules](docs/DOMAIN.md#email).
+- Standalone P60/P45 use `Payroll documents - {Personal Assistant Name}` and singular/plural neutral body text, independent of Dashboard dates. Ordinary/combined bundles use `Payslip for Week <PAYE week>` and the configured payslip body. MIME filenames use clean canonical payroll names; internal revision/hash storage filenames are not disclosed. Test sends retain TEST markers, target only the PA test address with no CC/BCC, and never mutate delivery/settlement/evidence state. See [exact email rules](docs/DOMAIN.md#email).
 
 ### Backup and restore
 
@@ -313,3 +313,6 @@ See [Payroll evidence and reconciliation](docs/PAYROLL-EVIDENCE.md) for storage,
 DirectPaymentTimesheets is free software licensed under the [GNU General Public License version 3 or later](LICENSE), identified by the SPDX expression `GPL-3.0-or-later`. You may redistribute and modify the source under that licence. Charging for copies or genuine services is permitted, but recipients retain the GPL freedoms and distributed modified versions remain subject to the GPL's requirements.
 
 Third-party dependencies and bundled font components remain subject to their respective terms; see [THIRD_PARTY_LICENSES.md](THIRD_PARTY_LICENSES.md).
+
+
+Corrected payroll PDFs are handled through Personal Assistant Maintenance → **Replace payroll document…**: select the existing identity, choose an individual corrected PDF, review both hashes/history, and confirm. Original bytes, hashes and delivery evidence remain retained. Revision/hash filenames are internal; payroll emails use canonical recipient-visible filenames. A saved Active-to-Inactive transition files safely identified PA-owned timesheets and payroll PDFs directly into shared year-level `Archived` folders, without a PA subfolder. New documents for inactive PAs go there directly; reactivation does not restore historical files. A durable move journal supports post-commit cleanup retries. See [filing and replacement details](docs/ARCHITECTURE.md#inactive-pa-filing-and-registered-supplement-repair).

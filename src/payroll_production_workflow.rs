@@ -123,13 +123,7 @@ impl DirectPaymentApp {
                     .snapshot_metadata(record.id)?;
                 if sending {
                     metadata.as_ref().ok_or("No current PDF — generate this PA's PDF first")?;
-                    let path = PdfGenerator::timesheet_output_path(
-                        &crate::paths::expand_path(
-                            &self.application.context.config.folders.pdf_output,
-                        ),
-                        &format!("{} {}", pa.first_name, pa.surname),
-                        schedule,
-                    )?;
+                    let path = crate::payroll_snapshot_service::attachment_path(&self.application,pa.id,schedule)?;
                     // No evidence preflight here: displaying unselected PAs must never write.
                     crate::payroll_snapshot_service::verify_preview_or_test_attachment(
                         &self.application.payroll_worked_item_repository,
@@ -361,11 +355,15 @@ impl DirectPaymentApp {
             return;
         };
         let mut cancel = false;
-        egui::Window::new("Email payroll timesheets — select PAs")
+        let payslips = matches!(batch.kind, PayrollEmailKind::Payslip);
+        egui::Window::new(if payslips { "Email payslips — select PAs" } else { "Email payroll timesheets — select PAs" })
             .collapsible(false)
             .show(ui.ctx(), |ui| {
                 if let Some(period) = &batch.payroll_period {
                     ui.label(&period.display_label);
+                }
+                if payslips {
+                    ui.label("Choose the PAs for this batch. Reviewed supplements marked Needs sending are included as shown. Each message goes to the PA, with a blind copy to the employer and no payroll department copy.");
                 }
                 draw_production_choices(
                     ui,
@@ -376,14 +374,17 @@ impl DirectPaymentApp {
                     if ui
                         .add_enabled(
                             !batch.selected_personal_assistant_ids.is_empty(),
-                            egui::Button::new("Continue to email notes"),
+                            egui::Button::new(if payslips { "Review selected recipients" } else { "Continue to email notes" }),
                         )
                         .clicked()
                     {
-                        batch.stage = EmailBatchNoteStage::ChooseAdditionalNote;
+                        batch.confirm_selection();
                     }
                     cancel = ui.button("Cancel").clicked();
                 });
+                if batch.selected_personal_assistant_ids.is_empty() {
+                    ui.label("Select at least one Personal Assistant to continue.");
+                }
             });
         if cancel {
             self.clear_pending_email_batch();

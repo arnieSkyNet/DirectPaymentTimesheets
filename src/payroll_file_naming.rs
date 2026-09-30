@@ -93,6 +93,76 @@ pub fn payslip_path(
         .join(payslip_filename(personal_assistant_name, schedule)?))
 }
 
+pub fn is_inactive(pa: &crate::models::PersonalAssistant) -> bool {
+    pa.employment_status
+        .as_deref()
+        .is_some_and(|s| s.trim().eq_ignore_ascii_case("inactive"))
+}
+
+pub fn supplement_path(
+    root: &Path,
+    pa: &crate::models::PersonalAssistant,
+    kind: &str,
+    year: Option<&str>,
+) -> Result<PathBuf, Box<dyn Error>> {
+    let base = root_without_payroll_year_suffix(root);
+    let mut directory = match year {
+        Some(year) => base.join(payroll_year_directory_name(year)?),
+        None => base.to_path_buf(),
+    };
+    if is_inactive(pa) {
+        directory = directory.join("Archived");
+    }
+    let name = sanitise_filename(&format!("{} {}", pa.first_name.trim(), pa.surname.trim()));
+    let kind = match kind.to_ascii_lowercase().as_str() {
+        "p45" => "P45",
+        "p60" => "P60",
+        _ => return Err("Only P45/P60 are supplements".into()),
+    };
+    let year = year
+        .map(|y| format!(" for year {}", y.replace('/', "-")))
+        .unwrap_or_default();
+    Ok(directory.join(format!("{kind}{year} for {name}.pdf")))
+}
+
+pub fn supplement_destination(
+    root: &Path,
+    pa: &crate::models::PersonalAssistant,
+    kind: &str,
+    year: Option<&str>,
+    source_name: &str,
+) -> Result<PathBuf, Box<dyn Error>> {
+    Ok(supplement_path(root, pa, kind, year)?.with_file_name(
+        crate::archive::clean_supplement_filename(source_name, kind, pa),
+    ))
+}
+
+/// Reactivation leaves historical files in Archived; delivery can still find them.
+pub fn existing_payslip_path(
+    root: &Path,
+    name: &str,
+    schedule: &PayrollSchedule,
+) -> Result<PathBuf, Box<dyn Error>> {
+    let active = payslip_path(root, name, schedule)?;
+    let archived = active
+        .parent()
+        .unwrap()
+        .join("Archived")
+        .join(active.file_name().unwrap());
+    if active.exists()
+        && archived.exists()
+        && crate::payroll_document_repository::file_digest(&active)?
+            != crate::payroll_document_repository::file_digest(&archived)?
+    {
+        return Err("Different active and Archived copies of the payslip exist; reconcile the files before delivery.".into());
+    }
+    Ok(if active.exists() || !archived.exists() {
+        active
+    } else {
+        archived
+    })
+}
+
 /// Accept only an explicit consecutive tax-year range, never a week/cycle guess.
 pub fn document_year(filename: &str) -> Option<String> {
     let mut years = std::collections::HashSet::new();
@@ -241,7 +311,32 @@ pub fn timesheet_path(
     Ok(output_root.join(timesheet_filename(personal_assistant_name, schedule)?))
 }
 
-fn root_without_payroll_year_suffix(root: &Path) -> &Path {
+pub fn existing_timesheet_path(
+    root: &Path,
+    name: &str,
+    schedule: &PayrollSchedule,
+) -> Result<PathBuf, Box<dyn Error>> {
+    let active = timesheet_path(root, name, schedule)?;
+    let archived = payroll_year_directory(root, schedule)?
+        .join("Archived")
+        .join(timesheet_filename(name, schedule)?);
+    if active.exists()
+        && archived.exists()
+        && crate::payroll_document_repository::file_digest(&active)?
+            != crate::payroll_document_repository::file_digest(&archived)?
+    {
+        return Err(
+            "Different active and Archived timesheets exist; reconcile before delivery".into(),
+        );
+    }
+    Ok(if active.exists() || !archived.exists() {
+        active
+    } else {
+        archived
+    })
+}
+
+pub(crate) fn root_without_payroll_year_suffix(root: &Path) -> &Path {
     if has_payroll_year_suffix(root) {
         root.parent().unwrap_or_else(|| Path::new(""))
     } else {
@@ -255,7 +350,7 @@ fn has_payroll_year_suffix(root: &Path) -> bool {
         .is_some_and(is_payroll_year_directory_name)
 }
 
-fn is_payroll_year_directory_name(value: &str) -> bool {
+pub(crate) fn is_payroll_year_directory_name(value: &str) -> bool {
     let Some((start, end)) = value.split_once(" to ") else {
         return false;
     };
@@ -273,7 +368,7 @@ fn is_payroll_year_directory_name(value: &str) -> bool {
         .is_some_and(|(start, end)| end == start + 1)
 }
 
-fn sanitise_filename(value: &str) -> String {
+pub(crate) fn sanitise_filename(value: &str) -> String {
     value
         .chars()
         .map(|character| match character {

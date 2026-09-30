@@ -5,7 +5,7 @@ This document describes the implementation on `main`. Source code, migrations an
 ## Current release and platform
 
 - Development application version: `1.0.4`; latest published release: `1.0.3`.
-- Database schema: version 32, upgraded in place by ordered SQLite migrations.
+- Database schema: version 35, upgraded in place by ordered SQLite migrations.
 - Desktop UI: Rust with `eframe`/`egui`.
 - Persistence: SQLite through `rusqlite` (bundled SQLite).
 - Documents and integration: `printpdf`, PDF text extraction, ZIP import and SMTP via `lettre`.
@@ -72,7 +72,7 @@ The authoritative resolver searches every imported schedule for a date within th
 There are deliberately separate selections:
 
 - The Dashboard operational payroll period controls preparation, generation and period-associated email operations. It defaults to the schedule containing today, or the newest imported schedule when none contains today. Historical or future choices are explicit and can be reset with **Use current payroll period**.
-- Import Payroll Documents selects and classifies an individual file or ZIP first; a separate period chooser is used only for unresolved ordinary payslips with applicable stored candidates.
+- Import Payroll Documents validates and classifies an individual file or ZIP first; a separate period chooser is used only for unresolved ordinary payslips with applicable stored candidates. ZIP safety checks and independently staged entries allow partial success with per-entry failures and recovery details.
 - View Payroll Schedule has a payroll-year selector and is display-only.
 
 Normal UI labels use Payroll Week, date range and pay date. The database still uses `cycle_number` 1–13 as part of schedule identity; it is not the user-facing payroll week.
@@ -115,11 +115,13 @@ Generation and production timesheet email use the same selected-period employmen
 
 Timesheet preview and test operations require the operational period; P60/P45-only emails can operate without one. Test messages use configured test recipients and test markers rather than production recipient routing.
 
-Both production timesheet and payslip messages are sent from the employer address to the payroll department, with the employer copied and the PA blind-copied when an address is available. Payslip test email is different: it is sent to the configured PA test address.
+Email Payslips first lists all unknown P60/P45 histories, identifying PA, type, filename and year. Each document offers Already delivered externally or Needs sending; decisions persist immediately without changing `sent_at`. Unknown documents remain excluded if the user continues, and Cancel sends nothing while retaining saved decisions. New imports also start unknown. It then asks about additional notes and shows individual PA checkboxes using the existing production selection controls. Available recipients are initially selected; Select all available and Clear selection are supported. Rows show unsent document types, including P45/P60 supplements. A separate final confirmation lists the selected PAs and count; an empty selection cannot send. Only selected recipients are dispatched and receive their chosen notes. Existing sent/indeterminate protections remain in force.
+
+Production timesheets retain To payroll department, CC employer and BCC PA when available. Production payslips use a dedicated composer: To the selected PA, BCC the employer, no CC or payroll department recipient. Missing/invalid PA addresses are unavailable. One message contains that PA's eligible bundle. Ordinary payslip subjects are `Payslip for Week <PAYE week>` from the captured schedule, independent of the timesheet subject setting; configured payslip body, notes and signature are retained. Payslip test email uses only the configured PA test address.
 
 A production email batch captures the optional selected schedule key and material facts when it starts; timesheets require a schedule, standalone documents do not. Confirmation displays the Payroll Week/date/pay-date label and warns for historical or future periods. Before dispatch, the schedule and global selection are revalidated; changed, missing or materially re-imported schedules are refused. Ordinary cycle attachments and status use captured schedule facts; P60/P45 use their own document identities. Standalone wording never borrows the Dashboard period. Cancel sends nothing and changes no status or snapshot.
 
-Import Payroll Documents handles prep sheets, ordinary payslips, P60/P45 and general information together. Ordinary payslips resolve exact stored periods, require an applicable choice when ambiguous, or become unassociated PA archives when no period applies. P60/P45 use schema31 document IDs; P30/general information is never attached to PA payroll email. See [Import/storage details](ARCHITECTURE.md#schema31-payroll-documents) and [Email rules](DOMAIN.md#email).
+Import Payroll Documents handles prep sheets, ordinary payslips, PA-specific P60/P45 supplements and shared P30/general information together. Ordinary payslips resolve exact stored periods, require an applicable choice when ambiguous, or become unassociated PA archives when no period applies. Safe case/separator-normalised token matching must resolve exactly one PA. ZIP members are checked for unsafe paths, special/encrypted members, count/size/ratio limits and conflicts; valid members can succeed while failures are reported. P30/general information is stored in the information area and is never attached to PA payroll email. See [Import/storage details](ARCHITECTURE.md#payroll-document-import-and-delivery) and [Email rules](DOMAIN.md#email).
 
 ### PAYE filenames and year folders
 
@@ -146,3 +148,8 @@ Known limitations and deliberately deferred work include:
 - no arbitrary-file restore or automated backup retention/scheduling;
 - public-holiday weekly aggregate hours and individual holiday rows remain distinct existing representations; and
 - see [README limitations](../README.md#current-limitations) for packaging, access, annual-leave algorithms, CSV provenance, archival-payslip promotion and indeterminate-delivery recovery boundaries.
+
+
+### Payroll filing and explicit replacements
+
+Schema35 implements deliberate corrected-document replacement and complete safely identified PA document filing. Maintenance offers **Replace payroll document…** with identity/hash/history review and confirmation; old bytes/evidence remain retained. Corrected ordinary payslips are current and unsent; corrected supplements start unknown with NULL sent_at and link to the superseding registration. P45/P60 remain independent. MIME names for ordinary/P45/P60 attachments use canonical names built from structured identities; hash/revision basenames remain private. Active-to-Inactive transitions file registered/revised payroll documents and generated/historical on-disk timesheets directly into shared year-level Archived folders with no PA subfolder, updating durable readers/paths. Late documents for inactive PAs go straight to Archived. Repeated inactive saves only retry existing cleanup; reactivation never restores files. Shared information/CSV/P30 and external assets are excluded. The schema34 journal retains verified move pairs until post-commit source cleanup succeeds. [Implementation and platform limits](ARCHITECTURE.md#inactive-pa-filing-and-registered-supplement-repair).

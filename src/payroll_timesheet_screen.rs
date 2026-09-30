@@ -2227,7 +2227,16 @@ pub(crate) mod tests {
                 ),
             context: AppContext {
                 environment,
-                config: AppConfig::default(),
+                config: {
+                    let mut config = AppConfig::default();
+                    config.folders.pdf_output = directory.path().join("pdfs");
+                    config.folders.payslip_folder = directory.path().join("payslips");
+                    config.folders.payroll_information_folder =
+                        directory.path().join("information");
+                    config.folders.email_archive = directory.path().join("emails");
+                    config.folders.csv_import = directory.path().join("import");
+                    config
+                },
                 version: "test".to_string(),
             },
             repository: crate::repository::TimesheetRepository::new(open()),

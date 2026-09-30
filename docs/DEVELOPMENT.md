@@ -151,7 +151,7 @@ Keep filesystem and SQLite details in `BackupService`. A backup must use SQLite'
 
 ## Current document and maintenance boundaries
 
-Unified Import Payroll Documents classifies individual files/ZIPs before any optional ordinary-payslip period choice. P60/P45 use independent schema31 document IDs; information uses its own filename year or configured root. Preserve idempotency, archival exclusions and mixed-import partial-result reporting described in [Architecture](ARCHITECTURE.md#schema31-payroll-documents).
+Unified Import Payroll Documents classifies individual files/ZIPs before any optional ordinary-payslip period choice. P60/P45 use cycle-independent schema31 document IDs, extended by schema33 history reconciliation and schema35 supersession. P30 and other shared information use their own filename year or configured root. Preserve safe one-PA token matching, ZIP limits, idempotency, archival exclusions and mixed-import partial-result reporting described in [Architecture](ARCHITECTURE.md#payroll-document-import-and-delivery). Replacement, inactive filing and cleanup-journal rules are documented in the architecture's schema34/35 sections.
 
 Employer feature flags and PA sickness enablement are legacy storage, not feature gates. Structured sickness records report dates to Payroll; PA mileage remains the mileage gate. Maintenance layout, footer controls and user-facing rules are summarised in [README](../README.md#records-and-settings) and [Domain](DOMAIN.md#sickness-and-weekly-mileage). Do not reintroduce gates from old columns.
 

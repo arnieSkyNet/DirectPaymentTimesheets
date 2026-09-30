@@ -3,7 +3,7 @@ use rusqlite::{params, Connection, Result};
 use crate::models::PersonalAssistant;
 
 pub struct PersonalAssistantRepository {
-    connection: Connection,
+    pub(crate) connection: Connection,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -235,6 +235,13 @@ FROM personal_assistants
 
                 SELECT 1 FROM payroll_timesheet_email_status
                 WHERE personal_assistant_id = ?1
+
+                UNION ALL
+                SELECT 1 FROM imported_payroll_documents WHERE personal_assistant_id = ?1
+                UNION ALL
+                SELECT 1 FROM payroll_file_moves WHERE personal_assistant_id = ?1
+                UNION ALL
+                SELECT 1 FROM payslip_revisions WHERE personal_assistant_id = ?1
             )
             ",
             params![personal_assistant_id],

@@ -2,7 +2,7 @@ use std::path::Path;
 
 use rusqlite::{Connection, Result};
 
-pub const CURRENT_SCHEMA_VERSION: i64 = 32;
+pub const CURRENT_SCHEMA_VERSION: i64 = 35;
 
 pub fn initialise_database(database_path: &Path) -> Result<()> {
     let connection = Connection::open(database_path)?;
@@ -224,7 +224,52 @@ fn apply_migrations(connection: &Connection) -> Result<()> {
         migrate_to_version_32(connection)?;
     }
 
+    if current_version < 33 {
+        migrate_to_version_33(connection)?;
+    }
+    if current_version < 34 {
+        migrate_to_version_34(connection)?;
+    }
+    if current_version < 35 {
+        migrate_to_version_35(connection)?;
+    }
     Ok(())
+}
+
+fn migrate_to_version_35(connection: &Connection) -> Result<()> {
+    let tx = connection.unchecked_transaction()?;
+    tx.execute_batch("ALTER TABLE imported_payroll_documents ADD COLUMN superseded_by INTEGER REFERENCES imported_payroll_documents(id);
+        CREATE TABLE payslip_revisions (
+            id INTEGER PRIMARY KEY, personal_assistant_id INTEGER NOT NULL,
+            payroll_year TEXT NOT NULL, cycle_number INTEGER NOT NULL,
+            stored_path TEXT NOT NULL UNIQUE, sha256 TEXT NOT NULL CHECK(length(sha256)=64),
+            sent_at TEXT, is_current INTEGER NOT NULL CHECK(is_current IN (0,1)),
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        );
+        CREATE UNIQUE INDEX current_payslip_revision ON payslip_revisions(personal_assistant_id,payroll_year,cycle_number) WHERE is_current=1;
+        UPDATE schema_version SET version=35;")?;
+    tx.commit()
+}
+
+fn migrate_to_version_34(connection: &Connection) -> Result<()> {
+    let tx = connection.unchecked_transaction()?;
+    tx.execute_batch(
+        "CREATE TABLE payroll_file_moves (
+        source_path TEXT PRIMARY KEY,
+        destination_path TEXT NOT NULL UNIQUE,
+        personal_assistant_id INTEGER NOT NULL,
+        sha256 TEXT NOT NULL CHECK(length(sha256)=64)
+    ); UPDATE schema_version SET version=34;",
+    )?;
+    tx.commit()
+}
+
+fn migrate_to_version_33(connection: &Connection) -> Result<()> {
+    let transaction = connection.unchecked_transaction()?;
+    transaction.execute_batch("ALTER TABLE imported_payroll_documents ADD COLUMN history_state TEXT NOT NULL DEFAULT 'unknown' CHECK(history_state IN ('unknown', 'needs_sending', 'external', 'application'));
+        UPDATE imported_payroll_documents SET history_state = 'application' WHERE sent_at IS NOT NULL;
+        UPDATE schema_version SET version = 33;")?;
+    transaction.commit()
 }
 
 fn migrate_to_version_32(connection: &Connection) -> Result<()> {
@@ -1178,7 +1223,11 @@ fn table_has_column(connection: &Connection, table: &str, column: &str) -> Resul
 pub(crate) mod tests {
     pub(crate) fn remove_schema_32_fixture(db: &rusqlite::Connection) {
         db.execute_batch(
-            "ALTER TABLE payroll_timesheets DROP COLUMN payroll_department_notes;
+            "DROP TABLE payslip_revisions;
+            ALTER TABLE imported_payroll_documents DROP COLUMN superseded_by;
+            DROP TABLE payroll_file_moves;
+            ALTER TABLE imported_payroll_documents DROP COLUMN history_state;
+            ALTER TABLE payroll_timesheets DROP COLUMN payroll_department_notes;
             ALTER TABLE payroll_timesheets DROP COLUMN actual_in_lieu_hours;
             ALTER TABLE payroll_timesheets DROP COLUMN actual_in_lieu_updated_at;
             ALTER TABLE payroll_submissions DROP COLUMN payroll_department_notes;",

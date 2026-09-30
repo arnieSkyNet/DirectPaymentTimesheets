@@ -354,7 +354,7 @@ fn payroll_notes_schema32_upgrade_is_atomic_preserves_history_and_reopens() {
     assert_eq!(
         db.query_row::<i64, _, _>("SELECT version FROM schema_version", [], |r| r.get(0))
             .unwrap(),
-        32
+        crate::database::CURRENT_SCHEMA_VERSION
     );
     let values: (String,Option<f64>,Option<String>,f64,String,String) = db.query_row("SELECT payroll_department_notes,actual_in_lieu_hours,actual_in_lieu_updated_at,previous_cycle_hours,created_at,updated_at FROM payroll_timesheets",[],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?))).unwrap();
     assert_eq!(
@@ -383,7 +383,7 @@ fn payroll_notes_schema32_upgrade_is_atomic_preserves_history_and_reopens() {
         reopened
             .query_row::<i64, _, _>("SELECT version FROM schema_version", [], |r| r.get(0))
             .unwrap(),
-        32
+        crate::database::CURRENT_SCHEMA_VERSION
     );
 }
 

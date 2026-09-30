@@ -228,6 +228,23 @@ pub fn verify_candidate(
     Ok(())
 }
 
+/// Durable snapshot locations remain authoritative after filing or reactivation.
+pub fn attachment_path(
+    app: &crate::app::Application,
+    pa: i64,
+    schedule: &crate::payroll_schedule_repository::PayrollSchedule,
+) -> Result<PathBuf, Box<dyn std::error::Error>> {
+    let record = app
+        .payroll_timesheet_repository
+        .get_for_cycle_and_pa(&schedule.payroll_year, schedule.cycle_number, pa)?
+        .ok_or("No prepared timesheet exists")?;
+    let metadata = app
+        .payroll_worked_item_repository
+        .snapshot_metadata(record.id)?
+        .ok_or("No generated timesheet exists")?;
+    Ok(PathBuf::from(metadata.pdf_path))
+}
+
 pub fn verify_preview_or_test_attachment(
     repository: &PayrollWorkedItemRepository,
     payroll_timesheet_id: i64,

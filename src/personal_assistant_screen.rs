@@ -8,6 +8,7 @@ use crate::personal_assistant_repository::PersonalAssistantDeleteResult;
 
 pub struct PersonalAssistantScreen {
     assistants: Vec<PersonalAssistant>,
+    replacement: crate::payroll_replacement::ReplacementUi,
     annual_leave: crate::annual_leave_summary::AnnualLeaveSummaryUi,
     selected_index: Option<usize>,
     editing_assistant: Option<PersonalAssistant>,
@@ -33,6 +34,7 @@ impl PersonalAssistantScreen {
     pub fn new() -> Self {
         Self {
             assistants: Vec::new(),
+            replacement: Default::default(),
             annual_leave: Default::default(),
             selected_index: None,
             editing_assistant: None,
@@ -63,6 +65,7 @@ impl PersonalAssistantScreen {
             self.loaded = true;
         }
 
+        self.replacement.show(ui.ctx(), application);
         ui.heading("Personal Assistant Maintenance");
 
         if self.confirm_delete {
@@ -287,17 +290,17 @@ impl PersonalAssistantScreen {
 
                     ui.separator();
 
-                    ui.horizontal(|ui| {
+                    ui.horizontal_wrapped(|ui| {
                         if ui.button("Save Personal Assistant").clicked() {
-                            let result = if assistant.id == 0 {
-                                application.personal_assistant_repository.insert(assistant)
+                            let result: Result<Vec<String>, Box<dyn std::error::Error>> = if assistant.id == 0 {
+                                application.personal_assistant_repository.insert(assistant).map(|_| vec![]).map_err(Into::into)
                             } else {
-                                application.personal_assistant_repository.update(assistant)
+                                crate::payroll_archive_service::apply(application, assistant, true)
                             };
 
                             match result {
-                                Ok(()) => {
-                                    self.status_message = "Personal Assistant saved.".to_string();
+                                Ok(messages) => {
+                                    self.status_message = format!("Personal Assistant saved. {}", messages.join("\n"));
                                     self.annual_leave.invalidate();
                                     self.refresh_after_save = true;
                                     self.loaded = false;
@@ -306,6 +309,16 @@ impl PersonalAssistantScreen {
                                 Err(error) => {
                                     self.status_message = format!("Save failed: {}", error);
                                 }
+                            }
+                        }
+
+                        if assistant.id != 0 && ui.button("Replace payroll document…").clicked() {self.replacement.open(application,assistant.id);}
+
+                        if assistant.id != 0 && ui.button("Repair registered payroll filing").on_hover_text("Normalises registered supplements using saved PA details. Also finishes previously committed cleanup for this PA, which can remove verified obsolete ordinary-payslip source copies. Does not start archiving an active PA’s ordinary payslips.").clicked() {
+                            // Use saved identity/status, never unsaved employment edits.
+                            match application.personal_assistant_repository.get_all().map_err(|e| -> Box<dyn std::error::Error> { e.into() }).and_then(|pas| pas.into_iter().find(|pa|pa.id==assistant.id).ok_or_else(|| "PA no longer exists".into())).and_then(|pa|crate::payroll_archive_service::apply(application,&pa,false)) {
+                                Ok(messages) => self.status_message=messages.join("\n"),
+                                Err(error) => self.status_message=format!("Payroll filing repair failed: {error}"),
                             }
                         }
 
@@ -839,6 +852,7 @@ fn employment_controls(
     assistant: &mut PersonalAssistant,
     format: crate::date_utils::DateDisplayFormat,
 ) {
+    ui.label("Saving an Active-to-Inactive change files this PA’s managed timesheets and payroll documents into shared Archived folders. Reactivation leaves historical files there.");
     let mut active = assistant.employment_status.as_deref() == Some("Active");
 
     ui.horizontal_wrapped(|ui| {

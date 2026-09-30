@@ -4,8 +4,10 @@
 was published on 25 September 2026 from commit
 `7415778d4cde1482b70102289e5ece2a33f2a235`. Its ten downloadable packages comprise
 six Linux packages, two Windows installers (x86-64 and ARM64), and two macOS DMGs.
-The application schema is 32. Package versions come from Cargo.toml; references
-to 1.0.2 below describe earlier rehearsals and hardware tests.
+The published 1.0.3 release used schema 32. The current unreleased 1.0.4 source
+tree has schema 35; this does not change the version or contents of the historical
+release artifacts described here. Package versions come from Cargo.toml;
+references to 1.0.2 below describe earlier rehearsals and hardware tests.
 
 The packaging workflows remain artifact-only: they build and validate candidates,
 but do not publish GitHub releases. Publication is a separate authorised action.

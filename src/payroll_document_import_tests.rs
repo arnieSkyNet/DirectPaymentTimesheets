@@ -54,7 +54,7 @@ fn standalone(kind: &str) {
         .unwrap();
     assert_eq!(docs.len(), 1);
     assert_eq!(docs[0].document_year.as_deref(), Some("2025/26"));
-    assert!(docs[0].path.ends_with(format!("payslips/2025 to 2026/PA 1/{kind} End of Year Summary for year 2025-26 for Alder Example.pdf")));
+    assert!(docs[0].path.ends_with(format!("payslips/2025 to 2026/Archived/{kind} End of Year Summary for year 2025-26 for Alder Example.pdf")));
     let again = app
         .import_payroll_documents(&path, Some(&unrelated_period()))
         .unwrap();
@@ -192,16 +192,24 @@ fn mixed_cross_year_package_classification_and_routing_match_real_filename_model
         assert_eq!(docs[0].document_year.as_deref(), Some("2025/26"));
         let expected_directory = dir
             .path()
-            .join(format!("payslips/2025 to 2026/PA {id}"))
+            .join(if id == 1 {
+                "payslips/2025 to 2026/Archived"
+            } else {
+                "payslips/2025 to 2026"
+            })
             .canonicalize()
             .unwrap();
         assert!(docs[0].path.starts_with(expected_directory));
         // A P60 in the same package does not prove this payslip's year.
         assert!(dir
             .path()
-            .join(format!(
-                "payslips/PA {id}/Employee Payslip for Week 50 for {name}.pdf"
-            ))
+            .join(if id == 1 {
+                format!(
+                    "payslips/Archived/Unassociated - Employee Payslip for Week 50 for {name}.pdf"
+                )
+            } else {
+                format!("payslips/PA {id}/Employee Payslip for Week 50 for {name}.pdf")
+            })
             .is_file());
         assert!(!dir
             .path()
@@ -229,7 +237,7 @@ fn individual_documents_and_unknown_year_use_configured_root_without_cycle() {
     assert_eq!(doc.document_year, None);
     assert!(doc
         .path
-        .ends_with("payslips/PA 1/P45 Leaving details for Alder Example.pdf"));
+        .ends_with("payslips/Archived/P45 Leaving details for Alder Example.pdf"));
     let ordinary = dir
         .path()
         .join("Employee Payslip for Week 50 for Alder Example.pdf");
@@ -250,7 +258,7 @@ fn individual_documents_and_unknown_year_use_configured_root_without_cycle() {
 }
 
 #[test]
-fn supplement_filename_variant_is_not_assumed_to_be_a_duplicate() {
+fn supplement_filename_variant_requires_explicit_replacement() {
     let (dir, app) = fixture();
     let path = dir.path().join("variants.zip");
     zip(
@@ -260,19 +268,17 @@ fn supplement_filename_variant_is_not_assumed_to_be_a_duplicate() {
             entry("P60 for Alder Example [1].pdf"),
         ],
     );
+    let result = app.import_payroll_documents(&path, None).unwrap();
+    assert_eq!(result.supplements_imported, 1);
+    assert_eq!(result.failures.len(), 1);
+    assert!(result.failures[0].contains("Replace payroll document"));
     assert_eq!(
-        app.import_payroll_documents(&path, None)
+        app.payroll_timesheet_email_repository
+            .documents_for_pa(1)
             .unwrap()
-            .supplements_imported,
-        2
+            .len(),
+        1
     );
-    let docs = app
-        .payroll_timesheet_email_repository
-        .documents_for_pa(1)
-        .unwrap();
-    assert_eq!(docs.len(), 2);
-    assert_ne!(docs[0].id, docs[1].id);
-    assert_ne!(docs[0].sha256, docs[1].sha256);
 }
 
 #[test]
@@ -293,7 +299,7 @@ fn exact_explicit_year_and_provider_week_reuse_schedule_but_missing_or_ambiguous
     );
     assert!(dir
         .path()
-        .join("payslips/2025 to 2026/Payslip for Week 50 for Alder Example.pdf")
+        .join("payslips/2025 to 2026/Archived/Payslip for Week 50 for Alder Example.pdf")
         .is_file());
     zip(
         &path,
@@ -337,7 +343,7 @@ fn historical_year_known_archival_evidence_never_creates_email_or_settlement_sta
         (0, 1)
     );
     let archived = dir.path().join(
-        "payslips/2025 to 2026/PA 1/Employee Payslip for Week 50 for Alder Example 2025-26.pdf",
+        "payslips/2025 to 2026/Archived/Unassociated - Employee Payslip for Week 50 for Alder Example 2025-26.pdf",
     );
     assert!(archived.is_file());
     assert_eq!(
@@ -426,20 +432,20 @@ fn yearless_pa_documents_escape_configured_year_suffix_and_keep_known_years() {
             result.archival_payslips_imported,
             result.supplements_imported
         ),
-        (1, 4)
+        (1, 2)
     );
     for name in [
-        "Employee Payslip for Week 50 for Alder Example.pdf",
+        "Unassociated - Employee Payslip for Week 50 for Alder Example.pdf",
         "P60 for Alder Example.pdf",
         "P45 Leaving details for Alder Example.pdf",
     ] {
-        assert!(dir.path().join("payslips/PA 1").join(name).exists());
+        assert!(dir.path().join("payslips/Archived").join(name).exists());
     }
     for kind in ["P60", "P45"] {
-        assert!(dir
+        assert!(!dir
             .path()
             .join(format!(
-                "payslips/2025 to 2026/PA 1/{kind} 2025-26 for Alder Example.pdf"
+                "payslips/2025 to 2026/Archived/{kind} 2025-26 for Alder Example.pdf"
             ))
             .exists());
     }
@@ -448,13 +454,37 @@ fn yearless_pa_documents_escape_configured_year_suffix_and_keep_known_years() {
         before,
         format!("{:?}", app.personal_assistant_repository.get_all().unwrap())
     );
+    assert!(crate::payslip_delivery_service::select_payroll_documents(
+        &app.payroll_timesheet_email_repository,
+        1,
+        None
+    )
+    .unwrap()
+    .paths
+    .is_empty());
+    for doc in app
+        .payroll_timesheet_email_repository
+        .documents_for_pa(1)
+        .unwrap()
+    {
+        assert_eq!(doc.history_state, "unknown");
+        assert!(app
+            .payroll_timesheet_email_repository
+            .reconcile_document(doc.id, true)
+            .unwrap());
+    }
     let bundle = crate::payslip_delivery_service::select_payroll_documents(
         &app.payroll_timesheet_email_repository,
         1,
         None,
     )
     .unwrap();
-    assert_eq!(bundle.paths.len(), 4);
+    assert_eq!(bundle.paths.len(), 2);
+    assert_eq!(result.failures.len(), 2);
+    assert!(result
+        .failures
+        .iter()
+        .all(|e| e.contains("Replace payroll document")));
     assert!(!bundle.email_types.contains(&"payslip"));
 }
 
@@ -502,7 +532,7 @@ fn cycle_choice_contains_only_plausible_periods_and_cannot_contaminate_archival_
     );
     assert!(dir
         .path()
-        .join("payslips/2025 to 2026/Payslip for Week 50 for Alder Example.pdf")
+        .join("payslips/2025 to 2026/Archived/Payslip for Week 50 for Alder Example.pdf")
         .exists());
     assert!(dir
         .path()
@@ -794,11 +824,11 @@ fn partial_zip_reports_every_failure_and_keeps_database_and_files_consistent() {
     }
     assert!(!dir
         .path()
-        .join("payslips/PA 2/P45 for Birch Sample.pdf")
+        .join("payslips/P45 for Birch Sample.pdf")
         .exists());
     assert!(!dir
         .path()
-        .join("payslips/PA 3/P45 for Cedar Fixture.pdf")
+        .join("payslips/P45 for Cedar Fixture.pdf")
         .exists());
     assert!(!dir.path().join("payslips/PA 4").exists());
     fn no_temporary_files(path: &Path) {

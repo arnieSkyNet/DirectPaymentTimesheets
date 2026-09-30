@@ -1,6 +1,6 @@
 # Payroll evidence and reconciliation (schema 29)
 
-Schema29 is the evidence-migration milestone described here; the development application is v1.0.4/schema32.
+Schema29 is the evidence-migration milestone described here; the development application is v1.0.4/schema35.
 
 ## Sources and possible duplicates
 
@@ -19,6 +19,14 @@ Milestones are per PA/payroll period, not schedule-wide:
 1. Editable preparation uses current eligible evidence and explicit manual adjustments.
 2. A successfully emailed timesheet preserves submitted evidence. Differences are reviewed inside that period's preparation. **Correct / Resubmit Timesheet** explicitly opens a replacement preparation; **Carry correction forward** explicitly records the discrepancy instead. The replacement is generated and emailed through the existing normal workflow. Other submitted/settled PAs are skipped during batch PDF generation.
 3. A definitively Sent per-PA `email_type='payslip'` status establishes settlement. Indeterminate delivery remains protected. P60/P45 per-document delivery does not settle payroll or complete a schedule; see [schema31 documents](DATABASE-SCHEMA.md#schema-31-cycle-independent-pa-payroll-documents). Settled preparation cannot be silently recalculated or saved.
+
+## Payroll document history and corrections (schemas 31, 33 and 35)
+
+Ordinary payslips are cycle-associated and settle only through their per-PA cycle status. `payslip_revisions` retains each explicitly corrected file's path, SHA-256, current flag and delivery marker; replacement makes the new bytes current and unsent while preserving the old bytes and their prior sent/indeterminate evidence. The old marker continues to describe the old bytes, not the corrected ones.
+
+P45/P60 are separate PA-specific, cycle-independent documents. Their `history_state` is `unknown`, `external`, `needs_sending` or `application`; this declaration is distinct from `sent_at`, which records application transport evidence or an indeterminate attempt. New/corrected documents begin unknown with NULL `sent_at`. Reconciliation changes only `history_state`; only needs_sending plus NULL `sent_at` is eligible for production. Corrected documents link to the superseding registration, while older rows and hashes remain for history. P30 and other shared payroll-information documents have no PA delivery identity and are never part of a PA email bundle.
+
+Email Payslips selects recipients individually. For each selected PA, production sends one bundle To that PA, BCCs the employer, and has no CC or payroll-department recipient. A normal ordinary/combined subject is `Payslip for Week <PAYE week>` from the captured schedule and uses the configured payslip body; a standalone P45/P60 bundle uses neutral `Payroll documents - {Personal Assistant Name}` wording. MIME filenames use clean canonical names from structured document identity, not internal replacement revision/hash storage basenames. Delivery evidence is updated only by production transport; test-email sends do not update it.
 
 `payroll_submissions` and its item/week/leave/holiday child tables preserve submission history. Successful resubmission links to the prior submission with `supersedes_id`; the latest successful submission is the expected submitted baseline. Production submissions retain the attachment bytes and digest. Migration copies only retained submitted data; an unavailable legacy attachment or submission timestamp remains unavailable. There are no user-facing PDF revision numbers and normal filenames are unchanged.
 

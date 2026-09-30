@@ -213,7 +213,7 @@ impl SourceZip {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum PlannedKind {
+pub(crate) enum PlannedKind {
     Payslip,
     ArchivalPayslip,
     P60,
@@ -228,58 +228,6 @@ impl PlannedKind {
             self,
             Self::Payslip | Self::ArchivalPayslip | Self::P60 | Self::P45
         )
-    }
-}
-
-fn supplement_filename(filename: &str, token: &str, assistant: &PersonalAssistant) -> String {
-    let start = filename
-        .char_indices()
-        .find_map(|(index, character)| {
-            if character.eq_ignore_ascii_case(&'p')
-                && (index == 0
-                    || !filename[..index]
-                        .chars()
-                        .next_back()
-                        .unwrap()
-                        .is_alphanumeric())
-                && filename[index..]
-                    .get(..3)
-                    .is_some_and(|value| value.eq_ignore_ascii_case(token))
-                && filename[index + 3..]
-                    .chars()
-                    .next()
-                    .is_none_or(|c| !c.is_alphanumeric())
-            {
-                Some(index)
-            } else {
-                None
-            }
-        })
-        .expect("classified document has a type token");
-    let remainder = &filename[start..];
-    let full_name = format!(
-        "{} {}",
-        assistant.first_name.trim(),
-        assistant.surname.trim()
-    );
-    if contains_token_sequence(
-        &normalized_tokens(remainder),
-        &normalized_tokens(&full_name),
-    ) {
-        remainder.to_string()
-    } else {
-        let stem = Path::new(remainder).file_stem().unwrap().to_string_lossy();
-        let safe_name: String = full_name
-            .chars()
-            .map(|c| {
-                if matches!(c, '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|') {
-                    '_'
-                } else {
-                    c
-                }
-            })
-            .collect();
-        format!("{stem} for {safe_name}.pdf")
     }
 }
 
@@ -363,7 +311,7 @@ fn open_source_archive(
     }
 }
 
-fn classify_filename(
+pub(crate) fn classify_filename(
     name: &str,
     assistants: &[PersonalAssistant],
 ) -> Result<(PlannedKind, Option<i64>), Box<dyn Error>> {
@@ -429,6 +377,116 @@ fn classify_filename(
 /// Week numbers recur each year; they alone do not select a reliable schedule.
 /// Individual entry errors are collected by the importer, not raised by this
 /// period-selection scan; archive-level errors still prevent opening the source.
+/// Keep provider document metadata, replace every supplied PA-name span with one
+/// authoritative maintained name, and discard the unmatched type-closing bracket.
+pub(crate) fn clean_supplement_filename(
+    filename: &str,
+    kind: &str,
+    pa: &PersonalAssistant,
+) -> String {
+    clean_owned_document_filename(filename, kind, pa, pa)
+}
+
+/// Only for documents whose PA ownership has already been established. Accept
+/// the saved and edited names together, removing the longest matching spans.
+pub(crate) fn clean_owned_document_filename(
+    filename: &str,
+    kind: &str,
+    pa: &PersonalAssistant,
+    previous: &PersonalAssistant,
+) -> String {
+    let stem = Path::new(filename)
+        .file_stem()
+        .unwrap_or_default()
+        .to_string_lossy();
+    let mut ranges = Vec::new();
+    let mut start = None;
+    for (i, c) in stem.char_indices() {
+        if c.is_alphanumeric() {
+            if start.is_none() {
+                start = Some(i);
+            }
+        } else if let Some(begin) = start.take() {
+            ranges.push((begin, i));
+        }
+    }
+    if let Some(begin) = start {
+        ranges.push((begin, stem.len()));
+    }
+    let tokens: Vec<_> = ranges
+        .iter()
+        .map(|(a, b)| stem[*a..*b].to_lowercase())
+        .collect();
+    let token_index = tokens
+        .iter()
+        .position(|t| t.eq_ignore_ascii_case(kind))
+        .unwrap_or(0);
+    let given = normalized_tokens(&pa.first_name);
+    let surname = normalized_tokens(&pa.surname);
+    let previous_given = normalized_tokens(&previous.first_name);
+    let previous_surname = normalized_tokens(&previous.surname);
+    let mut removals = Vec::new();
+    let mut i = token_index + 1;
+    while i < tokens.len() {
+        if let Some(end) = (i + 1..=tokens.len()).rev().find(|end| {
+            name_tokens_match(&tokens[i..*end], &given, &surname)
+                || name_tokens_match(&tokens[i..*end], &previous_given, &previous_surname)
+        }) {
+            let begin = if i > token_index + 1 && tokens[i - 1] == "for" {
+                ranges[i - 1].0
+            } else {
+                ranges[i].0
+            };
+            removals.push((begin, ranges[end - 1].1));
+            i = end;
+        } else {
+            i += 1;
+        }
+    }
+    let begin = ranges.get(token_index).map(|r| r.1).unwrap_or(0);
+    let mut tail = stem[begin..].to_string();
+    for (a, b) in removals.into_iter().rev() {
+        tail.replace_range(a - begin..b - begin, "");
+    }
+    let tail = tail.trim_start_matches(|c: char| c.is_whitespace() || c == ')');
+    let tail = tail.split_whitespace().collect::<Vec<_>>().join(" ");
+    let tail = tail.trim_matches(|c: char| c.is_whitespace() || c == '-' || c == '_');
+    let metadata = if tail.is_empty() {
+        String::new()
+    } else {
+        format!(" {tail}")
+    };
+    let full = if kind.eq_ignore_ascii_case("payslip") {
+        // Match the existing canonical payslip generator/lookup exactly, even
+        // when maintained fields contain surrounding spaces.
+        format!("{} {}", pa.first_name, pa.surname)
+    } else {
+        format!("{} {}", pa.first_name.trim(), pa.surname.trim())
+    };
+    let name = crate::payroll_file_naming::sanitise_filename(&full);
+    let heading = if kind.eq_ignore_ascii_case("payslip") {
+        "Payslip".to_string()
+    } else {
+        kind.to_ascii_uppercase()
+    };
+    format!("{heading}{metadata} for {name}.pdf")
+}
+
+pub(crate) fn ordinary_payslip_owner(
+    name: &str,
+    assistants: &[PersonalAssistant],
+) -> Result<Option<i64>, Box<dyn Error>> {
+    if !normalized_tokens(name).iter().any(|t| t == "payslip") {
+        return Ok(None);
+    }
+    let (kind, pa) = classify_filename(name, assistants)?;
+    Ok(if kind == PlannedKind::Payslip {
+        pa
+    } else {
+        None
+    })
+}
+
 pub fn source_payslip_filenames(
     path: &Path,
     assistants: &[PersonalAssistant],
@@ -543,17 +601,13 @@ pub fn import_payroll_documents(
                     } else {
                         "p45"
                     };
-                    let destination =
-                        crate::payroll_file_naming::independent_pa_document_directory(
-                            payslip_root,
-                            assistant.id,
-                            year.as_deref(),
-                        )?
-                        .join(supplement_filename(
-                            &source_filename,
-                            token,
-                            assistant,
-                        ));
+                    let destination = crate::payroll_file_naming::supplement_destination(
+                        payslip_root,
+                        assistant,
+                        token,
+                        year.as_deref(),
+                        &source_filename,
+                    )?;
                     details.push(format!(
                         "{token} for {} {}: '{}'.",
                         assistant.first_name,
@@ -586,7 +640,23 @@ pub fn import_payroll_documents(
                         );
                         path
                     };
-                    destination
+                    if crate::payroll_file_naming::is_inactive(assistant) {
+                        let directory = if kind == PlannedKind::ArchivalPayslip {
+                            destination.parent().unwrap().parent().unwrap()
+                        } else {
+                            destination.parent().unwrap()
+                        };
+                        let filename = destination.file_name().unwrap().to_string_lossy();
+                        directory
+                            .join("Archived")
+                            .join(if kind == PlannedKind::ArchivalPayslip {
+                                format!("Unassociated - {filename}")
+                            } else {
+                                filename.into_owned()
+                            })
+                    } else {
+                        destination
+                    }
                 }
                 PlannedKind::ArchivalPayslip => {
                     unreachable!("only assigned after payslip classification")
@@ -655,9 +725,34 @@ pub fn import_payroll_documents(
                 if identical {
                     return Ok(false);
                 }
-            } else if entry.plan.destination.exists() {
+            } else {
+                // A reactivated PA may still have the same identity in Archived.
+                // Import never creates a second current ordinary payslip there.
+                if entry.plan.kind == PlannedKind::Payslip {
+                    let parent = entry.plan.destination.parent().unwrap();
+                    let other = if parent.file_name().is_some_and(|n| n == "Archived") {
+                        parent
+                            .parent()
+                            .unwrap()
+                            .join(entry.plan.destination.file_name().unwrap())
+                    } else {
+                        parent
+                            .join("Archived")
+                            .join(entry.plan.destination.file_name().unwrap())
+                    };
+                    if other.exists() {
+                        if !files_equal(&entry.temporary_path, &other)? {
+                            return Err("A different payslip exists in active/Archived filing. Use Replace payroll document in Personal Assistant Maintenance.".into());
+                        }
+                        if !entry.plan.destination.exists() {
+                            return Ok(false);
+                        }
+                    }
+                }
+            }
+            if entry.plan.kind.is_pa_document() && entry.plan.destination.exists() {
                 if !files_equal(&entry.temporary_path, &entry.plan.destination)? {
-                    return Err(format!("A different canonical payslip already exists at '{}'; it was not overwritten.", entry.plan.destination.display()).into());
+                    return Err(format!("A different canonical payslip already exists at '{}'; it was not overwritten. Use Replace payroll document in Personal Assistant Maintenance.", entry.plan.destination.display()).into());
                 }
                 register_staged_document(&entry, &register_document)?;
                 return Ok(false);
@@ -844,7 +939,11 @@ fn matching_assistants<'a>(
                             tokens[start - 1].as_str(),
                             "for" | "payslip" | "p45" | "p60"
                         );
-                    let ends_name = end == tokens.len()
+                    // A terminal provider revision marker is metadata, not a surname.
+                    // Keep the token available to full-name matching as well, so a
+                    // maintained name ending in Revised can still cause ambiguity.
+                    let ends_name = (end + 1 == tokens.len() && tokens[end] == "revised")
+                        || end == tokens.len()
                         || matches!(tokens[end].as_str(), "p45" | "p60" | "payslip")
                         || tokens[end..]
                             .iter()
@@ -1259,6 +1358,44 @@ mod tests {
     }
 
     #[test]
+    fn revised_provider_name_boundary_preserves_unique_middle_name_matching() {
+        let exact = "Test Employer - Employee Leaving Statement (P45) for year 2026-27 for Fictional Samplepa REVISED.pdf";
+        let pa = [named_assistant(1, "Fictional Middletest", "Samplepa")];
+        assert_eq!(
+            classify_filename(exact, &pa).unwrap(),
+            (PlannedKind::P45, Some(1))
+        );
+        assert_eq!(
+            classify_filename(&exact.replace("REVISED", "revised"), &pa).unwrap(),
+            (PlannedKind::P45, Some(1))
+        );
+        assert_eq!(
+            classify_filename(
+                "Test Employer - Employee Payslip for Week 26 for Fictional Samplepa.pdf",
+                &pa
+            )
+            .unwrap(),
+            (PlannedKind::Payslip, Some(1))
+        );
+        for name in [
+            "P45 for Fictional Samplepa Jones REVISED.pdf",
+            "P45 for Other Fictional Samplepa REVISED.pdf",
+            "P45 for Fictional Unknown Samplepa REVISED.pdf",
+            "P45 for Fictional Samplepa REVISED Jones.pdf",
+            "P45 for Fictional Samplepa REVISEDNESS.pdf",
+            "P45 P60 for Fictional Samplepa REVISED.pdf",
+        ] {
+            assert!(classify_filename(name, &pa).is_err(), "{name}");
+        }
+        for other in [
+            named_assistant(2, "Fictional Other", "Samplepa"),
+            named_assistant(2, "Fictional", "Samplepa Revised"),
+        ] {
+            assert!(classify_filename(exact, &[pa[0].clone(), other]).is_err());
+        }
+    }
+
+    #[test]
     fn first_surname_and_middle_names_match_conservatively() {
         for (given, filename) in [
             ("Fictional", "Payslip FICTIONAL_SAMPLEPA.pdf"),
@@ -1399,12 +1536,10 @@ mod tests {
         assert!(ordinary.ends_with("2026 to 2027/Payslip for Week 22 for Cedar Fixture.pdf"));
         assert_eq!(fs::read(ordinary).unwrap(), b"%PDF-1.4 payslip");
         assert!(payslips
-            .join(
-                "2025 to 2026/PA 1/P60 End of Year Summary for year 2025-26 for CEDar_Fixture.pdf"
-            )
+            .join("2025 to 2026/P60 End of Year Summary for year 2025-26 for Cedar Fixture.pdf")
             .is_file());
         assert!(payslips
-            .join("PA 1/P45 Leaving details for Cedar Fixture.pdf")
+            .join("P45 Leaving details for Cedar Fixture.pdf")
             .is_file());
         let info_year = information.clone();
         for name in general.iter().copied().chain([p30, p30_variant]) {
@@ -1453,8 +1588,7 @@ mod tests {
             assert!(root
                 .path()
                 .join(format!(
-                    "PA {}/{token} Provider details for Cedar Fixture.pdf",
-                    pa.id
+                    "Archived/{token} Provider details for Cedar Fixture.pdf"
                 ))
                 .is_file());
             assert!(!root.path().join("PA 999").exists());
@@ -1528,9 +1662,7 @@ mod tests {
             };
             assert_eq!(run().unwrap().supplements_imported, 1);
             assert_eq!(run().unwrap().supplements_already_present, 1);
-            let path = root
-                .path()
-                .join(format!("PA 1/{token} for Cedar Fixture.pdf"));
+            let path = root.path().join(format!("{token} for Cedar Fixture.pdf"));
             create_zip(
                 &zip,
                 &[
