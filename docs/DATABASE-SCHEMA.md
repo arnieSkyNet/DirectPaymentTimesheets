@@ -2,7 +2,7 @@
 
 ## Scope and versioning
 
-This is the implemented SQLite schema at version 35 (development application version `1.0.4`). It is derived from `create_schema` and migrations in `src/database.rs`; those migrations are authoritative.
+This is the implemented SQLite schema at version 35 (development application version `1.0.5`). It is derived from `create_schema` and migrations in `src/database.rs`; those migrations are authoritative.
 
 `schema_version` contains the current integer version. A new database begins at version 1 and receives each ordered migration through `CURRENT_SCHEMA_VERSION` 35. Existing databases are upgraded in place. Migration 23 removes the short-lived revision-only tables introduced by migration 22 while retaining the operational legacy snapshot tables. Migration 24 adds an explicit contracted/variable hours basis to effective-dated Personal Assistant contracted-hours history while preserving existing records as contracted.
 
@@ -400,7 +400,7 @@ The table checks `end_date >= start_date`; repository validation additionally re
 
 ## Schema 31: cycle-independent PA payroll documents
 
-Migration 31 creates the following table and index in one transaction and advances `schema_version` to 31. It does not read, rewrite or migrate `payroll_timesheet_email_status`: existing payslip/timesheet rows and settlement semantics remain unchanged. There are no historical P60/P45 delivery associations to invent or backfill. The current development application is 1.0.4; schema 31 is the introduction point for this table, subsequently extended by schemas 33 and 35 below.
+Migration 31 creates the following table and index in one transaction and advances `schema_version` to 31. It does not read, rewrite or migrate `payroll_timesheet_email_status`: existing payslip/timesheet rows and settlement semantics remain unchanged. There are no historical P60/P45 delivery associations to invent or backfill. The current development application is 1.0.5; schema 31 is the introduction point for this table, subsequently extended by schemas 33 and 35 below.
 
 ### `imported_payroll_documents`
 

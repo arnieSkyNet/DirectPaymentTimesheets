@@ -1,6 +1,6 @@
 # Payroll evidence and reconciliation (schema 29)
 
-Schema29 is the evidence-migration milestone described here; the development application is v1.0.4/schema35.
+Schema29 is the evidence-migration milestone described here; the development application is v1.0.5/schema35.
 
 ## Sources and possible duplicates
 

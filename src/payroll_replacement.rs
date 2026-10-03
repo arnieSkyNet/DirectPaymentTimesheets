@@ -822,7 +822,7 @@ mod tests {
         .is_err());
     }
     #[test]
-    fn timesheet_registry_failure_rolls_back_all_files_and_employment() {
+    fn timesheet_registry_failure_keeps_inactive_and_original_file() {
         let (_dir, app) = fixture();
         seed(&app, "p45");
         let db = &app.payroll_timesheet_email_repository.connection;
@@ -845,13 +845,16 @@ mod tests {
             .unwrap()
             .remove(0);
         pa.employment_status = Some("Inactive".into());
-        assert!(crate::payroll_archive_service::apply(&app, &pa, true).is_err());
+        assert!(crate::payroll_archive_service::apply(&app, &pa, true)
+            .unwrap()
+            .join("\n")
+            .contains("fixture"));
         assert!(sheet.exists());
         assert_eq!(
             app.personal_assistant_repository.get_all().unwrap()[0]
                 .employment_status
                 .as_deref(),
-            Some("Active")
+            Some("Inactive")
         );
         assert_eq!(
             db.query_row::<String, _, _>(
@@ -915,10 +918,16 @@ mod tests {
             .join("Archived/Unassociated - Synthetic Example.pdf")
             .is_file());
         assert!(!sheet.exists() && !ordinary.exists());
-        assert!(unrelated.exists());
+        assert!(!unrelated.exists());
+        assert!(unrelated
+            .parent()
+            .unwrap()
+            .join("Archived")
+            .join(unrelated.file_name().unwrap())
+            .exists());
     }
     #[test]
-    fn genuine_provider_revised_p45_and_week26_replacements_use_shared_matching() {
+    fn fictional_provider_revised_p45_and_week26_replacements_use_shared_matching() {
         // Exact reported filenames, with synthetic bytes and an isolated database.
         let (dir, app) = fixture();
         app.payroll_timesheet_email_repository.connection.execute_batch("UPDATE personal_assistants SET first_name='Fictional Middletest',surname='Samplepa' WHERE id=1;

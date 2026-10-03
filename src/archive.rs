@@ -311,6 +311,23 @@ fn open_source_archive(
     }
 }
 
+/// Ownership for existing managed documents uses the ZIP import name matcher.
+pub(crate) fn managed_document_owner(
+    filename: &str,
+    assistants: &[PersonalAssistant],
+) -> Result<Option<i64>, Box<dyn Error>> {
+    let normalized = normalized_assistants(assistants)?;
+    // Generated timesheets delimit their PA name from the date/week code.
+    let name = filename.strip_prefix("Timesheet - ")
+        .and_then(|s| s.rsplit_once(" - ").map(|(name, _)| name))
+        .unwrap_or(filename);
+    let matches = matching_assistants(name, &normalized);
+    if matches.len() > 1 {
+        return Err(format!("Ambiguous payroll document ownership: {filename}").into());
+    }
+    Ok(matches.first().map(|(pa, _)| pa.id))
+}
+
 pub(crate) fn classify_filename(
     name: &str,
     assistants: &[PersonalAssistant],
@@ -1309,18 +1326,18 @@ mod tests {
                 "{filename}"
             );
         }
-        let anne = [named_assistant(2, "Anne Marie", "Van Dyke")];
+        let anne = [named_assistant(2, "Testgiven Middleone", "Van Testfamily")];
         for filename in [
-            "Payslip Anne Van Dyke-Smith.pdf",
-            "P45 for Anne Van Dyke Smith.pdf",
-            "Payslip Anne Wrong Van Dyke.pdf",
+            "Payslip Testgiven Van Testfamily-Smith.pdf",
+            "P45 for Testgiven Van Testfamily Smith.pdf",
+            "Payslip Testgiven Wrong Van Testfamily.pdf",
         ] {
             assert!(classify_filename(filename, &anne).is_err(), "{filename}");
         }
         for filename in [
-            "Payslip Anne Van Dyke.pdf",
-            "P60 for Anne Marie Van-Dyke.pdf",
-            "Anne Van Dyke.pdf",
+            "Payslip Testgiven Van Testfamily.pdf",
+            "P60 for Testgiven Middleone Van-Testfamily.pdf",
+            "Testgiven Van Testfamily.pdf",
         ] {
             assert_eq!(
                 classify_filename(filename, &anne).unwrap().1,
@@ -1448,16 +1465,16 @@ mod tests {
                 .1,
             Some(2)
         );
-        let pas = [named_assistant(1, "Anne Marie", "Van Dyke")];
+        let pas = [named_assistant(1, "Testgiven Middleone", "Van Testfamily")];
         assert_eq!(
-            classify_filename("Payslip Anne Van Dyke.pdf", &pas)
+            classify_filename("Payslip Testgiven Van Testfamily.pdf", &pas)
                 .unwrap()
                 .1,
             Some(1)
         );
-        assert!(classify_filename("Payslip Anne Dyke.pdf", &pas).is_err());
+        assert!(classify_filename("Payslip Testgiven Testfamily.pdf", &pas).is_err());
         assert_eq!(
-            classify_filename("Anne Van Dyke report for Anne Van Dyke.pdf", &pas)
+            classify_filename("Testgiven Van Testfamily report for Testgiven Van Testfamily.pdf", &pas)
                 .unwrap()
                 .0,
             PlannedKind::Information

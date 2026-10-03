@@ -4,7 +4,7 @@ use crate::{
     app::Application, models::PersonalAssistant, payroll_document_repository::file_digest,
     payroll_file_naming as naming, personal_assistant_repository::PersonalAssistantRepository,
 };
-use rusqlite::{params, Connection};
+use rusqlite::{params, Connection, OptionalExtension};
 use std::{
     collections::BTreeMap,
     error::Error,
@@ -87,6 +87,26 @@ pub(crate) fn verified(path: &Path, digest: &str) -> Result<()> {
     }
     Ok(())
 }
+// Non-PDF managed documents still receive path and byte-integrity protection.
+fn verified_managed(path: &Path, digest: &str) -> Result<()> {
+    if path
+        .extension()
+        .is_some_and(|e| e.eq_ignore_ascii_case("pdf"))
+    {
+        return verified(path, digest);
+    }
+    verified_bytes(path, digest)
+}
+
+/// Verify a filing copy against the bytes observed now, not historical evidence.
+fn verified_bytes(path: &Path, digest: &str) -> Result<()> {
+    checked_path(path)?;
+    if file_digest(path)? != digest {
+        return Err(format!("Payroll file changed: {}", path.display()).into());
+    }
+    Ok(())
+}
+
 fn key(path: &Path) -> String {
     path.to_string_lossy().to_lowercase()
 }
@@ -606,6 +626,15 @@ fn plan_timesheets(app: &Application, pa: &PersonalAssistant, moves: &mut Vec<Mo
 
 /// Retries only journalled cleanup. A changed source/destination is never deleted.
 fn cleanup(db: &Connection, pa: i64, bases: &[PathBuf]) -> Result<()> {
+    cleanup_with_verifier(db, pa, bases, verified_managed)
+}
+
+fn cleanup_with_verifier(
+    db: &Connection,
+    pa: i64,
+    bases: &[PathBuf],
+    verify: fn(&Path, &str) -> Result<()>,
+) -> Result<()> {
     let pending=db.prepare("SELECT source_path,destination_path,sha256 FROM payroll_file_moves WHERE personal_assistant_id=?1 ORDER BY source_path")?.query_map([pa],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,String>(2)?)))?.collect::<rusqlite::Result<Vec<_>>>()?;
     let mut failures = Vec::new();
     for (source, destination, digest) in pending {
@@ -627,10 +656,10 @@ fn cleanup(db: &Connection, pa: i64, bases: &[PathBuf]) -> Result<()> {
                         .into(),
                 );
             }
-            verified(Path::new(&destination), &digest)?;
+            verify(Path::new(&destination), &digest)?;
             checked_path(Path::new(&source))?;
             if Path::new(&source).exists() {
-                verified(Path::new(&source), &digest)?;
+                verify(Path::new(&source), &digest)?;
                 fs::remove_file(&source)?;
                 sync_directory(Path::new(&source).parent().unwrap())?;
             }
@@ -681,28 +710,64 @@ pub fn apply(app: &Application, pa: &PersonalAssistant, save: bool) -> Result<Ve
         // Ordinary active edits/reactivation retain the existing save behaviour;
         // they do not depend on archive availability or initiate file repair.
         repository.update(pa)?;
-        let bases = managed_bases(app)?;
         let mut messages = Vec::new();
-        if let Err(e) = cleanup(&repository.connection, pa.id, &bases) {
+        if let Err(e) =
+            managed_bases(app).and_then(|bases| cleanup(&repository.connection, pa.id, &bases))
+        {
             messages.push(format!("Saved; cleanup remains pending: {e}"));
+        }
+        return Ok(messages);
+    }
+    if transition {
+        // The requested PA details are the primary save. Filing can never roll this back.
+        repository.update(pa)?;
+        let mut messages = Vec::new();
+        if let Err(e) = archive_existing(app, pa, &previous, &repository, &mut messages) {
+            messages.push(format!(
+                "Personal Assistant saved; payroll archiving failed: {e}"
+            ));
         }
         return Ok(messages);
     }
     let bases = managed_bases(app)?;
     cleanup(&repository.connection, pa.id, &bases)?;
-    // Acquire the write lock before planning/publication; status/path changes share it.
+    // Keep existing rename/repair planning protected by the write lock.
     let tx = rusqlite::Transaction::new_unchecked(
         &repository.connection,
         rusqlite::TransactionBehavior::Immediate,
     )?;
     let moves = plan(app, pa, &previous, transition, rename)?;
+    file_moves(&repository, pa, &bases, &moves, save, Some(tx), false)
+}
+
+fn file_moves(
+    repository: &PersonalAssistantRepository,
+    pa: &PersonalAssistant,
+    bases: &[PathBuf],
+    moves: &[Move],
+    save: bool,
+    transaction: Option<rusqlite::Transaction<'_>>,
+    deactivation: bool,
+) -> Result<Vec<String>> {
+    let tx = match transaction {
+        Some(tx) => tx,
+        None => rusqlite::Transaction::new_unchecked(
+            &repository.connection,
+            rusqlite::TransactionBehavior::Immediate,
+        )?,
+    };
+    let verify = if deactivation {
+        verified_bytes
+    } else {
+        verified_managed
+    };
     let mut published = Vec::new();
     let attempt = (|| -> Result<()> {
         if save {
             repository.update(pa)?;
         }
-        for m in &moves {
-            verified(&m.source, &m.digest)?;
+        for m in moves {
+            verify(&m.source, &m.digest)?;
             checked_path(&m.destination)?;
             fs::create_dir_all(m.destination.parent().unwrap())?;
             if !m.destination.exists() {
@@ -711,14 +776,22 @@ pub fn apply(app: &Application, pa: &PersonalAssistant, save: bool) -> Result<Ve
                     tempfile::NamedTempFile::new_in(m.destination.parent().unwrap())?;
                 std::io::copy(&mut fs::File::open(&m.source)?, &mut temporary)?;
                 temporary.as_file().sync_all()?;
-                verified(temporary.path(), &m.digest)?;
+                verify(temporary.path(), &m.digest)?;
                 fs::hard_link(temporary.path(), &m.destination)?;
                 published.push(m.destination.clone());
             }
-            verified(&m.destination, &m.digest)?;
+            verify(&m.destination, &m.digest)?;
             sync_directory(m.destination.parent().unwrap())?;
             if let Some(id) = m.document_id {
-                if tx.execute("UPDATE imported_payroll_documents SET stored_path=?1 WHERE id=?2 AND stored_path=?3 AND sha256=?4",params![m.destination.to_str().ok_or("Non-UTF8 path")?,id,m.source.to_str().ok_or("Non-UTF8 path")?,m.digest])?!=1 { return Err("Document registration changed during filing".into()); }
+                let updated = if deactivation {
+                    // Only location changes: retain the historical digest and delivery facts.
+                    tx.execute("UPDATE imported_payroll_documents SET stored_path=?1 WHERE id=?2 AND stored_path=?3 AND personal_assistant_id=?4",params![m.destination.to_str(),id,m.source.to_str(),pa.id])?
+                } else {
+                    tx.execute("UPDATE imported_payroll_documents SET stored_path=?1 WHERE id=?2 AND stored_path=?3 AND sha256=?4",params![m.destination.to_str().ok_or("Non-UTF8 path")?,id,m.source.to_str().ok_or("Non-UTF8 path")?,m.digest])?
+                };
+                if updated != 1 {
+                    return Err("Document registration changed during filing".into());
+                }
             }
             // Location metadata changes; hashes and historical delivery facts do not.
             for table in [
@@ -747,7 +820,7 @@ pub fn apply(app: &Application, pa: &PersonalAssistant, save: bool) -> Result<Ve
         )];
         for path in published {
             let digest = &moves.iter().find(|m| m.destination == path).unwrap().digest;
-            if let Err(e) = verified(&path, digest).and_then(|_| Ok(fs::remove_file(&path)?)) {
+            if let Err(e) = verify(&path, digest).and_then(|_| Ok(fs::remove_file(&path)?)) {
                 failures.push(format!(
                     "Extra unregistered copy retained at {}: {e}",
                     path.display()
@@ -760,10 +833,160 @@ pub fn apply(app: &Application, pa: &PersonalAssistant, save: bool) -> Result<Ve
         "{} payroll file(s) filed; document delivery history preserved.",
         moves.len()
     )];
-    if let Err(e) = cleanup(&repository.connection, pa.id, &bases) {
+    if let Err(e) = cleanup_with_verifier(&repository.connection, pa.id, bases, verify) {
         messages.push(format!("Saved successfully, but {e}. Use Repair registered payroll filing to retry cleanup; do not delete either copy manually."));
     }
     Ok(messages)
+}
+
+/// Scan actual managed files, rather than requiring every historical registry path.
+fn archive_existing(
+    app: &Application,
+    pa: &PersonalAssistant,
+    previous: &PersonalAssistant,
+    repository: &PersonalAssistantRepository,
+    messages: &mut Vec<String>,
+) -> Result<()> {
+    let bases = managed_bases(app)?;
+    if let Err(e) = cleanup(&repository.connection, pa.id, &bases) {
+        messages.push(format!(
+            "Personal Assistant saved; cleanup remains pending: {e}"
+        ));
+    }
+    let mut assistants = repository.get_all()?;
+    // Match the saved-before-edit identity as well when names changed during deactivation.
+    assistants.retain(|p| p.id != pa.id);
+    assistants.push(previous.clone());
+    let db = &repository.connection;
+    let mut seen = std::collections::HashSet::new();
+    let mut filed_count = 0;
+    for base in &bases {
+        for year in year_directories(base)? {
+            for directory in [year.clone(), year.join(format!("PA {}", pa.id))] {
+                if !directory.try_exists()? {
+                    continue;
+                }
+                checked_path(&directory)?;
+                for entry in fs::read_dir(&directory)? {
+                    let source = entry?.path();
+                    let attempt = (|| -> Result<()> {
+                        let name = source
+                            .file_name()
+                            .and_then(|n| n.to_str())
+                            .ok_or("Invalid payroll filename")?;
+                        let registered_owner: Option<i64> = db.query_row("SELECT personal_assistant_id FROM imported_payroll_documents WHERE stored_path=?1 UNION SELECT personal_assistant_id FROM payslip_revisions WHERE stored_path=?1 UNION SELECT p.personal_assistant_id FROM payroll_timesheet_snapshot_states s JOIN payroll_timesheets p ON p.id=s.payroll_timesheet_id WHERE s.pdf_path=?1 UNION SELECT p.personal_assistant_id FROM payroll_submissions s JOIN payroll_timesheets p ON p.id=s.payroll_timesheet_id WHERE s.pdf_path=?1",[source.to_str()],|r|r.get(0)).optional()?;
+                        let owner = if registered_owner.is_some() {
+                            registered_owner
+                        } else {
+                            let owner = crate::archive::managed_document_owner(name, &assistants)?;
+                            if owner == Some(pa.id) {
+                                owner
+                            } else {
+                                let mut final_assistants = assistants.clone();
+                                *final_assistants.iter_mut().find(|p| p.id == pa.id).unwrap() =
+                                    pa.clone();
+                                crate::archive::managed_document_owner(name, &final_assistants)?
+                            }
+                        };
+                        if owner != Some(pa.id) {
+                            return Ok(());
+                        }
+                        checked_path(&source)?;
+                        if !source.is_file() || !seen.insert(normalised_path(&source)?) {
+                            return Ok(());
+                        }
+                        let digest = file_digest(&source)?;
+                        // Existing evidence is never silently re-hashed or reassigned.
+                        let foreign: bool = db.query_row("SELECT EXISTS(SELECT 1 FROM imported_payroll_documents WHERE stored_path=?1 AND personal_assistant_id<>?2 UNION SELECT 1 FROM payslip_revisions WHERE stored_path=?1 AND personal_assistant_id<>?2 UNION SELECT 1 FROM payroll_timesheet_snapshot_states s JOIN payroll_timesheets p ON p.id=s.payroll_timesheet_id WHERE s.pdf_path=?1 AND p.personal_assistant_id<>?2 UNION SELECT 1 FROM payroll_submissions s JOIN payroll_timesheets p ON p.id=s.payroll_timesheet_id WHERE s.pdf_path=?1 AND p.personal_assistant_id<>?2)", params![source.to_str(),pa.id], |r|r.get(0))?;
+                        if foreign {
+                            return Err("Payroll file belongs to another PA".into());
+                        }
+                        // Deactivation files the actual bytes; stored historical hashes remain untouched.
+                        let record: Option<(String, Option<String>)> = db.query_row("SELECT document_type,document_year FROM imported_payroll_documents WHERE stored_path=?1",[source.to_str()],|r|Ok((r.get(0)?,r.get(1)?))).optional()?;
+                        let stored_year: Option<String> = db.query_row("SELECT payroll_year FROM payslip_revisions WHERE stored_path=?1 UNION SELECT p.payroll_year FROM payroll_timesheet_snapshot_states s JOIN payroll_timesheets p ON p.id=s.payroll_timesheet_id WHERE s.pdf_path=?1 UNION SELECT p.payroll_year FROM payroll_submissions s JOIN payroll_timesheets p ON p.id=s.payroll_timesheet_id WHERE s.pdf_path=?1",[source.to_str()],|r|r.get(0)).optional()?;
+                        let target_year = if year == *base {
+                            record
+                                .as_ref()
+                                .and_then(|(_, y)| y.as_ref())
+                                .or(stored_year.as_ref())
+                                .map(|y| {
+                                    naming::payroll_year_directory_name(y).map(|y| base.join(y))
+                                })
+                                .transpose()?
+                                .unwrap_or_else(|| year.clone())
+                        } else {
+                            year.clone()
+                        };
+                        let filename = if let Some((kind, _)) = record {
+                            crate::archive::clean_owned_document_filename(name, &kind, pa, previous)
+                        } else if directory != year {
+                            format!(
+                                "Unassociated - {}",
+                                name.strip_prefix("Unassociated - ").unwrap_or(name)
+                            )
+                        } else if pa.first_name != previous.first_name
+                            || pa.surname != previous.surname
+                        {
+                            crate::archive::clean_owned_document_filename(
+                                name, "payslip", pa, previous,
+                            )
+                        } else {
+                            name.to_string()
+                        };
+                        let destination = target_year.join("Archived").join(filename);
+                        checked_path(&destination)?;
+                        if let Some(parent) = destination.parent().filter(|p| p.exists()) {
+                            if fs::read_dir(parent)?.any(|e| {
+                                e.map(|e| key(&e.path()) == key(&destination))
+                                    .unwrap_or(true)
+                            }) {
+                                return Err(format!(
+                                    "Archive destination conflict: {}",
+                                    destination.display()
+                                )
+                                .into());
+                            }
+                        }
+                        let registered_destination: bool = db.query_row("SELECT EXISTS(SELECT 1 FROM imported_payroll_documents WHERE stored_path=?1 UNION SELECT 1 FROM payslip_revisions WHERE stored_path=?1 UNION SELECT 1 FROM payroll_timesheet_snapshot_states WHERE pdf_path=?1 UNION SELECT 1 FROM payroll_submissions WHERE pdf_path=?1)",[destination.to_str()],|r|r.get(0))?;
+                        if registered_destination {
+                            return Err("Archive destination is already registered".into());
+                        }
+                        let document_id = db
+                            .query_row(
+                                "SELECT id FROM imported_payroll_documents WHERE stored_path=?1",
+                                [source.to_str()],
+                                |r| r.get(0),
+                            )
+                            .optional()?;
+                        let movement = Move {
+                            source: source.clone(),
+                            destination,
+                            digest,
+                            document_id,
+                        };
+                        let filing_messages =
+                            file_moves(repository, pa, &bases, &[movement], false, None, true)?;
+                        filed_count += 1;
+                        // Each move reports success; publish one total for this save.
+                        messages.extend(filing_messages.into_iter().skip(1));
+                        Ok(())
+                    })();
+                    if let Err(e) = attempt {
+                        messages.push(format!(
+                            "Personal Assistant saved; payroll archiving failed for {}: {e}",
+                            source.display()
+                        ));
+                    }
+                }
+            }
+        }
+    }
+    if filed_count > 0 {
+        messages.push(format!(
+            "{filed_count} payroll file(s) filed; document delivery history preserved."
+        ));
+    }
+    Ok(())
 }
 
 #[cfg(test)]

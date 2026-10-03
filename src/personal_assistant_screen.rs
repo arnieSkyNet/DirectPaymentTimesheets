@@ -675,12 +675,11 @@ impl PersonalAssistantScreen {
         match application.personal_assistant_repository.get_all() {
             Ok(assistants) => {
                 self.assistants = assistants;
-                self.status_message = if refresh_after_save {
-                    "Personal Assistant saved."
-                } else {
-                    "Personal Assistants loaded."
+                if refresh_after_save && !self.status_message.starts_with("Personal Assistant saved.") {
+                    self.status_message = "Personal Assistant saved.".to_string();
+                } else if !refresh_after_save {
+                    self.status_message = "Personal Assistants loaded.".to_string();
                 }
-                .to_string();
             }
 
             Err(error) => {
@@ -1006,6 +1005,7 @@ fn historical_records_message(assistant_name: &str) -> String {
 #[cfg(test)]
 mod save_status_tests {
     use super::*;
+    include!("personal_assistant_status_tests.rs");
 
     #[test]
     fn details_heading_uses_current_names_without_mutating_them() {

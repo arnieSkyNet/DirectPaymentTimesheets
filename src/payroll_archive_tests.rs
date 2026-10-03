@@ -1,3 +1,4 @@
+// All PA identities and document contents in this file are fictional fixtures.
 use super::*;
 use crate::payroll_timesheet_email_repository::EmailDeliveryState;
 
@@ -272,52 +273,30 @@ fn registered_legacy_repair_preserves_every_history_state_and_leaves_active_pays
 }
 
 #[test]
-fn collisions_are_reported_together_and_no_file_or_status_is_changed() {
-    let (_dir, app) = fixture();
-    let sources = [
-        register(&app, 4, "p45", "2026/27", "P45 for Fictional Samplepa.pdf"),
-        {
-            // A legacy duplicate predates the explicit replacement workflow.
-            let path = app
-                .context
-                .config
-                .folders
-                .payslip_folder
-                .join("2026 to 2027/PA 4/P45 for Fictional Middletest Samplepa.pdf");
-            pdf(&path, b"%PDF-1.4 legacy duplicate");
-            app.payroll_timesheet_email_repository.connection.execute("INSERT INTO imported_payroll_documents(personal_assistant_id,document_type,stored_path,sha256,document_year) VALUES(4,'p45',?1,?2,'2026/27')",params![path.to_str(),file_digest(&path).unwrap()]).unwrap();
-            path
-        },
-    ];
-    let before = facts(&app, 4);
-    let mut assistant = pa(&app, 4);
-    assistant.employment_status = Some("Inactive".into());
-    let error = apply(&app, &assistant, true).unwrap_err().to_string();
-    for source in &sources {
-        assert!(error.contains(&source.display().to_string()));
-        assert!(source.exists());
-    }
-    assert_eq!(facts(&app, 4), before);
-    assert_eq!(pa(&app, 4).employment_status.as_deref(), Some("Active"));
-    // A different pre-existing destination is never overwritten.
+fn archive_collision_preserves_destination_and_saved_inactive_status() {
     let (_dir, app) = fixture();
     let source = register(&app, 4, "p45", "2026/27", "P45 for Fictional Middletest Samplepa.pdf");
-    let target = naming::supplement_destination(
-        &app.context.config.folders.payslip_folder,
-        &pa(&app, 4),
-        "p45",
-        Some("2026/27"),
-        source.file_name().unwrap().to_str().unwrap(),
-    )
-    .unwrap();
-    pdf(&target, b"%PDF-1.4 different");
-    assert!(apply(&app, &pa(&app, 4), false).is_err());
-    assert_eq!(fs::read(target).unwrap(), b"%PDF-1.4 different");
+    let target = source
+        .parent()
+        .unwrap()
+        .parent()
+        .unwrap()
+        .join("Archived/P45 for Fictional Middletest Samplepa.pdf");
+    pdf(&target, b"%PDF-1.4 conflicting destination");
+    let mut assistant = pa(&app, 4);
+    assistant.employment_status = Some("Inactive".into());
+    let messages = apply(&app, &assistant, true).unwrap();
+    assert!(messages.join("\n").contains("destination conflict"));
+    assert_eq!(pa(&app, 4).employment_status.as_deref(), Some("Inactive"));
     assert!(source.exists());
+    assert_eq!(
+        fs::read(target).unwrap(),
+        b"%PDF-1.4 conflicting destination"
+    );
 }
 
 #[test]
-fn registry_failure_rolls_back_employment_paths_and_publication() {
+fn registry_failure_keeps_saved_inactive_and_continues_other_files() {
     let (_dir, app) = fixture();
     let source = register(&app, 4, "p45", "2026/27", "P45 for Fictional Middletest Samplepa.pdf");
     let earlier = register(
@@ -347,12 +326,12 @@ fn registry_failure_rolls_back_employment_paths_and_publication() {
     )
     .unwrap();
     assert!(apply(&app, &assistant, true)
-        .unwrap_err()
-        .to_string()
+        .unwrap()
+        .join("\n")
         .contains("fixture failure"));
     assert!(source.exists());
-    assert!(earlier.exists());
-    assert!(ordinary.exists());
+    assert!(!earlier.exists());
+    assert!(!ordinary.exists());
     let earlier_target = naming::supplement_destination(
         &app.context.config.folders.payslip_folder,
         &assistant,
@@ -361,8 +340,8 @@ fn registry_failure_rolls_back_employment_paths_and_publication() {
         earlier.file_name().unwrap().to_str().unwrap(),
     )
     .unwrap();
-    assert!(!earlier_target.exists());
-    assert!(!ordinary
+    assert!(earlier_target.exists());
+    assert!(ordinary
         .parent()
         .unwrap()
         .join("Archived")
@@ -377,7 +356,7 @@ fn registry_failure_rolls_back_employment_paths_and_publication() {
             .path,
         source
     );
-    assert_eq!(pa(&app, 4).employment_status.as_deref(), Some("Active"));
+    assert_eq!(pa(&app, 4).employment_status.as_deref(), Some("Inactive"));
     assert_eq!(
         app.payroll_timesheet_email_repository
             .connection
@@ -485,7 +464,11 @@ fn symlinked_archive_directory_is_refused() {
     .unwrap();
     let mut assistant = pa(&app, 4);
     assistant.employment_status = Some("Inactive".into());
-    assert!(apply(&app, &assistant, true).is_err());
+    assert!(apply(&app, &assistant, true)
+        .unwrap()
+        .join("\n")
+        .contains("Symlink"));
+    assert_eq!(pa(&app, 4).employment_status.as_deref(), Some("Inactive"));
     assert!(source.exists());
     assert_eq!(fs::read_dir(elsewhere).unwrap().count(), 0);
 }
@@ -643,10 +626,10 @@ fn rename_schedule() -> crate::payroll_schedule_repository::PayrollSchedule {
 fn maintained_name_edits_normalise_old_documents_and_preserve_delivery_lookup() {
     for inactive in [false, true] {
         for (given, surname) in [
-            ("Fictional Middletest", "Khan"),
-            ("Sam Middletest", "Samplepa"),
+            ("Fictional Middletest", "Renamedpa"),
+            ("Renamedfirst Middletest", "Samplepa"),
             ("Fictional New Middle", "Samplepa"),
-            ("Fictional Middletest", "Van Dyke-Smith"),
+            ("Fictional Middletest", "Van Testfamily-Testlast"),
         ] {
             let (_dir, app) = fixture();
             let root = &app.context.config.folders.payslip_folder;
@@ -752,13 +735,13 @@ fn maintained_name_edits_normalise_old_documents_and_preserve_delivery_lookup() 
 fn name_edit_keeps_archived_history_and_unassociated_evidence_in_place() {
     let (_dir, app) = fixture();
     app.payroll_timesheet_email_repository.connection.execute_batch(
-        "UPDATE personal_assistants SET first_name='Anne Marie',surname='Van Dyke-Smith' WHERE id=4;"
+        "UPDATE personal_assistants SET first_name='Testgiven Middleone',surname='Van Testfamily-Testlast' WHERE id=4;"
     ).unwrap();
     let root = &app.context.config.folders.payslip_folder;
     let archived =
-        root.join("2025 to 2026/Archived/Payslip for Week 22 for Anne Marie Van Dyke-Smith.pdf");
+        root.join("2025 to 2026/Archived/Payslip for Week 22 for Testgiven Middleone Van Testfamily-Testlast.pdf");
     let unassociated =
-        root.join("2026 to 2027/PA 4/Employee Payslip for Week 26 for Anne Van Dyke-Smith.pdf");
+        root.join("2026 to 2027/PA 4/Employee Payslip for Week 26 for Testgiven Van Testfamily-Testlast.pdf");
     pdf(&archived, b"%PDF-1.4 historic ordinary");
     pdf(&unassociated, b"%PDF-1.4 unassociated");
     let original = register(
@@ -766,26 +749,26 @@ fn name_edit_keeps_archived_history_and_unassociated_evidence_in_place() {
         4,
         "p60",
         "2025/26",
-        "P60 for year 2025-26 for Anne Van Dyke-Smith.pdf",
+        "P60 for year 2025-26 for Testgiven Van Testfamily-Testlast.pdf",
     );
     app.payroll_timesheet_email_repository.connection.execute_batch(
         "UPDATE imported_payroll_documents SET history_state='needs_sending',sent_at='indeterminate:retained';"
     ).unwrap();
     let before = facts(&app, 4);
     let mut edited = pa(&app, 4);
-    edited.first_name = "Annie Jane".into();
-    edited.surname = "De la Cruz".into();
+    edited.first_name = "Changedgiven Middletwo".into();
+    edited.surname = "De la Testfamily".into();
     apply(&app, &edited, true).unwrap();
     assert_eq!(facts(&app, 4), before);
     assert!(!archived.exists() && !unassociated.exists() && !original.exists());
     assert!(root
-        .join("2025 to 2026/Archived/Payslip for Week 22 for Annie Jane De la Cruz.pdf")
+        .join("2025 to 2026/Archived/Payslip for Week 22 for Changedgiven Middletwo De la Testfamily.pdf")
         .is_file());
     assert!(root
-        .join("2026 to 2027/PA 4/Payslip for Week 26 for Annie Jane De la Cruz.pdf")
+        .join("2026 to 2027/PA 4/Payslip for Week 26 for Changedgiven Middletwo De la Testfamily.pdf")
         .is_file());
     assert!(
-        !naming::existing_payslip_path(root, "Annie Jane De la Cruz", &rename_schedule())
+        !naming::existing_payslip_path(root, "Changedgiven Middletwo De la Testfamily", &rename_schedule())
             .unwrap()
             .exists()
     );
@@ -806,14 +789,14 @@ fn ambiguous_old_or_new_names_and_name_change_collisions_refuse_without_mutation
         let old = root.join("2026 to 2027/Payslip for Week 26 for Fictional Middletest Samplepa.pdf");
         pdf(&old, b"%PDF-1.4 original");
         let mut edited = pa(&app, 4);
-        edited.surname = "Khan".into();
+        edited.surname = "Renamedpa".into();
         if scenario == "old ambiguous" {
             app.payroll_timesheet_email_repository.connection.execute_batch("UPDATE personal_assistants SET first_name='Fictional Middletest',surname='Samplepa' WHERE id=5;").unwrap();
         } else if scenario == "new ambiguous" {
-            app.payroll_timesheet_email_repository.connection.execute_batch("UPDATE personal_assistants SET first_name='Fictional Middletest',surname='Khan' WHERE id=5;").unwrap();
+            app.payroll_timesheet_email_repository.connection.execute_batch("UPDATE personal_assistants SET first_name='Fictional Middletest',surname='Renamedpa' WHERE id=5;").unwrap();
         } else {
             pdf(
-                &root.join("2026 to 2027/Payslip for Week 26 for Fictional Middletest Khan.pdf"),
+                &root.join("2026 to 2027/Payslip for Week 26 for Fictional Middletest Renamedpa.pdf"),
                 b"%PDF-1.4 unrelated existing",
             );
         }
@@ -822,7 +805,7 @@ fn ambiguous_old_or_new_names_and_name_change_collisions_refuse_without_mutation
         assert_eq!(fs::read(&old).unwrap(), b"%PDF-1.4 original");
         if scenario == "collision" {
             assert_eq!(
-                fs::read(root.join("2026 to 2027/Payslip for Week 26 for Fictional Middletest Khan.pdf"))
+                fs::read(root.join("2026 to 2027/Payslip for Week 26 for Fictional Middletest Renamedpa.pdf"))
                     .unwrap(),
                 b"%PDF-1.4 unrelated existing"
             );
@@ -840,7 +823,7 @@ fn name_change_registry_failure_rolls_back_name_paths_and_files() {
     let before = facts(&app, 4);
     app.payroll_timesheet_email_repository.connection.execute_batch("CREATE TRIGGER refuse_name_move BEFORE UPDATE OF stored_path ON imported_payroll_documents BEGIN SELECT RAISE(ABORT,'name move failure'); END;").unwrap();
     let mut edited = pa(&app, 4);
-    edited.surname = "Khan".into();
+    edited.surname = "Renamedpa".into();
     assert!(apply(&app, &edited, true)
         .unwrap_err()
         .to_string()
@@ -849,10 +832,10 @@ fn name_change_registry_failure_rolls_back_name_paths_and_files() {
     assert_eq!(facts(&app, 4), before);
     assert!(old.exists() && supplement.exists());
     assert!(!root
-        .join("2025 to 2026/Payslip for Week 26 for Fictional Middletest Khan.pdf")
+        .join("2025 to 2026/Payslip for Week 26 for Fictional Middletest Renamedpa.pdf")
         .exists());
     assert!(!root
-        .join("2026 to 2027/P45 for Fictional Middletest Khan.pdf")
+        .join("2026 to 2027/P45 for Fictional Middletest Renamedpa.pdf")
         .exists());
 }
 
@@ -900,18 +883,18 @@ fn name_change_reuses_only_proven_interrupted_publication_not_new_name_lookalike
         let (_dir, app) = fixture();
         let root = &app.context.config.folders.payslip_folder;
         let old = root.join("2026 to 2027/Payslip for Week 26 for Fictional Middletest Samplepa.pdf");
-        let new = root.join("2026 to 2027/Payslip for Week 26 for Fictional Middletest Khan.pdf");
+        let new = root.join("2026 to 2027/Payslip for Week 26 for Fictional Middletest Renamedpa.pdf");
         pdf(&new, b"%PDF-1.4 same content");
         if with_old_source {
             pdf(&old, b"%PDF-1.4 same content");
         }
         let mut edited = pa(&app, 4);
-        edited.surname = "Khan".into();
+        edited.surname = "Renamedpa".into();
         let result = apply(&app, &edited, true);
         assert_eq!(result.is_ok(), with_old_source);
         assert_eq!(
             pa(&app, 4).surname,
-            if with_old_source { "Khan" } else { "Samplepa" }
+            if with_old_source { "Renamedpa" } else { "Samplepa" }
         );
         assert_eq!(fs::read(&new).unwrap(), b"%PDF-1.4 same content");
         assert!(!old.exists());
@@ -927,7 +910,7 @@ fn name_edit_with_field_whitespace_still_matches_canonical_delivery_lookup() {
     pdf(&original, b"%PDF-1.4 ordinary");
     let mut edited = pa(&app, 4);
     edited.first_name = " Fictional Middletest ".into();
-    edited.surname = " Khan ".into();
+    edited.surname = " Renamedpa ".into();
     apply(&app, &edited, true).unwrap();
     let saved = pa(&app, 4);
     let discovered = naming::existing_payslip_path(
@@ -966,7 +949,7 @@ fn name_change_preserves_all_supplement_history_states_and_document_identities()
             .unwrap();
         let before = facts(&app, 4);
         let mut edited = pa(&app, 4);
-        edited.surname = "Khan".into();
+        edited.surname = "Renamedpa".into();
         apply(&app, &edited, true).unwrap();
         assert_eq!(facts(&app, 4), before);
         let docs = app
@@ -980,7 +963,7 @@ fn name_change_preserves_all_supplement_history_states_and_document_identities()
                 .config
                 .folders
                 .payslip_folder
-                .join("2026 to 2027/P45 for year 2026-27 for Fictional Middletest Khan.pdf")
+                .join("2026 to 2027/P45 for year 2026-27 for Fictional Middletest Renamedpa.pdf")
         );
         assert_eq!(docs[0].document_year.as_deref(), Some("2026/27"));
         assert_eq!(docs[0].document_type, "p45");
@@ -1002,4 +985,151 @@ fn name_change_preserves_all_supplement_history_states_and_document_identities()
         apply(&app, &edited, false).unwrap();
         assert_eq!(facts(&app, 4), before);
     }
+}
+
+#[test]
+fn existing_named_documents_with_optional_middle_names_archive_across_years() {
+    let (_dir, app) = fixture();
+    let mut sources = Vec::new();
+    for year in ["2025 to 2026", "2026 to 2027"] {
+        for root in [
+            &app.context.config.folders.payslip_folder,
+            &app.context.config.folders.pdf_output,
+        ] {
+            for name in [
+                "Payslip for Week 26 for Fictional Samplepa.pdf",
+                "Payslip for Week 25 for Fictional Middletest Samplepa.pdf",
+                "P45 for Fictional Samplepa.pdf",
+                "P60 for Fictional Middletest Samplepa.pdf",
+                "Timesheet - Fictional Samplepa - 260907w04.pdf",
+                "Statement for Fictional Middletest Samplepa.pdf",
+                "Payroll details for Fictional Samplepa.csv",
+            ] {
+                let path = root.join(year).join(name);
+                pdf(&path, b"%PDF-1.4 synthetic managed document");
+                sources.push(path);
+            }
+            pdf(
+                &root.join(year).join("P60 for Imaginary Fixturepa.pdf"),
+                b"%PDF-1.4 other PA",
+            );
+        }
+    }
+    let mut assistant = pa(&app, 4);
+    assistant.employment_status = Some("Inactive".into());
+    let messages = apply(&app, &assistant, true).unwrap();
+    assert!(!messages.join("\n").contains("failed"), "{messages:?}");
+    for path in &sources {
+        assert!(!path.exists());
+        let archived = path
+            .parent()
+            .unwrap()
+            .join("Archived")
+            .join(path.file_name().unwrap());
+        assert_eq!(
+            fs::read(archived).unwrap(),
+            b"%PDF-1.4 synthetic managed document"
+        );
+        assert!(path
+            .parent()
+            .unwrap()
+            .join("P60 for Imaginary Fixturepa.pdf")
+            .exists());
+    }
+    assistant.employment_status = Some("Active".into());
+    apply(&app, &assistant, true).unwrap();
+    assert_eq!(pa(&app, 4).employment_status.as_deref(), Some("Active"));
+    assert!(sources.iter().all(|p| !p.exists()));
+}
+
+#[test]
+fn deactivation_files_actual_bytes_without_rewriting_historical_digests() {
+    let (_dir, app) = fixture();
+    let root = app
+        .context
+        .config
+        .folders
+        .payslip_folder
+        .join("2026 to 2027");
+    let paths = [
+        root.join("Payslip for Week 26 for Fictional Samplepa.pdf"),
+        root.join("P45 for Fictional Middletest Samplepa.pdf"),
+        root.join("P45 for year 2026-27 for Fictional Samplepa.pdf"),
+    ];
+    for path in &paths {
+        pdf(path, b"%PDF-1.4 historical bytes");
+    }
+    let db = &app.payroll_timesheet_email_repository.connection;
+    let historical = file_digest(&paths[0]).unwrap();
+    db.execute("INSERT INTO payslip_revisions(personal_assistant_id,payroll_year,cycle_number,stored_path,sha256,is_current,sent_at) VALUES(4,'2026/27',7,?1,?2,1,'historic-sent')",params![paths[0].to_str(),historical]).unwrap();
+    for path in &paths[1..] {
+        // Seed stale legacy registrations directly; this is not an import operation.
+        db.execute("INSERT INTO imported_payroll_documents(personal_assistant_id,document_type,stored_path,sha256,document_year) VALUES(4,'p45',?1,?2,'2026/27')",params![path.to_str(),historical]).unwrap();
+    }
+    db.execute_batch("UPDATE imported_payroll_documents SET history_state='application',sent_at='historic-sent';").unwrap();
+    let before = facts(&app, 4);
+    for path in &paths {
+        fs::write(
+            path,
+            b"actual existing bytes, not validated historical PDF content",
+        )
+        .unwrap();
+    }
+    let mut assistant = pa(&app, 4);
+    assistant.employment_status = Some("Inactive".into());
+    let messages = apply(&app, &assistant, true).unwrap();
+    assert!(!messages.join("\n").contains("failed"), "{messages:?}");
+    assert_eq!(facts(&app, 4), before);
+    for path in &paths {
+        assert!(!path.exists());
+    }
+    let records = db.prepare("SELECT stored_path,sha256,sent_at FROM payslip_revisions UNION SELECT stored_path,sha256,sent_at FROM imported_payroll_documents").unwrap().query_map([],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,String>(2)?))).unwrap().collect::<rusqlite::Result<Vec<_>>>().unwrap();
+    assert_eq!(records.len(), 3);
+    for (path, digest, sent) in records {
+        let path = PathBuf::from(path);
+        assert_eq!(path.parent().unwrap(), root.join("Archived"));
+        assert_eq!(
+            fs::read(path).unwrap(),
+            b"actual existing bytes, not validated historical PDF content"
+        );
+        assert_eq!(digest, historical);
+        assert_eq!(sent, "historic-sent");
+    }
+    assert_eq!(pa(&app, 4).employment_status.as_deref(), Some("Inactive"));
+    // Repair retains its evidence/content validation despite the deactivation exception.
+    assert!(apply(&app, &assistant, false).is_err());
+}
+
+#[test]
+fn deactivation_reports_filesystem_failure_and_attempts_other_years() {
+    let (_dir, app) = fixture();
+    let root = &app.context.config.folders.payslip_folder;
+    let blocked = root.join("2025 to 2026/P45 for Fictional Samplepa.pdf");
+    let other = root.join("2026 to 2027/P60 for Fictional Middletest Samplepa.pdf");
+    pdf(&blocked, b"%PDF-1.4 blocked");
+    pdf(&other, b"%PDF-1.4 movable");
+    // A real filesystem obstruction: Archived is a file, so a child cannot be created.
+    fs::write(
+        blocked.parent().unwrap().join("Archived"),
+        b"keep existing obstruction",
+    )
+    .unwrap();
+    let mut assistant = pa(&app, 4);
+    assistant.employment_status = Some("Inactive".into());
+    let messages = apply(&app, &assistant, true).unwrap().join("\n");
+    assert!(messages.contains("archiving failed"), "{messages}");
+    assert!(messages.contains(blocked.to_str().unwrap()), "{messages}");
+    assert!(blocked.exists());
+    assert_eq!(
+        fs::read(blocked.parent().unwrap().join("Archived")).unwrap(),
+        b"keep existing obstruction"
+    );
+    assert!(!other.exists());
+    assert!(other
+        .parent()
+        .unwrap()
+        .join("Archived")
+        .join(other.file_name().unwrap())
+        .exists());
+    assert_eq!(pa(&app, 4).employment_status.as_deref(), Some("Inactive"));
 }

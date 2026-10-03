@@ -133,6 +133,8 @@ inside the repository.
 
 Sensitive information must be stored separately.
 
+Tests, fixtures, documentation and examples must use obviously fictional identities and invented contact/payroll data. Never copy live PA names, identifying filenames or paths, payroll records or personal documents into the repository.
+
 ;
 
 6. Accessibility Principles
