@@ -35,8 +35,8 @@ Choose your computer and installed operating system below. On Linux, choose eith
 
 **macOS — Apple Silicon or Intel**
 
-[![Download Apple Silicon DMG](https://img.shields.io/badge/Download%20Apple%20Silicon%20DMG-v1.0.4-blue?logo=apple&logoColor=white)](https://github.com/arnieSkyNet/DirectPaymentTimesheets/releases/download/v1.0.4/DirectPaymentTimesheets-1.0.4-macos-arm64.dmg)<br>
-[![Download Intel DMG](https://img.shields.io/badge/Download%20Intel%20DMG-v1.0.4-blue?logo=apple&logoColor=white)](https://github.com/arnieSkyNet/DirectPaymentTimesheets/releases/download/v1.0.4/DirectPaymentTimesheets-1.0.4-macos-x86_64.dmg)<br>
+[![Download Apple Silicon DMG](https://img.shields.io/badge/Download%20Apple%20Silicon%20DMG-v1.0.5-blue?logo=apple&logoColor=white)](https://github.com/arnieSkyNet/DirectPaymentTimesheets/releases/download/v1.0.5/DirectPaymentTimesheets-1.0.5-macos-arm64.dmg)<br>
+[![Download Intel DMG](https://img.shields.io/badge/Download%20Intel%20DMG-v1.0.5-blue?logo=apple&logoColor=white)](https://github.com/arnieSkyNet/DirectPaymentTimesheets/releases/download/v1.0.5/DirectPaymentTimesheets-1.0.5-macos-x86_64.dmg)<br>
 
 [Installation instructions](#install-build-and-run) · [v1.0.4 release notes](https://github.com/arnieSkyNet/DirectPaymentTimesheets/releases/tag/v1.0.4) · [All releases](https://github.com/arnieSkyNet/DirectPaymentTimesheets/releases/)
 
@@ -110,17 +110,17 @@ Both Windows architectures use the same per-user application folder and uninstal
 
 ### macOS
 
-New Intel (x86_64) builds target **macOS 11.4 Big Sur or later**; Apple Silicon (arm64) builds continue to target **macOS 12.0 Monterey or later**. These are the configured minimums; final hardware and minimum-OS acceptance testing remains pending, including an Intel Mac running exactly macOS 11.4. The linked v1.0.4 downloads still require macOS 12.0 on both architectures; the lower Intel minimum applies to future rebuilt releases. These are independently distributed builds, not Mac App Store applications.
+The Mac-only v1.0.5 release requires **macOS 11.4 Big Sur or later for Intel (x86_64)** and **macOS 12.0 Monterey or later for Apple Silicon (arm64)**. Minimum-OS hardware acceptance testing remains pending on both architectures, including an Intel Mac running exactly macOS 11.4. These are independently distributed builds, not Mac App Store applications.
 
 #### Choose the correct DMG
 
 1. Click the **Apple menu → About This Mac**.
-2. If it lists **Chip: Apple M1, M2, M3, M4** or another Apple M-series chip, choose `DirectPaymentTimesheets-1.0.4-macos-arm64.dmg`.
-3. If it lists an **Intel processor**, choose `DirectPaymentTimesheets-1.0.4-macos-x86_64.dmg`.
+2. If it lists **Chip: Apple M1, M2, M3, M4** or another Apple M-series chip, choose `DirectPaymentTimesheets-1.0.5-macos-arm64.dmg`.
+3. If it lists an **Intel processor**, choose `DirectPaymentTimesheets-1.0.5-macos-x86_64.dmg`.
 
 #### Copy the application into Applications
 
-1. Download the matching DMG from the project's official v1.0.4 release page.
+1. Download the matching DMG from the project's official v1.0.5 release page.
 2. Open **Finder → Downloads**, then double-click the downloaded `.dmg`. This opens a temporary disk containing the application and an **Applications** shortcut.
 3. Drag **Direct Payments Timesheets.app** onto the **Applications** shortcut. Finder may hide the `.app` extension. The spaces in the application name are intentional.
 4. Wait for copying to finish. If replacing an older copy, quit the old application first and confirm replacement only for the intended application.
