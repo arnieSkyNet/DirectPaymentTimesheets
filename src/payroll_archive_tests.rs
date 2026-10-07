@@ -452,6 +452,27 @@ fn checked_path_rejects_dot_components_in_verbatim_windows_paths() {
 
 #[cfg(unix)]
 #[test]
+fn symlinked_ancestor_is_refused_even_for_missing_payroll_paths() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = temp_root(&dir);
+    let real = root.join("real");
+    fs::create_dir(&real).unwrap();
+    let alias = root.join("alias");
+    std::os::unix::fs::symlink(&real, &alias).unwrap();
+    let aliased = alias.join("payslips/2026 to 2027/Archived/document.pdf");
+    assert!(checked_path(&aliased)
+        .unwrap_err()
+        .to_string()
+        .contains("Symlink payroll path refused"));
+    assert!(normalised_path(&aliased).is_err());
+    assert!(filing_base(&alias.join("payslips")).is_err());
+    // Canonicalizing a trusted test fixture root avoids the alias without
+    // changing the validator or allowing symlinks within managed paths.
+    checked_path(&alias.canonicalize().unwrap().join("payslips/document.pdf")).unwrap();
+}
+
+#[cfg(unix)]
+#[test]
 fn symlinked_archive_directory_is_refused() {
     let (dir, app) = fixture();
     let source = register(&app, 4, "p45", "2026/27", "P45 original.pdf");

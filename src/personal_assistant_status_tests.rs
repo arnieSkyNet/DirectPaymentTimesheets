@@ -152,6 +152,23 @@ fn reopen_editor(app: &Application, expected: &str) -> (egui::Context, PersonalA
 }
 
 #[test]
+fn status_fixture_uses_canonical_payroll_roots() {
+    let (dir, app, _ctx, _screen) = status_fixture("Active");
+    let root = dir.path().canonicalize().unwrap();
+    for (folder, name) in [
+        (&app.context.config.folders.payslip_folder, "payslips"),
+        (&app.context.config.folders.pdf_output, "pdfs"),
+        (
+            &app.context.config.folders.payroll_information_folder,
+            "information",
+        ),
+    ] {
+        assert_eq!(folder, &root.join(name));
+        crate::payroll_archive_service::checked_path(folder).unwrap();
+    }
+}
+
+#[test]
 fn editor_active_to_inactive_persists_after_editor_and_database_reopen() {
     let (_dir, app, ctx, mut screen) = status_fixture("Active");
     editor_click(&ctx, &mut screen, &app, "Active");

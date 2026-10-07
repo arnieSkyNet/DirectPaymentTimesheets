@@ -2205,20 +2205,24 @@ pub(crate) mod tests {
 
     pub(crate) fn test_application() -> (TempDir, Application) {
         let directory = TempDir::new().unwrap();
-        let database_path = directory.path().join("test.sqlite");
+        // macOS temporary paths may start with /var -> /private/var. Resolve
+        // this newly created fixture root before constructing managed paths;
+        // production validation must still reject symlink ancestors.
+        let root = directory.path().canonicalize().unwrap();
+        let database_path = root.join("test.sqlite");
         let connection = Connection::open(&database_path).unwrap();
         crate::database::create_schema(&connection).unwrap();
         drop(connection);
         let open = || Connection::open(&database_path).unwrap();
         let environment = AppEnvironment {
-            data_dir: directory.path().to_path_buf(),
+            data_dir: root.clone(),
             database_path: database_path.clone(),
-            import_dir: directory.path().join("import"),
-            archive_dir: directory.path().join("archive"),
-            backups_dir: directory.path().join("backups"),
-            logs_dir: directory.path().join("logs"),
-            templates_dir: directory.path().join("templates"),
-            cache_dir: directory.path().join("cache"),
+            import_dir: root.join("import"),
+            archive_dir: root.join("archive"),
+            backups_dir: root.join("backups"),
+            logs_dir: root.join("logs"),
+            templates_dir: root.join("templates"),
+            cache_dir: root.join("cache"),
         };
         let application = Application {
             annual_leave_settings_repository:
@@ -2229,12 +2233,11 @@ pub(crate) mod tests {
                 environment,
                 config: {
                     let mut config = AppConfig::default();
-                    config.folders.pdf_output = directory.path().join("pdfs");
-                    config.folders.payslip_folder = directory.path().join("payslips");
-                    config.folders.payroll_information_folder =
-                        directory.path().join("information");
-                    config.folders.email_archive = directory.path().join("emails");
-                    config.folders.csv_import = directory.path().join("import");
+                    config.folders.pdf_output = root.join("pdfs");
+                    config.folders.payslip_folder = root.join("payslips");
+                    config.folders.payroll_information_folder = root.join("information");
+                    config.folders.email_archive = root.join("emails");
+                    config.folders.csv_import = root.join("import");
                     config
                 },
                 version: "test".to_string(),
