@@ -2,6 +2,7 @@ import importlib.util
 import json
 import os
 import platform
+import plistlib
 from pathlib import Path
 import re
 import shutil
@@ -17,6 +18,51 @@ spec.loader.exec_module(package)
 
 
 class PackagingTests(unittest.TestCase):
+    def test_macos_minimums_and_validation_are_architecture_specific(self):
+        for target, expected, other in [
+            ('x86_64-apple-darwin', '11.4', '12.0'),
+            ('aarch64-apple-darwin', '12.0', '11.4'),
+        ]:
+            with self.subTest(target=target), tempfile.TemporaryDirectory() as tmp:
+                self.assertEqual(package.macos_deployment_target(target), expected)
+                info = Path(tmp) / 'Info.plist'
+                info.write_bytes(plistlib.dumps({'LSMinimumSystemVersion': expected}))
+                for reported in [expected, expected + '.0']:
+                    package.validate_macos(target, info, '    minos ' + reported + '\n')
+                for deployment in ['', '    minos ' + other, '    minos ' + expected + '1',
+                                   '    minos ' + expected + '\n    minos ' + other]:
+                    with self.assertRaises(ValueError):
+                        package.validate_macos(target, info, deployment)
+                info.write_bytes(plistlib.dumps({'LSMinimumSystemVersion': other}))
+                with self.assertRaises(ValueError):
+                    package.validate_macos(target, info, '    minos ' + expected)
+        with self.assertRaises(ValueError):
+            package.macos_deployment_target('unsupported')
+
+    def test_macos_record_includes_selected_minimum(self):
+        for arch, target, expected in [('x86_64', 'x86_64-apple-darwin', '11.4'),
+                                       ('arm64', 'aarch64-apple-darwin', '12.0')]:
+            with self.subTest(target=target), tempfile.TemporaryDirectory() as tmp:
+                artifact = Path(tmp) / f'DirectPaymentTimesheets-{package.version()}-macos-{arch}.dmg'
+                # Exercise sidecar generation without creating a DMG payload.
+                with patch.object(Path, 'is_file', return_value=True), \
+                        patch.object(package, 'digest', return_value='a' * 64):
+                    package.record(artifact, target, 'macos')
+                metadata = json.loads(artifact.with_name(artifact.name + '.json').read_text())
+                self.assertEqual(metadata['macos_deployment_target'], expected)
+
+    def test_macos_script_exports_minimum_before_cargo_and_checks_mounted_app(self):
+        script = (ROOT / 'packaging/macos/build-dmg.sh').read_text()
+        self.assertLess(script.index('macos-target "$TARGET"'), script.index('cargo test'))
+        self.assertLess(script.index('export MACOSX_DEPLOYMENT_TARGET'), script.index('cargo test'))
+        self.assertLess(script.index('export MACOSX_DEPLOYMENT_TARGET'), script.index('cargo build'))
+        self.assertIn("'LSMinimumSystemVersion': sys.argv[3]", script)
+        self.assertEqual(script.count('python3 packaging/package.py macos "$TARGET"'), 2)
+        workflow = (ROOT / '.github/workflows/macos-packages-test.yml').read_text()
+        self.assertIn('x86_64) target=x86_64-apple-darwin', workflow)
+        self.assertIn('arm64) target=aarch64-apple-darwin', workflow)
+        self.assertIn('run: bash packaging/macos/build-dmg.sh', workflow)
+
     def test_explicit_target_mapping_and_ten_unique_packages(self):
         names = package.expected_packages('1.0.2')
         self.assertEqual(len(names), 10)
@@ -85,6 +131,8 @@ class PackagingTests(unittest.TestCase):
             path.parent.mkdir()
             path.write_bytes(b'disposable package')
             data = dict(source_sha='a' * 40, version='1.0.2', target=target, installation_kind=kind, file=name, sha256=package.digest(path))
+            if kind == 'macos':
+                data['macos_deployment_target'] = package.macos_deployment_target(target)
             path.with_name(name + '.json').write_text(json.dumps(data))
             path.with_name(name + '.sha256').write_text(f"{data['sha256']}  {name}\n")
 
@@ -96,6 +144,22 @@ class PackagingTests(unittest.TestCase):
             for line in (root / 'SHA256SUMS').read_text().splitlines():
                 sha, name = line.split('  ')
                 self.assertEqual(package.digest(root / name), sha)
+
+    def test_collection_refuses_wrong_or_missing_macos_minimum(self):
+        for arch in ['x86_64', 'arm64']:
+            for minimum in [None, '11.4' if arch == 'arm64' else '12.0']:
+                with self.subTest(arch=arch, minimum=minimum), tempfile.TemporaryDirectory() as tmp:
+                    root = Path(tmp); self.fixture(root)
+                    artifact = next(root.rglob(f'*macos-{arch}.dmg'))
+                    sidecar = artifact.with_name(artifact.name + '.json')
+                    metadata = json.loads(sidecar.read_text())
+                    if minimum is None:
+                        del metadata['macos_deployment_target']
+                    else:
+                        metadata['macos_deployment_target'] = minimum
+                    sidecar.write_text(json.dumps(metadata))
+                    with self.assertRaisesRegex(ValueError, 'macOS deployment target mismatch'):
+                        package.collect(root, 'a' * 40, '1.0.2')
 
     def test_collection_refuses_missing_duplicate_modified_and_mixed_source(self):
         for defect in ['missing', 'duplicate', 'modified', 'source', 'kind', 'version', 'checksum']:

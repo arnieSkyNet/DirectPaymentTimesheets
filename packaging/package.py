@@ -4,6 +4,7 @@ import argparse
 import hashlib
 import json
 import os
+import plistlib
 from pathlib import Path
 import re
 import shutil
@@ -18,6 +19,24 @@ TARGETS = {
     'aarch64-unknown-linux-gnu': ('arm64', 'aarch64', 'ELF64', 'AArch64'),
 }
 KINDS = {'deb', 'appimage', 'windows', 'macos'}
+
+
+def macos_deployment_target(target):
+    targets = json.loads((ROOT / 'packaging/toolchain.json').read_text())['macos_deployment_targets']
+    if target not in targets:
+        raise ValueError('Unsupported macOS target: ' + target)
+    return targets[target]
+
+
+def validate_macos(target, info_plist, deployment):
+    expected = macos_deployment_target(target)
+    with info_plist.open('rb') as source:
+        if plistlib.load(source).get('LSMinimumSystemVersion') != expected:
+            raise ValueError('Info.plist minimum must be ' + expected + ' for ' + target)
+    # vtool must report exactly the selected minimum, not a higher SDK default.
+    versions = re.findall(r'^\s*minos\s+(\S+)\s*$', deployment, re.M)
+    if len(versions) != 1 or versions[0] not in {expected, expected + '.0'}:
+        raise ValueError('Mach-O minos must be ' + expected + ' for ' + target)
 
 
 def version():
@@ -107,6 +126,8 @@ def record(artifact, target, kind):
         'packaging_tools': json.loads((ROOT / 'packaging/toolchain.json').read_text()),
         'appimage_tool_assets': json.loads((ROOT / 'packaging/linux/tools.json').read_text()) if kind == 'appimage' else None,
     }
+    if kind == 'macos':
+        metadata['macos_deployment_target'] = macos_deployment_target(target)
     artifact.with_name(artifact.name + '.json').write_text(json.dumps(metadata, indent=2) + '\n')
     artifact.with_name(artifact.name + '.sha256').write_text(f"{metadata['sha256']}  {artifact.name}\n")
 
@@ -136,6 +157,8 @@ def collect(directory, source, v):
         target, kind = expected[path.name]
         if (data['source_sha'], data['version'], data['target'], data['installation_kind'], data['file'], data['sha256']) != (source, v, target, kind, path.name, digest(path)):
             raise ValueError(f'Artifact provenance/checksum mismatch: {path.name}')
+        if kind == 'macos' and data.get('macos_deployment_target') != macos_deployment_target(target):
+            raise ValueError('macOS deployment target mismatch: ' + path.name)
         checksum = path.with_name(path.name + '.sha256').read_text()
         if checksum != f"{data['sha256']}  {path.name}\n":
             raise ValueError('Checksum sidecar mismatch: ' + path.name)
@@ -158,6 +181,8 @@ def main():
     parser = argparse.ArgumentParser(__doc__)
     sub = parser.add_subparsers(dest='command', required=True)
     sub.add_parser('version')
+    p = sub.add_parser('macos-target'); p.add_argument('target')
+    p = sub.add_parser('macos'); p.add_argument('target'); p.add_argument('info_plist', type=Path); p.add_argument('deployment', type=Path)
     for command in ['stamp-binary', 'verify-binary']:
         p = sub.add_parser(command); p.add_argument('binary', type=Path); p.add_argument('target'); p.add_argument('kind', choices=KINDS)
     p = sub.add_parser('licenses'); p.add_argument('destination', type=Path)
@@ -167,6 +192,8 @@ def main():
     p = sub.add_parser('collect'); p.add_argument('directory', type=Path); p.add_argument('source'); p.add_argument('version')
     args = parser.parse_args()
     if args.command == 'version': print(version())
+    elif args.command == 'macos-target': print(macos_deployment_target(args.target))
+    elif args.command == 'macos': validate_macos(args.target, args.info_plist, args.deployment.read_text())
     elif args.command == 'licenses': licenses(args.destination)
     elif args.command == 'elf':
         text = subprocess.check_output(['readelf', '-h', '-A', '--version-info', str(args.binary)], text=True)

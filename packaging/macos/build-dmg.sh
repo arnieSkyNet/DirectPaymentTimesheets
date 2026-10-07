@@ -9,7 +9,9 @@ case "$TARGET" in
     *) echo "Unsupported macOS target: $TARGET" >&2; exit 1 ;;
 esac
 [[ "$(uname -m)" == "$ARCH" ]] || { echo 'Use a native runner for each macOS architecture' >&2; exit 1; }
-export MACOSX_DEPLOYMENT_TARGET=12.0 DPT_INSTALLATION_KIND=macos
+# Export before either Cargo invocation so Rust and native dependencies agree.
+MACOSX_DEPLOYMENT_TARGET="$(python3 packaging/package.py macos-target "$TARGET")"
+export MACOSX_DEPLOYMENT_TARGET DPT_INSTALLATION_KIND=macos
 export CARGO_TARGET_DIR="$PROJECT_ROOT/target/packages/$TARGET/macos"
 VERSION="$(python3 packaging/package.py version)"
 cargo test --locked --target "$TARGET"
@@ -32,7 +34,7 @@ for size in 16 32 128 256 512; do
     sips -z "$double" "$double" assets/direct-payment-timesheets.png --out "$ICONSET/icon_${size}x${size}@2x.png" >/dev/null
 done
 iconutil --convert icns "$ICONSET" --output "$APP/Contents/Resources/direct-payment-timesheets.icns"
-python3 - "$APP/Contents/Info.plist" "$VERSION" <<'PY'
+python3 - "$APP/Contents/Info.plist" "$VERSION" "$MACOSX_DEPLOYMENT_TARGET" <<'PY'
 import plistlib, sys
 with open(sys.argv[1], 'wb') as f:
     plistlib.dump({
@@ -44,7 +46,7 @@ with open(sys.argv[1], 'wb') as f:
         'CFBundleShortVersionString': sys.argv[2],
         'CFBundleVersion': sys.argv[2],
         'CFBundleIconFile': 'direct-payment-timesheets.icns',
-        'LSMinimumSystemVersion': '12.0',
+        'LSMinimumSystemVersion': sys.argv[3],
         'NSHighResolutionCapable': True,
         'NSPrincipalClass': 'NSApplication',
     }, f)
@@ -62,7 +64,7 @@ for line in open(sys.argv[1]).readlines()[1:]:
         raise SystemExit('Non-system macOS dependency: ' + dependency)
 PY
 xcrun vtool -show-build "$BINARY" > "$BUILD_ROOT/deployment.txt"
-grep -Eq 'minos 12\.0($|\.0$)' "$BUILD_ROOT/deployment.txt"
+python3 packaging/package.py macos "$TARGET" "$APP/Contents/Info.plist" "$BUILD_ROOT/deployment.txt"
 # No Developer ID / notarisation. Ad-hoc seal is needed for ARM64 execution and
 # must be created after all bundle modifications; it confers no publisher trust.
 codesign --force --sign - "$APP"
@@ -79,6 +81,8 @@ mkdir "$MOUNT"
 hdiutil attach -readonly -nobrowse -mountpoint "$MOUNT" "$OUTPUT_FILE"
 trap 'hdiutil detach "$MOUNT" >/dev/null 2>&1 || true; rm -rf -- "$BUILD_ROOT"' EXIT
 plutil -lint "$MOUNT/Direct Payments Timesheets.app/Contents/Info.plist"
+xcrun vtool -show-build "$MOUNT/Direct Payments Timesheets.app/Contents/MacOS/direct_payment_timesheets" > "$BUILD_ROOT/mounted-deployment.txt"
+python3 packaging/package.py macos "$TARGET" "$MOUNT/Direct Payments Timesheets.app/Contents/Info.plist" "$BUILD_ROOT/mounted-deployment.txt"
 codesign --verify --deep --strict "$MOUNT/Direct Payments Timesheets.app"
 [[ "$(lipo -archs "$MOUNT/Direct Payments Timesheets.app/Contents/MacOS/direct_payment_timesheets")" == "$ARCH" ]]
 test -f "$MOUNT/Direct Payments Timesheets.app/Contents/Resources/DejaVu-LICENSE.txt"

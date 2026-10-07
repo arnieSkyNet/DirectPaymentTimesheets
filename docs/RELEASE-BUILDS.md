@@ -126,22 +126,32 @@ before claiming those platforms supported.
 ## macOS
 
 Each architecture builds natively and separately with Rust 1.98.1,
-`DPT_INSTALLATION_KIND=macos` and `MACOSX_DEPLOYMENT_TARGET=12.0`. The bundle has
-`LSMinimumSystemVersion=12.0`, stable identifier
+`DPT_INSTALLATION_KIND=macos`. The deployment minimums in
+`packaging/toolchain.json` are **11.4 for Intel (`x86_64-apple-darwin`)** and
+**12.0 for Apple Silicon (`aarch64-apple-darwin`)**. The packaging script selects
+and exports `MACOSX_DEPLOYMENT_TARGET` before both Cargo test and release build,
+so Rust and native dependencies use the same architecture-specific minimum.
+The bundle has the matching `LSMinimumSystemVersion`, stable identifier
 `io.github.arnieskynet.DirectPaymentTimesheets`, Cargo-derived versions, an icns
 icon generated from the existing PNG and licence resources. UI/PDF fallback fonts
 are already embedded; no database, user config or payroll files enter the bundle.
 
 Native tools validate Info.plist, single architecture, the Mach-O deployment target
-and system-only library links. A final **ad-hoc** signature seals the completed
+and system-only library links. Shared packaging validation requires Info.plist's
+minimum and the executable's `vtool`-reported `minos` to match the selected target
+(11.4 for Intel, 12.0 for arm64), both before signing and in the mounted DMG.
+Artifact metadata also records the selected minimum. A final **ad-hoc** signature seals the completed
 bundle; there is no Developer ID certificate, timestamp service, notarisation or
 Universal binary. Ad-hoc signing satisfies executable integrity requirements but
 does not establish publisher identity. `hdiutil` creates and verifies a compressed
 UDZO DMG with an Applications shortcut, then mounts it read-only to inspect the
 actual distributed bundle without launching it.
 
-macOS 12.0 is the proposed minimum, pending testing on that OS. The macOS 15 runner
-alone cannot establish backwards compatibility. Browser-downloaded unsigned/
+Intel macOS 11.4 and Apple Silicon macOS 12.0 acceptance testing remains pending.
+The macOS 15 runner alone cannot establish backwards compatibility. Test a rebuilt
+Intel artifact on an Intel Mac running exactly macOS 11.4, including first launch,
+rendering, file dialogs, accessibility, database/backup, PDF operations and SMTP TLS.
+Browser-downloaded unsigned/
 unnotarised builds may need System Settings > Privacy & Security > Open Anyway
 after the first attempted launch; do not disable Gatekeeper globally. Test that
 flow on real Macs, including the minimum OS, before declaring release acceptance.
@@ -260,8 +270,10 @@ The README links to all ten actual v1.0.4 release assets using fixed
 `DirectPaymentTimesheets-1.0.4-windows-arm64-setup.exe`. Asset names and URLs were
 checked against the published GitHub release. The actual macOS bundle is
 `Direct Payments Timesheets.app` (with spaces), not `DirectPaymentTimesheets.app`.
-Its minimum deployment target is 12.0 and its signature is ad-hoc, not Developer
-ID/notarised.
+The published v1.0.4 bundles have minimum deployment target 12.0 on both
+architectures; changing the build configuration does not change those downloads.
+Future rebuilt Intel packages target 11.4; Apple Silicon remains at 12.0.
+The signature is ad-hoc, not Developer ID/notarised.
 
 For future publication, verify the ten-package inventory, same-source provenance
 and checksums, confirm each asset name matches the README, and record the status

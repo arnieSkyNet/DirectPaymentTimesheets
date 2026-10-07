@@ -110,7 +110,7 @@ Both Windows architectures use the same per-user application folder and uninstal
 
 ### macOS
 
-The two separate DMGs target **macOS 12 Monterey or later**. That is the configured minimum; final hardware and minimum-OS acceptance testing remains pending. These are independently distributed builds, not Mac App Store applications.
+New Intel (x86_64) builds target **macOS 11.4 Big Sur or later**; Apple Silicon (arm64) builds continue to target **macOS 12.0 Monterey or later**. These are the configured minimums; final hardware and minimum-OS acceptance testing remains pending, including an Intel Mac running exactly macOS 11.4. The linked v1.0.4 downloads still require macOS 12.0 on both architectures; the lower Intel minimum applies to future rebuilt releases. These are independently distributed builds, not Mac App Store applications.
 
 #### Choose the correct DMG
 
@@ -139,7 +139,7 @@ Only make an exception for the package you deliberately downloaded from **this p
 4. Authenticate with your password or Touch ID if requested, then confirm **Open** in the next dialog.
 5. Later launches should work normally from Applications.
 
-On macOS 12, the equivalent controls are **System Preferences → Security & Privacy → General**. On older macOS versions that offer it, Control-clicking the app in Finder and choosing **Open**, then confirming **Open**, may also grant the exception. On newer versions, use Privacy & Security if Finder's Open command still blocks it. If no exception is offered, consult [Apple's current safe-opening instructions](https://support.apple.com/en-gb/102445); a managed Mac may require help from its administrator.
+On macOS 11 and 12, the equivalent controls are **System Preferences → Security & Privacy → General**. On older macOS versions that offer it, Control-clicking the app in Finder and choosing **Open**, then confirming **Open**, may also grant the exception. On newer versions, use Privacy & Security if Finder's Open command still blocks it. If no exception is offered, consult [Apple's current safe-opening instructions](https://support.apple.com/en-gb/102445); a managed Mac may require help from its administrator.
 
 Do not disable Gatekeeper globally or change security settings to allow all applications.
 
