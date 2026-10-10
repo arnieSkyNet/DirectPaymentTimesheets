@@ -22,15 +22,15 @@ The GUI owns navigation and stable selection state. `Application` exposes reposi
 
 ## Runtime environment
 
-`AppEnvironment` uses `DIRECTPAYMENTTIMESHEETS_HOME` when set, otherwise `~/.directpaymenttimesheets`. It creates the internal data, import, archive, backup, log, template and cache directories and locates `database.sqlite`. `config.toml` is stored in the data root.
+`AppEnvironment` uses `DIRECTPAYMENTTIMESHEETS_HOME` when set, otherwise `%LOCALAPPDATA%/DirectPaymentTimesheets` on Windows or `~/.directpaymenttimesheets` on Unix. It creates the internal data, import, archive, backup, log, template and cache directories and locates `database.sqlite`. `config.toml` is stored in the data root.
 
 `AppConfig` is TOML/Serde data split into theme, folder, PDF, payroll and email sections. Serde's normal unknown-field handling permits obsolete keys in old files. Missing newer fields use defaults. Annual-leave rule values are an exception to TOML settings: they live in the singleton SQLite `annual_leave_settings` table. A compatibility reconciliation preserves the legacy timesheet email body when the newer payroll template is absent.
 
-Configured business paths may point outside the data root. `email_archive` is currently persisted without a production consumer, and Payroll Return information deliberately uses the separate payroll-information path. Saving configuration ensures configured business roots exist. Schedule-derived path creation is deliberately late: for example, a future payroll-year directory is created only when a PDF or Payroll Return file is actually written.
+Configured business paths may point outside the data root. `email_archive` is currently persisted without a production consumer, and Payroll Return information deliberately uses the separate payroll-information path. Startup probes configured business roots in a background worker; warnings preserve paths and leave Settings accessible. Saving configuration does not create business roots. Schedule-derived path creation is deliberately late: for example, a future payroll-year directory is created only when a PDF or Payroll Return file is actually written.
 
 ## SQLite and repositories
 
-`database.rs` creates the original schema and applies ordered migrations through `CURRENT_SCHEMA_VERSION` 35. Each repository opens/uses its own `rusqlite::Connection` to the same database path. Schema-changing work belongs in a migration; tests exercise fresh initialisation and upgrades, including preservation of existing history.
+`database.rs` creates the original schema and applies ordered migrations through `CURRENT_SCHEMA_VERSION` 38. Each repository opens/uses its own `rusqlite::Connection` to the same database path. Schema-changing work belongs in a migration; tests exercise fresh initialisation and upgrades, including preservation of existing history.
 
 Principal persisted areas are:
 
@@ -227,3 +227,12 @@ former file is missing. Failed identical publication retains the old registratio
 `src/sickness_service.rs` owns reviewed insert/edit/delete transactions, cross-cycle lifecycle checks, scoped projections, duplicate/stale-edit protection, audit and immutable sickness snapshots. The editor never performs direct sickness repository mutations in production. Generation holds the existing OS dispatch lock before reading PDF inputs and through publication; sickness mutation, production sending, restore and migration use the same lock plus database writer reservations. Correction generation reuses retained worked membership/totals and rejects changed payroll totals instead of recalculating settled work. Candidate registration binds structured sickness evidence to immutable document identity; attempt and submission snapshots copy that exact capture.
 
 The original submission/PDF and settlement remain protected when a sickness-only replacement is authorised. The correction uses existing reconciliation decisions and safeguarded email first-send/resend handling. Per-cycle overrides preserve full protected sickness ranges during explicitly scoped editable-only changes. Database/config recovery includes the new tables; external business documents/signatures retain their existing separate recovery requirements. See [schema37](DATABASE-SCHEMA.md#schema-37-sickness-protection-and-historical-information-corrections).
+
+
+## Stage 5 startup orchestration
+
+`main` returns an explicit failure status and reports a structured `startup::StartupError` through a native dialog independent of eframe, retaining stderr fallback. Error text uses curated explanations, safe paths and recovery guidance; underlying TOML/SQL/graphics payloads are not displayed. Native dialog availability is platform-dependent; an error-only eframe window is a fallback before main-GUI startup. It is not retried after a graphics failure. Presentation is tested through injected functions, without starting a desktop.
+
+`AppContext` performs the single database initialisation before loading configuration; `Application` then opens repositories, and `application::run` opens eframe without repeating migration/locking. Existing-database upgrades retain verified backup, isolated migrations and transactional verified installation. Fresh databases also stage before installation. Current-schema validation checks critical table/column and write-guard metadata, then runs `quick_check(1)` with a 100,000-VM-operation/250-ms callback budget. Exhausting that budget is not corruption and does not certify unchecked pages; backup/upgrade integrity checks remain full.
+
+Configuration loading distinguishes genuine absence from inaccessible/malformed files and dangling symlinks. A synced same-directory temporary file is published without overwrite; concurrent creators load the winning configuration. Explicit configuration saves also publish atomically. Business-folder checks are read-only/background operations; workflows retain their existing operation-specific filesystem validation and late output creation. Settings changes refresh folder checks; unavailable unrelated folders do not gate saving configuration or internal shifts.

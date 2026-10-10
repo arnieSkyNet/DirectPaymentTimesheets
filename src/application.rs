@@ -1,6 +1,7 @@
 use std::error::Error;
 
 use crate::app::Application;
+#[cfg(test)]
 use crate::database;
 
 // Both package formats use the same executable entry point. Keep this policy
@@ -48,25 +49,19 @@ mod rendering_tests {
     }
 }
 
-pub fn run() -> Result<(), Box<dyn Error>> {
+pub fn run() -> Result<(), crate::startup::StartupError> {
     let app = Application::initialise()?;
 
     println!("DirectPaymentTimesheets v{}", app.context.version);
 
     println!("Application foundation ready.");
 
-    println!(
-        "Application data directory: {:?}",
-        app.context.environment.data_dir
-    );
-
-    initialise_database(&app.context.environment.database_path)?;
-
-    launch_gui(app)?;
+    launch_gui(app).map_err(|_| crate::startup::StartupError::new(crate::startup::Stage::Graphics,None,"The application window could not be opened.","Check your desktop/display session and graphics driver. Try launching from a terminal for platform diagnostics; do not reset payroll data.").after_database())?;
 
     Ok(())
 }
 
+#[cfg(test)]
 fn initialise_database(database_path: &std::path::Path) -> Result<(), Box<dyn Error>> {
     database::initialise_database(database_path)?;
 

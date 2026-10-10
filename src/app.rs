@@ -32,46 +32,47 @@ pub struct Application {
 }
 
 impl Application {
-    pub fn initialise() -> Result<Self, Box<dyn std::error::Error>> {
+    pub fn initialise() -> Result<Self, crate::startup::StartupError> {
         let context = AppContext::initialise()?;
 
         let database_path = &context.environment.database_path;
 
-        let repository = TimesheetRepository::new(crate::database::open(database_path)?);
+        let open = || {
+            crate::database::open(database_path).map_err(|_| {
+                crate::startup::StartupError::new(
+                    crate::startup::Stage::Repositories,
+                    Some(database_path),
+                    "An application database connection could not be opened.",
+                    "Check access, free space and open instances, then retry.",
+                )
+                .after_database()
+            })
+        };
+        let repository = TimesheetRepository::new(open()?);
 
-        let employer_repository = EmployerRepository::new(crate::database::open(database_path)?);
+        let employer_repository = EmployerRepository::new(open()?);
 
-        let personal_assistant_repository =
-            PersonalAssistantRepository::new(crate::database::open(database_path)?);
+        let personal_assistant_repository = PersonalAssistantRepository::new(open()?);
 
-        let pay_rate_repository = PayRateRepository::new(crate::database::open(database_path)?);
+        let pay_rate_repository = PayRateRepository::new(open()?);
 
-        let contracted_hours_repository =
-            ContractedHoursRepository::new(crate::database::open(database_path)?);
+        let contracted_hours_repository = ContractedHoursRepository::new(open()?);
 
-        let direct_shift_repository =
-            DirectShiftRepository::new(crate::database::open(database_path)?);
+        let direct_shift_repository = DirectShiftRepository::new(open()?);
 
-        let payroll_provider_repository =
-            PayrollProviderRepository::new(crate::database::open(database_path)?);
+        let payroll_provider_repository = PayrollProviderRepository::new(open()?);
 
-        let payroll_schedule_repository =
-            PayrollScheduleRepository::new(crate::database::open(database_path)?);
+        let payroll_schedule_repository = PayrollScheduleRepository::new(open()?);
 
-        let payroll_timesheet_repository =
-            PayrollTimesheetRepository::new(crate::database::open(database_path)?);
+        let payroll_timesheet_repository = PayrollTimesheetRepository::new(open()?);
 
-        let payroll_worked_item_repository =
-            PayrollWorkedItemRepository::new(crate::database::open(database_path)?);
+        let payroll_worked_item_repository = PayrollWorkedItemRepository::new(open()?);
 
-        let payroll_timesheet_email_repository =
-            PayrollTimesheetEmailRepository::new(crate::database::open(database_path)?);
+        let payroll_timesheet_email_repository = PayrollTimesheetEmailRepository::new(open()?);
 
         Ok(Self {
             annual_leave_settings_repository:
-                crate::annual_leave_settings_repository::AnnualLeaveSettingsRepository::new(
-                    crate::database::open(database_path)?,
-                ),
+                crate::annual_leave_settings_repository::AnnualLeaveSettingsRepository::new(open()?),
             context,
             repository,
             employer_repository,
@@ -89,14 +90,6 @@ impl Application {
 
     pub fn save_config(&self) -> Result<(), Box<dyn std::error::Error>> {
         let config_path = self.context.environment.data_dir.join("config.toml");
-
-        crate::paths::ensure_directories(&[
-            &self.context.config.folders.csv_import,
-            &self.context.config.folders.pdf_output,
-            &self.context.config.folders.email_archive,
-            &self.context.config.folders.payslip_folder,
-            &self.context.config.folders.payroll_information_folder,
-        ])?;
 
         self.context.config.save(&config_path)?;
 

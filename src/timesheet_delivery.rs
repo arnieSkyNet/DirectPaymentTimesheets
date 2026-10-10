@@ -1048,6 +1048,13 @@ mod tests {
     }
 }
 
+pub(crate) fn lock_error(error: std::fs::TryLockError) -> Box<dyn std::error::Error> {
+    match error {
+        std::fs::TryLockError::WouldBlock => "Payroll sending, publication or recovery is active in another instance; wait for it to finish before retrying or reviewing. Never delete the lock file.".into(),
+        std::fs::TryLockError::Error(e) => format!("Cannot acquire the dispatch lock ({:?}); check filesystem permissions and locking support. Do not bypass or delete the lock.",e.kind()).into(),
+    }
+}
+
 /// An OS lock prevents review from releasing a claim while another instance is
 /// still in SMTP. Kernel release on process exit allows review after a crash.
 /// Never delete this sidecar: unlinking an active lock could split ownership.
@@ -1055,13 +1062,48 @@ pub(crate) fn production_lock(db: &Connection) -> Result<Option<std::fs::File>> 
     let Some(path) = db.path().filter(|p| !p.is_empty() && *p != ":memory:") else {
         return Ok(None);
     };
-    let path = std::fs::canonicalize(path)?.with_extension("timesheet-delivery.lock");
+    let path = std::fs::canonicalize(path)
+        .map_err(|e| {
+            format!(
+                "Cannot locate the dispatch lock ({:?}); check database access and permissions.",
+                e.kind()
+            )
+        })?
+        .with_extension("timesheet-delivery.lock");
     let file = std::fs::OpenOptions::new()
         .create(true)
         .truncate(false)
         .read(true)
         .write(true)
-        .open(path)?;
-    file.try_lock().map_err(|e|format!("Payroll sending, publication or recovery is active in another instance; wait for it to finish before retrying or reviewing: {e}"))?;
+        .open(path)
+        .map_err(|e| {
+            format!(
+                "Cannot open the dispatch lock ({:?}); check directory and lock-file permissions.",
+                e.kind()
+            )
+        })?;
+    file.try_lock().map_err(lock_error)?;
     Ok(Some(file))
+}
+
+#[cfg(test)]
+mod stage5_lock_tests {
+    #[test]
+    fn stage5_lock_contention_and_filesystem_errors_have_distinct_safe_guidance() {
+        let busy = super::lock_error(std::fs::TryLockError::WouldBlock).to_string();
+        assert!(busy.contains("another instance"));
+        for kind in [
+            std::io::ErrorKind::Unsupported,
+            std::io::ErrorKind::PermissionDenied,
+        ] {
+            let other = super::lock_error(std::fs::TryLockError::Error(std::io::Error::new(
+                kind,
+                "PRIVATE_SECRET",
+            )))
+            .to_string();
+            assert!(!other.contains("another instance"));
+            assert!(!other.contains("PRIVATE_SECRET"));
+            assert!(other.contains("locking support"));
+        }
+    }
 }

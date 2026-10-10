@@ -258,7 +258,7 @@ Set `DIRECTPAYMENTTIMESHEETS_HOME` before launching to use a different data root
 
 The application root contains `database.sqlite`, `config.toml` and internal import, archive, backup, log, template and cache directories. Application Settings also configures external business folders for CSV import, generated PDFs, payslips and returned payroll information. These paths can be outside the application root and may contain sensitive payroll data. Inspect them before running a workflow that writes files.
 
-New configurations use provider-neutral paths beneath `~/Documents/DirectPaymentTimesheets/` for those business folders. The `~` prefix is expanded to the current user's home directory at runtime. Existing configured paths are preserved and remain editable in Application Settings. Saving configuration ensures business roots exist; schedule-derived folders remain lazy until an actual write/import.
+New configurations use provider-neutral paths beneath `~/Documents/DirectPaymentTimesheets/` for those business folders. The `~` prefix is expanded to the current user's home directory at runtime. Existing configured paths are preserved and remain editable in Application Settings. Startup checks business folders in the background and warns without preventing Settings access. Saving configuration preserves the selected paths without creating those folders. Workflows validate their own required locations and create outputs only when actually used; no alternate folder is silently substituted.
 
 The configured `email_archive` path is currently persisted but has no production consumer. Returned payroll information uses the separate payroll-information folder.
 
@@ -367,3 +367,12 @@ backup: separately protect the complete data root and external business assets.
 
 
 Development 1.0.6 Stage 4 uses schema38 for CSV content identity and prospective shift review across Hours Keeper and Hours Shift. Changed files at the same pathname are detected; originals and omitted rows are retained. Overnight overlaps and moved counterparts require explicit payable-version/separate-shift review, with audited deferral available. New protected edits require authorisation and contextual financial correction; legacy obligations remain unchanged. Upgrades use the existing verified recovery process. See [Stage 4 development notes](docs/DEVELOPMENT.md#stage-4-shift-change-protection-106schema38).
+
+
+## Stage 5 startup reliability (1.0.6/schema38)
+
+Startup failures identify their stage, safe relevant location and recovery action, without raw configuration, SQL errors or credentials. A separate native dialog presents fatal errors; stderr remains a fallback and failure exits nonzero. Windows uses its native message box, macOS uses `osascript`, and Linux uses an available `zenity` or `kdialog`; if no native helper works, configuration/database failures can use a small error-only window. After a graphics failure, eframe is not retried. Without usable graphical presentation, launch from a terminal to see stderr. No helper is automatically installed.
+
+Missing or inaccessible configured business folders produce background warnings and leave Settings and unrelated payroll work available. Recheck folders after reconnecting a drive. Missing configuration is published atomically without overwriting a concurrent existing file; malformed/unreadable configuration is preserved. Windows default-folder discovery returns a recoverable error when required.
+
+Current-schema startup validates critical schema/protection metadata and performs a bounded page check; it is not a full integrity certification of every stored page. Full verified backup/upgrade checks remain unchanged. Fresh databases are built in isolation and installed transactionally. Fatal database, backup or migration failures never trigger automatic reset, deletion or recovery replacement. A later configuration/graphics failure does not undo an already completed upgrade; retain its verified recovery copy and protect external business files separately.

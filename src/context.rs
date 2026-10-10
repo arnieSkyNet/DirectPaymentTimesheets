@@ -11,22 +11,18 @@ pub struct AppContext {
 impl AppContext {
     pub fn initialise() -> Result<Self, AppError> {
         let environment = AppEnvironment::initialise()?;
+        Self::from_environment(environment)
+    }
 
+    pub(crate) fn from_environment(environment: AppEnvironment) -> Result<Self, AppError> {
         // Upgrade safety runs before configuration/default folders can be changed.
-        crate::database::initialise_database(&environment.database_path)
-            .map_err(|error| AppError::Config(format!("Database startup refused: {error}")))?;
+        crate::database::initialise_database(&environment.database_path).map_err(|error| {
+            crate::startup::StartupError::database(&environment.database_path, error.as_ref())
+        })?;
         let config_path = environment.data_dir.join("config.toml");
 
-        let config = AppConfig::load(&config_path)?;
-
-        crate::paths::ensure_directories(&[
-            &config.folders.csv_import,
-            &config.folders.pdf_output,
-            &config.folders.email_archive,
-            &config.folders.payslip_folder,
-            &config.folders.payroll_information_folder,
-        ])
-        .map_err(|error| AppError::Config(error.to_string()))?;
+        let config =
+            AppConfig::load(&config_path).map_err(crate::startup::StartupError::after_database)?;
 
         Ok(Self {
             environment,

@@ -105,7 +105,7 @@ Use `payroll_file_naming` for every producer and consumer. Do not reimplement pe
 - Payslip filename is `Payslip for Week N for Name.pdf`.
 - A root ending in `YYYY to YYYY` is normalised back to its parent before applying another schedule year.
 - Generic timesheet PDF roots stay flat; year-suffixed timesheet roots roll to sibling years.
-- Create schedule-derived directories only immediately before an actual write/import. Saving configuration also ensures configured business roots exist.
+- Create schedule-derived directories only immediately before an actual write/import. Saving configuration preserves configured business roots without creating them; background checks warn and workflows validate their own locations.
 
 When adding file writes, preserve collision handling and propagate directory/write errors before changing related database state.
 
@@ -450,3 +450,14 @@ restoration keeps those files untouched and restores only stored references.
 The CSV parser maps semantic headers independently of ordering. Supported aliases are Client Name/PA, Start Time/Start, End Time/End, Break Time/Break, Worked Hours/Worked, Rate/h/Rate, Amount and Note. Names ignore case, surrounding whitespace and a leading BOM; missing, unknown and duplicate semantic fields are refused. Both real and synthetic test variants remain supported. Tests use only synthetic temporary CSVs/databases; production exports must not be opened by development tests.
 
 Duplicate review retains original sources, supports explicit retain-all and audited deferral, and requires fresh authorisation if displayed evidence/payroll changes. New protected edits cannot use the repository's ordinary editing API as a bypass. Financial changes use existing contextual resubmission/carry-forward, with original settlements and PDFs preserved. Regression coverage is in `payroll_evidence/stage4_tests.rs`, header tests, populated schema37 migration tests, and the existing production/recovery suites. No public-holiday, sickness, signature, PDF-layout or SMTP policy changes are part of Stage 4.
+
+
+## Stage 5 startup reliability (1.0.6/schema38)
+
+`startup.rs` centralises curated stage/path/recovery diagnostics and independent native presentation. Never forward raw parser, database or graphical errors into startup output: those can contain private values. The presentation tests inject success/failure and do not open native dialogs; a subprocess test runs only isolated failing application initialisation, never the main GUI. Linux dialog helpers are optional, Windows uses MessageBoxW, and macOS uses a fixed AppleScript with message text passed as an argument. A small error-only eframe fallback needs no Application/configuration/database; skip it after a graphics failure to avoid retrying event-loop creation.
+
+Configuration creation uses a synced temporary file plus no-clobber publication, distinguishing NotFound from unreadable files and dangling references. Explicit saves are atomic too. Windows default-location discovery must return an error when defaults are needed, rather than panic. Folder warnings run asynchronously, preserve paths, refresh on settings changes and never redirect workflow output.
+
+Database initialisation remains before configuration and repository connections. The redundant second call was removed. Current-schema checks validate critical metadata/write guards plus a bounded quick_check; they do not replace full verified backup/upgrade integrity. SQLite progress callbacks are cleared after completion or budget interruption. Fresh initialisation stages the full chain and installs in one live transaction; unknown or damaged existing databases remain fatal and are never auto-reset. Later errors explicitly state that database initialisation already completed.
+
+Stage5-filtered tests cover redaction/presentation, subprocess exit status, concurrent configuration creation, preservation on configuration failure, Windows discovery, folder warnings/background refresh, lock classification, missing current-schema metadata/guards, corrupt pages, bounded-check cleanup and completed-upgrade/later-failure recovery. All fixtures are temporary; no production folders, GUI, network shares or native dialogs are used.

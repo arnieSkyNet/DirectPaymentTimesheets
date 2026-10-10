@@ -61,9 +61,8 @@ pub struct FolderConfig {
 fn portable_business_folder(name: &str) -> PathBuf {
     #[cfg(windows)]
     {
-        let documents =
-            dirs::document_dir().expect("Could not resolve the Windows Documents known folder");
-        business_folder(name, Some(&documents))
+        let documents = dirs::document_dir();
+        business_folder(name, documents.as_deref())
     }
     #[cfg(not(windows))]
     {
@@ -334,35 +333,137 @@ impl Default for AppConfig {
 
 impl AppConfig {
     pub fn load(path: &Path) -> Result<Self, AppError> {
-        if path.exists() {
-            let contents = fs::read_to_string(path).map_err(|e| AppError::Config(e.to_string()))?;
-            let source: toml::Value =
-                toml::from_str(&contents).map_err(|e| AppError::Config(e.to_string()))?;
-            let mut config: Self =
-                toml::from_str(&contents).map_err(|e| AppError::Config(e.to_string()))?;
+        Self::load_with_retry(path, 0)
+    }
 
-            reconcile_legacy_timesheet_email_body(&mut config, &source);
-
-            Ok(config)
-        } else {
-            let config = Self::default();
-
-            let contents =
-                toml::to_string_pretty(&config).map_err(|e| AppError::Config(e.to_string()))?;
-
-            fs::write(path, contents).map_err(|e| AppError::Config(e.to_string()))?;
-
-            Ok(config)
+    fn load_with_retry(path: &Path, retries: u8) -> Result<Self, AppError> {
+        use crate::startup::{Stage, StartupError};
+        if retries >= 8 {
+            return Err(StartupError::new(Stage::Configuration,Some(path),"Configuration changed repeatedly while loading.","Close other configuration editors or application instances, then retry. No existing configuration was overwritten."));
         }
+        let contents = match fs::read_to_string(path) {
+            Ok(contents) => contents,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                // A dangling symlink is not an absent configuration file.
+                match fs::symlink_metadata(path) {
+                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                    Ok(metadata) if metadata.is_file() => {
+                        return Self::load_with_retry(path, retries + 1)
+                    }
+                    _ => return Err(StartupError::new(
+                        Stage::Configuration,
+                        Some(path),
+                        "The configured file cannot be read; it is not a genuinely absent file.",
+                        "Repair permissions or the existing reference. It was not overwritten.",
+                    )
+                    .into()),
+                }
+                validate_default_location(None, cfg!(windows), dirs::document_dir().as_deref())?;
+                let config = Self::default();
+                let contents = toml::to_string_pretty(&config).map_err(|_| {
+                    StartupError::new(
+                        Stage::Configuration,
+                        Some(path),
+                        "Default configuration could not be encoded.",
+                        "Retain existing data and report this application error.",
+                    )
+                })?;
+                match publish_config(path, contents.as_bytes(), false) {
+                    Ok(()) => return Ok(config),
+                    Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+                        return Self::load_with_retry(path, retries + 1)
+                    }
+                    Err(error) => {
+                        return Err(StartupError::io(Stage::Configuration, path, &error).into())
+                    }
+                }
+            }
+            Err(error) => return Err(StartupError::io(Stage::Configuration, path, &error).into()),
+        };
+        let invalid = |span: Option<std::ops::Range<usize>>| {
+            let location = span
+                .and_then(|span| contents.get(..span.start))
+                .map(|before| {
+                    format!(
+                        " near line {}, column {}",
+                        before.bytes().filter(|b| *b == b'\n').count() + 1,
+                        before.rsplit('\n').next().unwrap_or("").chars().count() + 1
+                    )
+                })
+                .unwrap_or_default();
+            StartupError::new(Stage::Configuration,Some(path),format!("The configuration is malformed or contains an unsupported setting{location}. Its contents have not been replaced."),"Check TOML syntax and supported settings, or recover a verified configuration copy. Do not share passwords or raw configuration contents.")
+        };
+        let source: toml::Value =
+            toml::from_str(&contents).map_err(|e: toml::de::Error| invalid(e.span()))?;
+        validate_default_location(
+            Some(&source),
+            cfg!(windows),
+            dirs::document_dir().as_deref(),
+        )?;
+        let mut config: Self =
+            toml::from_str(&contents).map_err(|e: toml::de::Error| invalid(e.span()))?;
+        reconcile_legacy_timesheet_email_body(&mut config, &source);
+        Ok(config)
     }
 
     pub fn save(&self, path: &Path) -> Result<(), AppError> {
-        let contents = toml::to_string_pretty(self).map_err(|e| AppError::Config(e.to_string()))?;
-
-        fs::write(path, contents).map_err(|e| AppError::Config(e.to_string()))?;
-
+        use crate::startup::{Stage, StartupError};
+        let contents = toml::to_string_pretty(self).map_err(|_| {
+            StartupError::new(
+                Stage::Configuration,
+                Some(path),
+                "The configuration could not be encoded.",
+                "Retain the existing configuration and report this application error.",
+            )
+        })?;
+        publish_config(path, contents.as_bytes(), true)
+            .map_err(|e| StartupError::io(Stage::Configuration, path, &e))?;
         Ok(())
     }
+}
+
+fn publish_config(path: &Path, bytes: &[u8], replace: bool) -> std::io::Result<()> {
+    use std::io::Write;
+    let parent = path
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .unwrap_or(Path::new("."));
+    let mut pending = tempfile::NamedTempFile::new_in(parent)?;
+    pending.write_all(bytes)?;
+    pending.as_file().sync_all()?;
+    if replace {
+        pending.persist(path).map_err(|e| e.error)?;
+    } else {
+        pending.persist_noclobber(path).map_err(|e| e.error)?;
+    }
+    #[cfg(unix)]
+    fs::File::open(parent)?.sync_all()?;
+    Ok(())
+}
+
+fn validate_default_location(
+    source: Option<&toml::Value>,
+    windows: bool,
+    documents: Option<&Path>,
+) -> Result<(), AppError> {
+    let missing = [
+        "csv_import",
+        "pdf_output",
+        "email_archive",
+        "payslip_folder",
+        "payroll_information_folder",
+    ]
+    .iter()
+    .any(|key| {
+        source
+            .and_then(|s| s.get("folders"))
+            .and_then(|f| f.get(key))
+            .is_none()
+    });
+    if windows && missing && documents.is_none() {
+        return Err(crate::startup::StartupError::new(crate::startup::Stage::Configuration,None,"Windows Documents location could not be discovered for default business folders.","Restore access to your Windows Documents known folder, or explicitly configure all five business folders. Existing configuration was not replaced.").into());
+    }
+    Ok(())
 }
 
 fn reconcile_legacy_timesheet_email_body(config: &mut AppConfig, source: &toml::Value) {
@@ -733,6 +834,113 @@ payroll_information_folder = 'relative\Chosen Information'
         assert_eq!(
             config.payroll.timesheet_email_body,
             "Authoritative timesheet text"
+        );
+    }
+}
+
+#[cfg(test)]
+mod stage5_tests {
+    use super::*;
+    #[test]
+    fn missing_configuration_is_complete_atomic_and_concurrent_creation_is_safe() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(8));
+        let threads = (0..8)
+            .map(|_| {
+                let path = path.clone();
+                let barrier = barrier.clone();
+                std::thread::spawn(move || {
+                    barrier.wait();
+                    AppConfig::load(&path).unwrap();
+                })
+            })
+            .collect::<Vec<_>>();
+        for thread in threads {
+            thread.join().unwrap();
+        }
+        AppConfig::load(&path).unwrap();
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 1);
+    }
+    #[test]
+    fn malformed_and_unreadable_existing_configuration_is_preserved_and_redacted() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        let bytes = "smtp_password = 'VERY_SECRET'\ntoken = 'PRIVATE_TOKEN'\nbroken = [";
+        fs::write(&path, bytes).unwrap();
+        let e = AppConfig::load(&path).unwrap_err();
+        assert_eq!(fs::read_to_string(&path).unwrap(), bytes);
+        assert_eq!(e.stage, crate::startup::Stage::Configuration);
+        assert!(!e.to_string().contains("VERY_SECRET"));
+        assert!(!e.to_string().contains("PRIVATE_TOKEN"));
+        fs::remove_file(&path).unwrap();
+        fs::create_dir(&path).unwrap();
+        assert!(AppConfig::load(&path).is_err());
+        assert!(path.is_dir());
+    }
+    #[test]
+    fn exclusive_publication_never_replaces_a_concurrently_existing_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        fs::write(&path, b"previous valid configuration").unwrap();
+        assert_eq!(
+            publish_config(&path, b"replacement", false)
+                .unwrap_err()
+                .kind(),
+            std::io::ErrorKind::AlreadyExists
+        );
+        assert_eq!(fs::read(&path).unwrap(), b"previous valid configuration");
+    }
+    #[test]
+    fn failed_atomic_save_retains_existing_configuration_and_leaves_no_partial_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        fs::create_dir(&path).unwrap();
+        assert!(AppConfig::default().save(&path).is_err());
+        assert!(path.is_dir());
+        assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 1);
+    }
+    #[test]
+    fn windows_document_discovery_failure_is_recoverable_only_when_defaults_are_needed() {
+        assert!(validate_default_location(None, true, None).is_err());
+        let config = toml::Value::try_from(AppConfig::default()).unwrap();
+        assert!(validate_default_location(Some(&config), true, None).is_ok());
+        assert!(validate_default_location(None, false, None).is_ok());
+        assert!(validate_default_location(None, true, Some(Path::new("D:/Documents"))).is_ok());
+    }
+    #[cfg(unix)]
+    #[test]
+    fn dangling_config_symlink_is_not_replaced_as_missing() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        std::os::unix::fs::symlink("unavailable-original", &path).unwrap();
+        assert!(AppConfig::load(&path).is_err());
+        assert!(fs::symlink_metadata(&path)
+            .unwrap()
+            .file_type()
+            .is_symlink());
+    }
+}
+
+#[cfg(all(test, unix))]
+mod stage5_permission_tests {
+    #[test]
+    fn stage5_unreadable_config_does_not_receive_default_overwrite() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(&path, b"original protected configuration").unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0)).unwrap();
+        let unreadable = std::fs::read(&path).is_err();
+        let result = super::AppConfig::load(&path);
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+        assert!(result.is_err());
+        if unreadable {
+            assert!(result.unwrap_err().to_string().contains("PermissionDenied"));
+        }
+        assert_eq!(
+            std::fs::read(&path).unwrap(),
+            b"original protected configuration"
         );
     }
 }

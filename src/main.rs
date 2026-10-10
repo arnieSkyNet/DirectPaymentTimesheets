@@ -58,11 +58,12 @@ mod shift_changes;
 mod sickness_period_repository;
 mod sickness_service;
 mod signature;
+mod startup;
 mod theme;
 mod timesheet_delivery;
 mod update_check;
 
-fn main() {
+fn main() -> std::process::ExitCode {
     // Set Mesa's default before application initialisation can start any threads
     // or initialise graphics. An explicit user setting remains authoritative.
     if application::use_packaged_arm_software_rendering(
@@ -74,6 +75,8 @@ fn main() {
         std::env::set_var("LIBGL_ALWAYS_SOFTWARE", "1");
     }
     if let Err(error) = application::run() {
-        eprintln!("Application error: {}", error);
+        startup::report(&error);
+        return std::process::ExitCode::from(startup::exit_code(true));
     }
+    std::process::ExitCode::from(startup::exit_code(false))
 }

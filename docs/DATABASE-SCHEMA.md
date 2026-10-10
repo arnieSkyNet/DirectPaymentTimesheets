@@ -621,3 +621,10 @@ Migration38 is additive. `csv_import_contents` identifies successfully retained 
 No legacy source, audit, duplicate/reconciliation decision, correction component/application, submission, settlement or PDF is reclassified by migration38. New tables start empty. A user-requested import may register a legacy CSV archive's verified content and raw membership against its existing audit; it does not fabricate a new legacy audit or mark unchanged rows as new changes. An unavailable legacy archive refuses comparison with an actionable error. No archive/business files are read by migration38 itself.
 
 The established verified WAL-safe backup and isolated installation cover 35→36→37→38 and 37→38. Migration38 and its schema guard replacement are transactional. Schema38 guards reject ordinary business/version writes from schema37 connections. This does not make previously published executables safe recovery tools: keep old binaries away from upgraded data, because filesystem-level restore and schema-altering operations are outside these guards.
+
+
+### Stage 5 startup validation (schema38 unchanged)
+
+Ordinary current-schema startup validates critical table/column and schema38 write-guard metadata, then runs a bounded `quick_check(1)`. Its progress callback stops at approximately 100,000 VM operations or 250 ms; an individual filesystem I/O can exceed the callback budget. Budget exhaustion is not treated as corruption and unchecked pages are not certified. Detected corruption/missing protections is fatal without automatic repair. Verified backup, staged upgrade and transactional installation still perform their full checks.
+
+Fresh empty databases are now staged and installed transactionally rather than applying the migration chain directly to live data. Unknown/nonempty databases are never treated as fresh. Existing upgrade backup/WAL/rollback/recovery semantics are unchanged. Configuration or graphics failure after a successful upgrade leaves that upgrade applied and reports the location of its pre-upgrade recovery folder. Business-folder availability does not bypass database or dispatch locks. No schema migration accompanies Stage5.

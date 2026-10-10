@@ -120,6 +120,92 @@ pub(crate) fn file_fingerprint(path: &Path) -> Result<Option<String>> {
     Ok(Some(format!("{:x}", Sha256::digest(std::fs::read(path)?))))
 }
 
+/// Always validate critical schema metadata. A bounded quick_check additionally
+/// probes page integrity without an unbounded full scan of retained PDF blobs.
+/// Budget exhaustion is not evidence of corruption; backup/upgrade checks remain full.
+fn validate_current(db: &Connection) -> Result<()> {
+    for (table, columns) in [
+        (
+            "timesheets",
+            "id,personal_assistant_id,start_time,end_time,worked_minutes",
+        ),
+        ("employers", "id"),
+        ("personal_assistants", "id"),
+        ("import_audit", "id"),
+        ("direct_shifts", "id,start_time,end_time"),
+        ("direct_shift_audit", "id"),
+        ("payroll_schedules", "id,first_week_commencing"),
+        ("payroll_timesheets", "id"),
+        ("payroll_timesheet_weeks", "id"),
+        ("payroll_submissions", "id,document_id,pdf_bytes"),
+        ("payroll_submission_items", "submission_id"),
+        ("payroll_corrections", "id"),
+        ("payroll_correction_applications", "correction_id"),
+        (
+            "payroll_timesheet_snapshot_states",
+            "payroll_timesheet_id,document_id",
+        ),
+        ("timesheet_documents", "id,pdf_bytes"),
+        ("timesheet_delivery_attempts", "id,outcome,resolved_at"),
+        ("timesheet_delivery_reviews", "id"),
+        (
+            "personal_assistant_sickness_periods",
+            "id,start_date,end_date",
+        ),
+        ("sickness_document_evidence", "document_id"),
+        ("sickness_changes", "id"),
+        ("csv_import_contents", "sha256"),
+        ("csv_import_rows", "source_id"),
+        ("shift_change_events", "id"),
+        ("shift_change_links", "old_id,new_id"),
+        ("shift_review_deferrals", "id"),
+        ("imported_payroll_documents", "id,sent_at"),
+    ] {
+        db.prepare(&format!("SELECT {columns} FROM {} LIMIT 0", quote(table)))?;
+        for operation in ["INSERT", "UPDATE", "DELETE"] {
+            let name = format!("dpt38_{table}_{operation}");
+            let exists: bool = db.query_row(
+                "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='trigger' AND name=?1)",
+                [name],
+                |r| r.get(0),
+            )?;
+            if !exists {
+                return Err("Required current-schema protection is missing; preserve the database for verified recovery".into());
+            }
+        }
+    }
+    bounded_integrity(db, 100)?;
+    Ok(())
+}
+fn bounded_integrity(db: &Connection, budget: usize) -> Result<bool> {
+    use std::sync::{
+        atomic::{AtomicUsize, Ordering},
+        Arc,
+    };
+    let work = Arc::new(AtomicUsize::new(0));
+    let count = Arc::clone(&work);
+    let started = std::time::Instant::now();
+    db.progress_handler(
+        1000,
+        Some(move || {
+            count.fetch_add(1, Ordering::Relaxed) >= budget
+                || started.elapsed() > std::time::Duration::from_millis(250)
+        }),
+    );
+    let result = (|| -> rusqlite::Result<Vec<String>> {
+        db.prepare("PRAGMA quick_check(1)")?
+            .query_map([], |r| r.get(0))?
+            .collect()
+    })();
+    db.progress_handler(0, None::<fn() -> bool>);
+    match result {
+        Err(rusqlite::Error::SqliteFailure(e,_)) if e.code==rusqlite::ErrorCode::OperationInterrupted => Ok(false),
+        Err(e)=>Err(e.into()),
+        Ok(rows) if rows==["ok"]=>Ok(true),
+        Ok(_)=>Err("Database page integrity validation failed; original data must be preserved for recovery".into()),
+    }
+}
+
 /// Holds the live writer reservation throughout backup, verification and staging.
 /// No live schema changes occur until the staged chain is completely verified.
 pub fn initialise(path: &Path) -> Result<()> {
@@ -131,6 +217,7 @@ pub fn initialise(path: &Path) -> Result<()> {
     let tx = live.transaction_with_behavior(TransactionBehavior::Immediate)?;
     match version(&tx)? {
         Some(crate::database::CURRENT_SCHEMA_VERSION) => {
+            validate_current(&tx)?;
             tx.commit()?;
             return Ok(());
         }
@@ -144,8 +231,16 @@ pub fn initialise(path: &Path) -> Result<()> {
                 return Err("Unrecognised database; startup refused without changing it.".into());
             }
             // Fresh empty databases have no original payroll data to back up.
+            let parent = path
+                .parent()
+                .filter(|p| !p.as_os_str().is_empty())
+                .unwrap_or(Path::new("."));
+            let pending = tempfile::tempdir_in(parent)?;
+            let staged = crate::database::open(pending.path().join("fresh.sqlite"))?;
+            crate::database::create_schema(&staged)?;
+            integrity(&staged)?;
+            install(&tx, &staged)?;
             tx.commit()?;
-            crate::database::create_schema(&live)?;
             return Ok(());
         }
         Some(_) => {}
@@ -960,5 +1055,145 @@ mod tests {
                 .unwrap(),
             1000
         );
+    }
+}
+
+#[cfg(test)]
+mod stage5_tests {
+    use super::*;
+    #[test]
+    fn current_schema_validation_preserves_bytes_and_rejects_missing_critical_schema() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("database.sqlite");
+        initialise(&path).unwrap();
+        let db = crate::database::open(&path).unwrap();
+        let bytes = std::fs::read(&path).unwrap();
+        initialise(&path).unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), bytes);
+        db.execute_batch("DROP TABLE shift_change_links").unwrap();
+        let before = fingerprint(&db).unwrap();
+        assert!(initialise(&path).is_err());
+        assert_eq!(fingerprint(&db).unwrap(), before);
+    }
+    #[test]
+    fn current_schema_rejects_missing_critical_columns_without_repairing() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("database.sqlite");
+        initialise(&path).unwrap();
+        let db = crate::database::open(&path).unwrap();
+        db.execute_batch(
+            "ALTER TABLE timesheet_documents RENAME COLUMN pdf_bytes TO missing_bytes",
+        )
+        .unwrap();
+        let before = fingerprint(&db).unwrap();
+        assert!(initialise(&path).is_err());
+        assert_eq!(fingerprint(&db).unwrap(), before);
+    }
+    #[test]
+    fn bounded_integrity_budget_is_cleared_before_later_database_operations() {
+        let db = crate::database::open_in_memory().unwrap();
+        crate::database::create_schema(&db).unwrap();
+        for _ in 0..10 {
+            db.execute_batch("CREATE TABLE IF NOT EXISTS large_test(value TEXT); INSERT INTO large_test VALUES(hex(randomblob(10000)));").unwrap();
+        }
+        assert!(!bounded_integrity(&db, 0).unwrap());
+        assert!(bounded_integrity(&db, 100).unwrap());
+        assert_eq!(version(&db).unwrap(), Some(38));
+    }
+    #[test]
+    fn interrupted_fresh_staging_is_ignored_and_unknown_partial_live_data_is_not_reset() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("database.sqlite");
+        std::fs::write(
+            dir.path().join("abandoned-fresh.sqlite"),
+            b"unfinished staging",
+        )
+        .unwrap();
+        initialise(&path).unwrap();
+        assert_eq!(
+            version(&crate::database::open(&path).unwrap()).unwrap(),
+            Some(38)
+        );
+        let unknown = dir.path().join("unknown.sqlite");
+        let db = crate::database::open(&unknown).unwrap();
+        db.execute_batch("CREATE TABLE original_evidence(value TEXT); INSERT INTO original_evidence VALUES('preserve');").unwrap();
+        let before = fingerprint(&db).unwrap();
+        assert!(initialise(&unknown).is_err());
+        assert_eq!(fingerprint(&db).unwrap(), before);
+    }
+    #[test]
+    fn corrupt_database_is_fatal_and_not_replaced() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("database.sqlite");
+        let bytes = b"not a sqlite database";
+        std::fs::write(&path, bytes).unwrap();
+        assert!(initialise(&path).is_err());
+        assert_eq!(std::fs::read(&path).unwrap(), bytes);
+    }
+    #[test]
+    fn post_migration_configuration_failure_reports_applied_upgrade_and_recovery_copy() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("database.sqlite");
+        let db = crate::database::open(&path).unwrap();
+        crate::database::create_legacy_schema(&db, 37).unwrap();
+        std::fs::write(
+            dir.path().join("config.toml"),
+            b"secret='PRIVATE_SECRET'\nbroken=[",
+        )
+        .unwrap();
+        let environment = crate::environment::AppEnvironment::at(dir.path().to_path_buf()).unwrap();
+        let error = crate::context::AppContext::from_environment(environment)
+            .err()
+            .unwrap();
+        assert_eq!(error.stage, crate::startup::Stage::Configuration);
+        assert!(error.to_string().contains("remains applied"));
+        assert!(!error.to_string().contains("PRIVATE_SECRET"));
+        assert_eq!(version(&db).unwrap(), Some(38));
+        let saved =
+            crate::backup_service::BackupService::discover(&dir.path().join("backups")).unwrap();
+        assert_eq!(saved.len(), 1);
+        assert_eq!(
+            version(&crate::database::open(saved[0].path.join("database.sqlite")).unwrap())
+                .unwrap(),
+            Some(37)
+        );
+    }
+}
+
+#[cfg(test)]
+mod stage5_integrity_tests {
+    use super::*;
+    #[test]
+    fn stage5_missing_schema_write_guard_is_fatal_without_repair() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("database.sqlite");
+        initialise(&path).unwrap();
+        let db = crate::database::open(&path).unwrap();
+        db.execute_batch("DROP TRIGGER dpt38_timesheet_delivery_attempts_UPDATE")
+            .unwrap();
+        let before = fingerprint(&db).unwrap();
+        assert!(initialise(&path).is_err());
+        assert_eq!(fingerprint(&db).unwrap(), before);
+    }
+    #[test]
+    fn stage5_corrupt_data_page_with_current_schema_is_fatal_and_preserved() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("database.sqlite");
+        initialise(&path).unwrap();
+        let db = crate::database::open(&path).unwrap();
+        let root: i64 = db
+            .query_row(
+                "SELECT rootpage FROM sqlite_master WHERE name='timesheets'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        let size: i64 = db.query_row("PRAGMA page_size", [], |r| r.get(0)).unwrap();
+        drop(db);
+        let mut bytes = std::fs::read(&path).unwrap();
+        bytes[((root - 1) * size) as usize] = 0xff;
+        std::fs::write(&path, &bytes).unwrap();
+        assert!(initialise(&path).is_err());
+        assert_eq!(std::fs::read(&path).unwrap(), bytes);
     }
 }

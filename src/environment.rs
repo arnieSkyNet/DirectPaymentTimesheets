@@ -27,6 +27,10 @@ impl AppEnvironment {
             cfg!(windows),
         )?;
 
+        Self::at(data_dir)
+    }
+
+    pub(crate) fn at(data_dir: PathBuf) -> Result<Self, AppError> {
         let database_path = data_dir.join("database.sqlite");
         let import_dir = data_dir.join("import");
         let archive_dir = data_dir.join("archive");
@@ -44,7 +48,9 @@ impl AppEnvironment {
             &templates_dir,
             &cache_dir,
         ] {
-            fs::create_dir_all(directory).map_err(|e| AppError::Config(e.to_string()))?;
+            fs::create_dir_all(directory).map_err(|e| {
+                crate::startup::StartupError::io(crate::startup::Stage::Environment, directory, &e)
+            })?;
         }
 
         Ok(Self {
@@ -70,11 +76,11 @@ fn resolve_data_dir(
         Some(path) => Ok(PathBuf::from(path)),
         None if windows => local_app_data
             .map(|local| local.join("DirectPaymentTimesheets"))
-            .ok_or_else(|| AppError::Config("LOCALAPPDATA not set".into())),
+            .ok_or_else(|| crate::startup::StartupError::new(crate::startup::Stage::Environment,None,"LOCALAPPDATA is not set.","Restore the user environment or set DIRECTPAYMENTTIMESHEETS_HOME to your existing application data root.").into()),
         None => user_home
             .map(PathBuf::from)
             .map(|home| home.join(".directpaymenttimesheets"))
-            .ok_or_else(|| AppError::Config("HOME not set".into())),
+            .ok_or_else(|| crate::startup::StartupError::new(crate::startup::Stage::Environment,None,"HOME is not set.","Restore the user environment or set DIRECTPAYMENTTIMESHEETS_HOME to your existing application data root.").into()),
     }
 }
 

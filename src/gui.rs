@@ -202,6 +202,7 @@ pub struct DirectPaymentApp {
     about_schema_version: String,
     update_check: crate::update_check::UpdateCheck,
     initial_size_pending: bool,
+    startup_folders: crate::paths::FolderCheck,
     status_message: String,
     file_status: Option<(String, Vec<std::path::PathBuf>)>,
     last_import: Option<ImportSummary>,
@@ -253,6 +254,7 @@ impl DirectPaymentApp {
             about_schema_version: String::new(),
             update_check: Default::default(),
             initial_size_pending: true,
+            startup_folders: crate::paths::FolderCheck::new(&application.context.config),
             application,
             status_message: "Application ready.".to_string(),
             file_status: None,
@@ -341,6 +343,17 @@ impl eframe::App for DirectPaymentApp {
             return;
         }
 
+        self.startup_folders.poll(&self.application.context.config);
+        if self.startup_folders.checking() {ctx.request_repaint_after(std::time::Duration::from_millis(250));}
+        if !self.startup_folders.warnings.is_empty() {
+            egui::TopBottomPanel::top("startup_folder_warnings").show(ctx,|ui| {
+                ui.collapsing("Business folder availability — Settings remains available",|ui| {
+                    for warning in &self.startup_folders.warnings { ui.label(warning); }
+                    if ui.button("Open Settings").clicked() {self.active_screen=ActiveScreen::ApplicationSettings;}
+                    if ui.add_enabled(!self.startup_folders.checking(),egui::Button::new("Recheck folders")).clicked() {self.startup_folders.restart(&self.application.context.config);}
+                });
+            });
+        }
         egui::TopBottomPanel::top("header").show(ctx, |ui| {
             ui.horizontal_wrapped(|ui| {
                 ui.heading(format!("DirectPaymentTimesheets v{}", self.version));
