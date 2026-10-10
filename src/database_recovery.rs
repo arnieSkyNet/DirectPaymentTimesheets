@@ -166,7 +166,7 @@ pub fn initialise(path: &Path) -> Result<()> {
         Ok(())
     })();
     upgrade.map_err(|e| format!("Isolated upgrade/install failed: {e}. Uncommitted installation changes are rolled back; verified original recovery is {}. Close all instances, retain this recovery copy, and seek help before retrying or sending payroll.",recovery.display()))?;
-    println!("Database upgraded to schema 36. Verified database/config recovery: {}. External business files are not copied; see its recovery manifest.",recovery.display());
+    println!("Database upgraded to schema {}. Verified database/config recovery: {}. External business files are not copied; see its recovery manifest.",crate::database::CURRENT_SCHEMA_VERSION,recovery.display());
     Ok(())
 }
 
@@ -503,7 +503,10 @@ mod tests {
         );
         db.execute_batch("DROP TRIGGER fail36").unwrap();
         initialise(&dir.path().join("database.sqlite")).unwrap();
-        assert_eq!(version(&db).unwrap(), Some(36));
+        assert_eq!(
+            version(&db).unwrap(),
+            Some(crate::database::CURRENT_SCHEMA_VERSION)
+        );
     }
     #[test]
     fn interrupted_isolated_chain_is_not_used_as_live_data_on_restart() {
@@ -517,7 +520,10 @@ mod tests {
         // Simulate interruption after one separately committed migration on a work copy.
         drop(stage);
         initialise(&dir.path().join("database.sqlite")).unwrap();
-        assert_eq!(version(&db).unwrap(), Some(36));
+        assert_eq!(
+            version(&db).unwrap(),
+            Some(crate::database::CURRENT_SCHEMA_VERSION)
+        );
         assert!(db.prepare("SELECT * FROM partial_chain_fixture").is_err());
         assert!(abandoned.is_file());
     }
@@ -548,7 +554,10 @@ mod tests {
             "Verified employer rollback; separately protected business files",
         )
         .unwrap();
-        assert_eq!(version(&db).unwrap(), Some(36));
+        assert_eq!(
+            version(&db).unwrap(),
+            Some(crate::database::CURRENT_SCHEMA_VERSION)
+        );
         assert_eq!(
             fingerprint(&Connection::open(result.safety_backup.join("database.sqlite")).unwrap())
                 .unwrap(),
@@ -562,7 +571,7 @@ mod tests {
             BackupService::validate(&result.safety_backup, &dir.path().join("backups"))
                 .unwrap()
                 .schema_version,
-            36
+            crate::database::CURRENT_SCHEMA_VERSION
         );
     }
     #[test]
@@ -672,7 +681,10 @@ mod tests {
             .contains("active"));
         drop(guard);
         restore(dir.path(), plan, true, "after sender exits").unwrap();
-        assert_eq!(version(&db).unwrap(), Some(36));
+        assert_eq!(
+            version(&db).unwrap(),
+            Some(crate::database::CURRENT_SCHEMA_VERSION)
+        );
     }
     #[test]
     fn writer_reservation_prevents_restore_installation_and_partial_edits() {
@@ -691,7 +703,10 @@ mod tests {
     fn install_failure_rolls_back_schema_data_and_high_water_marks() {
         let (_dir, mut db) = fixture();
         let before = fingerprint(&db).unwrap();
-        let stage = Connection::open_in_memory().unwrap();
+        // Stage a recognised current application schema, including its SQLite
+        // AUTOINCREMENT sequence table, rather than an unrelated bare database.
+        let stage = crate::database::open_in_memory().unwrap();
+        crate::database::create_schema(&stage).unwrap();
         stage
             .execute_batch("CREATE TABLE bad_fixture(value); INSERT INTO bad_fixture VALUES(1);")
             .unwrap();
@@ -705,7 +720,7 @@ mod tests {
     #[test]
     fn future_schema_startup_is_rejected_without_backup_or_downgrade() {
         let (dir, db) = fixture();
-        db.execute("UPDATE schema_version SET version=37", [])
+        db.execute("UPDATE schema_version SET version=38", [])
             .unwrap();
         let before = fingerprint(&db).unwrap();
         assert!(initialise(&dir.path().join("database.sqlite")).is_err());
@@ -914,7 +929,10 @@ mod tests {
             "Verified original schema1 recovery rehearsal",
         )
         .unwrap();
-        assert_eq!(version(&db).unwrap(), Some(36));
+        assert_eq!(
+            version(&db).unwrap(),
+            Some(crate::database::CURRENT_SCHEMA_VERSION)
+        );
         assert_eq!(fingerprint(&old).unwrap(), original);
         assert_eq!(
             db.query_row::<i64, _, _>(

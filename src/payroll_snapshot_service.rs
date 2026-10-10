@@ -42,6 +42,7 @@ pub struct CandidatePublication<'a> {
     pub week_totals_minutes: &'a [i64; 4],
 }
 
+#[cfg(test)]
 pub fn publish_candidate<F>(
     repository: &PayrollWorkedItemRepository,
     publication: CandidatePublication<'_>,
@@ -53,6 +54,18 @@ where
     // Publishing a replacement must not overlap sending, review, upgrade or restore.
     let _dispatch = crate::timesheet_delivery::production_lock(&repository.connection)
         .map_err(|e| SnapshotSafetyError::Operation(e.to_string()))?;
+    publish_candidate_locked(repository, publication, write_pdf)
+}
+
+/// Caller must hold the production lock from before reading PDF inputs.
+pub(crate) fn publish_candidate_locked<F>(
+    repository: &PayrollWorkedItemRepository,
+    publication: CandidatePublication<'_>,
+    write_pdf: F,
+) -> Result<(), SnapshotSafetyError>
+where
+    F: FnOnce(&Path) -> Result<(), Box<dyn std::error::Error>>,
+{
     let previous_document: Option<i64> = repository.connection.query_row(
         "SELECT document_id FROM payroll_timesheet_snapshot_states WHERE payroll_timesheet_id=?1",
         [publication.payroll_timesheet_id], |r|r.get(0),

@@ -200,7 +200,7 @@ schema check, so schema36 write guards require a connection function that only
 compatible application connections register.
 
 
-## Recovery and maintenance safety (1.0.6/schema36)
+## Recovery and maintenance safety (1.0.6/current schema)
 
 `database_recovery` backs up and verifies the original database/configuration
 before upgrades, migrates on an isolated copy and installs with one live SQLite
@@ -220,3 +220,10 @@ Byte-identical generation preserves immutable document/submission identity and
 sent status. After successful PDF publication it updates only the current registered
 snapshot location, allowing recovery at a new output destination even when the
 former file is missing. Failed identical publication retains the old registration.
+
+
+## Stage 2 sickness safety (schema37)
+
+`src/sickness_service.rs` owns reviewed insert/edit/delete transactions, cross-cycle lifecycle checks, scoped projections, duplicate/stale-edit protection, audit and immutable sickness snapshots. The editor never performs direct sickness repository mutations in production. Generation holds the existing OS dispatch lock before reading PDF inputs and through publication; sickness mutation, production sending, restore and migration use the same lock plus database writer reservations. Correction generation reuses retained worked membership/totals and rejects changed payroll totals instead of recalculating settled work. Candidate registration binds structured sickness evidence to immutable document identity; attempt and submission snapshots copy that exact capture.
+
+The original submission/PDF and settlement remain protected when a sickness-only replacement is authorised. The correction uses existing reconciliation decisions and safeguarded email first-send/resend handling. Per-cycle overrides preserve full protected sickness ranges during explicitly scoped editable-only changes. Database/config recovery includes the new tables; external business documents/signatures retain their existing separate recovery requirements. See [schema37](DATABASE-SCHEMA.md#schema-37-sickness-protection-and-historical-information-corrections).

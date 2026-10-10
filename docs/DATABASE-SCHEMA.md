@@ -540,7 +540,7 @@ without changing the original database. New empty databases need no original
 recovery snapshot; future schemas are refused.
 
 All ordered migrations, including individually committed older steps, run on an
-isolated working copy. Only a fully migrated, verified schema36 copy is installed
+isolated working copy. Only a fully migrated, verified current-schema copy is installed
 in one live SQLite transaction, under the same writer reservation. Failure or
 interruption before commit retains the original; restart does not adopt abandoned
 work copies. SQL transfer preserves tables, rows, indexes, triggers, views,
@@ -574,3 +574,30 @@ business folders and registered document/signature paths without reading those
 business files. Complete application-data recovery needs a separate protected
 copy of the entire application root plus configured external folders/files. Raw
 configuration can contain credentials; backup directories are private on Unix.
+
+
+## Schema 37: sickness protection and historical information corrections
+
+Current development 1.0.6 uses schema37. The existing verified pre-upgrade backup and isolated migration-chain installation apply to 36→37 and earlier supported databases. Migration37 transactionally rebuilds `personal_assistant_sickness_periods` with `INTEGER PRIMARY KEY AUTOINCREMENT`, preserving existing IDs, dates, PA references and the date index. It does not deduplicate existing records, backfill missing historic sickness dates, change legacy weekly hours or modify payroll settlement/submission records.
+
+New tables:
+
+| Table | Stored evidence |
+| --- | --- |
+| `sickness_changes` | ID, PA, period ID, structured before/after evidence, reason, scope, actor and timestamp; append-only. |
+| `sickness_cycle_overrides` | Payroll record ID and structured scoped date projection, retaining protected dates when editable portions change. |
+| `sickness_corrections` | Change, payroll record, original submission and reconciliation decision IDs; before/after evidence, unchanged payroll totals, reason, authorisation timestamp/actor, generated document ID and retirement timestamp. Authorisation fields are immutable; document association and retirement are limited lifecycle metadata. |
+| `sickness_document_evidence` | Immutable document ID, payroll record, structured date evidence and optional correction association. |
+| `sickness_attempt_evidence` | Immutable attempt ID, exact document/date evidence and correction association, including resends. |
+| `sickness_submission_evidence` | Immutable submission ID, document/date evidence and correction association. |
+
+Structured evidence contains the ordered inclusive PA-owned date periods and stable IDs. Candidate freshness incorporates a deterministic sickness signature. Correction freshness additionally binds the correction authority, original submission and preserved payroll totals. New document identities receive exact sickness snapshots atomically with candidate registration. Dispatch copies document evidence into the durable attempt before SMTP; acceptance copies the attempt evidence into the new submission. Resends append attempts against the existing submission.
+
+No historical snapshots are fabricated for legacy PDFs. Missing capture blocks first delivery until regeneration, while retained submitted bytes can still be deliberately resent. For legacy authorised corrections without a captured original date snapshot, the operator must review the original PDF and verify the previously recorded dates; the application cannot reconstruct missing historic dates automatically.
+
+Schema37 replaces schema36 compatibility triggers atomically with `dpt37_*` guards requiring `dpt_schema_version() = 37`. Published 1.0.4/1.0.5 and earlier schema36 development executables do not gain future-schema checks: guarded row writes fail, but these triggers do not prevent destructive DDL, file replacement or old restore operations. Never open the upgraded production database using an older executable. Current startup rejects future schemas. Restore reviews include all new sickness tables, require documented rollback approval, preserve a verified recovery copy and refuse unresolved delivery uncertainty; external business files are not silently restored.
+
+
+Schema37 retained-period transfers allocate a new PA-wide sickness identity when the former row has been deleted; immutable original evidence keeps its old identity. Per-cycle projections are updated transactionally only after reviewing all overlapping source/destination cycles. Conflicting active/retained versions refuse transfer. No further migration is needed.
+
+New sickness correction `original_totals` values also bind a fingerprint of the authorised original submission's financial payload and PDF digest. Business-value validation excludes generated row IDs and capture timestamps, checks exact worked membership/correction applications and weekly/dated evidence, and validates carry-forward from retained items. Older authorisation strings remain readable and still undergo original-submission comparison; missing legacy financial evidence is never invented.

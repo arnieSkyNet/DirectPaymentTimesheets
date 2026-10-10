@@ -2,7 +2,7 @@
 
 ## Purpose
 
-This document describes the implemented business entities and their relationships. It is intentionally conceptual; [DATABASE-SCHEMA.md](DATABASE-SCHEMA.md) is the exact schema36 table/column reference and the Rust source remains authoritative.
+This document describes the implemented business entities and their relationships. It is intentionally conceptual; [DATABASE-SCHEMA.md](DATABASE-SCHEMA.md) is the exact current-schema table/column reference and the Rust source remains authoritative.
 
 The model preserves imported facts, effective-dated employment terms, prepared payroll values and the exact worked-item evidence represented by a generated or submitted timesheet.
 
@@ -66,7 +66,7 @@ Payroll preparation and generation consume effective imported corrections alongs
 
 An import-audit record captures import time, original/archive filenames, row counts, status and optional error. Validated source bytes are written first to a unique, non-overwriting file in `archive/YYYY/MM/`; all imported rows and the SUCCESS audit are then committed in one SQLite transaction. A database failure leaves the archive as reported recoverable evidence and rolls back all rows. Failed/refused audits are best-effort.
 
-The current schema36 still has no CSV imported-file content hash or row-to-import relationship. Historical successful-import detection therefore remains based on the original pathname: changed content at an already-successful pathname is conservatively skipped, while renamed identical content is preflighted again and exact already-stored raw rows are skipped. Correction events do not change raw collision identity. Durable content identity and row provenance require a future migration.
+The current schema37 still has no CSV imported-file content hash or row-to-import relationship. Historical successful-import detection therefore remains based on the original pathname: changed content at an already-successful pathname is conservatively skipped, while renamed identical content is preflighted again and exact already-stored raw rows are skipped. Correction events do not change raw collision identity. Durable content identity and row provenance require a future migration.
 
 ## DirectShift
 
@@ -241,3 +241,8 @@ regeneration; immutable document location and original submission paths remain
 provenance. Database/config recovery is distinct from external business-file
 recovery. Explicit rollback decisions and exact pre-restore evidence are retained
 in a separately verified recovery snapshot; uncertainty cannot be cleared by restore.
+
+
+## Sickness evidence and information correction (schema37)
+
+PA-owned inclusive sickness ranges have non-reused identities, audited date-only changes and optionally scoped payroll-cycle projections. Generated document evidence, dispatch attempts and submissions each retain immutable structured dates; a sickness-only correction associates its reason/authorisation and before/after dates with the original submission and existing reconciliation decision. Settled amounts/status remain unchanged. No historical snapshots or sickness dates are inferred from legacy hours or CSV notes. See [schema37](DATABASE-SCHEMA.md#schema-37-sickness-protection-and-historical-information-corrections).

@@ -2,7 +2,7 @@ use std::path::Path;
 
 use rusqlite::{Connection, Result};
 
-pub const CURRENT_SCHEMA_VERSION: i64 = 36;
+pub const CURRENT_SCHEMA_VERSION: i64 = 37;
 
 pub fn initialise_database(database_path: &Path) -> crate::database_recovery::Result<()> {
     crate::database_recovery::initialise(database_path)
@@ -33,6 +33,16 @@ pub fn open_in_memory() -> Result<Connection> {
 }
 
 pub fn create_schema(connection: &Connection) -> Result<()> {
+    create_schema_through(connection, CURRENT_SCHEMA_VERSION)
+}
+
+#[cfg(test)]
+pub(crate) fn create_legacy_schema(connection: &Connection, version: i64) -> Result<()> {
+    assert!((1..=CURRENT_SCHEMA_VERSION).contains(&version));
+    create_schema_through(connection, version)
+}
+
+fn create_schema_through(connection: &Connection, target: i64) -> Result<()> {
     register_connection(connection)?;
     let has_version: bool = connection.query_row(
         "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='schema_version')",
@@ -100,12 +110,12 @@ pub fn create_schema(connection: &Connection) -> Result<()> {
     )?;
 
     repair_unreleased_schema_20(connection)?;
-    apply_migrations(connection)?;
+    apply_migrations(connection, target)?;
 
     Ok(())
 }
 
-fn apply_migrations(connection: &Connection) -> Result<()> {
+fn apply_migrations(connection: &Connection, target: i64) -> Result<()> {
     let mut current_version: i64 =
         connection.query_row("SELECT version FROM schema_version LIMIT 1", [], |row| {
             row.get(0)
@@ -113,162 +123,165 @@ fn apply_migrations(connection: &Connection) -> Result<()> {
 
     let before_28 = current_version < 28;
 
-    if current_version < 2 {
+    if current_version < 2 && target >= 2 {
         migrate_to_version_2(connection)?;
         current_version = 2;
     }
 
-    if current_version < 3 {
+    if current_version < 3 && target >= 3 {
         migrate_to_version_3(connection)?;
         current_version = 3;
     }
 
-    if current_version < 4 {
+    if current_version < 4 && target >= 4 {
         migrate_to_version_4(connection)?;
         current_version = 4;
     }
 
-    if current_version < 5 {
+    if current_version < 5 && target >= 5 {
         migrate_to_version_5(connection)?;
         current_version = 5;
     }
 
-    if current_version < 6 {
+    if current_version < 6 && target >= 6 {
         migrate_to_version_6(connection)?;
         current_version = 6;
     }
 
-    if current_version < 7 {
+    if current_version < 7 && target >= 7 {
         migrate_to_version_7(connection)?;
         current_version = 7;
     }
 
-    if current_version < 8 {
+    if current_version < 8 && target >= 8 {
         migrate_to_version_8(connection)?;
         current_version = 8;
     }
 
-    if current_version < 9 {
+    if current_version < 9 && target >= 9 {
         migrate_to_version_9(connection)?;
         current_version = 9;
     }
 
-    if current_version < 10 {
+    if current_version < 10 && target >= 10 {
         migrate_to_version_10(connection)?;
         current_version = 10;
     }
 
-    if current_version < 11 {
+    if current_version < 11 && target >= 11 {
         migrate_to_version_11(connection)?;
         current_version = 11;
     }
 
-    if current_version < 12 {
+    if current_version < 12 && target >= 12 {
         migrate_to_version_12(connection)?;
         current_version = 12;
     }
 
-    if current_version < 13 {
+    if current_version < 13 && target >= 13 {
         migrate_to_version_13(connection)?;
         current_version = 13;
     }
 
-    if current_version < 14 {
+    if current_version < 14 && target >= 14 {
         migrate_to_version_14(connection)?;
         current_version = 14;
     }
 
-    if current_version < 15 {
+    if current_version < 15 && target >= 15 {
         migrate_to_version_15(connection)?;
         current_version = 15;
     }
 
-    if current_version < 16 {
+    if current_version < 16 && target >= 16 {
         migrate_to_version_16(connection)?;
         current_version = 16;
     }
 
-    if current_version < 17 {
+    if current_version < 17 && target >= 17 {
         migrate_to_version_17(connection)?;
         current_version = 17;
     }
 
-    if current_version < 18 {
+    if current_version < 18 && target >= 18 {
         migrate_to_version_18(connection)?;
         current_version = 18;
     }
 
-    if current_version < 19 {
+    if current_version < 19 && target >= 19 {
         migrate_to_version_19(connection)?;
         current_version = 19;
     }
 
-    if current_version < 20 {
+    if current_version < 20 && target >= 20 {
         migrate_to_version_20(connection)?;
         current_version = 20;
     }
 
-    if current_version < 21 {
+    if current_version < 21 && target >= 21 {
         migrate_to_version_21(connection)?;
         current_version = 21;
     }
 
-    if current_version < 22 {
+    if current_version < 22 && target >= 22 {
         migrate_to_version_22(connection)?;
         current_version = 22;
     }
 
-    if current_version < 23 {
+    if current_version < 23 && target >= 23 {
         migrate_to_version_23(connection)?;
         current_version = 23;
     }
 
-    if current_version < 24 {
+    if current_version < 24 && target >= 24 {
         migrate_to_version_24(connection)?;
         current_version = 24;
     }
-    if current_version < 25 {
+    if current_version < 25 && target >= 25 {
         migrate_to_version_25(connection)?;
         current_version = 25;
     }
-    if current_version < 26 {
+    if current_version < 26 && target >= 26 {
         migrate_to_version_26(connection)?;
         current_version = 26;
     }
-    if current_version < 27 {
+    if current_version < 27 && target >= 27 {
         migrate_to_version_27(connection)?;
     }
-    if current_version < 28 {
+    if current_version < 28 && target >= 28 {
         crate::payroll_evidence::migrate(connection)?;
     }
 
-    if current_version < 29 {
+    if current_version < 29 && target >= 29 {
         crate::payroll_evidence::legacy_baseline::migrate(connection, before_28)?;
     }
 
-    if current_version < 30 {
+    if current_version < 30 && target >= 30 {
         migrate_to_version_30(connection)?;
     }
 
-    if current_version < 31 {
+    if current_version < 31 && target >= 31 {
         migrate_to_version_31(connection)?;
     }
 
-    if current_version < 32 {
+    if current_version < 32 && target >= 32 {
         migrate_to_version_32(connection)?;
     }
 
-    if current_version < 33 {
+    if current_version < 33 && target >= 33 {
         migrate_to_version_33(connection)?;
     }
-    if current_version < 34 {
+    if current_version < 34 && target >= 34 {
         migrate_to_version_34(connection)?;
     }
-    if current_version < 35 {
+    if current_version < 35 && target >= 35 {
         migrate_to_version_35(connection)?;
     }
-    if current_version < 36 {
+    if current_version < 36 && target >= 36 {
         crate::timesheet_delivery::migrate(connection)?;
+    }
+    if current_version < 37 && target >= 37 {
+        crate::sickness_service::migrate(connection)?;
     }
     Ok(())
 }
@@ -1263,7 +1276,7 @@ pub(crate) mod tests {
             return;
         }
         let triggers = db
-            .prepare("SELECT name FROM sqlite_master WHERE type='trigger' AND name LIKE 'dpt36_%'")
+            .prepare("SELECT name FROM sqlite_master WHERE type='trigger' AND (name LIKE 'dpt36_%' OR name LIKE 'dpt37_%')")
             .unwrap()
             .query_map([], |r| r.get::<_, String>(0))
             .unwrap()
@@ -1272,6 +1285,9 @@ pub(crate) mod tests {
         for name in triggers {
             db.execute_batch(&format!("DROP TRIGGER {name}")).unwrap();
         }
+        db.execute_batch("DROP TABLE IF EXISTS sickness_attempt_evidence; DROP TABLE IF EXISTS sickness_submission_evidence;
+            DROP TABLE IF EXISTS sickness_document_evidence; DROP TABLE IF EXISTS sickness_corrections;
+            DROP TABLE IF EXISTS sickness_cycle_overrides; DROP TABLE IF EXISTS sickness_changes;").unwrap();
         db.execute_batch("ALTER TABLE payroll_timesheet_snapshot_states DROP COLUMN document_id;
             DROP INDEX timesheet_document_submission;
             ALTER TABLE payroll_submissions DROP COLUMN document_id;

@@ -73,6 +73,7 @@ pub fn archive_submission(db: &Connection, record: i64, at: &str) -> Result<()> 
     }
     db.execute("INSERT INTO payroll_submissions(payroll_timesheet_id,submitted_at,supersedes_id,pdf_path,pdf_sha256,pdf_bytes,payroll_department_notes,document_id) VALUES (?1,?2,?3,?4,?5,?6,(SELECT payroll_department_notes FROM payroll_timesheets WHERE id=?1),(SELECT document_id FROM payroll_timesheet_snapshot_states WHERE payroll_timesheet_id=?1))",params![record,at,latest(db,record)?,path,digest,bytes])?;
     let id = db.last_insert_rowid();
+    db.execute("INSERT INTO sickness_submission_evidence SELECT ?1,d.document_id,d.evidence,d.correction_id FROM sickness_document_evidence d JOIN payroll_timesheet_snapshot_states s ON s.document_id=d.document_id WHERE s.payroll_timesheet_id=?2",params![id,record])?;
     for (target, source) in [
         (
             "payroll_submission_items",
@@ -206,8 +207,10 @@ pub fn authorize_resubmission(
     expected: &str,
 ) -> Result<()> {
     let db = open(app)?;
+    let _guard = crate::timesheet_delivery::production_lock(&db)?;
     let changes = super::reconciliation::changes(app, record)?;
     let tx = db.unchecked_transaction()?;
+    tx.execute("UPDATE schema_version SET version=version", [])?;
     if stage(&tx, record)? != Stage::Submitted {
         return Err("Only a sent, unsettled timesheet can be corrected/resubmitted".into());
     }
@@ -228,6 +231,8 @@ pub fn authorize_resubmission(
         expected,
         &changes.description,
     )?;
+    // A general worked-evidence correction supersedes the limited sickness-only generation authority.
+    tx.execute("UPDATE sickness_corrections SET retired_at=?1 WHERE payroll_timesheet_id=?2 AND retired_at IS NULL",params![now(),record.id])?;
     // The immutable submission tables retain the exact original. The ordinary
     // candidate slot becomes editable only following this explicit decision.
     tx.execute(
@@ -274,6 +279,24 @@ pub fn verify_candidate_evidence(db: &Connection, record: i64) -> Result<()> {
         .map(|s| toml::from_str::<WorkEvidence>(&s))
         .collect::<std::result::Result<Vec<_>, _>>()?;
     ensure_generatable(db, record)?;
+    let uncaptured: bool = db.query_row("SELECT EXISTS(SELECT 1 FROM payroll_timesheet_snapshot_states s WHERE s.payroll_timesheet_id=?1 AND s.document_id IS NOT NULL AND NOT EXISTS(SELECT 1 FROM sickness_document_evidence d WHERE d.document_id=s.document_id))",[record],|r|r.get(0))?;
+    if uncaptured {
+        return Err("This PDF predates structured sickness evidence; regenerate it before first delivery. Retained submitted PDFs may still be explicitly resent.".into());
+    }
+    if crate::sickness_service::document_is_correction(db, record)? {
+        crate::sickness_service::verify_candidate_correction(db, record)?;
+        let signature: String = db.query_row(
+            "SELECT evidence_signature FROM payroll_candidate_checks WHERE payroll_timesheet_id=?1",
+            [record],
+            |r| r.get(0),
+        )?;
+        if signature != candidate_signature(db, record)? {
+            return Err(
+                "Sickness correction evidence changed; regenerate before first delivery".into(),
+            );
+        }
+        return Ok(());
+    }
     let recorded: Option<String> = db
         .query_row(
             "SELECT evidence_signature FROM payroll_candidate_checks WHERE payroll_timesheet_id=?1",
@@ -361,7 +384,13 @@ fn ensure_mutable(db: &Connection, id: i64, allow_submitted: bool) -> Result<()>
     let record:Option<PayrollTimesheet>=db.query_row("SELECT id,personal_assistant_id,payroll_year,cycle_number,previous_cycle_hours,created_at,updated_at,payroll_department_notes,actual_in_lieu_hours,actual_in_lieu_updated_at FROM payroll_timesheets WHERE id=?1",[id],|r|Ok(PayrollTimesheet{id:r.get(0)?,personal_assistant_id:r.get(1)?,payroll_year:r.get(2)?,cycle_number:r.get(3)?,previous_cycle_hours:r.get(4)?,created_at:r.get(5)?,updated_at:r.get(6)?,payroll_department_notes:r.get(7)?,actual_in_lieu_hours:r.get(8)?,actual_in_lieu_updated_at:r.get(9)?})).optional()?;
     if let Some(record) = record {
         let stage = stage(db, &record)?;
-        if stage != Stage::Editable && !(allow_submitted && stage == Stage::Submitted) {
+        let sickness_only = allow_submitted
+            && stage == Stage::Settled
+            && crate::sickness_service::generation_allowed(db, id)?;
+        if stage != Stage::Editable
+            && !(allow_submitted && stage == Stage::Submitted)
+            && !sickness_only
+        {
             return Err("Submitted, settled or indeterminate payroll is protected".into());
         }
     }
@@ -383,6 +412,17 @@ pub fn candidate_signature(db: &Connection, id: i64) -> Result<String> {
         .as_deref()
         .and_then(crate::models::parse_employment_date)
         .map(|d| d + chrono::Duration::days(27));
+    if let Some(c) = crate::sickness_service::correction(db, id)? {
+        let (sid, totals): (i64, String) = db.query_row(
+            "SELECT original_submission_id,original_totals FROM sickness_corrections WHERE id=?1",
+            [c],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )?;
+        return Ok(hash(&format!(
+            "sickness-correction:{c}:{sid}:{totals}:{}",
+            crate::sickness_service::signature(db, id)?
+        )));
+    }
     let relevant = load_for_pa(db, pa)?
         .into_iter()
         .filter(|e| e.pa == pa && through.is_none_or(|end| e.date().is_ok_and(|d| d <= end)))
@@ -396,6 +436,7 @@ pub fn candidate_signature(db: &Connection, id: i64) -> Result<String> {
         .map(WorkEvidence::fingerprint)
         .collect::<Vec<_>>();
     values.push(format!("period:{first:?}"));
+    values.push(crate::sickness_service::signature(db, id)?);
     let mut statement=db.prepare("SELECT group_fingerprint,winner_source,winner_id FROM payroll_duplicate_decisions WHERE invalidated_at IS NULL AND id IN (
         SELECT m.decision_id FROM payroll_duplicate_members m
         LEFT JOIN timesheets t ON m.source='imported' AND t.id=m.source_id

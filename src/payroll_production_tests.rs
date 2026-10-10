@@ -1588,3 +1588,344 @@ fn stage1_ui_separates_first_sends_and_resends_and_resets_acknowledgement() {
         .is_empty());
     assert_eq!(smtp.count(), 1);
 }
+
+#[test]
+fn stage2_settled_sickness_correction_uses_real_pdf_and_safeguarded_first_send() {
+    use crate::sickness_service as sick;
+    let (_dir, mut app, schedule) = fixture();
+    let conn = db(&app);
+    let draft = crate::sickness_period_repository::SicknessPeriod {
+        id: 0,
+        personal_assistant_id: 1,
+        start_date: "2026-04-03".into(),
+        end_date: "2026-04-09".into(),
+    };
+    let review = sick::review(&conn, 1, None, Some(&draft)).unwrap();
+    let original_dates = sick::mutate(
+        &conn,
+        1,
+        None,
+        Some(&draft),
+        sick::Scope::Editable,
+        "Original sickness",
+        &review.signature,
+    )
+    .unwrap()
+    .unwrap();
+    assert_eq!(generate(&mut app, &[1]).completed(), 1);
+    let original_path = path(&app, &schedule, 1);
+    let original_pdf = std::fs::read(&original_path).unwrap();
+    let smtp = Smtp::new(&mut app);
+    let first = email_batch(&mut app, &[1]);
+    assert_eq!(
+        app.dispatch_timesheet_selection(&first)
+            .unwrap()
+            .completed(),
+        1
+    );
+    conn.execute("INSERT INTO payroll_timesheet_email_status(personal_assistant_id,payroll_year,cycle_number,email_type,sent_at) VALUES(1,'2026/27',1,'payslip','settled timestamp')",[]).unwrap();
+    let totals:Vec<f64>=conn.prepare("SELECT worked_hours FROM payroll_timesheet_weeks WHERE payroll_timesheet_id=1 ORDER BY week_number").unwrap().query_map([],|r|r.get(0)).unwrap().collect::<rusqlite::Result<_>>().unwrap();
+    let updated_at: String = conn
+        .query_row(
+            "SELECT updated_at FROM payroll_timesheets WHERE id=1",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    let mut corrected = original_dates.clone();
+    corrected.end_date = "2026-04-10".into();
+    let review = sick::review(&conn, 1, Some(&original_dates), Some(&corrected)).unwrap();
+    sick::mutate(
+        &conn,
+        1,
+        Some(&original_dates),
+        Some(&corrected),
+        sick::Scope::AuthorisedCorrection,
+        "Date confirmed with PA",
+        &review.signature,
+    )
+    .unwrap();
+    let report = generate(&mut app, &[1]);
+    assert_eq!(report.completed(), 1, "{:?}", report.entries);
+    let corrected_path: String = conn
+        .query_row(
+            "SELECT pdf_path FROM payroll_timesheet_snapshot_states WHERE payroll_timesheet_id=1",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert!(corrected_path.contains("Sickness-Correction-"));
+    assert_ne!(std::path::Path::new(&corrected_path), original_path);
+    let text = pdf_extract::extract_text(&corrected_path).unwrap();
+    let text = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    assert!(text.contains("10/04/2026)"));
+    assert!(
+        text.contains("** Sickness Information Correction"),
+        "{text}"
+    );
+    assert!(text.contains("assess financial impact"));
+    assert_eq!(std::fs::read(original_path).unwrap(), original_pdf);
+    assert_eq!(
+        conn.query_row::<String, _, _>(
+            "SELECT updated_at FROM payroll_timesheets WHERE id=1",
+            [],
+            |r| r.get(0)
+        )
+        .unwrap(),
+        updated_at
+    );
+    let after:Vec<f64>=conn.prepare("SELECT worked_hours FROM payroll_timesheet_weeks WHERE payroll_timesheet_id=1 ORDER BY week_number").unwrap().query_map([],|r|r.get(0)).unwrap().collect::<rusqlite::Result<_>>().unwrap();
+    assert_eq!(totals, after);
+    app.begin_email_batch(PayrollEmailKind::Timesheet);
+    assert!(app
+        .pending_email_batch
+        .as_ref()
+        .unwrap()
+        .selected_personal_assistant_ids
+        .contains(&1));
+    let corrected_batch = email_batch(&mut app, &[1]);
+    assert!(
+        !corrected_batch
+            .choices
+            .iter()
+            .find(|p| p.id == 1)
+            .unwrap()
+            .intent
+            .as_ref()
+            .unwrap()
+            .resend
+    );
+    assert_eq!(
+        app.dispatch_timesheet_selection(&corrected_batch)
+            .unwrap()
+            .completed(),
+        1
+    );
+    assert_eq!(smtp.count(), 2);
+    assert_eq!(conn.query_row::<String,_,_>("SELECT sent_at FROM payroll_timesheet_email_status WHERE personal_assistant_id=1 AND email_type='payslip'",[],|r|r.get(0)).unwrap(),"settled timestamp");
+    assert_eq!(
+        conn.query_row::<i64, _, _>(
+            "SELECT count(*) FROM payroll_corrections WHERE personal_assistant_id=1",
+            [],
+            |r| r.get(0)
+        )
+        .unwrap(),
+        0
+    );
+    assert_eq!(
+        conn.query_row::<i64, _, _>(
+            "SELECT count(*) FROM payroll_submissions WHERE payroll_timesheet_id=1",
+            [],
+            |r| r.get(0)
+        )
+        .unwrap(),
+        2
+    );
+    app.begin_email_batch(PayrollEmailKind::Timesheet);
+    assert!(!app
+        .pending_email_batch
+        .as_ref()
+        .unwrap()
+        .selected_personal_assistant_ids
+        .contains(&1));
+}
+
+#[test]
+fn stage2_sickness_authority_can_be_superseded_by_existing_worked_correction() {
+    use crate::sickness_service as sick;
+    use crate::timesheet_delivery as delivery;
+    let (_dir, mut app, _schedule) = fixture();
+    let conn = db(&app);
+    let draft = crate::sickness_period_repository::SicknessPeriod {
+        id: 0,
+        personal_assistant_id: 1,
+        start_date: "2026-04-03".into(),
+        end_date: "2026-04-04".into(),
+    };
+    let reviewed = sick::review(&conn, 1, None, Some(&draft)).unwrap();
+    let p = sick::mutate(
+        &conn,
+        1,
+        None,
+        Some(&draft),
+        sick::Scope::Editable,
+        "Original",
+        &reviewed.signature,
+    )
+    .unwrap()
+    .unwrap();
+    generate(&mut app, &[1]);
+    let submit = || {
+        let i = delivery::capture(&conn, 1).unwrap();
+        let bytes = delivery::bytes(&conn, &i).unwrap();
+        delivery::execute(
+            &conn,
+            &i,
+            "Payroll; CC employer",
+            &format!("<{}@test.local>", i.intent_id),
+            &bytes,
+            |_| Ok(()),
+            || Ok(()),
+        )
+        .unwrap();
+    };
+    submit();
+    let mut corrected = p.clone();
+    corrected.end_date = "2026-04-05".into();
+    let reviewed = sick::review(&conn, 1, Some(&p), Some(&corrected)).unwrap();
+    sick::mutate(
+        &conn,
+        1,
+        Some(&p),
+        Some(&corrected),
+        sick::Scope::AuthorisedCorrection,
+        "Sickness dates reviewed",
+        &reviewed.signature,
+    )
+    .unwrap();
+    assert_eq!(generate(&mut app, &[1]).completed(), 1);
+    submit();
+    conn.execute(
+        "UPDATE timesheets SET worked_minutes=180,end_time='2026-04-02T12:00:00' WHERE id=1",
+        [],
+    )
+    .unwrap();
+    let record = sick::record(&conn, 1).unwrap();
+    let change =
+        crate::payroll_evidence::reconciliation::changes(&app.application, &record).unwrap();
+    assert!(change.changed);
+    crate::payroll_evidence::lifecycle::authorize_resubmission(
+        &app.application,
+        &record,
+        &change.signature,
+    )
+    .unwrap();
+    assert!(sick::correction(&conn, 1).unwrap().is_none());
+    let result = generate(&mut app, &[1]);
+    assert_eq!(result.completed(), 1, "{:?}", result.entries);
+    assert_eq!(conn.query_row::<f64,_,_>("SELECT worked_hours FROM payroll_timesheet_weeks WHERE payroll_timesheet_id=1 AND week_number=1",[],|r|r.get(0)).unwrap(),3.0);
+    assert_eq!(
+        conn.query_row::<i64, _, _>(
+            "SELECT count(*) FROM sickness_corrections WHERE retired_at IS NOT NULL",
+            [],
+            |r| r.get(0)
+        )
+        .unwrap(),
+        1
+    );
+}
+
+#[test]
+fn stage2_full_pa_archive_reactivation_preserves_correction_snapshots_and_delivery() {
+    use crate::sickness_service as sick;
+    use crate::timesheet_delivery as delivery;
+    let (_dir, mut app, _schedule) = fixture();
+    let conn = db(&app);
+    conn.execute(
+        "UPDATE personal_assistants SET employment_status='Active' WHERE id=1",
+        [],
+    )
+    .unwrap();
+    let p = crate::sickness_period_repository::SicknessPeriod {
+        id: 0,
+        personal_assistant_id: 1,
+        start_date: "2026-04-03".into(),
+        end_date: "2026-04-04".into(),
+    };
+    let plan = sick::review(&conn, 1, None, Some(&p)).unwrap();
+    let p = sick::mutate(
+        &conn,
+        1,
+        None,
+        Some(&p),
+        sick::Scope::Editable,
+        "Original sickness",
+        &plan.signature,
+    )
+    .unwrap()
+    .unwrap();
+    assert_eq!(generate(&mut app, &[1]).completed(), 1);
+    let submit = || {
+        let i = delivery::capture(&conn, 1).unwrap();
+        let bytes = delivery::bytes(&conn, &i).unwrap();
+        delivery::execute(
+            &conn,
+            &i,
+            "Payroll; CC employer",
+            &format!("<{}@archive.test>", i.intent_id),
+            &bytes,
+            |_| Ok(()),
+            || Ok(()),
+        )
+        .unwrap();
+    };
+    submit();
+    conn.execute("INSERT INTO payroll_timesheet_email_status(personal_assistant_id,payroll_year,cycle_number,email_type,sent_at) VALUES(1,'2026/27',1,'payslip','original settled')",[]).unwrap();
+    let mut revised = p.clone();
+    revised.end_date = "2026-04-05".into();
+    let plan = sick::review(&conn, 1, Some(&p), Some(&revised)).unwrap();
+    sick::mutate(
+        &conn,
+        1,
+        Some(&p),
+        Some(&revised),
+        sick::Scope::AuthorisedCorrection,
+        "Verified sickness dates",
+        &plan.signature,
+    )
+    .unwrap();
+    assert_eq!(generate(&mut app, &[1]).completed(), 1);
+    submit();
+    let captured = delivery::capture(&conn, 1).unwrap();
+    let bytes = delivery::bytes(&conn, &captured).unwrap();
+    let before_documents=conn.prepare("SELECT id,pdf_sha256,pdf_bytes FROM timesheet_documents WHERE payroll_timesheet_id=1 ORDER BY id").unwrap().query_map([],|r|Ok((r.get::<_,i64>(0)?,r.get::<_,String>(1)?,r.get::<_,Vec<u8>>(2)?))).unwrap().collect::<rusqlite::Result<Vec<_>>>().unwrap();
+    let snapshots=conn.prepare("SELECT document_id,evidence,correction_id FROM sickness_document_evidence WHERE payroll_timesheet_id=1 ORDER BY document_id").unwrap().query_map([],|r|Ok((r.get::<_,i64>(0)?,r.get::<_,String>(1)?,r.get::<_,Option<i64>>(2)?))).unwrap().collect::<rusqlite::Result<Vec<_>>>().unwrap();
+    let mut pa = app
+        .application
+        .personal_assistant_repository
+        .get_all()
+        .unwrap()
+        .into_iter()
+        .find(|p| p.id == 1)
+        .unwrap();
+    pa.employment_status = Some("Inactive".into());
+    let messages = crate::payroll_archive_service::apply(&app.application, &pa, true).unwrap();
+    assert!(
+        !messages.iter().any(|m| m.contains("failed")),
+        "{messages:?}"
+    );
+    let archived = delivery::capture(&conn, 1).unwrap();
+    assert_eq!(archived.document, captured.document);
+    assert!(archived.path.contains("Archived"));
+    assert_eq!(delivery::bytes(&conn, &archived).unwrap(), bytes);
+    assert!(!std::path::Path::new(&captured.path).exists());
+    pa.employment_status = Some("Active".into());
+    crate::payroll_archive_service::apply(&app.application, &pa, true).unwrap();
+    let reactivated = delivery::capture(&conn, 1).unwrap();
+    assert_eq!(reactivated.path, archived.path);
+    assert!(reactivated.resend);
+    let after_documents=conn.prepare("SELECT id,pdf_sha256,pdf_bytes FROM timesheet_documents WHERE payroll_timesheet_id=1 ORDER BY id").unwrap().query_map([],|r|Ok((r.get::<_,i64>(0)?,r.get::<_,String>(1)?,r.get::<_,Vec<u8>>(2)?))).unwrap().collect::<rusqlite::Result<Vec<_>>>().unwrap();
+    assert_eq!(before_documents, after_documents);
+    let after_snapshots=conn.prepare("SELECT document_id,evidence,correction_id FROM sickness_document_evidence WHERE payroll_timesheet_id=1 ORDER BY document_id").unwrap().query_map([],|r|Ok((r.get::<_,i64>(0)?,r.get::<_,String>(1)?,r.get::<_,Option<i64>>(2)?))).unwrap().collect::<rusqlite::Result<Vec<_>>>().unwrap();
+    assert_eq!(snapshots, after_snapshots);
+    assert_eq!(
+        crate::payroll_evidence::lifecycle::stage(&conn, &sick::record(&conn, 1).unwrap()).unwrap(),
+        crate::payroll_evidence::lifecycle::Stage::Settled
+    );
+    submit();
+    assert_eq!(
+        conn.query_row::<i64, _, _>(
+            "SELECT count(*) FROM payroll_submissions WHERE payroll_timesheet_id=1",
+            [],
+            |r| r.get(0)
+        )
+        .unwrap(),
+        2
+    );
+    assert_eq!(
+        conn.query_row::<i64, _, _>("SELECT count(*) FROM sickness_attempt_evidence", [], |r| r
+            .get(0))
+            .unwrap(),
+        3
+    );
+}

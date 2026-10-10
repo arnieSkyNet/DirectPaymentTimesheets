@@ -1,6 +1,8 @@
 use crate::app::Application;
 use crate::payroll_timesheet_repository::{PayrollTimesheet, PayrollTimesheetWeek};
-use crate::sickness_period_repository::{SicknessPeriod, SicknessPeriodRepository};
+use crate::sickness_period_repository::SicknessPeriod;
+#[cfg(test)]
+use crate::sickness_period_repository::SicknessPeriodRepository;
 use chrono::{Datelike, NaiveDate};
 use eframe::egui;
 use std::collections::HashSet;
@@ -11,6 +13,7 @@ type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
 pub(super) struct SicknessUi {
     populated_weeks: HashSet<i64>,
     editor: Option<Editor>,
+    changed: bool,
 }
 
 struct Editor {
@@ -22,6 +25,15 @@ struct Editor {
     saved: Vec<SicknessPeriod>,
     confirm_close: bool,
     focus_first: bool,
+    reason: String,
+    baseline_revision: i64,
+    reviewed_originals: bool,
+    scope: crate::sickness_service::Scope,
+    pending: Option<(
+        usize,
+        Option<SicknessPeriod>,
+        crate::sickness_service::Review,
+    )>,
 }
 
 impl Editor {
@@ -41,6 +53,11 @@ impl Editor {
             error,
             confirm_close: false,
             focus_first: false,
+            reason: String::new(),
+            baseline_revision: 0,
+            reviewed_originals: false,
+            scope: crate::sickness_service::Scope::Editable,
+            pending: None,
         };
         if editor.rows.is_empty() && editor.error.is_empty() {
             editor.add_blank();
@@ -153,12 +170,14 @@ fn edit_date(ui: &mut egui::Ui, value: &mut String, focus: bool) {
     }
 }
 
+#[cfg(test)]
 fn repository(app: &Application) -> Result<SicknessPeriodRepository> {
     Ok(SicknessPeriodRepository::new(
         crate::payroll_evidence::open(app)?,
     ))
 }
 
+#[cfg(test)]
 fn week_periods(app: &Application, pa: i64, week: &str) -> Result<Vec<SicknessPeriod>> {
     let start = crate::date_utils::parse_legacy(week)?;
     let end = start + chrono::Duration::days(6);
@@ -169,7 +188,55 @@ fn week_periods(app: &Application, pa: i64, week: &str) -> Result<Vec<SicknessPe
     )?)
 }
 
+fn cycle_periods(
+    app: &Application,
+    record: &PayrollTimesheet,
+    week: &str,
+) -> Result<Vec<SicknessPeriod>> {
+    let start = crate::date_utils::parse_legacy(week)?;
+    let end = start + chrono::Duration::days(6);
+    Ok(
+        crate::sickness_service::evidence(&crate::payroll_evidence::open(app)?, record.id)?
+            .periods
+            .into_iter()
+            .filter(|p| {
+                p.start_date <= crate::date_utils::iso(end)
+                    && p.end_date >= crate::date_utils::iso(start)
+            })
+            .collect(),
+    )
+}
+
 impl SicknessUi {
+    pub(super) fn take_changed(&mut self) -> bool {
+        std::mem::take(&mut self.changed)
+    }
+    pub(super) fn open_cycle(
+        &mut self,
+        ui: &egui::Ui,
+        app: &Application,
+        record: &PayrollTimesheet,
+        week: &str,
+        name: &str,
+    ) -> Result<()> {
+        let db = crate::payroll_evidence::open(app)?;
+        let rows = crate::sickness_service::evidence(&db, record.id)?.periods;
+        let mut editor = Editor::new(
+            record.clone(),
+            week.into(),
+            name.into(),
+            rows,
+            String::new(),
+        );
+        editor.baseline_revision =
+            crate::sickness_service::revision(&db, record.personal_assistant_id)?;
+        for row in &mut editor.rows {
+            row.start_date = crate::date_utils::preference(ui).display(&row.start_date);
+            row.end_date = crate::date_utils::preference(ui).display(&row.end_date);
+        }
+        self.editor = Some(editor);
+        Ok(())
+    }
     pub(super) fn refresh(
         &mut self,
         app: &Application,
@@ -178,9 +245,7 @@ impl SicknessUi {
         let mut populated = HashSet::new();
         for (record, weeks, _) in records {
             for week in weeks {
-                if !week_periods(app, record.personal_assistant_id, &week.week_commencing)?
-                    .is_empty()
-                {
+                if !cycle_periods(app, record, &week.week_commencing)?.is_empty() {
                     populated.insert(week.id);
                 }
             }
@@ -232,7 +297,7 @@ impl SicknessUi {
                 "Add sickness dates"
             });
         if response.clicked() {
-            let loaded = week_periods(app, record.personal_assistant_id, &week.week_commencing);
+            let loaded = cycle_periods(app, record, &week.week_commencing);
             let (rows, error) = match loaded {
                 Ok(rows) => (rows, String::new()),
                 Err(error) => (Vec::new(), error.to_string()),
@@ -245,6 +310,11 @@ impl SicknessUi {
                 error,
             ));
             if let Some(editor) = &mut self.editor {
+                editor.baseline_revision = crate::payroll_evidence::open(app)
+                    .and_then(|db| {
+                        crate::sickness_service::revision(&db, record.personal_assistant_id)
+                    })
+                    .unwrap_or(-1);
                 for row in &mut editor.rows {
                     row.start_date = crate::date_utils::preference(ui).display(&row.start_date);
                     row.end_date = crate::date_utils::preference(ui).display(&row.end_date);
@@ -284,6 +354,22 @@ impl SicknessUi {
                 });
                 return;
             }
+            ui.label("Reason for this change (required):");
+            if ui.text_edit_singleline(&mut editor.reason).changed() { editor.pending = None; }
+            let prior_scope = editor.scope;
+            ui.radio_value(&mut editor.scope, crate::sickness_service::Scope::Editable, "Change editable cycles; refuse protected overlaps");
+            ui.radio_value(&mut editor.scope, crate::sickness_service::Scope::EditableOnly, "Apply only to editable cycles; retain protected cycle dates");
+            ui.radio_value(&mut editor.scope, crate::sickness_service::Scope::AuthorisedCorrection, "Authorise sickness-only correction of every affected protected cycle");
+            if prior_scope != editor.scope { editor.pending = None; }
+            ui.label("Corrections preserve settlement and worked amounts. Payroll must assess financial implications. Uncertain delivery blocks every scope.");
+            if let Ok(db) = crate::payroll_evidence::open(app) {
+                if crate::sickness_service::legacy_warning(&db, editor.record.id).unwrap_or(false) {
+                    ui.colored_label(ui.visuals().warn_fg_color, "Legacy sickness hours exist without date evidence. Review the original records; dates will not be invented.");
+                }
+                if let Ok(lines) = crate::sickness_service::audit(&db, editor.record.personal_assistant_id) {
+                    ui.collapsing("Sickness change history", |ui| { for line in lines { ui.label(line); } });
+                }
+            }
             let mut action = None;
             egui::ScrollArea::vertical()
                 .max_height(300.0)
@@ -318,15 +404,47 @@ impl SicknessUi {
                 });
             editor.focus_first = false;
             if let Some((index, delete)) = action {
-                let result = if delete {
-                    save_row(app, &editor.record, &editor.rows[index], true)
-                } else {
-                    resolved_row(&editor.rows[index], &editor.week)
-                        .and_then(|row| save_row(app, &editor.record, &row, false))
-                };
+                let new = if delete { Ok(None) } else { resolved_row(&editor.rows[index], &editor.week).map(Some) };
+                let old = editor.saved.iter().find(|p| p.id == editor.rows[index].id);
+                let reviewed = new.and_then(|new| {
+                    let db = crate::payroll_evidence::open(app)?;
+                    if crate::sickness_service::revision(&db,editor.record.personal_assistant_id)? != editor.baseline_revision { return Err("Sickness records changed since this editor opened; close and reopen before saving".into()); }
+                    let review = crate::sickness_service::review(&db, editor.record.id, old, new.as_ref())?;
+                    Ok((index,new,review))
+                });
+                editor.reviewed_originals = false;
+                match reviewed { Ok(pending) => editor.pending = Some(pending), Err(e) => editor.error = e.to_string() }
+            }
+            if editor.scope == crate::sickness_service::Scope::AuthorisedCorrection {
+                ui.checkbox(&mut editor.reviewed_originals, "I reviewed the original PDF(s), verified the original dates and authorise the displayed sickness-only corrections");
+            }
+            let pending = editor.pending.clone();
+            if let Some((index, new, review)) = pending {
+                ui.separator();
+                ui.strong("Confirm sickness change and affected payroll periods");
+                ui.label(&review.description);
+                ui.label(format!("Before: {:?}\nAfter: {:?}", editor.saved.iter().find(|p| p.id == editor.rows[index].id), new));
+                let confirm = ui.add_enabled(!editor.reason.trim().is_empty() && (editor.scope != crate::sickness_service::Scope::AuthorisedCorrection || editor.reviewed_originals), egui::Button::new(if editor.scope == crate::sickness_service::Scope::AuthorisedCorrection { "Authorise correction and save reviewed dates" } else { "Confirm and save reviewed dates" })).clicked();
+                if ui.button("Cancel review").clicked() { editor.pending = None; }
+                if confirm {
+                let delete = new.is_none();
+                let result = (|| -> Result<Option<SicknessPeriod>> {
+                    let db = crate::payroll_evidence::open(app)?;
+                    let old = editor.saved.iter().find(|p| p.id == editor.rows[index].id);
+                    if let Some(approved) = &new {
+                        if resolved_row(&editor.rows[index], &editor.week)? != *approved { return Err("Displayed dates changed since review; review again before saving".into()); }
+                    }
+                    crate::sickness_service::mutate(&db, editor.record.id, old, new.as_ref(), editor.scope, &editor.reason, &review.signature)
+                })();
                 match result {
                     Ok(saved) => {
-                        editor.accept_saved(index, saved);
+                        // A transfer can remove the selected view, or an editable-only
+                        // operation can retain its old protected view. Display what was persisted.
+                        let persisted=crate::payroll_evidence::open(app).and_then(|db|crate::sickness_service::evidence(&db,editor.record.id));
+                        let persisted=match persisted { Ok(v)=>v, Err(e)=>{editor.error=format!("Dates saved, but editor refresh failed: {e}. Close and reopen the editor."); self.changed=true; return;} };
+                        let displayed=saved.as_ref().and_then(|p|persisted.periods.iter().find(|v|v.id==p.id)).cloned()
+                            .or_else(||persisted.periods.iter().find(|p|p.id==editor.rows[index].id).cloned());
+                        editor.accept_saved(index, displayed);
                         if let Some(row) = editor.rows.get_mut(index) {
                             if !delete && row.id != 0 {
                                 row.start_date =
@@ -336,10 +454,14 @@ impl SicknessUi {
                             }
                         }
                         editor.error.clear();
+                        editor.pending = None;
+                        editor.reviewed_originals = false;
+                        editor.baseline_revision = crate::payroll_evidence::open(app).and_then(|db|crate::sickness_service::revision(&db, editor.record.personal_assistant_id)).unwrap_or(-1);
                         changed = true;
                     }
                     Err(error) => editor.error = error.to_string(),
                 }
+            }
             }
             if ui.button("Add period").clicked() {
                 editor.add_blank();
@@ -352,6 +474,7 @@ impl SicknessUi {
             }
         });
         if changed {
+            self.changed = true;
             if let Err(error) = self.refresh(app, records) {
                 self.editor.as_mut().unwrap().error = error.to_string();
             }
@@ -362,46 +485,30 @@ impl SicknessUi {
     }
 }
 
+#[cfg(test)]
 fn save_row(
     app: &Application,
     record: &PayrollTimesheet,
     row: &SicknessPeriod,
     delete: bool,
 ) -> Result<Option<SicknessPeriod>> {
-    use crate::payroll_evidence::lifecycle::{stage, Stage};
-    if stage(&crate::payroll_evidence::open(app)?, record)? != Stage::Editable {
-        return Err("Submitted or settled payroll is protected from changes".into());
-    }
-    app.personal_assistant_repository
-        .get_all()?
-        .into_iter()
-        .find(|pa| pa.id == record.personal_assistant_id)
-        .ok_or("Personal Assistant not found")?;
-    let repo = repository(app)?;
-    if row.personal_assistant_id != record.personal_assistant_id {
-        return Err("Sickness period belongs to another Personal Assistant".into());
-    }
-    if row.id != 0 {
-        let stored = repo
-            .get_by_id(row.id)?
-            .ok_or("Sickness period no longer exists; reopen the editor")?;
-        if stored.personal_assistant_id != record.personal_assistant_id {
-            return Err("Sickness period belongs to another Personal Assistant".into());
-        }
-    }
-    if delete {
-        if row.id != 0 {
-            repo.delete(row.id)?;
-        }
-        return Ok(None);
-    }
-    let id = if row.id == 0 {
-        repo.insert(row.personal_assistant_id, &row.start_date, &row.end_date)?
+    let db = crate::payroll_evidence::open(app)?;
+    let old = if row.id == 0 {
+        None
     } else {
-        repo.update(row.id, &row.start_date, &row.end_date)?;
-        row.id
+        repository(app)?.get_by_id(row.id)?
     };
-    Ok(repo.get_by_id(id)?)
+    let new = (!delete).then_some(row);
+    let review = crate::sickness_service::review(&db, record.id, old.as_ref(), new)?;
+    crate::sickness_service::mutate(
+        &db,
+        record.id,
+        old.as_ref(),
+        new,
+        crate::sickness_service::Scope::Editable,
+        "Test sickness edit",
+        &review.signature,
+    )
 }
 
 #[cfg(test)]

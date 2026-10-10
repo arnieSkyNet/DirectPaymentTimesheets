@@ -282,9 +282,9 @@ schema-32 columns before simulating older versions; their historical assertions
 remain in force. Run `cargo fmt --check`, `cargo check --locked`, and
 `cargo test --locked`; the existing mock SMTP tests require local TCP binding.
 
-The pre-existing sickness-date editor candidate-invalidation gap is unchanged by
-this work. These notes do not imply that structured sickness dates now participate
-in candidate evidence signatures.
+At the schema32 milestone, sickness dates did not invalidate candidates or participate
+in candidate evidence signatures. Stage 2/schema37 closes that gap; see the Stage 2
+workflow below.
 
 ## Individual PA payroll production (schema 32)
 
@@ -376,3 +376,27 @@ approved verified bytes; never reopen a pathname during transport. Retain the OS
 Do not treat an exception as proof of non-acceptance. Never create another payroll
 submission to record a resend. Test claim races, acknowledgement loss, stale
 confirmation, restart/review, partial retry and original correction applications.
+
+
+## Stage 2 sickness protection (1.0.6/schema37)
+
+Sickness remains manual inclusive dates, separate from CSV worked evidence, leave and public holidays. Open Sick / SSP in preparation; protected preparation has a separate sickness-review control outside its read-only hours grid. Enter a reason, choose normal editable scope, explicit editable-only scope, or authorised sickness-only correction, then review the old/new dates and every affected period. Authorised correction additionally requires confirmation that original PDFs and original dates were reviewed. Delivery-uncertain periods remain blocked until audited resolution.
+
+Editable-only scope retains a protected cycle's full-date projection, even if the PA-wide period changes or is deleted. The cycle view can subsequently receive its own authorised correction without changing another cycle. Date IDs are never reused after deletion. Audits and immutable document, attempt and submission snapshots preserve the original evidence. A new correction document starts as a first send; the accepted version subsequently defaults unticked and uses the existing deliberate resend acknowledgement.
+
+For settled corrections, no settlement marker is cleared and no worked-minute correction is created. Generation uses the retained submission's worked membership/totals and refuses changed payroll totals. The new filename includes `Sickness-Correction-<id>` and preserves the original file. Full dates stay in their ordinary weekly cells. Only the notes area receives `Sickness Information Correction`, numbered with the next asterisk count after populated notes; no empty notes are created. The footnote tells Payroll to assess financial implications, with settled amounts unchanged and no SSP calculation. Existing font/layout and overflow refusal remain in force; long existing notes may exceed the remaining space before generation can succeed.
+
+Migration37 is atomic and uses the existing verified database/config backup, isolated migration chain and dispatch/writer locks before live installation. It does not invent structured sickness snapshots for older PDFs. Unsent older PDFs must be regenerated before first delivery; previously submitted PDFs retain deliberate immutable-byte resend. Legacy original dates without a captured structured snapshot require review of the retained original PDF before correction authorisation. Business PDFs/signatures are external to database/config backup coverage; protect them separately.
+
+Regression coverage is in `sickness_service_tests.rs`, the sickness editor/PDF tests, recovery tests and the Stage 2 production SMTP/PDF tests. All fixtures use temporary databases/folders. Public-holiday identification/subtraction, annual-leave accrual and SSP calculations are outside this change.
+
+
+### Retained-period transfers and original financial evidence
+
+Every reviewed sickness change validates the complete union of original and proposed ranges, including local edits to a retained cycle view. Delivery uncertainty in any overlapping cycle blocks the operation. Historical delivery markers without a preparation/submission baseline also refuse mutation until the original payroll evidence is recovered.
+
+A retained period whose PA-wide row was deleted can be shortened or deleted locally with authorised correction while other historical views remain retained. Moving or extending its dates outside the selected historical cycle is an explicit reviewed transfer: it creates a fresh, non-reused active period identity and publishes its full inclusive dates into every destination projection, including future preparation records. Changed unsent candidates are invalidated in the same transaction. Protected destinations require correction authority; uncertain destinations refuse every scope. If an existing PA-wide version or a conflicting retained version would be overwritten, the transfer is refused without an audit claiming success. Reconcile those dates first. Editable-only scope still freezes protected views rather than altering their evidence. The editor displays the persisted selected-cycle view after saving, and preparation candidate indicators refresh immediately without replacing other unsaved drafts.
+
+Sickness-only correction authority binds the exact original submission's financial evidence fingerprint. Generation and first delivery compare retained worked membership, correction applications, weekly values, dated leave/public-holiday records and carry-forward. New publication timestamps and row IDs are excluded from business-value comparison. Carry-forward is recovered from original late-work/legacy-carry/correction items, never inferred from today's mutable preparation value; inconsistent or insufficient legacy evidence refuses the correction and requests recovery/reconciliation. Original settlement values and original PDFs remain unchanged. This adds no SSP calculation or public-holiday classification/subtraction changes.
+
+Regression tests include populated schema35/schema36 databases created by the actual ordered migration steps (with the original non-AUTOINCREMENT sickness table), WAL-backed upgrade/restore, a failure after schema36 commits on the isolated copy, retained transfers across lifecycle states, nonzero worked/carry/correction evidence, parent indicators and full PA archive/reactivation with retained sickness snapshots and delivery history. Schema remains 37 and application version remains 1.0.6.

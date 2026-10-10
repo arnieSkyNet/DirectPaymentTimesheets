@@ -2845,6 +2845,9 @@ impl DirectPaymentApp {
         current_schedule: &PayrollSchedule,
         assistant: &crate::models::PersonalAssistant,
     ) -> Result<bool, Box<dyn std::error::Error>> {
+        let generation_db = crate::payroll_evidence::open(&self.application)?;
+        let _generation_lock = crate::timesheet_delivery::production_lock(&generation_db)?;
+
         let employers = self.application.employer_repository.get_all()?;
 
         let employer = employers
@@ -2999,13 +3002,12 @@ impl DirectPaymentApp {
             format_pdf_hours(payroll_weeks[3].annual_leave_hours),
         ];
 
-        let sickness_periods = crate::pdf_generator::sickness_periods_for_weeks(
-            &crate::sickness_period_repository::SicknessPeriodRepository::new(
-                crate::payroll_evidence::open(&self.application)?,
-            ),
-            assistant.id,
+        let sickness_periods = crate::sickness_service::projection(
+            &crate::sickness_service::evidence(&generation_db, payroll_timesheet.id)?,
             &week_dates,
         )?;
+        let sickness_correction_note =
+            crate::sickness_service::correction_note(&generation_db, payroll_timesheet.id)?;
 
         let public_holidays = self
             .application
@@ -3056,6 +3058,7 @@ impl DirectPaymentApp {
 
         let data = TimesheetPdfData {
             payroll_department_notes: &payroll_timesheet.payroll_department_notes,
+            sickness_correction_note: sickness_correction_note.as_deref(),
             schedule: &current_schedule,
             employer_name: &employer.name,
 
@@ -3105,14 +3108,24 @@ impl DirectPaymentApp {
         };
 
         let captured_at = chrono::Local::now().to_rfc3339();
-        let final_pdf_path = PdfGenerator::output_path(&output_dir, &data)?;
+        let mut final_pdf_path = PdfGenerator::output_path(&output_dir, &data)?;
+        if let Some(correction) =
+            crate::sickness_service::correction(&generation_db, payroll_timesheet.id)?
+        {
+            let stem = final_pdf_path
+                .file_stem()
+                .unwrap_or_default()
+                .to_string_lossy();
+            final_pdf_path = final_pdf_path
+                .with_file_name(format!("{stem}_Sickness-Correction-{correction}.pdf"));
+        }
         let week_ids = [
             payroll_weeks[0].id,
             payroll_weeks[1].id,
             payroll_weeks[2].id,
             payroll_weeks[3].id,
         ];
-        crate::payroll_snapshot_service::publish_candidate(
+        crate::payroll_snapshot_service::publish_candidate_locked(
             &self.application.payroll_worked_item_repository,
             crate::payroll_snapshot_service::CandidatePublication {
                 payroll_timesheet_id: payroll_timesheet.id,

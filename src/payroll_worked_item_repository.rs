@@ -181,6 +181,8 @@ impl PayrollWorkedItemRepository {
         )
         .map_err(|e| rusqlite::Error::InvalidParameterName(e.to_string()))?;
         let previous:Option<(String,String,Option<String>)>=transaction.query_row("SELECT s.state,s.pdf_sha256,c.evidence_signature FROM payroll_timesheet_snapshot_states s LEFT JOIN payroll_candidate_checks c ON c.payroll_timesheet_id=s.payroll_timesheet_id WHERE s.payroll_timesheet_id=?1",[payroll_timesheet_id],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?))).optional()?;
+        let legacy_submitted_bytes = previous.as_ref().is_some_and(|(state,digest,_)|state=="submitted" && digest==pdf_sha256)
+            && !transaction.query_row("SELECT EXISTS(SELECT 1 FROM sickness_document_evidence d JOIN payroll_timesheet_snapshot_states s ON s.document_id=d.document_id WHERE s.payroll_timesheet_id=?1)",[payroll_timesheet_id],|r|r.get::<_,bool>(0))?;
         // A byte-identical, evidence-identical regeneration is the same document,
         // not a fresh first send. Material corrections still allocate a new identity.
         if previous
@@ -188,7 +190,7 @@ impl PayrollWorkedItemRepository {
             .is_some_and(|(state, digest, old_signature)| {
                 state != "indeterminate"
                     && digest == pdf_sha256
-                    && old_signature.as_ref() == Some(&signature)
+                    && (old_signature.as_ref() == Some(&signature) || legacy_submitted_bytes)
             })
             && self.get_snapshot_items(payroll_timesheet_id)? == items
         {
@@ -250,24 +252,55 @@ impl PayrollWorkedItemRepository {
                 submitted_at = NULL, indeterminate_at = NULL",
             params![payroll_timesheet_id, pdf_path, pdf_sha256, generated_at],
         )?;
-        transaction.execute(
-            "UPDATE payroll_timesheets
-             SET previous_cycle_hours = ?1, updated_at = ?2 WHERE id = ?3",
-            params![
-                (previous_cycle_minutes != 0).then(|| previous_cycle_minutes as f64 / 60.0),
-                generated_at,
-                payroll_timesheet_id
-            ],
-        )?;
-        for index in 0..4 {
+        if crate::sickness_service::correction(&transaction, payroll_timesheet_id)
+            .map_err(|e| rusqlite::Error::InvalidParameterName(e.to_string()))?
+            .is_none()
+        {
             transaction.execute(
-                "UPDATE payroll_timesheet_weeks SET worked_hours = ?1 WHERE id = ?2",
-                params![week_totals_minutes[index] as f64 / 60.0, week_ids[index]],
+                "UPDATE payroll_timesheets
+             SET previous_cycle_hours = ?1, updated_at = ?2 WHERE id = ?3",
+                params![
+                    (previous_cycle_minutes != 0).then(|| previous_cycle_minutes as f64 / 60.0),
+                    generated_at,
+                    payroll_timesheet_id
+                ],
             )?;
+            for index in 0..4 {
+                transaction.execute(
+                    "UPDATE payroll_timesheet_weeks SET worked_hours = ?1 WHERE id = ?2",
+                    params![week_totals_minutes[index] as f64 / 60.0, week_ids[index]],
+                )?;
+            }
+        } else {
+            let original =
+                crate::sickness_service::historical_hours(&transaction, payroll_timesheet_id)
+                    .map_err(|e| rusqlite::Error::InvalidParameterName(e.to_string()))?
+                    .ok_or_else(|| {
+                        rusqlite::Error::InvalidParameterName(
+                            "Sickness correction authority missing".into(),
+                        )
+                    })?;
+            if original.snapshot_items != items
+                || original.week_totals_minutes != *week_totals_minutes
+                || original.previous_cycle_minutes != previous_cycle_minutes
+            {
+                return Err(rusqlite::Error::InvalidParameterName("Sickness correction publication differs from authorised original worked membership, carry-forward or weekly totals".into()));
+            }
         }
         transaction.execute("INSERT INTO timesheet_documents(payroll_timesheet_id,pdf_path,pdf_sha256,generated_at) VALUES (?1,?2,?3,?4)", params![payroll_timesheet_id,pdf_path,pdf_sha256,generated_at])?;
         let document_id = transaction.last_insert_rowid();
         transaction.execute("UPDATE payroll_timesheet_snapshot_states SET document_id=?1 WHERE payroll_timesheet_id=?2",params![document_id,payroll_timesheet_id])?;
+        crate::sickness_service::capture_document(&transaction, payroll_timesheet_id, document_id)
+            .map_err(|e| rusqlite::Error::InvalidParameterName(e.to_string()))?;
+        if crate::sickness_service::document_is_correction(&transaction, payroll_timesheet_id)
+            .map_err(|e| rusqlite::Error::InvalidParameterName(e.to_string()))?
+        {
+            crate::sickness_service::verify_candidate_correction(
+                &transaction,
+                payroll_timesheet_id,
+            )
+            .map_err(|e| rusqlite::Error::InvalidParameterName(e.to_string()))?;
+        }
         transaction.commit()?;
         Ok(())
     }

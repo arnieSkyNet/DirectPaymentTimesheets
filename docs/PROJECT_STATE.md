@@ -177,3 +177,11 @@ invalidates stale approval and requires a documented destructive rollback decisi
 A separately verified original snapshot retains newer delivery/payroll evidence.
 External business files are inventoried only and need independent protection.
 See DATABASE-SCHEMA.md for recovery limits and maintenance locking.
+
+
+## Stage 2 sickness protection (1.0.6/schema37)
+
+Implemented transactional cross-cycle sickness review, reasons/authorisation, exact duplicate rejection, stale-editor/candidate safeguards, immutable document/attempt/submission date evidence and scoped preservation of protected dates. Authorised sickness-only corrections can generate separately named historical PDFs for submitted or settled cycles, preserving settlement, worked totals, original submission/PDF and historical evidence. Corrected dates use the existing weekly cells; a dynamically numbered Sickness Information Correction footnote outside the table asks Payroll to assess financial implications without SSP calculation. Uncertain delivery blocks corrections until audited resolution. Schema37 upgrades use verified pre-migration database/config recovery and isolated installation; missing legacy date snapshots are not fabricated. Version remains 1.0.6; published releases remain unchanged.
+
+
+Stage 2 final-review corrections close the retained-view transfer gap: source/destination ranges are fully reviewed, safe transfers persist a fresh active identity, and conflicts/uncertainty refuse without partial changes. Historical corrections bind original financial evidence and validated carry-forward; preparation indicators refresh after saves. Genuine populated schema35/schema36 upgrade/restore and full PA archive/reactivation regressions extend recovery coverage. No schema/version increase is required.

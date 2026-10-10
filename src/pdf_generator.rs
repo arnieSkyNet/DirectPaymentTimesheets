@@ -26,6 +26,7 @@ pub struct TimesheetPdfData<'a> {
 
     pub previous_cycle_hours: Option<&'a str>,
     pub payroll_department_notes: &'a str,
+    pub sickness_correction_note: Option<&'a str>,
 
     pub employer_signature_path: Option<&'a Path>,
     pub pa_signature_path: Option<&'a Path>,
@@ -37,6 +38,7 @@ pub struct PublicHolidayPdfEntry {
 }
 
 /// Read-only PDF projection: retain complete dates in every overlapping week.
+#[cfg(test)]
 pub fn sickness_periods_for_weeks(
     repository: &crate::sickness_period_repository::SicknessPeriodRepository,
     pa_id: i64,
@@ -306,11 +308,16 @@ impl PdfGenerator {
         // Signatures / declaration
         // ------------------------------------------------------------
 
-        let notes_layout = layout_payroll_notes(
+        let combined_notes = crate::sickness_service::notes_with_correction(
             data.payroll_department_notes,
+            data.sickness_correction_note,
+        );
+        let notes_layout = layout_payroll_notes_internal(
+            &combined_notes,
             8.0, // Match the declaration body; never shrink the note to make it fit.
             &regular_font,
             &bold_font,
+            data.sickness_correction_note.is_some(),
         )?;
         if let Some(layout) = &notes_layout {
             write_text(
@@ -601,14 +608,27 @@ fn text_vertical_bounds(text: &str, size: f32, font: &ParsedFont) -> Result<(f32
     Ok((bottom, top))
 }
 
+#[cfg(test)]
 fn layout_payroll_notes(
     text: &str,
     size: f32,
     regular: &ParsedFont,
     bold: &ParsedFont,
 ) -> Result<Option<PayrollNotesLayout>, String> {
-    crate::payroll_timesheet_repository::validate_payroll_department_notes(text)
-        .map_err(|e| e.to_string())?;
+    layout_payroll_notes_internal(text, size, regular, bold, false)
+}
+
+fn layout_payroll_notes_internal(
+    text: &str,
+    size: f32,
+    regular: &ParsedFont,
+    bold: &ParsedFont,
+    generated_correction: bool,
+) -> Result<Option<PayrollNotesLayout>, String> {
+    if !generated_correction {
+        crate::payroll_timesheet_repository::validate_payroll_department_notes(text)
+            .map_err(|e| e.to_string())?;
+    }
     if text.trim().is_empty() {
         return Ok(None);
     }
@@ -1644,6 +1664,7 @@ mod tests {
             travel_miles: ["0", "0", "0", "0"],
 
             payroll_department_notes: "",
+            sickness_correction_note: None,
             previous_cycle_hours: Some("2.75"),
 
             employer_signature_path: None,
@@ -1757,6 +1778,7 @@ mod tests {
             ],
             travel_miles: ["0", "0", "0", "0"],
             payroll_department_notes: "",
+            sickness_correction_note: None,
             previous_cycle_hours: None,
             employer_signature_path: None,
             pa_signature_path: None,
@@ -1845,6 +1867,7 @@ mod tests {
             public_holidays: std::array::from_fn(|_| Vec::new()),
             travel_miles: ["0", "0", "0", "0"],
             payroll_department_notes: "",
+            sickness_correction_note: None,
             previous_cycle_hours: None,
             employer_signature_path: None,
             pa_signature_path: None,

@@ -1,11 +1,12 @@
 //! Date-only sickness storage. Dates are inclusive and independent of payroll weeks.
 //! Payroll is responsible for all SSP calculations.
-// Public storage API is wired into sickness entry in a later stage.
+// Production changes go through sickness_service; this repository supplies read queries
+// and isolated low-level storage/migration fixtures.
 #![allow(dead_code)]
 
 use rusqlite::{params, Connection, OptionalExtension, Result};
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct SicknessPeriod {
     pub id: i64,
     pub personal_assistant_id: i64,

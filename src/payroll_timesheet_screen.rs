@@ -432,6 +432,16 @@ impl PayrollTimesheetScreen {
                         ui.label(previous);
                     });
 
+                    if read_only {
+                        ui.horizontal(|ui| {
+                            ui.label("Review sickness dates / authorised sickness-only correction:");
+                            if let Some(week) = weeks.first() {
+                                if ui.button("Review all sickness dates").clicked() {
+                                    if let Err(error)=self.sickness_ui.open_cycle(ui, application, record, &week.week_commencing, assistant_name) { self.status_message=error.to_string(); }
+                                }
+                            }
+                        });
+                    }
                     ui.add_enabled_ui(!read_only, |ui| {
                         egui::Grid::new(format!("payroll_week_grid_{}", record_index))
                             .striped(true)
@@ -553,6 +563,14 @@ impl PayrollTimesheetScreen {
             ui.ctx().request_repaint();
         }
         self.sickness_ui.show(ui, application, &self.weeks);
+        if self.sickness_ui.take_changed() {
+            if let Err(e) = self.refresh_candidate_indicators(application) {
+                self.status_message = format!(
+                    "Sickness saved; candidate indicator refresh failed: {e}. Reopen preparation."
+                );
+            }
+            ui.ctx().request_repaint();
+        }
         let action = self
             .mileage_editor
             .as_mut()
@@ -697,6 +715,40 @@ impl PayrollTimesheetScreen {
 
     // Inspection uses labels, never disabled editors: even rendering an annual
     // leave editor can normalise draft rows. Lower sections must stay persisted.
+    fn refresh_candidate_indicators(
+        &mut self,
+        application: &Application,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        for (record, _, _) in &self.weeks {
+            let metadata = application
+                .payroll_worked_item_repository
+                .snapshot_metadata(record.id)?
+                .map(|m| m.state);
+            let stage = crate::payroll_evidence::lifecycle::stage(
+                &crate::payroll_evidence::open(application)?,
+                record,
+            )?;
+            let state = match stage {
+                crate::payroll_evidence::lifecycle::Stage::Submitted
+                | crate::payroll_evidence::lifecycle::Stage::Settled => {
+                    Some(SnapshotState::Submitted)
+                }
+                crate::payroll_evidence::lifecycle::Stage::Indeterminate => {
+                    Some(SnapshotState::Indeterminate)
+                }
+                _ => metadata,
+            };
+            match state {
+                Some(state) => {
+                    self.snapshot_states.insert(record.id, state);
+                }
+                None => {
+                    self.snapshot_states.remove(&record.id);
+                }
+            }
+        }
+        Ok(())
+    }
     fn show_visited_pa(&self, ui: &mut egui::Ui, index: usize) {
         let (record, weeks, name) = &self.weeks[index];
         ui.label("Previously visited — activate to edit or resolve actions");
@@ -2372,6 +2424,50 @@ pub(crate) mod tests {
         assert_eq!(reopened.get_weeks(record.id).unwrap()[0].travel_miles, 8.25);
         screen.save_mileage(&app, 0.0).unwrap();
         assert_eq!(reopened.get_weeks(record.id).unwrap()[0].travel_miles, 0.0);
+    }
+
+    #[test]
+    fn sickness_save_refreshes_parent_candidate_indicators_without_reloading_drafts() {
+        let (_dir, app, _schedule, mut screen) = load_active_record();
+        let record = screen.weeks[0].0.clone();
+        let db = setup_connection(&app);
+        db.execute("INSERT INTO payroll_timesheet_snapshot_states(payroll_timesheet_id,state,pdf_path,pdf_sha256,generated_at) VALUES(?1,'candidate','isolated.pdf','digest','original')",[record.id]).unwrap();
+        screen.refresh_candidate_indicators(&app).unwrap();
+        assert_eq!(
+            screen.snapshot_states.get(&record.id),
+            Some(&SnapshotState::Candidate)
+        );
+        screen.weeks[0].1[0].annual_leave_hours = 3.25;
+        let p = crate::sickness_period_repository::SicknessPeriod {
+            id: 0,
+            personal_assistant_id: record.personal_assistant_id,
+            start_date: crate::date_utils::iso(
+                crate::date_utils::parse_legacy(&screen.weeks[0].1[0].week_commencing).unwrap(),
+            ),
+            end_date: crate::date_utils::iso(
+                crate::date_utils::parse_legacy(&screen.weeks[0].1[0].week_commencing).unwrap(),
+            ),
+        };
+        let plan = crate::sickness_service::review(&db, record.id, None, Some(&p)).unwrap();
+        crate::sickness_service::mutate(
+            &db,
+            record.id,
+            None,
+            Some(&p),
+            crate::sickness_service::Scope::Editable,
+            "Sickness dates saved",
+            &plan.signature,
+        )
+        .unwrap();
+        screen.refresh_candidate_indicators(&app).unwrap();
+        assert!(!screen.snapshot_states.contains_key(&record.id));
+        assert_eq!(screen.weeks[0].1[0].annual_leave_hours, 3.25);
+        db.execute("INSERT INTO payroll_timesheet_email_status(personal_assistant_id,payroll_year,cycle_number,email_type,sent_at) VALUES(?1,?2,?3,'payslip','settled')",params![record.personal_assistant_id,record.payroll_year,record.cycle_number]).unwrap();
+        screen.refresh_candidate_indicators(&app).unwrap();
+        assert_eq!(
+            screen.snapshot_states.get(&record.id),
+            Some(&SnapshotState::Submitted)
+        );
     }
 
     #[test]

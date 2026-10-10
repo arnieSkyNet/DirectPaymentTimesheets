@@ -16,6 +16,7 @@ fn note_pdf_data<'a>(
         travel_miles: ["0"; 4],
         previous_cycle_hours: None,
         payroll_department_notes: note,
+        sickness_correction_note: None,
         employer_signature_path: None,
         pa_signature_path: None,
     }
@@ -345,4 +346,26 @@ fn payroll_notes_increased_spacing_rejects_wide_maximum_note_without_replacing_p
             .contains("Reduce line breaks or shorten the note"));
         assert_eq!(fs::read(&path).unwrap(), before);
     }
+}
+
+#[test]
+fn sickness_correction_footnote_fits_existing_notes_and_stays_outside_table() {
+    let dir=tempfile::tempdir().unwrap();let path=dir.path().join("sickness-correction.pdf");
+    let schedule=schedule("05/04/2032","30/04/2032");
+    let correction="Sickness Information Correction: Payroll to assess financial impact; settled amounts unchanged; no SSP calculation.";
+    let mut data=note_pdf_data(&schedule,"Payroll note for PA1\nPlease confirm.");data.sickness_correction_note=Some(correction);
+    data.sickness_periods[0]=vec![["(06/04/2032 to".into(),"07/04/2032)".into()]];
+    PdfGenerator::generate_to_path(&path,&data,&crate::config::PdfConfig::default(),&crate::config::PayrollConfig::default()).unwrap();
+    let pdf=parsed_note_pdf(&path);assert_eq!(pdf.pages.len(),1);
+    let text=pdf_extract::extract_text(&path).unwrap().split_whitespace().collect::<Vec<_>>().join(" ");
+    assert!(text.contains("** Sickness Information Correction"));assert!(text.contains("07/04/2032)"));
+    let mut cursor=0.0;let mut found=false;
+    for op in &pdf.pages[0].ops {
+        match op {
+            Op::SetTextCursor{pos}=>cursor=pos.y.0*25.4/72.0,
+            Op::WriteText{items,..}=>if items.iter().any(|i|matches!(i,TextItem::Text(s) if s.contains("Sickness Information Correction"))) {assert!(cursor<116.0);found=true;},
+            _=>{}
+        }
+    }
+    assert!(found);
 }

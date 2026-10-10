@@ -1,6 +1,6 @@
 # Payroll evidence and reconciliation (schema 29)
 
-Schema29 is the evidence-migration milestone described here; the development application is v1.0.6/schema36.
+Schema29 is the evidence-migration milestone described here; the development application is v1.0.6/schema37.
 
 ## Sources and possible duplicates
 
@@ -178,3 +178,10 @@ reason/decision manifest are durable. Review explicitly lists changed/absent
 current rows and warns of duplicate payroll processing. Reconcile any rollback
 with Payroll before further sending; preserved historical acceptance is not proof
 of recipient delivery. Published older executables lack these recovery safeguards.
+
+
+## Sickness-only historical corrections (schema37)
+
+An authorised sickness correction extends the existing reviewed resubmission/document-delivery lifecycle with date-only evidence. It never becomes a worked-minute or SSP calculation. Submitted and settled original evidence remains retained, and settled status/totals remain unchanged. Corrected dates appear directly in the original weekly table layout; the next populated-note asterisk labels an explanation outside the table as `Sickness Information Correction`. Payroll assesses financial implications.
+
+Sickness changes check the union of original/proposed ranges transactionally under the dispatch OS lock. Explicit editable-only scope retains protected cycle projections. Uncertain cycles remain blocked until audited resolution. Deterministic date evidence invalidates unsent candidates and blocks stale first delivery; immutable resends preserve the exact original approved bytes. Each generated document, attempt and successful submission retains its structured sickness evidence. A later authorised general worked-evidence correction retires the limited sickness-only generation authority without removing its historical audit.

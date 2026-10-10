@@ -93,7 +93,7 @@ pub fn migrate(db: &Connection) -> rusqlite::Result<()> {
         .collect::<rusqlite::Result<Vec<_>>>()?;
     for table in tables {
         for operation in ["INSERT", "UPDATE", "DELETE"] {
-            tx.execute_batch(&format!("CREATE TRIGGER IF NOT EXISTS dpt36_{table}_{operation} BEFORE {operation} ON {table} BEGIN SELECT CASE WHEN dpt_schema_version()<>36 THEN RAISE(ABORT,'Incompatible application schema') END; END;"))?;
+            tx.execute_batch(&format!("CREATE TRIGGER IF NOT EXISTS dpt36_{table}_{operation} BEFORE {operation} ON {table} BEGIN SELECT CASE WHEN dpt_schema_version()<36 THEN RAISE(ABORT,'Incompatible application schema') END; END;"))?;
         }
     }
     tx.commit()
@@ -237,6 +237,7 @@ where
     };
     tx.execute("INSERT INTO timesheet_delivery_attempts(intent_id,payroll_timesheet_id,document_id,submission_id,classification,recipients,message_id,started_at,pdf_path,outcome,detail,payroll_department_notes) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,'uncertain','Claimed before transport; acceptance not yet established',(SELECT payroll_department_notes FROM payroll_timesheets WHERE id=?2))",params![intent.intent_id,intent.record,intent.document,submission,if intent.resend {"resend"} else {"first_send"},recipients,message_id,now(),intent.path])?;
     let attempt = tx.last_insert_rowid();
+    tx.execute("INSERT INTO sickness_attempt_evidence SELECT ?1,document_id,evidence,correction_id FROM sickness_document_evidence WHERE document_id=?2",params![attempt,intent.document])?;
     if !intent.resend {
         tx.execute("UPDATE payroll_timesheet_snapshot_states SET state='indeterminate',indeterminate_at=?1 WHERE payroll_timesheet_id=?2 AND document_id=?3 AND state='candidate'",params![now(),intent.record,intent.document])?;
         for (name, source, _) in PAYLOADS {
@@ -261,6 +262,7 @@ fn finalise(db: &Connection, attempt: i64, accepted: bool, at: &str) -> Result<(
     }
     db.execute("INSERT INTO payroll_submissions(payroll_timesheet_id,submitted_at,supersedes_id,pdf_path,pdf_sha256,pdf_bytes,payroll_department_notes,document_id) SELECT ?1,?2,(SELECT MAX(id) FROM payroll_submissions WHERE payroll_timesheet_id=?1),a.pdf_path,d.pdf_sha256,d.pdf_bytes,a.payroll_department_notes,d.id FROM timesheet_documents d JOIN timesheet_delivery_attempts a ON a.document_id=d.id WHERE a.id=?3",params![record,at,attempt])?;
     let submission = db.last_insert_rowid();
+    db.execute("INSERT INTO sickness_submission_evidence SELECT ?1,document_id,evidence,correction_id FROM sickness_attempt_evidence WHERE attempt_id=?2",params![submission,attempt])?;
     for (name, _, target) in PAYLOADS {
         let columns = db
             .prepare(&format!("PRAGMA table_info(timesheet_attempt_{name})"))?
@@ -806,7 +808,7 @@ mod tests {
         assert!(old
             .execute("DELETE FROM timesheet_delivery_attempts", [])
             .is_err());
-        db.execute("UPDATE schema_version SET version=37", [])
+        db.execute("UPDATE schema_version SET version=38", [])
             .unwrap();
         assert!(crate::database::create_schema(&db)
             .unwrap_err()
@@ -815,7 +817,7 @@ mod tests {
         assert_eq!(
             db.query_row::<i64, _, _>("SELECT version FROM schema_version", [], |r| r.get(0))
                 .unwrap(),
-            37
+            38
         );
     }
 
@@ -980,6 +982,7 @@ mod tests {
             INSERT INTO payroll_timesheet_snapshot_states(payroll_timesheet_id,state,pdf_path,pdf_sha256,generated_at,document_id) SELECT 2,'candidate',pdf_path,pdf_sha256,generated_at,id FROM timesheet_documents WHERE payroll_timesheet_id=2;
             INSERT INTO payroll_timesheet_worked_item_snapshots(payroll_timesheet_id,week_number,source_type,timesheet_id,work_date,worked_minutes,pay_rate_id,pay_rate_effective_date,total_hourly_rate,captured_at) VALUES(2,1,'imported_shift',55,'2026-04-01',60,1,'2026-01-01',12,'captured');").unwrap();
         let second = capture(&db, 2).unwrap();
+        crate::sickness_service::capture_document(&db, 2, second.document).unwrap();
         assert!(claim(
             &db,
             &second,
