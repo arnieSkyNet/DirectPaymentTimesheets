@@ -159,3 +159,28 @@ The application prepares payroll evidence and provider documents; it is not a ge
 A deliberate saved Active-to-Inactive transition files safely identified PA-owned payslips, P45/P60s, retained revisions, generated timesheets and on-disk historical timesheet evidence into shared year-level Archived folders. Repeated inactive saves do not initiate another archival pass. Shared documents and external assets are excluded; reactivation does not restore files. New imports for an already inactive PA go directly to Archived without changing employment status.
 
 Corrected documents require an explicit existing-identity selection and reviewed confirmation in Personal Assistant Maintenance. Old bytes and delivery evidence remain retained. Corrected payslips become current and unsent; corrected supplements become current with unknown history and no sent timestamp. P45 and P60 coexist independently. [Detailed safety and exclusions](ARCHITECTURE.md#explicit-payroll-document-corrections-schema35).
+
+## Signature reliability and drawing (Stage 3)
+
+Signature images are separate from the employer's email-text signature. The
+employer and each PA retain their own nullable image path. Selection validates
+PNG/JPEG content before changing the reference; saving a changed imported path
+validates again. Supported JPEG regression examples include JFIF, Exif,
+progressive and grayscale. Exif orientation is applied before PDF embedding;
+existing signature positions, aspect-ratio fitting and unsigned spaces remain.
+
+Drawing is optional in Maintenance and Dashboard generation selection. The
+dialog names the database owner, requires explicit signer/delegate authorisation
+and replacement acknowledgement, and saves only after **Use drawn signature**.
+Black strokes and a transparent background are persisted immediately; other
+unsaved maintenance fields are not saved by this action. Existing signatures
+are never overwritten or deleted. A stale owner reference refuses replacement.
+Generation reloads signature references, so a newly saved drawing is used
+immediately and on subsequent generations, without repeated approval.
+
+Unavailable configured signatures require a generation-scoped choice to replace,
+continue unsigned or cancel. The unsigned choice leaves configuration intact and
+never blocks subsequent printing, email or payroll completion. Intentionally
+unconfigured signatures do not prompt. Previously generated/submitted PDFs and
+approved resend bytes are unaffected by any later signature change. External
+signature files remain external and require separate recovery protection.

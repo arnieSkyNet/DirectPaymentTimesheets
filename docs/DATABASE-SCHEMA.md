@@ -601,3 +601,14 @@ Schema37 replaces schema36 compatibility triggers atomically with `dpt37_*` guar
 Schema37 retained-period transfers allocate a new PA-wide sickness identity when the former row has been deleted; immutable original evidence keeps its old identity. Per-cycle projections are updated transactionally only after reviewing all overlapping source/destination cycles. Conflicting active/retained versions refuse transfer. No further migration is needed.
 
 New sickness correction `original_totals` values also bind a fingerprint of the authorised original submission's financial payload and PDF digest. Business-value validation excludes generated row IDs and capture timestamps, checks exact worked membership/correction applications and weekly/dated evidence, and validates carry-forward from retained items. Older authorisation strings remain readable and still undergo original-submission comparison; missing legacy financial evidence is never invented.
+
+### Stage 3 signature references (schema37 unchanged)
+
+`employers.employer_signature` and `personal_assistants.signature` continue to
+store nullable image paths, with no new table or migration. External PNG/JPEG
+paths remain compatible. Drawn signatures point to immutable full-name/numbered PNGs
+under `<configured data root>/signatures/`. Saving a drawing updates only its
+owner's signature column transactionally under the delivery/recovery lock;
+existing files, submissions and PDF evidence are retained. Signature image assets
+are excluded from database/config backup even when inside the data root: protect
+the full root separately. Unsigned generation never clears a stored reference.

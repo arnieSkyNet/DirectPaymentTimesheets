@@ -7,6 +7,7 @@ use crate::pay_rate_repository::PersonalAssistantPayRate;
 use crate::personal_assistant_repository::PersonalAssistantDeleteResult;
 
 pub struct PersonalAssistantScreen {
+    drawing: crate::signature::DrawingUi,
     assistants: Vec<PersonalAssistant>,
     replacement: crate::payroll_replacement::ReplacementUi,
     annual_leave: crate::annual_leave_summary::AnnualLeaveSummaryUi,
@@ -33,6 +34,7 @@ pub struct PersonalAssistantScreen {
 impl PersonalAssistantScreen {
     pub fn new() -> Self {
         Self {
+            drawing: Default::default(),
             assistants: Vec::new(),
             replacement: Default::default(),
             annual_leave: Default::default(),
@@ -59,12 +61,27 @@ impl PersonalAssistantScreen {
         }
     }
 
+    pub fn signature_saved(&mut self, owner: crate::signature::Owner, path: &str) {
+        if let crate::signature::Owner::Pa(id) = owner {
+            if let Some(pa) = self.editing_assistant.as_mut().filter(|p| p.id == id) {
+                pa.signature = Some(path.into());
+            }
+            for pa in self.assistants.iter_mut().filter(|p| p.id == id) {
+                pa.signature = Some(path.into());
+            }
+        }
+    }
+
     pub fn show(&mut self, ui: &mut egui::Ui, application: &Application) {
         if !self.loaded {
             self.load(application);
             self.loaded = true;
         }
 
+        if let Some((owner, path)) = self.drawing.show(ui.ctx(), application) {
+            self.signature_saved(owner, &path);
+            self.status_message = "Drawn PA signature saved for future PDFs.".into();
+        }
         self.replacement.show(ui.ctx(), application);
         ui.heading("Personal Assistant Maintenance");
 
@@ -261,15 +278,19 @@ impl PersonalAssistantScreen {
 
                         if ui.button("Select Signature...").clicked() {
                             if let Some(path) = rfd::FileDialog::new()
-                                .add_filter("Signature Image", &["png", "jpg", "jpeg"])
+                                .add_filter("Signature Image", &["png", "jpg", "jpeg", "jfif", "jpe"])
                                 .pick_file()
                             {
-                                assistant.signature = Some(path.to_string_lossy().to_string());
-
-                                self.status_message = "PA signature selected.".to_string();
+                                match crate::signature::select_import(&mut assistant.signature, &path) {
+                                    Ok(_) => { self.status_message="Valid PA signature selected. Save Personal Assistant to use this replacement.".into(); },
+                                    Err(e) => self.status_message=e.to_string(),
+                                }
                             }
                         }
 
+                        if ui.add_enabled(assistant.id != 0, egui::Button::new("Draw Signature...")).clicked() {
+                            if let Err(e) = self.drawing.open(crate::signature::Owner::Pa(assistant.id), &application.personal_assistant_repository.connection) { self.status_message=e.to_string(); }
+                        }
                         if assistant.signature.is_some() && ui.button("Clear Signature").clicked() {
                             assistant.signature = None;
                             self.status_message = "PA signature cleared.".to_string();
@@ -292,11 +313,19 @@ impl PersonalAssistantScreen {
 
                     ui.horizontal_wrapped(|ui| {
                         if ui.button("Save Personal Assistant").clicked() {
-                            let result: Result<Vec<String>, Box<dyn std::error::Error>> = if assistant.id == 0 {
+                            let previous = self.assistants.iter().find(|p|p.id==assistant.id).and_then(|p|p.signature.as_ref());
+                            let validation = if previous != assistant.signature.as_ref() {
+                                assistant.signature.as_deref().map(|p|crate::signature::read(std::path::Path::new(p))).transpose().map(|_| ())
+                            } else { Ok(()) };
+                            let result: Result<Vec<String>, Box<dyn std::error::Error>> = (|| {
+                                validation?;
+                                let _signature_guard=crate::signature::edit_guard(application,(assistant.id!=0).then_some(crate::signature::Owner::Pa(assistant.id)),previous.map(String::as_str))?;
+                                if assistant.id == 0 {
                                 application.personal_assistant_repository.insert(assistant).map(|_| vec![]).map_err(Into::into)
                             } else {
                                 crate::payroll_archive_service::apply(application, assistant, true)
-                            };
+                                }
+                            })();
 
                             match result {
                                 Ok(messages) => {

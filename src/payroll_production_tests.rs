@@ -1929,3 +1929,165 @@ fn stage2_full_pa_archive_reactivation_preserves_correction_snapshots_and_delive
         3
     );
 }
+
+fn signature_images(path: &std::path::Path) -> usize {
+    // printpdf's importer treats raw Flate pixels as encoded images and omits
+    // them. Inspect the actual PDF image streams, excluding alpha-mask objects.
+    let document = lopdf::Document::load(path).unwrap();
+    let masks: HashSet<_> = document
+        .objects
+        .values()
+        .filter_map(|o| o.as_stream().ok())
+        .filter_map(|s| s.dict.get(b"SMask").ok()?.as_reference().ok())
+        .collect();
+    document
+        .objects
+        .iter()
+        .filter(|(id, o)| {
+            !masks.contains(id)
+                && o.as_stream().ok().is_some_and(|s| {
+                    s.dict.get(b"Subtype").ok().and_then(|v| v.as_name().ok()) == Some(b"Image")
+                })
+        })
+        .count()
+}
+#[test]
+fn signature_drawn_immediate_future_use_correct_owner_and_immutable_resend() {
+    let (dir, mut app, schedule) = fixture();
+    let smtp = Smtp::new(&mut app);
+    assert_eq!(generate(&mut app, &[1]).completed(), 1);
+    let original = std::fs::read(path(&app, &schedule, 1)).unwrap();
+    assert_eq!(signature_images(&path(&app, &schedule, 1)), 0);
+    let batch = email_batch(&mut app, &[1]);
+    assert_eq!(
+        app.dispatch_timesheet_selection(&batch)
+            .unwrap()
+            .completed(),
+        1
+    );
+    let historical:Vec<u8>=db(&app).query_row("SELECT pdf_bytes FROM payroll_submissions WHERE payroll_timesheet_id IN (SELECT id FROM payroll_timesheets WHERE personal_assistant_id=1)",[],|r|r.get(0)).unwrap();
+    assert_eq!(historical, original);
+    let bytes =
+        crate::signature::rasterize(&[vec![egui::pos2(0.1, 0.5), egui::pos2(0.9, 0.5)]]).unwrap();
+    let mut connection = db(&app);
+    let pa_path = crate::signature::save_drawn(
+        &mut connection,
+        dir.path(),
+        crate::signature::Owner::Pa(2),
+        None,
+        &bytes,
+        true,
+    )
+    .unwrap();
+    let employer_path = crate::signature::save_drawn(
+        &mut connection,
+        dir.path(),
+        crate::signature::Owner::Employer(1),
+        None,
+        &bytes,
+        true,
+    )
+    .unwrap();
+    assert_ne!(pa_path, employer_path);
+    assert_eq!(std::path::Path::new(&pa_path).file_name().unwrap(),"PA2 Test.png");
+    assert_eq!(std::path::Path::new(&employer_path).file_name().unwrap(),"Test Employer.png");
+    assert_eq!(generate(&mut app, &[2, 3]).completed(), 2);
+    assert_eq!(signature_images(&path(&app, &schedule, 2)), 2);
+    assert_eq!(signature_images(&path(&app, &schedule, 3)), 1);
+    assert_eq!(generate(&mut app, &[2]).completed(), 1);
+    assert_eq!(signature_images(&path(&app, &schedule, 2)), 2);
+    assert_eq!(std::fs::read(path(&app, &schedule, 1)).unwrap(), original);
+    let resend = email_batch(&mut app, &[1]);
+    assert!(
+        resend
+            .choices
+            .iter()
+            .find(|c| c.id == 1)
+            .unwrap()
+            .intent
+            .as_ref()
+            .unwrap()
+            .resend
+    );
+    assert_eq!(
+        app.dispatch_timesheet_selection(&resend)
+            .unwrap()
+            .completed(),
+        1
+    );
+    let preserved:Vec<u8>=connection.query_row("SELECT pdf_bytes FROM payroll_submissions WHERE payroll_timesheet_id IN (SELECT id FROM payroll_timesheets WHERE personal_assistant_id=1)",[],|r|r.get(0)).unwrap();
+    assert_eq!(preserved, original);
+    let attempts: i64 = connection
+        .query_row(
+            "SELECT COUNT(*) FROM timesheet_delivery_attempts",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(attempts, 2);
+    assert_eq!(smtp.messages.lock().unwrap().len(), 2);
+}
+#[test]
+fn signature_invalid_configuration_offers_unsigned_without_losing_paths() {
+    let (_dir, mut app, schedule) = fixture();
+    let conn = db(&app);
+    conn.execute_batch("UPDATE employers SET employer_signature='absent-employer.png'; UPDATE personal_assistants SET signature='absent-pa.png' WHERE id=1;").unwrap();
+    app.begin_generation();
+    let mut pending = app.pending_generation.take().unwrap();
+    pending.selected_ids = vec![1];
+    let issues = app.signature_issues(&pending).unwrap();
+    assert_eq!(issues.len(), 2);
+    pending
+        .unsigned_signatures
+        .insert(crate::signature::Owner::Employer(1));
+    pending
+        .unsigned_signatures
+        .insert(crate::signature::Owner::Pa(1));
+    assert!(app.signature_issues(&pending).unwrap().is_empty());
+    assert_eq!(app.generate_selection(&pending).unwrap().completed(), 1);
+    assert_eq!(signature_images(&path(&app, &schedule, 1)), 0);
+    assert_eq!(
+        crate::signature::Owner::Employer(1)
+            .path(&conn)
+            .unwrap()
+            .as_deref(),
+        Some("absent-employer.png")
+    );
+    assert_eq!(
+        crate::signature::Owner::Pa(1)
+            .path(&conn)
+            .unwrap()
+            .as_deref(),
+        Some("absent-pa.png")
+    );
+    let smtp = Smtp::new(&mut app);
+    let batch = email_batch(&mut app, &[1]);
+    assert_eq!(
+        app.dispatch_timesheet_selection(&batch)
+            .unwrap()
+            .completed(),
+        1
+    );
+    assert_eq!(smtp.messages.lock().unwrap().len(), 1);
+}
+#[test]
+fn signature_decode_failure_preserves_registered_candidate_and_pdf() {
+    let (dir, mut app, schedule) = fixture();
+    assert_eq!(generate(&mut app, &[1]).completed(), 1);
+    let before = std::fs::read(path(&app, &schedule, 1)).unwrap();
+    let evidence = facts(&app, 1);
+    let invalid = dir.path().join("invalid-signature.jpg");
+    std::fs::write(&invalid, b"damaged").unwrap();
+    db(&app)
+        .execute(
+            "UPDATE personal_assistants SET signature=?1 WHERE id=1",
+            [invalid.to_str().unwrap()],
+        )
+        .unwrap();
+    assert!(matches!(
+        generate(&mut app, &[1]).entries[0].2,
+        ProductionOutcome::Failed(_)
+    ));
+    assert_eq!(std::fs::read(path(&app, &schedule, 1)).unwrap(), before);
+    assert_eq!(facts(&app, 1), evidence);
+}

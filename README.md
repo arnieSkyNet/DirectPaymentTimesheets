@@ -332,3 +332,35 @@ Corrected payroll PDFs are handled through Personal Assistant Maintenance → **
 
 
 Development 1.0.6 Stage 2 uses schema37 to protect sickness dates across payroll cycles. Changes require a reason and reviewed scope; protected cycles require authorised sickness-only corrections, and uncertain delivery remains blocked. Corrected historical PDFs preserve settled work and original evidence, display revised dates in the ordinary weekly table and explain the change in the notes area. Payroll assesses financial implications; the application does not calculate SSP or classify CSV notes as sickness. Upgrades retain verified database/config recovery; external business files need separate protection. See [Stage 2 workflow](docs/DEVELOPMENT.md#stage-2-sickness-protection-106schema37).
+
+### Signature images and drawing (development 1.0.6)
+
+Employer and PA Maintenance accept PNG and JPEG content (including JPG, JFIF,
+Exif and progressive/grayscale JPEGs), validated independently of the filename.
+Invalid replacements leave the previous reference intact. Images are limited to
+8 MiB and 4096 pixels per dimension; Exif orientation is respected.
+
+Use **Draw Signature** in Maintenance or the Dashboard generation selection.
+The named person must sign, or explicitly authorise recording their signature.
+**Use drawn signature** immediately saves black ink on a transparent background
+for that employer or PA and reuses it in this and subsequent generated PDFs.
+Mouse, touch and stylus use the platform's primary-pointer support; pressure,
+multitouch drawing and handwriting recognition are not provided. Clear/redraw,
+authorisation and save/cancel controls are available; image import and unsigned
+continuation remain alternatives to drawing.
+
+If a configured image is unavailable or invalid, generation offers **Draw
+replacement**, **Continue unsigned** or **Cancel generation**. Unsigned continuation
+retains the configured path and printable blank signature spaces. Unconfigured
+signatures produce no warning. Changing a signature never changes an existing
+PDF or the immutable bytes authorised for resending.
+
+Drawn images use the database owner's full name under the configured data
+root's `signatures/` directory: `Full Name.png`, then `Full Name (2).png`, etc.
+Names retain Unicode and legitimate punctuation; unsafe filesystem characters
+are sanitised, and collisions are checked without case sensitivity. Unavailable
+names use `Employer <ID>.png` or `PA <ID>.png`. Identity and authorisation use
+stable database IDs, not filenames. Existing assets are never overwritten or
+renamed, including earlier hexadecimal filenames. Existing external paths remain
+supported. Neither external nor managed signature images are copied by database/configuration
+backup: separately protect the complete data root and external business assets.

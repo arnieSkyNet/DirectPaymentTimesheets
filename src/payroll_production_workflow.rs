@@ -12,6 +12,9 @@ struct PendingGeneration {
     revision: u64,
     selected_ids: Vec<i64>,
     choices: Vec<ProductionChoice>,
+    unsigned_signatures: HashSet<crate::signature::Owner>,
+    review_signatures: bool,
+    reviewed_signature_issues: Option<Vec<(crate::signature::Owner, String, String)>>,
 }
 #[derive(Debug, PartialEq, Eq)]
 enum ProductionOutcome {
@@ -204,6 +207,9 @@ impl DirectPaymentApp {
                     .map(|c| c.id)
                     .collect(),
                 choices,
+                unsigned_signatures: HashSet::new(),
+                review_signatures: false,
+                reviewed_signature_issues: None,
             })
         })();
         match result {
@@ -237,7 +243,11 @@ impl DirectPaymentApp {
     ) -> Result<ProductionReport, Box<dyn std::error::Error>> {
         let schedule = self.validated_generation_schedule(pending)?;
         self.process_selected(&schedule, &pending.selected_ids, "Generation", |pa| {
-            self.generate_payroll_timesheet(&schedule, pa)
+            self.generate_payroll_timesheet_with_unsigned(
+                &schedule,
+                pa,
+                &pending.unsigned_signatures,
+            )
         })
     }
     fn dispatch_timesheet_selection(
@@ -350,28 +360,129 @@ impl DirectPaymentApp {
         Ok(report)
     }
 
+    fn signature_issues(
+        &self,
+        pending: &PendingGeneration,
+    ) -> Result<Vec<(crate::signature::Owner, String, String)>, Box<dyn std::error::Error>> {
+        let mut owners = Vec::new();
+        if let Some(employer) = self
+            .application
+            .employer_repository
+            .get_all()?
+            .into_iter()
+            .next()
+        {
+            owners.push((
+                crate::signature::Owner::Employer(employer.id),
+                format!("Employer {}", employer.name),
+                employer.employer_signature,
+            ));
+        }
+        for pa in self
+            .application
+            .personal_assistant_repository
+            .get_all()?
+            .into_iter()
+            .filter(|p| pending.selected_ids.contains(&p.id))
+        {
+            owners.push((
+                crate::signature::Owner::Pa(pa.id),
+                format!("PA {} {}", pa.first_name, pa.surname),
+                pa.signature,
+            ));
+        }
+        let mut issues = Vec::new();
+        for (owner, name, path) in owners {
+            if !pending.unsigned_signatures.contains(&owner) {
+                if let Err(error) = crate::signature::checked_path(path.as_deref(), false) {
+                    issues.push((owner, name, error.to_string()));
+                }
+            }
+        }
+        Ok(issues)
+    }
+
     fn draw_generation_selection(&mut self, ui: &mut egui::Ui) {
         let Some(mut pending) = self.pending_generation.take() else {
             return;
         };
+        if let Some((owner, path)) = self.signature_drawing.show(ui.ctx(), &self.application) {
+            pending.unsigned_signatures.remove(&owner);
+            pending.reviewed_signature_issues = None;
+            self.employer_screen.signature_saved(owner, &path);
+            self.personal_assistant_screen.signature_saved(owner, &path);
+        }
         let mut execute = false;
         let mut cancel = false;
-        egui::Window::new("Generate payroll timesheets — select PAs")
-            .collapsible(false)
-            .show(ui.ctx(), |ui| {
+        if pending.review_signatures {
+            // Decode once per review, then only refresh after a saved replacement.
+            // Publication revalidates; a filesystem race cannot silently omit ink.
+            let review = if let Some(issues) = &pending.reviewed_signature_issues {
+                Ok(issues.clone())
+            } else {
+                self.signature_issues(&pending)
+            };
+            match review.map(|issues| {
+                pending.reviewed_signature_issues = Some(issues.clone());
+                issues
+                    .into_iter()
+                    .filter(|(owner, _, _)| !pending.unsigned_signatures.contains(owner))
+                    .collect::<Vec<_>>()
+            }) {
+                Ok(issues) if issues.is_empty() => execute = true,
+                Ok(issues) => {
+                    egui::Window::new("Signature unavailable — choose how to continue").collapsible(false).show(ui.ctx(), |ui| {
+                        ui.label("Saved signature paths are retained. Unsigned PDFs have blank signature boxes for handwritten signing.");
+                        for (owner,name,error) in issues {
+                            ui.push_id(owner,|ui| {
+                                ui.strong(&name); ui.label(&error);
+                                ui.horizontal(|ui| {
+                                    if ui.button("Draw replacement...").clicked() {
+                                        match crate::payroll_evidence::open(&self.application).and_then(|db|self.signature_drawing.open(owner,&db)) {
+                                            Ok(())=>{}, Err(e)=>self.status_message=e.to_string(),
+                                        }
+                                    }
+                                    if ui.button("Continue unsigned").clicked() { pending.unsigned_signatures.insert(owner); }
+                                });
+                            });
+                        }
+                        cancel=ui.button("Cancel generation").clicked();
+                    });
+                }
+                Err(e) => {
+                    self.status_message = e.to_string();
+                    cancel = true;
+                }
+            }
+        } else {
+            egui::Window::new("Generate payroll timesheets — select PAs").collapsible(false).show(ui.ctx(), |ui| {
                 ui.label(&pending.period.display_label);
-                draw_production_choices(ui, &pending.choices, &mut pending.selected_ids, false);
+                draw_production_choices(ui,&pending.choices,&mut pending.selected_ids,false);
+                ui.label("Optional: draw an authorised signature for this and future PDFs. Leaving signatures unconfigured keeps printable blank boxes.");
+                if let Ok(db)=crate::payroll_evidence::open(&self.application) {
+                    let mut people=Vec::new();
+                    if let Ok(employers)=self.application.employer_repository.get_all() {
+                        if let Some(e)=employers.into_iter().next() {people.push((crate::signature::Owner::Employer(e.id),format!("Employer {}",e.name)));}
+                    }
+                    if let Ok(pas)=self.application.personal_assistant_repository.get_all() {
+                        people.extend(pas.into_iter().filter(|p|pending.selected_ids.contains(&p.id)).map(|p|(crate::signature::Owner::Pa(p.id),format!("PA {} {}",p.first_name,p.surname))));
+                    }
+                    for (owner,name) in people {
+                        if ui.button(format!("Draw signature — {name}")).clicked() {
+                            if let Err(e)=self.signature_drawing.open(owner,&db) {self.status_message=e.to_string();}
+                        }
+                    }
+                }
                 ui.horizontal(|ui| {
-                    execute = ui
-                        .add_enabled(
-                            !pending.selected_ids.is_empty(),
-                            egui::Button::new("Generate selected PAs"),
-                        )
-                        .clicked();
-                    cancel = ui.button("Cancel").clicked();
+                    if ui.add_enabled(!pending.selected_ids.is_empty(),egui::Button::new("Generate selected PAs")).clicked() {pending.review_signatures=true;}
+                    cancel=ui.button("Cancel").clicked();
                 });
             });
-        if execute {
+        }
+        if cancel {
+            self.signature_drawing = Default::default();
+        } else if execute {
+            self.signature_drawing = Default::default();
             match self.generate_selection(&pending) {
                 Ok(report) => {
                     self.status_message = report.summary();
@@ -385,11 +496,9 @@ impl DirectPaymentApp {
                     });
                     self.production_report = Some(report);
                 }
-                Err(e) => {
-                    self.status_message = format!("Generation refused: {e}");
-                }
+                Err(e) => self.status_message = format!("Generation refused: {e}"),
             }
-        } else if !cancel {
+        } else {
             self.pending_generation = Some(pending);
         }
     }

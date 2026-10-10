@@ -56,6 +56,7 @@ mod personal_assistant_screen;
 mod repository;
 mod sickness_period_repository;
 mod sickness_service;
+mod signature;
 mod theme;
 mod timesheet_delivery;
 mod update_check;

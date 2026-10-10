@@ -400,3 +400,44 @@ A retained period whose PA-wide row was deleted can be shortened or deleted loca
 Sickness-only correction authority binds the exact original submission's financial evidence fingerprint. Generation and first delivery compare retained worked membership, correction applications, weekly values, dated leave/public-holiday records and carry-forward. New publication timestamps and row IDs are excluded from business-value comparison. Carry-forward is recovered from original late-work/legacy-carry/correction items, never inferred from today's mutable preparation value; inconsistent or insufficient legacy evidence refuses the correction and requests recovery/reconciliation. Original settlement values and original PDFs remain unchanged. This adds no SSP calculation or public-holiday classification/subtraction changes.
 
 Regression tests include populated schema35/schema36 databases created by the actual ordered migration steps (with the original non-AUTOINCREMENT sickness table), WAL-backed upgrade/restore, a failure after schema36 commits on the isolated copy, retained transfers across lifecycle states, nonzero worked/carry/correction evidence, parent indicators and full PA archive/reactivation with retained sickness snapshots and delivery history. Schema remains 37 and application version remains 1.0.6.
+
+## Stage 3 signature validation and drawing
+
+`signature.rs` shares content validation across import, drawing, pre-generation
+review and PDF embedding. Limits are 8 MiB, 4096 pixels per dimension and bounded
+decoder allocation. PNG container completion and strict JPEG decoding reject
+malformed/truncated inputs; detection follows content rather than extensions.
+The JPEG container walk ignores embedded Exif thumbnail end markers. Exif
+orientation is normalised into PNG pixels before PDF placement. Cargo explicitly
+enables both printpdf PNG and JPEG features.
+
+Drawn signatures are 1000×300 RGBA PNGs, black with transparent background.
+Full-name files (`Name.png`, `Name (2).png`, etc.) are allocated with conservative
+Unicode caseless/normalisation collision checks, published atomically without
+overwrite and flushed before a signature-column-only database transaction commits. The
+existing production/recovery OS lock and immediate writer transaction protect
+publication, including concurrent instances; stale references refuse updates.
+Names come from the database inside the save transaction; IDs remain the ownership and
+authorisation keys. Blank names fall back to Employer/PA plus ID. Cross-platform
+sanitisation preserves Unicode/punctuation, replaces forbidden characters,
+protects Windows device names and caps the stem at 180 UTF-8 bytes to reserve
+filesystem component space for numbering. Very long names are therefore truncated.
+Directories, symlinks and unreferenced files reserve names; identical ink also
+receives a new filename. Legacy hash/external references are never rewritten.
+An interrupted save may leave an unreferenced immutable asset, never a partially
+replaced signature. Existing assets are deliberately retained, not cleaned up.
+No schema migration is required: development version remains 1.0.6/schema37.
+
+`signature`-filtered tests cover format variants, bounds, corruption, renamed
+files, replacement preservation, drawing pixels/ownership, stale saves and
+cross-instance locking. Production-workflow tests verify immediate and repeated
+PDF use, unsigned email, failed-generation preservation and immutable historical
+resends using temporary databases/assets and localhost SMTP fixtures. Test JPEGs
+under `src/test_fixtures/` are project-generated black rectangles, not signatures.
+Touch/stylus drawing depends on eframe/egui receiving primary-pointer events;
+pressure and multi-pointer input are not interpreted. No production GUI/hardware
+rehearsal is part of automated validation.
+
+Database/config backups do not copy managed `signatures/` assets or external
+images. Preserve the full configured data root and external assets separately;
+restoration keeps those files untouched and restores only stored references.

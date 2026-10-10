@@ -4,6 +4,7 @@ use crate::app::Application;
 use crate::models::Employer;
 
 pub struct EmployerScreen {
+    drawing: crate::signature::DrawingUi,
     employer: Option<Employer>,
     persisted_employer: Option<Employer>,
     confirm_open_email_settings: bool,
@@ -14,6 +15,7 @@ pub struct EmployerScreen {
 impl EmployerScreen {
     pub fn new() -> Self {
         Self {
+            drawing: Default::default(),
             employer: None,
             persisted_employer: None,
             confirm_open_email_settings: false,
@@ -22,7 +24,21 @@ impl EmployerScreen {
         }
     }
 
+    pub fn signature_saved(&mut self, owner: crate::signature::Owner, path: &str) {
+        if let crate::signature::Owner::Employer(id) = owner {
+            for cached in [&mut self.employer, &mut self.persisted_employer] {
+                if let Some(record) = cached.as_mut().filter(|r| r.id == id) {
+                    record.employer_signature = Some(path.into());
+                }
+            }
+        }
+    }
+
     pub fn show(&mut self, ui: &mut egui::Ui, application: &Application) -> bool {
+        if let Some((owner, path)) = self.drawing.show(ui.ctx(), application) {
+            self.signature_saved(owner, &path);
+            self.status_message = "Drawn employer signature saved for future PDFs.".into();
+        }
         let mut open_email_settings = false;
         if !self.loaded {
             self.load(application);
@@ -170,14 +186,21 @@ impl EmployerScreen {
             ui.horizontal_wrapped(|ui| {
                 if ui.button("Select Signature...").clicked() {
                     if let Some(path) = rfd::FileDialog::new()
-                        .add_filter("Signature Image", &["png", "jpg", "jpeg"])
+                        .add_filter("Signature Image", &["png", "jpg", "jpeg", "jfif", "jpe"])
                         .pick_file()
                     {
-                        employer.employer_signature = Some(path.to_string_lossy().to_string());
-                        self.status_message = "Employer signature selected.".to_string();
+                        match crate::signature::select_import(&mut employer.employer_signature, &path) {
+                            Ok(_) => {
+                                self.status_message = "Valid employer signature selected. Save Employer to use this replacement.".into();
+                            },
+                            Err(e) => self.status_message = e.to_string(),
+                        }
                     }
                 }
 
+                if ui.add_enabled(employer.id != 0, egui::Button::new("Draw Signature...")).clicked() {
+                    if let Err(e) = crate::payroll_evidence::open(application).and_then(|db| self.drawing.open(crate::signature::Owner::Employer(employer.id), &db)) { self.status_message = e.to_string(); }
+                }
                 if employer.employer_signature.is_some() && ui.button("Clear Signature").clicked() {
                     employer.employer_signature = None;
                     self.status_message = "Employer signature cleared.".to_string();
@@ -226,6 +249,34 @@ impl EmployerScreen {
         let Some(employer) = &self.employer else {
             return false;
         };
+        if self
+            .persisted_employer
+            .as_ref()
+            .and_then(|e| e.employer_signature.as_ref())
+            != employer.employer_signature.as_ref()
+        {
+            if let Some(path) = employer.employer_signature.as_deref() {
+                if let Err(e) = crate::signature::read(std::path::Path::new(path)) {
+                    self.status_message = e.to_string();
+                    return false;
+                }
+            }
+        }
+        let expected = self
+            .persisted_employer
+            .as_ref()
+            .and_then(|e| e.employer_signature.as_deref());
+        let _signature_guard = match crate::signature::edit_guard(
+            application,
+            (employer.id != 0).then_some(crate::signature::Owner::Employer(employer.id)),
+            expected,
+        ) {
+            Ok(guard) => guard,
+            Err(e) => {
+                self.status_message = e.to_string();
+                return false;
+            }
+        };
         let result = if employer.id == 0 {
             application.employer_repository.insert(employer)
         } else {
@@ -233,6 +284,12 @@ impl EmployerScreen {
         };
         match result {
             Ok(()) => {
+                if employer.id == 0 {
+                    // The drawing action needs the newly assigned durable owner ID.
+                    if let Ok(records) = application.employer_repository.get_all() {
+                        self.employer = records.into_iter().next();
+                    }
+                }
                 self.persisted_employer = self.employer.clone();
                 self.status_message = "Employer saved successfully.".to_string();
                 true
@@ -285,6 +342,7 @@ mod tests {
     #[test]
     fn synchronizing_email_signature_preserves_unrelated_unsaved_edits() {
         let mut screen = EmployerScreen {
+            drawing: Default::default(),
             employer: Some(employer(1, "Unsaved employer name", Some("Old signature"))),
             persisted_employer: Some(employer(1, "Saved employer name", Some("Old signature"))),
             confirm_open_email_settings: false,
@@ -313,5 +371,37 @@ mod tests {
             "Unsaved employer name"
         );
         assert_ne!(screen.employer, screen.persisted_employer);
+    }
+    #[test]
+    fn drawn_signature_cache_refresh_preserves_edits_and_owner_identity() {
+        let mut screen = EmployerScreen::new();
+        screen.employer = Some(employer(1, "Unsaved name", Some("email text")));
+        screen.persisted_employer = Some(employer(1, "Saved name", Some("email text")));
+        screen.signature_saved(crate::signature::Owner::Pa(1), "wrong.png");
+        assert_eq!(screen.employer.as_ref().unwrap().employer_signature, None);
+        screen.signature_saved(crate::signature::Owner::Employer(1), "drawn.png");
+        assert_eq!(screen.employer.as_ref().unwrap().name, "Unsaved name");
+        assert_eq!(
+            screen.persisted_employer.as_ref().unwrap().name,
+            "Saved name"
+        );
+        assert_eq!(
+            screen
+                .employer
+                .as_ref()
+                .unwrap()
+                .employer_signature
+                .as_deref(),
+            Some("drawn.png")
+        );
+        assert_eq!(
+            screen
+                .persisted_employer
+                .as_ref()
+                .unwrap()
+                .employer_signature
+                .as_deref(),
+            Some("drawn.png")
+        );
     }
 }

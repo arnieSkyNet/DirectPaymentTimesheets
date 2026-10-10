@@ -221,6 +221,7 @@ pub struct DirectPaymentApp {
     additional_notes_by_personal_assistant: HashMap<i64, String>,
     note_enabled_personal_assistant_ids: HashSet<i64>,
     pending_email_batch: Option<PendingEmailBatch>,
+    signature_drawing: crate::signature::DrawingUi,
     pending_generation: Option<PendingGeneration>,
     production_report: Option<ProductionReport>,
     delivery_review_reason: String,
@@ -272,6 +273,7 @@ impl DirectPaymentApp {
             additional_notes_by_personal_assistant: HashMap::new(),
             note_enabled_personal_assistant_ids: HashSet::new(),
             pending_email_batch: None,
+            signature_drawing: Default::default(),
             pending_generation: None,
             production_report: None,
             delivery_review_reason: String::new(),
@@ -2840,13 +2842,30 @@ impl DirectPaymentApp {
             });
     }
 
+    #[cfg(test)]
     fn generate_payroll_timesheet(
+        &self,
+        schedule: &PayrollSchedule,
+        assistant: &crate::models::PersonalAssistant,
+    ) -> Result<bool, Box<dyn std::error::Error>> {
+        self.generate_payroll_timesheet_with_unsigned(schedule, assistant, &HashSet::new())
+    }
+
+    fn generate_payroll_timesheet_with_unsigned(
         &self,
         current_schedule: &PayrollSchedule,
         assistant: &crate::models::PersonalAssistant,
+        unsigned: &HashSet<crate::signature::Owner>,
     ) -> Result<bool, Box<dyn std::error::Error>> {
         let generation_db = crate::payroll_evidence::open(&self.application)?;
         let _generation_lock = crate::timesheet_delivery::production_lock(&generation_db)?;
+        // Signature drawing saves immediately; never use a cached PA signature.
+        let fresh_assistant =
+            crate::personal_assistant_repository::PersonalAssistantRepository::get_by_id_on(
+                &generation_db,
+                assistant.id,
+            )?;
+        let assistant = &fresh_assistant;
 
         let employers = self.application.employer_repository.get_all()?;
 
@@ -3044,17 +3063,14 @@ impl DirectPaymentApp {
             crate::pay_rate_allocation::format_total_minutes(reconciled.previous_cycle_minutes)
         });
 
-        let employer_signature_path = employer
-            .employer_signature
-            .as_deref()
-            .map(|path| crate::paths::expand_path(&std::path::PathBuf::from(path)))
-            .filter(|path| path.exists());
-
-        let pa_signature_path = assistant
-            .signature
-            .as_deref()
-            .map(|path| crate::paths::expand_path(&std::path::PathBuf::from(path)))
-            .filter(|path| path.exists());
+        let employer_signature_path = crate::signature::checked_path(
+            employer.employer_signature.as_deref(),
+            unsigned.contains(&crate::signature::Owner::Employer(employer.id)),
+        )?;
+        let pa_signature_path = crate::signature::checked_path(
+            assistant.signature.as_deref(),
+            unsigned.contains(&crate::signature::Owner::Pa(assistant.id)),
+        )?;
 
         let data = TimesheetPdfData {
             payroll_department_notes: &payroll_timesheet.payroll_department_notes,

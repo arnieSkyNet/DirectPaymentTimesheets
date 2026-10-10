@@ -1212,7 +1212,12 @@ fn add_signature(
     width: f32,
     height: f32,
 ) -> Result<f32, Box<dyn std::error::Error>> {
-    let bytes = fs::read(path)?;
+    let bytes = crate::signature::read(path)?;
+    // Normalise EXIF orientation and feed exactly the validated pixels to printpdf.
+    let image = crate::signature::decode(&bytes)?;
+    let mut png = std::io::Cursor::new(Vec::new());
+    image.write_to(&mut png, image::ImageFormat::Png)?;
+    let bytes = png.into_inner();
 
     let mut warnings = Vec::new();
 
@@ -1901,5 +1906,62 @@ mod tests {
         config.information_font_size = 5.25;
 
         assert_eq!(configured_table_font_sizes(&config), (8.25, 14.0, 5.25));
+    }
+}
+
+#[cfg(test)]
+mod signature_render_tests {
+    use super::*;
+    #[test]
+    fn signature_png_alpha_and_jpeg_keep_existing_placement() {
+        let dir = tempfile::tempdir().unwrap();
+        let png = crate::signature::rasterize(&[vec![
+            eframe::egui::pos2(0.1, 0.5),
+            eframe::egui::pos2(0.9, 0.5),
+        ]])
+        .unwrap();
+        for bytes in [
+            &png[..],
+            include_bytes!("test_fixtures/signature-progressive.jpg"),
+            include_bytes!("test_fixtures/signature-grayscale.jpg"),
+        ] {
+            let path = dir.path().join("content.dat");
+            fs::write(&path, bytes).unwrap();
+            for x in [20.0, 115.0] {
+                let mut document = PdfDocument::new("test");
+                let mut ops = Vec::new();
+                add_signature(&mut document, &mut ops, &path, x, 70.0, 55.25, 17.0).unwrap();
+                assert_eq!(document.resources.xobjects.map.len(), 1);
+                let Op::UseXobject { transform, .. } = &ops[0] else {
+                    panic!("missing image");
+                };
+                let printpdf::XObject::Image(image) =
+                    document.resources.xobjects.map.values().next().unwrap()
+                else {
+                    panic!("missing pixels");
+                };
+                let rendered_width = image.width as f32 / 96.0 * 25.4 * transform.scale_x.unwrap();
+                let rendered_height =
+                    image.height as f32 / 96.0 * 25.4 * transform.scale_y.unwrap();
+                assert!(rendered_width <= 55.251 && rendered_height <= 17.001);
+                assert!(
+                    (Mm::from(transform.translate_x.unwrap()).0
+                        - x
+                        - (55.25 - rendered_width) / 2.0)
+                        .abs()
+                        < 0.01
+                );
+                assert!(
+                    (Mm::from(transform.translate_y.unwrap()).0
+                        - 70.0
+                        - (17.0 - rendered_height) / 2.0)
+                        .abs()
+                        < 0.01
+                );
+                if bytes == png.as_slice() {
+                    assert_eq!(image.data_format, printpdf::image::RawImageFormat::RGBA8);
+                }
+            }
+        }
     }
 }
