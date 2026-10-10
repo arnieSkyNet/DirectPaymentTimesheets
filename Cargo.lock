@@ -1245,6 +1245,7 @@ dependencies = [
  "printpdf",
  "rfd",
  "rusqlite",
+ "same-file",
  "semver",
  "serde",
  "sha2",

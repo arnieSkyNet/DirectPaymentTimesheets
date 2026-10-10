@@ -2,7 +2,7 @@ use std::path::Path;
 
 use rusqlite::{Connection, Result};
 
-pub const CURRENT_SCHEMA_VERSION: i64 = 38;
+pub const CURRENT_SCHEMA_VERSION: i64 = 39;
 
 pub fn initialise_database(database_path: &Path) -> crate::database_recovery::Result<()> {
     crate::database_recovery::initialise(database_path)
@@ -285,6 +285,9 @@ fn apply_migrations(connection: &Connection, target: i64) -> Result<()> {
     }
     if current_version < 38 && target >= 38 {
         crate::shift_changes::migrate(connection)?;
+    }
+    if current_version < 39 && target >= 39 {
+        crate::payroll_archive_service::migrate(connection)?;
     }
     Ok(())
 }
@@ -1275,6 +1278,7 @@ fn table_has_column(connection: &Connection, table: &str, column: &str) -> Resul
 #[cfg(test)]
 pub(crate) mod tests {
     pub(crate) fn remove_schema_38_fixture(db: &Connection) {
+        crate::payroll_archive_service::remove_schema_39_fixture(db);
         if !super::table_exists(db, "shift_change_events").unwrap() {
             return;
         }

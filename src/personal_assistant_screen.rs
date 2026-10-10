@@ -323,7 +323,7 @@ impl PersonalAssistantScreen {
                                 if assistant.id == 0 {
                                 application.personal_assistant_repository.insert(assistant).map(|_| vec![]).map_err(Into::into)
                             } else {
-                                crate::payroll_archive_service::apply(application, assistant, true)
+                                crate::payroll_archive_service::apply_locked(application, assistant, true)
                                 }
                             })();
 
@@ -343,6 +343,18 @@ impl PersonalAssistantScreen {
 
                         if assistant.id != 0 && ui.button("Replace payroll document…").clicked() {self.replacement.open(application,assistant.id);}
 
+                        if assistant.id != 0 {
+                            match crate::payroll_archive_service::pending_summary(&application.payroll_timesheet_email_repository.connection,Some(assistant.id)) {
+                                Ok(summary) if !summary.is_empty() => { ui.label(summary); }
+                                Err(_) => { ui.label("Filing status unavailable; check database access."); }
+                                _ => {}
+                            }
+                            if ui.button("Resume incomplete filing").clicked() {
+                                self.status_message = match crate::payroll_archive_service::resume(application,assistant.id) {
+                                    Ok(messages) => messages.join("\n"), Err(e) => format!("Filing recovery refused: {e}")
+                                };
+                            }
+                        }
                         if assistant.id != 0 && ui.button("Repair registered payroll filing").on_hover_text("Normalises registered supplements using saved PA details. Also finishes previously committed cleanup for this PA, which can remove verified obsolete ordinary-payslip source copies. Does not start archiving an active PA’s ordinary payslips.").clicked() {
                             // Use saved identity/status, never unsaved employment edits.
                             match application.personal_assistant_repository.get_all().map_err(|e| -> Box<dyn std::error::Error> { e.into() }).and_then(|pas| pas.into_iter().find(|pa|pa.id==assistant.id).ok_or_else(|| "PA no longer exists".into())).and_then(|pa|crate::payroll_archive_service::apply(application,&pa,false)) {

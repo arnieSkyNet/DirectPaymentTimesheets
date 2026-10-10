@@ -524,7 +524,10 @@ mod stage4_migration_tests {
             crate::database_recovery::fingerprint(&saved).unwrap(),
             original
         );
-        assert_eq!(crate::database_recovery::version(&db).unwrap(), Some(38));
+        assert_eq!(
+            crate::database_recovery::version(&db).unwrap(),
+            Some(crate::database::CURRENT_SCHEMA_VERSION)
+        );
     }
     #[test]
     fn migration_failure_rolls_back_guards_tables_and_legacy_obligations() {

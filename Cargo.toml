@@ -31,6 +31,7 @@ ureq = { version = "3", features = ["json"] }
 semver = "1"
 
 tempfile = "3"
+same-file = "1"
 
 [dev-dependencies]
 lopdf = { version = "0.35", default-features = false }

@@ -2,9 +2,9 @@
 
 ## Scope and versioning
 
-This is the implemented SQLite schema at version 38 (development application version `1.0.6`). It is derived from `create_schema` and migrations in `src/database.rs`; those migrations are authoritative.
+This is the implemented SQLite schema at version 39 (development application version `1.0.6`). It is derived from `create_schema` and migrations in `src/database.rs`; those migrations are authoritative.
 
-`schema_version` contains the current integer version. A new database begins at version 1 and receives each ordered migration through `CURRENT_SCHEMA_VERSION` 38. Existing databases receive a verified pre-upgrade database/configuration backup and an isolated migration chain before transactional installation. Migration 23 removes the short-lived revision-only tables introduced by migration 22 while retaining the operational legacy snapshot tables. Migration 24 adds an explicit contracted/variable hours basis to effective-dated Personal Assistant contracted-hours history while preserving existing records as contracted.
+`schema_version` contains the current integer version. A new database begins at version 1 and receives each ordered migration through `CURRENT_SCHEMA_VERSION` 39. Existing databases receive a verified pre-upgrade database/configuration backup and an isolated migration chain before transactional installation. Migration 23 removes the short-lived revision-only tables introduced by migration 22 while retaining the operational legacy snapshot tables. Migration 24 adds an explicit contracted/variable hours basis to effective-dated Personal Assistant contracted-hours history while preserving existing records as contracted.
 
 During unreleased schema-20 development, an earlier local database shape contained `direct_shifts` without soft-deletion columns or the audit table. Startup therefore performs an idempotent schema-20 compatibility check after normal migrations. When that exact incomplete shape is found, it transactionally rebuilds `direct_shifts` into the final constrained form while preserving IDs and row values, then creates the audit table/indexes. It does not fabricate historical audit events, and repeated startup does not duplicate existing audit rows.
 
@@ -578,7 +578,7 @@ configuration can contain credentials; backup directories are private on Unix.
 
 ## Schema 37: sickness protection and historical information corrections
 
-Stage 2 introduced schema37; current development 1.0.6 uses schema38. The existing verified pre-upgrade backup and isolated migration-chain installation apply to 36→37 and earlier supported databases. Migration37 transactionally rebuilds `personal_assistant_sickness_periods` with `INTEGER PRIMARY KEY AUTOINCREMENT`, preserving existing IDs, dates, PA references and the date index. It does not deduplicate existing records, backfill missing historic sickness dates, change legacy weekly hours or modify payroll settlement/submission records.
+Stage 2 introduced schema37; current development 1.0.6 uses schema39. The existing verified pre-upgrade backup and isolated migration-chain installation apply to 36→37 and earlier supported databases. Migration37 transactionally rebuilds `personal_assistant_sickness_periods` with `INTEGER PRIMARY KEY AUTOINCREMENT`, preserving existing IDs, dates, PA references and the date index. It does not deduplicate existing records, backfill missing historic sickness dates, change legacy weekly hours or modify payroll settlement/submission records.
 
 New tables:
 
@@ -628,3 +628,31 @@ The established verified WAL-safe backup and isolated installation cover 35→36
 Ordinary current-schema startup validates critical table/column and schema38 write-guard metadata, then runs a bounded `quick_check(1)`. Its progress callback stops at approximately 100,000 VM operations or 250 ms; an individual filesystem I/O can exceed the callback budget. Budget exhaustion is not treated as corruption and unchecked pages are not certified. Detected corruption/missing protections is fatal without automatic repair. Verified backup, staged upgrade and transactional installation still perform their full checks.
 
 Fresh empty databases are now staged and installed transactionally rather than applying the migration chain directly to live data. Unknown/nonempty databases are never treated as fresh. Existing upgrade backup/WAL/rollback/recovery semantics are unchanged. Configuration or graphics failure after a successful upgrade leaves that upgrade applied and reports the location of its pre-upgrade recovery folder. Business-folder availability does not bypass database or dispatch locks. No schema migration accompanies Stage5.
+
+
+### Stage 6 recover incomplete filing (1.0.6/schema39)
+
+Migration39 adds `payroll_filing_requests` (PA identity, previous maintained name,
+original configured roots, pending/complete scan status and recovery guidance) and
+`payroll_filing_intents` (stable ID/PA, immutable source/destination/staging paths,
+expected SHA-256, exact original registration fingerprint, optional supplement ID,
+progress, errors and timestamps). Progress is planned → staged → published →
+registered → source_removed → complete. Completed intents remain retained.
+Identity updates/deletion are refused. Existing schema34 `payroll_file_moves` rows
+are preserved unchanged; no legacy pre-publication intents are invented.
+
+The saved inactive status and scan request commit together before filesystem work.
+Each document intent commits before publication. A retained private staging hard
+link proves an interrupted publication; filename/identical bytes alone never
+justify adopting an archive destination. Registration changes commit separately,
+then destination/source and retained metadata are freshly verified before source
+removal. A partial or altered staging file is preserved and reported for review.
+Historical hashes, PDF bytes, submissions, corrections, settlement and sent states
+are not rewritten. Restored metadata mismatches block automatic reconciliation.
+
+Migration39 uses the established verified WAL-inclusive database/configuration
+backup, isolated migration and transactional installation. It reads no business
+files. Current-schema startup validates the new metadata and schema39 guards.
+Schema39 rejects ordinary writes from schema38 connections; older executables
+still must not be used for restore/DDL or filesystem manipulation. Backups remain
+database/configuration recovery, not external-document recovery.

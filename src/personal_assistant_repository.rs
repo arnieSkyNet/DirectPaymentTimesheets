@@ -242,6 +242,10 @@ FROM personal_assistants
                 SELECT 1 FROM payroll_file_moves WHERE personal_assistant_id = ?1
                 UNION ALL
                 SELECT 1 FROM payslip_revisions WHERE personal_assistant_id = ?1
+                UNION ALL
+                SELECT 1 FROM payroll_filing_requests WHERE personal_assistant_id = ?1
+                UNION ALL
+                SELECT 1 FROM payroll_filing_intents WHERE personal_assistant_id = ?1
             )
             ",
             params![personal_assistant_id],

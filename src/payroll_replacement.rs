@@ -160,6 +160,8 @@ pub fn review(app: &Application, target: Target, incoming: PathBuf) -> Result<Re
 
 pub fn replace(app: &Application, reviewed: &Review) -> Result<PathBuf> {
     let db = &app.payroll_timesheet_email_repository.connection;
+    let _guard = crate::timesheet_delivery::production_lock(db)?;
+    crate::payroll_archive_service::ensure_pa_not_uncertain(db, reviewed.target.pa)?;
     let tx = rusqlite::Transaction::new_unchecked(db, rusqlite::TransactionBehavior::Immediate)?;
     let old = &reviewed.target;
     let now = targets(app, old.pa)?
@@ -477,6 +479,11 @@ mod tests {
             let old = targets(&app, 1).unwrap().remove(0);
             let reviewed =
                 review(&app, old.clone(), incoming(&temp_root(&dir), "payslip")).unwrap();
+            if marker.is_some_and(|m| m.starts_with("indeterminate:")) {
+                assert!(replace(&app, &reviewed).is_err());
+                assert_eq!(targets(&app, 1).unwrap()[0].path, old.path);
+                continue;
+            }
             let new = replace(&app, &reviewed).unwrap();
             assert_eq!(fs::read(&old.path).unwrap(), b"%PDF-1.4 original");
             assert_eq!(fs::read(&new).unwrap(), b"%PDF-1.4 corrected");
@@ -536,11 +543,21 @@ mod tests {
                 .into_iter()
                 .find(|t| t.kind == "p45")
                 .unwrap();
-            let new = replace(
-                &app,
-                &review(&app, old.clone(), incoming(&temp_root(&dir), "p45")).unwrap(),
-            )
-            .unwrap();
+            let reviewed = review(&app, old.clone(), incoming(&temp_root(&dir), "p45")).unwrap();
+            if marker.is_some_and(|m| m.starts_with("indeterminate:")) {
+                assert!(replace(&app, &reviewed).is_err());
+                assert_eq!(
+                    targets(&app, 1)
+                        .unwrap()
+                        .into_iter()
+                        .find(|t| t.kind == "p45")
+                        .unwrap()
+                        .path,
+                    old.path
+                );
+                continue;
+            }
+            let new = replace(&app, &reviewed).unwrap();
             let current = app
                 .payroll_timesheet_email_repository
                 .documents_for_pa(1)

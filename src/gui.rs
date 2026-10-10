@@ -247,6 +247,13 @@ impl DirectPaymentApp {
     pub fn new(application: Application) -> Self {
         let (operational_payroll_schedules, operational_payroll_period, operational_error) =
             initial_operational_payroll_period(&application);
+        let filing_summary = crate::payroll_archive_service::pending_summary(
+            &application.payroll_timesheet_email_repository.connection,
+            None,
+        )
+        .unwrap_or_else(|_| {
+            "Filing recovery status unavailable; check Personal Assistant Maintenance.".into()
+        });
         Self {
             duplicate_ui: Default::default(),
             version: application.context.version.clone(),
@@ -256,7 +263,11 @@ impl DirectPaymentApp {
             initial_size_pending: true,
             startup_folders: crate::paths::FolderCheck::new(&application.context.config),
             application,
-            status_message: "Application ready.".to_string(),
+            status_message: if filing_summary.is_empty() {
+                "Application ready.".into()
+            } else {
+                format!("Application ready. {filing_summary}")
+            },
             file_status: None,
             last_import: None,
             payroll_document_import: None,
@@ -353,6 +364,20 @@ impl eframe::App for DirectPaymentApp {
                     if ui.add_enabled(!self.startup_folders.checking(),egui::Button::new("Recheck folders")).clicked() {self.startup_folders.restart(&self.application.context.config);}
                 });
             });
+        }
+        match crate::payroll_archive_service::pending_summary(
+            &self
+                .application
+                .payroll_timesheet_email_repository
+                .connection,
+            None,
+        ) {
+            Ok(summary) if !summary.is_empty() => {
+                egui::TopBottomPanel::top("pending_payroll_filing").show(ctx, |ui| {
+                    ui.label(summary);
+                });
+            }
+            _ => {}
         }
         egui::TopBottomPanel::top("header").show(ctx, |ui| {
             ui.horizontal_wrapped(|ui| {

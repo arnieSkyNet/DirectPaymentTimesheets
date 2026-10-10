@@ -461,3 +461,22 @@ Configuration creation uses a synced temporary file plus no-clobber publication,
 Database initialisation remains before configuration and repository connections. The redundant second call was removed. Current-schema checks validate critical metadata/write guards plus a bounded quick_check; they do not replace full verified backup/upgrade integrity. SQLite progress callbacks are cleared after completion or budget interruption. Fresh initialisation stages the full chain and installs in one live transaction; unknown or damaged existing databases remain fatal and are never auto-reset. Later errors explicitly state that database initialisation already completed.
 
 Stage5-filtered tests cover redaction/presentation, subprocess exit status, concurrent configuration creation, preservation on configuration failure, Windows discovery, folder warnings/background refresh, lock classification, missing current-schema metadata/guards, corrupt pages, bounded-check cleanup and completed-upgrade/later-failure recovery. All fixtures are temporary; no production folders, GUI, network shares or native dialogs are used.
+
+
+## Stage 6 filing recovery (1.0.6/schema39)
+
+`payroll_filing.rs` extends schema34 cleanup with durable deactivation scan requests
+and immutable per-document identity/provenance. Migration39 changes no historical
+obligations. Keep publication, registration and cleanup progress explicit; never
+infer destination ownership from its name or SHA-256 alone. The retained staging
+hard link supports recovery across the publish/commit boundary. Inconsistent or
+partial copies remain for review. Resume must validate configured roots and exact
+registered evidence before mutating files; older-backup metadata is not silently
+reconciled. Completed intents are retained.
+
+Use lock order production OS lock, SQLite writer reservation, filesystem. The PA
+Save UI already holds the signature/dispatch lock; only it calls `apply_locked`.
+Other filing entry points acquire the lock once. Preserve pre-migration verified
+backup/WAL/isolated-install safeguards and external-file recovery limitations.
+Tests in `payroll_filing_tests.rs` inject interruption points and use temporary
+file/database trees; native GUI and production records must never be used.

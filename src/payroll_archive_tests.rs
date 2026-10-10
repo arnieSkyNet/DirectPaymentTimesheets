@@ -2,7 +2,7 @@
 use super::*;
 use crate::payroll_timesheet_email_repository::EmailDeliveryState;
 
-fn fixture() -> (tempfile::TempDir, Application) {
+pub(super) fn fixture() -> (tempfile::TempDir, Application) {
     let (dir, mut app) = crate::payroll_timesheet_screen::tests::test_application();
     let root = temp_root(&dir);
     app.context.config.folders.payslip_folder = root.join("payslips");
@@ -19,7 +19,7 @@ fn append_raw_suffix(root: &Path, suffix: &str) -> PathBuf {
     path.push(suffix);
     PathBuf::from(path)
 }
-fn pa(app: &Application, id: i64) -> PersonalAssistant {
+pub(super) fn pa(app: &Application, id: i64) -> PersonalAssistant {
     app.personal_assistant_repository
         .get_all()
         .unwrap()
@@ -27,11 +27,17 @@ fn pa(app: &Application, id: i64) -> PersonalAssistant {
         .find(|p| p.id == id)
         .unwrap()
 }
-fn pdf(path: &Path, bytes: &[u8]) {
+pub(super) fn pdf(path: &Path, bytes: &[u8]) {
     fs::create_dir_all(path.parent().unwrap()).unwrap();
     fs::write(path, bytes).unwrap();
 }
-fn register(app: &Application, id: i64, kind: &str, year: &str, filename: &str) -> PathBuf {
+pub(super) fn register(
+    app: &Application,
+    id: i64,
+    kind: &str,
+    year: &str,
+    filename: &str,
+) -> PathBuf {
     let path = naming::independent_pa_document_directory(
         &app.context.config.folders.payslip_folder,
         id,
@@ -121,7 +127,7 @@ fn inactive_files_all_years_and_two_pas_into_shared_archived_and_reactivation_ke
             );
         }
     }
-    app.payroll_timesheet_email_repository.connection.execute_batch("UPDATE imported_payroll_documents SET history_state='external' WHERE personal_assistant_id=4 AND document_type='p60'; UPDATE imported_payroll_documents SET history_state='needs_sending',sent_at='indeterminate:unchanged' WHERE personal_assistant_id=4 AND document_type='p45'; UPDATE imported_payroll_documents SET history_state='application',sent_at='2026-09-29T20:23:33+01:00' WHERE personal_assistant_id=5;").unwrap();
+    app.payroll_timesheet_email_repository.connection.execute_batch("UPDATE imported_payroll_documents SET history_state='external' WHERE personal_assistant_id=4 AND document_type='p60'; UPDATE imported_payroll_documents SET history_state='application',sent_at='fixture-accepted' WHERE personal_assistant_id=4 AND document_type='p45'; UPDATE imported_payroll_documents SET history_state='application',sent_at='2026-09-29T20:23:33+01:00' WHERE personal_assistant_id=5;").unwrap();
     let before4 = facts(&app, 4);
     let before5 = facts(&app, 5);
     let mut assistant = pa(&app, 4);
@@ -162,7 +168,9 @@ fn inactive_files_all_years_and_two_pas_into_shared_archived_and_reactivation_ke
         4,
         None
     )
-    .is_err());
+    .unwrap()
+    .document_ids
+    .is_empty());
     assert!(apply(&app, &assistant, true).unwrap().is_empty());
     assistant.employment_status = Some("Active".into());
     apply(&app, &assistant, true).unwrap();
@@ -203,6 +211,12 @@ fn registered_legacy_repair_preserves_every_history_state_and_leaves_active_pays
             )
             .unwrap();
         let before = facts(&app, 4);
+        if sent.is_some_and(|s| s.starts_with("indeterminate:")) {
+            assert!(apply(&app, &pa(&app, 4), false).is_err());
+            assert!(source.exists());
+            assert_eq!(facts(&app, 4), before);
+            continue;
+        }
         apply(&app, &pa(&app, 4), false).unwrap();
         let destination = naming::supplement_path(
             &app.context.config.folders.payslip_folder,
@@ -359,7 +373,12 @@ fn registry_failure_keeps_saved_inactive_and_continues_other_files() {
         .join("Archived")
         .join(ordinary.file_name().unwrap())
         .exists());
-    assert!(!target.exists());
+    assert!(target.exists());
+    assert!(
+        recovery::pending_summary(&app.payroll_timesheet_email_repository.connection, Some(4))
+            .unwrap()
+            .contains("published")
+    );
     assert_eq!(facts(&app, 4), before);
     assert_eq!(
         app.payroll_timesheet_email_repository
@@ -376,6 +395,14 @@ fn registry_failure_keeps_saved_inactive_and_continues_other_files() {
             .unwrap(),
         0
     );
+    app.payroll_timesheet_email_repository
+        .connection
+        .execute_batch("DROP TRIGGER refuse_move")
+        .unwrap();
+    recovery::resume(&app, 4).unwrap();
+    assert!(!source.exists());
+    assert!(target.exists());
+    assert_eq!(facts(&app, 4), before);
 }
 
 #[test]
@@ -789,7 +816,7 @@ fn name_edit_keeps_archived_history_and_unassociated_evidence_in_place() {
         "P60 for year 2025-26 for Testgiven Van Testfamily-Testlast.pdf",
     );
     app.payroll_timesheet_email_repository.connection.execute_batch(
-        "UPDATE imported_payroll_documents SET history_state='needs_sending',sent_at='indeterminate:retained';"
+        "UPDATE imported_payroll_documents SET history_state='application',sent_at='fixture-retained-send';"
     ).unwrap();
     let before = facts(&app, 4);
     let mut edited = pa(&app, 4);
@@ -818,7 +845,9 @@ fn name_edit_keeps_archived_history_and_unassociated_evidence_in_place() {
         4,
         None
     )
-    .is_err());
+    .unwrap()
+    .document_ids
+    .is_empty());
     assert_eq!(pa(&app, 4).employment_status.as_deref(), Some("Active"));
 }
 
@@ -926,7 +955,7 @@ fn active_repair_finishes_committed_ordinary_cleanup_without_new_ordinary_filing
 }
 
 #[test]
-fn name_change_reuses_only_proven_interrupted_publication_not_new_name_lookalikes() {
+fn name_change_refuses_orphan_publication_without_durable_provenance() {
     for with_old_source in [false, true] {
         let (_dir, app) = fixture();
         let root = &app.context.config.folders.payslip_folder;
@@ -941,17 +970,10 @@ fn name_change_reuses_only_proven_interrupted_publication_not_new_name_lookalike
         let mut edited = pa(&app, 4);
         edited.surname = "Renamedpa".into();
         let result = apply(&app, &edited, true);
-        assert_eq!(result.is_ok(), with_old_source);
-        assert_eq!(
-            pa(&app, 4).surname,
-            if with_old_source {
-                "Renamedpa"
-            } else {
-                "Samplepa"
-            }
-        );
+        assert!(result.is_err());
+        assert_eq!(pa(&app, 4).surname, "Samplepa");
         assert_eq!(fs::read(&new).unwrap(), b"%PDF-1.4 same content");
-        assert!(!old.exists());
+        assert_eq!(old.exists(), with_old_source);
     }
 }
 
@@ -1004,6 +1026,13 @@ fn name_change_preserves_all_supplement_history_states_and_document_identities()
         let before = facts(&app, 4);
         let mut edited = pa(&app, 4);
         edited.surname = "Renamedpa".into();
+        if sent.is_some_and(|s| s.starts_with("indeterminate:")) {
+            assert!(apply(&app, &edited, true).is_err());
+            assert!(original.exists());
+            assert_eq!(facts(&app, 4), before);
+            assert_eq!(pa(&app, 4).surname, "Samplepa");
+            continue;
+        }
         apply(&app, &edited, true).unwrap();
         assert_eq!(facts(&app, 4), before);
         let docs = app

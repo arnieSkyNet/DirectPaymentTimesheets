@@ -209,6 +209,9 @@ impl Application {
         path: &std::path::Path,
         schedule: Option<&crate::payroll_schedule_repository::PayrollSchedule>,
     ) -> Result<crate::archive::PayrollReturnImportResult, Box<dyn std::error::Error>> {
+        let _guard = crate::timesheet_delivery::production_lock(
+            &self.payroll_timesheet_email_repository.connection,
+        )?;
         let names = crate::archive::source_payslip_filenames(
             path,
             &self.personal_assistant_repository.get_all()?,
@@ -270,6 +273,19 @@ impl Application {
                     .map_err(Into::into)
             },
             |pa, kind, path, year| {
+                // Identical re-import is a read-only acknowledgement of existing
+                // evidence, even when its delivery needs review. New registration
+                // or changed bytes must remain blocked under uncertainty.
+                let canonical = path.canonicalize()?;
+                let digest = crate::payroll_document_repository::file_digest(&canonical)?;
+                let unchanged: bool = self.payroll_timesheet_email_repository.connection.query_row(
+                    "SELECT EXISTS(SELECT 1 FROM imported_payroll_documents WHERE personal_assistant_id=?1 AND document_type=?2 AND stored_path=?3 AND sha256=?4 AND document_year IS ?5)",
+                    rusqlite::params![pa,kind,canonical.to_str().ok_or("Payroll document path is not UTF-8")?,digest,year], |r|r.get(0))?;
+                if unchanged { return Ok(()); }
+                crate::payroll_archive_service::ensure_pa_not_uncertain(
+                    &self.payroll_timesheet_email_repository.connection,
+                    pa,
+                )?;
                 self.payroll_timesheet_email_repository
                     .register_document(pa, kind, path, year)?;
                 Ok(())

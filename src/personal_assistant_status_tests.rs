@@ -452,7 +452,9 @@ fn editor_deactivation_reports_one_filing_summary_after_reload() {
         }
         editor_click(&ctx, &mut screen, &app, "Active");
         save_editor(&ctx, &mut screen, &app);
-        assert_eq!(screen.status_message,format!("Personal Assistant saved. {count} payroll file(s) filed; document delivery history preserved."));
+        let summary=format!("{count} payroll file(s) filed; document delivery history preserved.");
+        assert!(screen.status_message.starts_with("Personal Assistant saved."));
+        assert_eq!(screen.status_message.matches(&summary).count(),1);
         assert_status_reloaded(&app, "Inactive");
         assert_eq!(
             std::fs::read_dir(root.join("Archived")).unwrap().count(),

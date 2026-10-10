@@ -12,6 +12,12 @@ use std::{
     path::{Component, Path, PathBuf},
 };
 
+#[path = "payroll_filing.rs"]
+mod recovery;
+#[cfg(test)]
+pub(crate) use recovery::remove_schema_39_fixture;
+pub use recovery::{migrate, pending_summary, resume};
+
 type Result<T> = std::result::Result<T, Box<dyn Error>>;
 #[derive(Debug)]
 struct Move {
@@ -76,6 +82,15 @@ pub(crate) fn sync_directory(path: &Path) -> Result<()> {
     fs::File::open(path)?.sync_all()?;
     #[cfg(not(unix))]
     let _ = path;
+    Ok(())
+}
+
+/// Flush publication and newly created year/Archived directory entries on Unix.
+/// Windows intentionally inherits the explicit no-directory-fsync limitation.
+pub(crate) fn sync_publication_directory(directory: &Path) -> Result<()> {
+    for path in directory.ancestors().take(3) {
+        sync_directory(path)?;
+    }
     Ok(())
 }
 
@@ -420,6 +435,15 @@ fn plan(
                         if existing != m.destination {
                             return Err("Case-insensitive destination collision".into());
                         }
+                        if !recovery::known_pending(
+                            &app.payroll_timesheet_email_repository.connection,
+                            pa.id,
+                            &m.source,
+                            &m.destination,
+                            &m.digest,
+                        )? {
+                            return Err("Existing destination has no durable publication provenance; retain both files and seek reconciliation".into());
+                        }
                         verified(&existing, &m.digest)?;
                     }
                 }
@@ -639,6 +663,8 @@ fn cleanup_with_verifier(
     let mut failures = Vec::new();
     for (source, destination, digest) in pending {
         let attempt = (|| -> Result<()> {
+            let tx =
+                rusqlite::Transaction::new_unchecked(db, rusqlite::TransactionBehavior::Immediate)?;
             if source == destination {
                 return Err("Invalid identical journal paths".into());
             }
@@ -658,7 +684,7 @@ fn cleanup_with_verifier(
             }
             verify(Path::new(&destination), &digest)?;
             checked_path(Path::new(&source))?;
-            if Path::new(&source).exists() {
+            if Path::new(&source).try_exists()? {
                 verify(Path::new(&source), &digest)?;
                 fs::remove_file(&source)?;
                 sync_directory(Path::new(&source).parent().unwrap())?;
@@ -673,10 +699,11 @@ fn cleanup_with_verifier(
                 fs::remove_dir(parent)?;
                 sync_directory(parent.parent().unwrap())?;
             }
-            db.execute(
+            tx.execute(
                 "DELETE FROM payroll_file_moves WHERE source_path=?1",
                 [&source],
             )?;
+            tx.commit()?;
             Ok(())
         })();
         if let Err(e) = attempt {
@@ -688,10 +715,31 @@ fn cleanup_with_verifier(
     errors(failures)
 }
 
+/// Production lock must be held by the caller. Uncertain delivery blocks PA
+/// document mutation until the established audited reconciliation is completed.
+pub(crate) fn ensure_pa_not_uncertain(db: &Connection, pa: i64) -> Result<()> {
+    let blocked: bool = db.query_row("SELECT EXISTS(SELECT 1 FROM timesheet_delivery_attempts a JOIN payroll_timesheets p ON p.id=a.payroll_timesheet_id WHERE p.personal_assistant_id=?1 AND a.outcome='uncertain' AND a.resolved_at IS NULL UNION SELECT 1 FROM payroll_timesheet_email_status WHERE personal_assistant_id=?1 AND sent_at LIKE 'indeterminate:%' UNION SELECT 1 FROM imported_payroll_documents WHERE personal_assistant_id=?1 AND sent_at LIKE 'indeterminate:%')",[pa],|r|r.get(0))?;
+    if blocked {
+        return Err("Delivery uncertain: resolve it through audited delivery/history review before filing or replacing this PA's documents. No document was changed.".into());
+    }
+    Ok(())
+}
+
 /// Repair directly normalises registered supplements without changing employment
 /// or initiating ordinary filing. It also finishes committed cleanup for this PA,
 /// which may remove verified obsolete ordinary-payslip sources.
 pub fn apply(app: &Application, pa: &PersonalAssistant, save: bool) -> Result<Vec<String>> {
+    let db = crate::payroll_evidence::open(app)?;
+    let _guard = crate::timesheet_delivery::production_lock(&db)?;
+    apply_locked(app, pa, save)
+}
+
+// Caller holds the cross-process production lock (also used by signature maintenance).
+pub(crate) fn apply_locked(
+    app: &Application,
+    pa: &PersonalAssistant,
+    save: bool,
+) -> Result<Vec<String>> {
     let repository = PersonalAssistantRepository::new(crate::database::open(
         &app.context.environment.database_path,
     )?);
@@ -712,6 +760,10 @@ pub fn apply(app: &Application, pa: &PersonalAssistant, save: bool) -> Result<Ve
         // they do not depend on archive availability or initiate file repair.
         repository.update(pa)?;
         let mut messages = Vec::new();
+        if let Err(e) = ensure_pa_not_uncertain(&repository.connection, pa.id) {
+            messages.push(format!("Saved; document cleanup deferred: {e}"));
+            return Ok(messages);
+        }
         if let Err(e) =
             managed_bases(app).and_then(|bases| cleanup(&repository.connection, pa.id, &bases))
         {
@@ -719,14 +771,19 @@ pub fn apply(app: &Application, pa: &PersonalAssistant, save: bool) -> Result<Ve
         }
         return Ok(messages);
     }
+    ensure_pa_not_uncertain(&repository.connection, pa.id)?;
     if transition {
         // The requested PA details are the primary save. Filing can never roll this back.
+        let tx = repository.connection.unchecked_transaction()?;
         repository.update(pa)?;
+        recovery::request(&tx, app, pa, &previous)?;
+        tx.commit()?;
         let mut messages = Vec::new();
         if let Err(e) = archive_existing(app, pa, &previous, &repository, &mut messages) {
             messages.push(format!(
                 "Personal Assistant saved; payroll archiving failed: {e}"
             ));
+            recovery::finish_scan(&repository.connection, pa.id, &messages)?;
         }
         return Ok(messages);
     }
@@ -738,6 +795,30 @@ pub fn apply(app: &Application, pa: &PersonalAssistant, save: bool) -> Result<Ve
         rusqlite::TransactionBehavior::Immediate,
     )?;
     let moves = plan(app, pa, &previous, transition, rename)?;
+    if !save {
+        // Repair has no employment/name mutation. Release planning reservation
+        // before durably committing each intent; the outer OS lock stays held.
+        drop(tx);
+        let mut messages = Vec::new();
+        let mut failures = Vec::new();
+        for movement in &moves {
+            match recovery::move_file(&repository.connection, pa.id, &bases, movement) {
+                Ok(result) => messages.extend(result),
+                Err(e) => failures.push(format!(
+                    "Repair pending for {}: {e}. Retain copies and use Resume incomplete filing.",
+                    movement.source.display()
+                )),
+            }
+        }
+        if !failures.is_empty() {
+            messages.extend(failures);
+            return Err(messages.join("\n").into());
+        }
+        if messages.is_empty() {
+            messages.push("0 payroll file(s) filed; document delivery history preserved.".into());
+        }
+        return Ok(messages);
+    }
     file_moves(&repository, pa, &bases, &moves, save, Some(tx), false)
 }
 
@@ -848,7 +929,12 @@ fn archive_existing(
     repository: &PersonalAssistantRepository,
     messages: &mut Vec<String>,
 ) -> Result<()> {
-    let bases = managed_bases(app)?;
+    let (bases, root_errors) = recovery::available_bases(app);
+    messages.extend(root_errors);
+    messages.extend(recovery::missing_registrations(
+        &repository.connection,
+        pa.id,
+    )?);
     if let Err(e) = cleanup(&repository.connection, pa.id, &bases) {
         messages.push(format!(
             "Personal Assistant saved; cleanup remains pending: {e}"
@@ -862,14 +948,34 @@ fn archive_existing(
     let mut seen = std::collections::HashSet::new();
     let mut filed_count = 0;
     for base in &bases {
-        for year in year_directories(base)? {
+        let (years, failures) = recovery::scan_years(base);
+        messages.extend(failures);
+        for year in years {
             for directory in [year.clone(), year.join(format!("PA {}", pa.id))] {
-                if !directory.try_exists()? {
-                    continue;
-                }
-                checked_path(&directory)?;
-                for entry in fs::read_dir(&directory)? {
-                    let source = entry?.path();
+                let entries = (|| -> Result<Option<fs::ReadDir>> {
+                    if !directory.try_exists()? {
+                        return Ok(None);
+                    }
+                    checked_path(&directory)?;
+                    Ok(Some(fs::read_dir(&directory)?))
+                })();
+                let entries = match entries {
+                    Ok(Some(entries)) => entries,
+                    Ok(None) => continue,
+                    Err(e) => {
+                        messages.push(format!("Filing pending for {}: {e}. Reconnect/check permissions, then Resume incomplete filing.",directory.display()));
+                        continue;
+                    }
+                };
+                for entry in entries {
+                    let source = match entry {
+                        Ok(entry) => entry.path(),
+                        Err(e) => {
+                            messages
+                                .push(format!("Filing pending in {}: {e}", directory.display()));
+                            continue;
+                        }
+                    };
                     let attempt = (|| -> Result<()> {
                         let name = source
                             .file_name()
@@ -936,21 +1042,23 @@ fn archive_existing(
                         };
                         let destination = target_year.join("Archived").join(filename);
                         checked_path(&destination)?;
-                        if let Some(parent) = destination.parent().filter(|p| p.exists()) {
-                            if fs::read_dir(parent)?.any(|e| {
-                                e.map(|e| key(&e.path()) == key(&destination))
-                                    .unwrap_or(true)
-                            }) {
-                                return Err(format!(
-                                    "Archive destination conflict: {}",
-                                    destination.display()
-                                )
-                                .into());
+                        if !recovery::known_pending(db, pa.id, &source, &destination, &digest)? {
+                            if let Some(parent) = destination.parent().filter(|p| p.exists()) {
+                                if fs::read_dir(parent)?.any(|e| {
+                                    e.map(|e| key(&e.path()) == key(&destination))
+                                        .unwrap_or(true)
+                                }) {
+                                    return Err(format!(
+                                        "Archive destination conflict: {}",
+                                        destination.display()
+                                    )
+                                    .into());
+                                }
                             }
-                        }
-                        let registered_destination: bool = db.query_row("SELECT EXISTS(SELECT 1 FROM imported_payroll_documents WHERE stored_path=?1 UNION SELECT 1 FROM payslip_revisions WHERE stored_path=?1 UNION SELECT 1 FROM payroll_timesheet_snapshot_states WHERE pdf_path=?1 UNION SELECT 1 FROM payroll_submissions WHERE pdf_path=?1)",[destination.to_str()],|r|r.get(0))?;
-                        if registered_destination {
-                            return Err("Archive destination is already registered".into());
+                            let registered_destination: bool = db.query_row("SELECT EXISTS(SELECT 1 FROM imported_payroll_documents WHERE stored_path=?1 UNION SELECT 1 FROM payslip_revisions WHERE stored_path=?1 UNION SELECT 1 FROM payroll_timesheet_snapshot_states WHERE pdf_path=?1 UNION SELECT 1 FROM payroll_submissions WHERE pdf_path=?1)",[destination.to_str()],|r|r.get(0))?;
+                            if registered_destination {
+                                return Err("Archive destination is already registered".into());
+                            }
                         }
                         let document_id = db
                             .query_row(
@@ -965,8 +1073,7 @@ fn archive_existing(
                             digest,
                             document_id,
                         };
-                        let filing_messages =
-                            file_moves(repository, pa, &bases, &[movement], false, None, true)?;
+                        let filing_messages = recovery::move_file(db, pa.id, &bases, &movement)?;
                         filed_count += 1;
                         // Each move reports success; publish one total for this save.
                         messages.extend(filing_messages.into_iter().skip(1));
@@ -987,6 +1094,7 @@ fn archive_existing(
             "{filed_count} payroll file(s) filed; document delivery history preserved."
         ));
     }
+    recovery::finish_scan(db, pa.id, messages)?;
     Ok(())
 }
 

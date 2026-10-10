@@ -160,10 +160,18 @@ fn validate_current(db: &Connection) -> Result<()> {
         ("shift_change_links", "old_id,new_id"),
         ("shift_review_deferrals", "id"),
         ("imported_payroll_documents", "id,sent_at"),
+        (
+            "payroll_filing_requests",
+            "personal_assistant_id,previous_first_name,previous_surname,payslip_root,pdf_root,state,last_error,requested_at",
+        ),
+        (
+            "payroll_filing_intents",
+            "id,personal_assistant_id,source_path,destination_path,sha256,staging_path,registration,document_id,state,last_error,created_at,updated_at",
+        ),
     ] {
         db.prepare(&format!("SELECT {columns} FROM {} LIMIT 0", quote(table)))?;
         for operation in ["INSERT", "UPDATE", "DELETE"] {
-            let name = format!("dpt38_{table}_{operation}");
+            let name = format!("dpt39_{table}_{operation}");
             let exists: bool = db.query_row(
                 "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='trigger' AND name=?1)",
                 [name],
@@ -815,8 +823,11 @@ mod tests {
     #[test]
     fn future_schema_startup_is_rejected_without_backup_or_downgrade() {
         let (dir, db) = fixture();
-        db.execute("UPDATE schema_version SET version=39", [])
-            .unwrap();
+        db.execute(
+            "UPDATE schema_version SET version=?1",
+            [crate::database::CURRENT_SCHEMA_VERSION + 1],
+        )
+        .unwrap();
         let before = fingerprint(&db).unwrap();
         assert!(initialise(&dir.path().join("database.sqlite")).is_err());
         assert_eq!(fingerprint(&db).unwrap(), before);
@@ -1098,7 +1109,10 @@ mod stage5_tests {
         }
         assert!(!bounded_integrity(&db, 0).unwrap());
         assert!(bounded_integrity(&db, 100).unwrap());
-        assert_eq!(version(&db).unwrap(), Some(38));
+        assert_eq!(
+            version(&db).unwrap(),
+            Some(crate::database::CURRENT_SCHEMA_VERSION)
+        );
     }
     #[test]
     fn interrupted_fresh_staging_is_ignored_and_unknown_partial_live_data_is_not_reset() {
@@ -1112,7 +1126,7 @@ mod stage5_tests {
         initialise(&path).unwrap();
         assert_eq!(
             version(&crate::database::open(&path).unwrap()).unwrap(),
-            Some(38)
+            Some(crate::database::CURRENT_SCHEMA_VERSION)
         );
         let unknown = dir.path().join("unknown.sqlite");
         let db = crate::database::open(&unknown).unwrap();
@@ -1148,7 +1162,10 @@ mod stage5_tests {
         assert_eq!(error.stage, crate::startup::Stage::Configuration);
         assert!(error.to_string().contains("remains applied"));
         assert!(!error.to_string().contains("PRIVATE_SECRET"));
-        assert_eq!(version(&db).unwrap(), Some(38));
+        assert_eq!(
+            version(&db).unwrap(),
+            Some(crate::database::CURRENT_SCHEMA_VERSION)
+        );
         let saved =
             crate::backup_service::BackupService::discover(&dir.path().join("backups")).unwrap();
         assert_eq!(saved.len(), 1);
@@ -1169,7 +1186,7 @@ mod stage5_integrity_tests {
         let path = dir.path().join("database.sqlite");
         initialise(&path).unwrap();
         let db = crate::database::open(&path).unwrap();
-        db.execute_batch("DROP TRIGGER dpt38_timesheet_delivery_attempts_UPDATE")
+        db.execute_batch("DROP TRIGGER dpt39_timesheet_delivery_attempts_UPDATE")
             .unwrap();
         let before = fingerprint(&db).unwrap();
         assert!(initialise(&path).is_err());

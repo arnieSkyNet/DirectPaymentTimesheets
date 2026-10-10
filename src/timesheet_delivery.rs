@@ -808,8 +808,11 @@ mod tests {
         assert!(old
             .execute("DELETE FROM timesheet_delivery_attempts", [])
             .is_err());
-        db.execute("UPDATE schema_version SET version=39", [])
-            .unwrap();
+        db.execute(
+            "UPDATE schema_version SET version=?1",
+            [crate::database::CURRENT_SCHEMA_VERSION + 1],
+        )
+        .unwrap();
         assert!(crate::database::create_schema(&db)
             .unwrap_err()
             .to_string()
@@ -817,7 +820,7 @@ mod tests {
         assert_eq!(
             db.query_row::<i64, _, _>("SELECT version FROM schema_version", [], |r| r.get(0))
                 .unwrap(),
-            39
+            crate::database::CURRENT_SCHEMA_VERSION + 1
         );
     }
 

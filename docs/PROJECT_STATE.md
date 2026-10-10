@@ -189,9 +189,21 @@ Stage 2 final-review corrections close the retained-view transfer gap: source/de
 
 ## Stage 4 shift change protection (1.0.6/schema38)
 
-Current development remains version 1.0.6 and now uses additive schema38. Semantic CSV headers support the verified Hours Keeper format and existing synthetic aliases regardless of column order. Content identity detects changed same-path exports. Shared review protects imported/internal counterparts and cross-midnight overlaps; original evidence, archival bytes and omitted rows remain retained. Review supports a payable-version choice, explicit separate shifts and audited deferral. New protected edits require prospective authorisation and the existing contextual financial correction workflow; pre-existing obligations are preserved. The established verified database/config backup and isolated upgrade installation remain mandatory; external business files need separate protection.
+Stage 4 introduced additive schema38; current development 1.0.6 now uses schema39. Semantic CSV headers support the verified Hours Keeper format and existing synthetic aliases regardless of column order. Content identity detects changed same-path exports. Shared review protects imported/internal counterparts and cross-midnight overlaps; original evidence, archival bytes and omitted rows remain retained. Review supports a payable-version choice, explicit separate shifts and audited deferral. New protected edits require prospective authorisation and the existing contextual financial correction workflow; pre-existing obligations are preserved. The established verified database/config backup and isolated upgrade installation remain mandatory; external business files need separate protection.
 
 
 ## Stage 5 startup reliability (1.0.6/schema38)
 
 Structured redacted startup errors, independent native dialogs with stderr fallback and nonzero failure exits are implemented. Configuration creation is atomic/concurrency-safe; explicit saves are atomic and do not require unrelated business folders. Windows Documents discovery no longer panics during loading. Background folder warnings preserve Settings access. Current-schema checks are bounded, fresh initialisation stages before transactional installation, and duplicate database initialisation is removed. Existing verified backup, WAL, locking and recovery safeguards remain intact. Native platform presentation is source-reviewed and mock-tested; no production application launch or platform GUI rehearsal is part of automated validation.
+
+
+## Stage 6 recover incomplete archiving (1.0.6/schema39)
+
+Schema39 adds durable deactivation scan requests and provenance-backed per-document
+intent before publication, preserving schema34 cleanup and all historical evidence.
+Resume incomplete filing is explicit, with persistent pending status and a
+non-blocking startup summary. All production filing/replacement/import entry points
+share the dispatch/recovery OS lock. Uncertain delivery blocks document mutation;
+unavailable roots and files do not block unrelated payroll. Partial staging,
+conflicts, reactivation before a scan finishes and restored metadata mismatch require
+review rather than inferred ownership or automatic filesystem reconciliation.

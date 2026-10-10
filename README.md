@@ -376,3 +376,16 @@ Startup failures identify their stage, safe relevant location and recovery actio
 Missing or inaccessible configured business folders produce background warnings and leave Settings and unrelated payroll work available. Recheck folders after reconnecting a drive. Missing configuration is published atomically without overwriting a concurrent existing file; malformed/unreadable configuration is preserved. Windows default-folder discovery returns a recoverable error when required.
 
 Current-schema startup validates critical schema/protection metadata and performs a bounded page check; it is not a full integrity certification of every stored page. Full verified backup/upgrade checks remain unchanged. Fresh databases are built in isolation and installed transactionally. Fatal database, backup or migration failures never trigger automatic reset, deletion or recovery replacement. A later configuration/graphics failure does not undo an already completed upgrade; retain its verified recovery copy and protect external business files separately.
+
+
+## Stage 6 recover incomplete archiving (1.0.6/schema39)
+
+Incomplete deactivation filing now retains durable scan and document intent, with
+verified publication provenance, restartable registration/cleanup and persistent
+recovery status. Use **Personal Assistant Maintenance → Resume incomplete filing**;
+there is no need to toggle employment status. Reconnection/permissions can be fixed
+without changing configured paths. Conflicting or changed files are preserved for
+review, and reactivation leaves archived history in place. Unrelated payroll work
+remains usable when its required files are available. Upgrades use the verified
+pre-migration database/config backup; separately protect external business files.
+See [filing recovery](docs/ARCHITECTURE.md#recover-incomplete-filing-stage-6-schema39).

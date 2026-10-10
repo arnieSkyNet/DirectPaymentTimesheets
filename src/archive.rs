@@ -775,6 +775,14 @@ pub fn import_payroll_documents(
                 return Ok(false);
             }
             publish_no_clobber(&entry.temporary_path, &entry.plan.destination)?;
+            // Flush the published directory entry before database registration.
+            crate::payroll_archive_service::sync_publication_directory(
+                entry
+                    .plan
+                    .destination
+                    .parent()
+                    .ok_or("Missing publication parent")?,
+            )?;
             // Registration commits one document transaction. On failure remove only
             // the file this entry just published, never a pre-existing document.
             if let Err(error) = register_staged_document(&entry, &register_document) {
