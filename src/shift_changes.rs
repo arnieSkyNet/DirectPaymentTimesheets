@@ -210,7 +210,7 @@ pub fn review(
     })
 }
 
-fn retained_ranges(
+pub(crate) fn retained_ranges(
     db: &Connection,
     source: &str,
     id: i64,

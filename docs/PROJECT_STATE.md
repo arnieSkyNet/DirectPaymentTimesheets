@@ -5,7 +5,7 @@ This document describes the implementation on `main`. Source code, migrations an
 ## Current release and platform
 
 - Development application version: `1.0.6`; published Linux/Windows: `1.0.4`; published macOS: `1.0.5`.
-- Database schema: version 36, upgraded in place by ordered SQLite migrations.
+- Database schema: version 40, upgraded through verified backups and isolated ordered migrations.
 - Desktop UI: Rust with `eframe`/`egui`.
 - Persistence: SQLite through `rusqlite` (bundled SQLite).
 - Documents and integration: `printpdf`, PDF text extraction, ZIP import and SMTP via `lettre`.
@@ -189,7 +189,7 @@ Stage 2 final-review corrections close the retained-view transfer gap: source/de
 
 ## Stage 4 shift change protection (1.0.6/schema38)
 
-Stage 4 introduced additive schema38; current development 1.0.6 now uses schema39. Semantic CSV headers support the verified Hours Keeper format and existing synthetic aliases regardless of column order. Content identity detects changed same-path exports. Shared review protects imported/internal counterparts and cross-midnight overlaps; original evidence, archival bytes and omitted rows remain retained. Review supports a payable-version choice, explicit separate shifts and audited deferral. New protected edits require prospective authorisation and the existing contextual financial correction workflow; pre-existing obligations are preserved. The established verified database/config backup and isolated upgrade installation remain mandatory; external business files need separate protection.
+Stage 4 introduced additive schema38; current development 1.0.6 now uses schema40. Semantic CSV headers support the verified Hours Keeper format and existing synthetic aliases regardless of column order. Content identity detects changed same-path exports. Shared review protects imported/internal counterparts and cross-midnight overlaps; original evidence, archival bytes and omitted rows remain retained. Review supports a payable-version choice, explicit separate shifts and audited deferral. New protected edits require prospective authorisation and the existing contextual financial correction workflow; pre-existing obligations are preserved. The established verified database/config backup and isolated upgrade installation remain mandatory; external business files need separate protection.
 
 
 ## Stage 5 startup reliability (1.0.6/schema38)
@@ -207,3 +207,15 @@ share the dispatch/recovery OS lock. Uncertain delivery blocks document mutation
 unavailable roots and files do not block unrelated payroll. Partial staging,
 conflicts, reactivation before a scan finishes and restored metadata mismatch require
 review rather than inferred ownership or automatic filesystem reconciliation.
+
+## Stage 7 correct imported hours through the UI (1.0.6/schema40)
+
+Imported source dates/times, breaks, independently authoritative worked minutes and
+notes are editable through reviewed append-only events. Original/effective evidence,
+source eligibility, audit history and prepared/retained cycles are visible.
+Explicit Exclude/Restore uses an immutable inclusion ledger. Protected source changes
+require prospective authorisation and existing financial reconciliation; uncertain
+delivery blocks mutation. Source identity, PA assignment, rate/amount, existing
+submissions, settlement and PDF bytes remain retained. Internal shift history has
+bounded searchable pages; deletion rejects stale confirmation and retained protected
+cycles. Existing holiday preparation and deliberate subtraction are unchanged.

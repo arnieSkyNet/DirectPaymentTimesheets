@@ -278,3 +278,30 @@ unregistered files or unauthorised PA renaming.
 Payroll Return import now syncs the destination directory before registration on
 Unix. Windows directory fsync remains unsupported; hard-link-capable destination
 filesystems are still required. No cross-resource power-loss guarantee is claimed.
+
+## Imported-hours correction UI (Stage 7, schema40)
+
+View Imported Hours retains raw PA filtering, ordering, cycle scope and scrolling,
+with effective values, breaks/notes, source archive identity, source eligibility and
+correction history beside the original data. A review action beside each PA name
+opens the editor even on narrow windows; horizontal scrolling exposes the additional
+evidence while retaining the Dashboard vertical scroll. Edit/Revert/Exclude/Restore capture
+raw values, latest correction/inclusion events and source audit identity. Reviews
+include original, effective, proposed and retained submission cycles plus duplicate
+counterparts. Saving acquires the production OS lock before an immediate SQLite
+transaction and repeats stale-version, uncertainty and authorisation checks.
+No PA reassignment is performed.
+
+Edits share the existing append-only correction implementation. Exclusion is an
+independent ledger, not a fabricated zero-hour edit. Restoring evidence re-enters
+cross-source duplicate review. Submitted/settled totals, correction obligations and
+original PDFs remain unchanged; financial consequences use existing preparation
+reconciliation/resubmission/carry-forward decisions. Changed unsent candidates are
+invalidated, with retained document bytes untouched. Notes-only changes that do not
+change PDF/payroll evidence retain the existing freshness semantics.
+
+Internal history uses bounded twelve-record pages and literal date/time/note search.
+Deletion compares displayed expected values inside the writer transaction and
+checks retained submission cycles as well as current dates. Protected deletion
+remains refused. UI evidence caches refresh on same-connection changes and external
+SQLite data-version changes; mutation validation never trusts cached values.

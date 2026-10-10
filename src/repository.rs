@@ -237,130 +237,12 @@ impl TimesheetRepository {
         action_at: &str,
         reason: Option<&str>,
     ) -> std::result::Result<AppendCorrectionResult, TimesheetCorrectionError> {
-        if actor_id.trim().is_empty() {
-            return Err(TimesheetCorrectionError::MissingActor);
-        }
-        if action_at.trim().is_empty() {
-            return Err(TimesheetCorrectionError::MissingActionTime);
-        }
-        let _guard = crate::timesheet_delivery::production_lock(&self.connection).map_err(|e| {
-            TimesheetCorrectionError::Database(rusqlite::Error::InvalidParameterName(e.to_string()))
-        })?;
+        let _guard = crate::timesheet_delivery::production_lock(&self.connection).map_err(|e| TimesheetCorrectionError::Database(rusqlite::Error::InvalidParameterName(e.to_string())))?;
         let transaction = self.connection.unchecked_transaction()?;
         transaction.execute("UPDATE schema_version SET version=version", [])?;
-        let raw = get_raw_on(&transaction, timesheet_id)?
-            .ok_or(TimesheetCorrectionError::NotFound(timesheet_id))?;
-        let after = match proposal {
-            Some(proposal) => validate_and_normalize_proposal(proposal)?,
-            None => validate_and_normalize_proposal(&TimesheetCorrectionProposal {
-                start_time: raw.start_time.clone(),
-                end_time: raw.end_time.clone(),
-                break_minutes: raw.break_minutes,
-                worked_minutes: raw.worked_minutes,
-                notes: raw.notes.clone(),
-            })?,
-        };
-        let current = effective_entry_on(&transaction, raw)?;
-        let before_start =
-            crate::csv_import::parse_supported_timestamp(&current.effective.start_time)
-                .or_else(|| {
-                    NaiveDateTime::parse_from_str(
-                        &current.effective.start_time,
-                        CORRECTION_TIME_FORMAT,
-                    )
-                    .ok()
-                })
-                .ok_or_else(|| {
-                    TimesheetCorrectionError::InvalidTimestamp(current.effective.start_time.clone())
-                })?;
-        let before_end = crate::csv_import::parse_supported_timestamp(&current.effective.end_time)
-            .or_else(|| {
-                NaiveDateTime::parse_from_str(&current.effective.end_time, CORRECTION_TIME_FORMAT)
-                    .ok()
-            })
-            .ok_or_else(|| {
-                TimesheetCorrectionError::InvalidTimestamp(current.effective.end_time.clone())
-            })?;
-        let next_start = NaiveDateTime::parse_from_str(&after.start_time, CORRECTION_TIME_FORMAT)
-            .map_err(|_| {
-            TimesheetCorrectionError::InvalidTimestamp(after.start_time.clone())
-        })?;
-        let next_end = NaiveDateTime::parse_from_str(&after.end_time, CORRECTION_TIME_FORMAT)
-            .map_err(|_| TimesheetCorrectionError::InvalidTimestamp(after.end_time.clone()))?;
-        if current.raw.personal_assistant_id.is_none() {
-            let retained: bool = transaction.query_row(
-                "SELECT EXISTS(SELECT 1 FROM payroll_submission_items WHERE timesheet_id=?1)",
-                [timesheet_id],
-                |r| r.get(0),
-            )?;
-            if retained {
-                return Err(TimesheetCorrectionError::Database(rusqlite::Error::InvalidParameterName("Unassigned historical evidence requires an explicit payroll identity review".into())));
-            }
-        }
-        let review = crate::shift_changes::review(
-            &transaction,
-            current.raw.personal_assistant_id.unwrap_or(0),
-            &[(before_start, before_end), (next_start, next_end)],
-        )
-        .map_err(|e| {
-            TimesheetCorrectionError::Database(rusqlite::Error::InvalidParameterName(e.to_string()))
-        })?;
-        if review.protected && current.effective != after {
-            return Err(TimesheetCorrectionError::Database(rusqlite::Error::InvalidParameterName("Protected imported evidence requires reviewed candidate selection and the existing payroll correction workflow".into())));
-        }
-
-        if current.effective == after {
-            transaction.commit()?;
-            return Ok(AppendCorrectionResult {
-                event_id: None,
-                effective: after,
-            });
-        }
-        let reason = normalized_optional_text(reason);
-        transaction.execute(
-            "INSERT INTO timesheet_correction_events (
-                timesheet_id, actor_id, action_type, action_at, reason,
-                before_start_time, before_end_time, before_break_minutes,
-                before_worked_minutes, before_notes,
-                after_start_time, after_end_time, after_break_minutes,
-                after_worked_minutes, after_notes
-             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)",
-            params![
-                timesheet_id,
-                actor_id.trim(),
-                action.as_str(),
-                action_at.trim(),
-                reason,
-                current.effective.start_time,
-                current.effective.end_time,
-                current.effective.break_minutes,
-                current.effective.worked_minutes,
-                current.effective.notes,
-                after.start_time,
-                after.end_time,
-                after.break_minutes,
-                after.worked_minutes,
-                after.notes,
-            ],
-        )?;
-        let event_id = transaction.last_insert_rowid();
-        crate::shift_changes::event(
-            &transaction,
-            "imported",
-            timesheet_id,
-            &format!("{:?}", current.effective),
-            &format!("{after:?}"),
-            reason.as_deref().unwrap_or("Editable imported correction"),
-            &review.signature,
-        )
-        .map_err(|e| {
-            TimesheetCorrectionError::Database(rusqlite::Error::InvalidParameterName(e.to_string()))
-        })?;
+        let result = append_correction_on(&transaction,timesheet_id,action,proposal,actor_id,action_at,reason,None)?;
         transaction.commit()?;
-        Ok(AppendCorrectionResult {
-            event_id: Some(event_id),
-            effective: after,
-        })
+        Ok(result)
     }
 
     #[allow(dead_code)]
@@ -568,7 +450,133 @@ pub(crate) fn get_raw_on(connection: &Connection, id: i64) -> Result<Option<Time
         .optional()
 }
 
-fn effective_entry_on(
+/// Shared append-only correction implementation; caller owns the writer transaction
+/// and, for reviewed protected changes, the Stage 7 authorisation validation.
+pub(crate) fn append_correction_on(
+    transaction: &Connection, timesheet_id: i64, action: TimesheetCorrectionAction,
+    proposal: Option<&TimesheetCorrectionProposal>, actor_id: &str, action_at: &str,
+    reason: Option<&str>, reviewed: Option<&str>,
+) -> std::result::Result<AppendCorrectionResult, TimesheetCorrectionError> {
+        if actor_id.trim().is_empty() {
+            return Err(TimesheetCorrectionError::MissingActor);
+        }
+        if action_at.trim().is_empty() {
+            return Err(TimesheetCorrectionError::MissingActionTime);
+        }
+        let raw = get_raw_on(&transaction, timesheet_id)?
+            .ok_or(TimesheetCorrectionError::NotFound(timesheet_id))?;
+        let after = match proposal {
+            Some(proposal) => validate_and_normalize_proposal(proposal)?,
+            None => validate_and_normalize_proposal(&TimesheetCorrectionProposal {
+                start_time: raw.start_time.clone(),
+                end_time: raw.end_time.clone(),
+                break_minutes: raw.break_minutes,
+                worked_minutes: raw.worked_minutes,
+                notes: raw.notes.clone(),
+            })?,
+        };
+        let current = effective_entry_on(&transaction, raw)?;
+        let before_start =
+            crate::csv_import::parse_supported_timestamp(&current.effective.start_time)
+                .or_else(|| {
+                    NaiveDateTime::parse_from_str(
+                        &current.effective.start_time,
+                        CORRECTION_TIME_FORMAT,
+                    )
+                    .ok()
+                })
+                .ok_or_else(|| {
+                    TimesheetCorrectionError::InvalidTimestamp(current.effective.start_time.clone())
+                })?;
+        let before_end = crate::csv_import::parse_supported_timestamp(&current.effective.end_time)
+            .or_else(|| {
+                NaiveDateTime::parse_from_str(&current.effective.end_time, CORRECTION_TIME_FORMAT)
+                    .ok()
+            })
+            .ok_or_else(|| {
+                TimesheetCorrectionError::InvalidTimestamp(current.effective.end_time.clone())
+            })?;
+        let next_start = NaiveDateTime::parse_from_str(&after.start_time, CORRECTION_TIME_FORMAT)
+            .map_err(|_| {
+            TimesheetCorrectionError::InvalidTimestamp(after.start_time.clone())
+        })?;
+        let next_end = NaiveDateTime::parse_from_str(&after.end_time, CORRECTION_TIME_FORMAT)
+            .map_err(|_| TimesheetCorrectionError::InvalidTimestamp(after.end_time.clone()))?;
+        if current.raw.personal_assistant_id.is_none() {
+            let retained: bool = transaction.query_row(
+                "SELECT EXISTS(SELECT 1 FROM payroll_submission_items WHERE timesheet_id=?1)",
+                [timesheet_id],
+                |r| r.get(0),
+            )?;
+            if retained {
+                return Err(TimesheetCorrectionError::Database(rusqlite::Error::InvalidParameterName("Unassigned historical evidence requires an explicit payroll identity review".into())));
+            }
+        }
+        let review = crate::shift_changes::review(
+            &transaction,
+            current.raw.personal_assistant_id.unwrap_or(0),
+            &[(before_start, before_end), (next_start, next_end)],
+        )
+        .map_err(|e| {
+            TimesheetCorrectionError::Database(rusqlite::Error::InvalidParameterName(e.to_string()))
+        })?;
+        if review.protected && current.effective != after && reviewed.is_none() {
+            return Err(TimesheetCorrectionError::Database(rusqlite::Error::InvalidParameterName("Protected imported evidence requires reviewed candidate selection and the existing payroll correction workflow".into())));
+        }
+
+        if current.effective == after {
+            return Ok(AppendCorrectionResult {
+                event_id: None,
+                effective: after,
+            });
+        }
+        let reason = normalized_optional_text(reason);
+        transaction.execute(
+            "INSERT INTO timesheet_correction_events (
+                timesheet_id, actor_id, action_type, action_at, reason,
+                before_start_time, before_end_time, before_break_minutes,
+                before_worked_minutes, before_notes,
+                after_start_time, after_end_time, after_break_minutes,
+                after_worked_minutes, after_notes
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)",
+            params![
+                timesheet_id,
+                actor_id.trim(),
+                action.as_str(),
+                action_at.trim(),
+                reason,
+                current.effective.start_time,
+                current.effective.end_time,
+                current.effective.break_minutes,
+                current.effective.worked_minutes,
+                current.effective.notes,
+                after.start_time,
+                after.end_time,
+                after.break_minutes,
+                after.worked_minutes,
+                after.notes,
+            ],
+        )?;
+        let event_id = transaction.last_insert_rowid();
+        crate::shift_changes::event(
+            &transaction,
+            "imported",
+            timesheet_id,
+            &format!("{:?}", current.effective),
+            &format!("{after:?}"),
+            reason.as_deref().unwrap_or("Editable imported correction"),
+            reviewed.unwrap_or(&review.signature),
+        )
+        .map_err(|e| {
+            TimesheetCorrectionError::Database(rusqlite::Error::InvalidParameterName(e.to_string()))
+        })?;
+        Ok(AppendCorrectionResult {
+            event_id: Some(event_id),
+            effective: after,
+        })
+}
+
+pub(crate) fn effective_entry_on(
     connection: &Connection,
     raw: TimesheetEntry,
 ) -> std::result::Result<EffectiveTimesheetEntry, TimesheetCorrectionError> {
@@ -613,7 +621,7 @@ fn effective_entry_on(
     })
 }
 
-fn validate_and_normalize_proposal(
+pub(crate) fn validate_and_normalize_proposal(
     proposal: &TimesheetCorrectionProposal,
 ) -> std::result::Result<EffectiveTimesheetValues, TimesheetCorrectionError> {
     let start = parse_correction_timestamp(&proposal.start_time)?;

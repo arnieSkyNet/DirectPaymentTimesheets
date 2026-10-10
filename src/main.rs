@@ -54,6 +54,8 @@ mod pdf_generator;
 mod personal_assistant_repository;
 mod personal_assistant_screen;
 mod repository;
+mod imported_hours;
+mod imported_hours_ui;
 mod shift_changes;
 mod sickness_period_repository;
 mod sickness_service;

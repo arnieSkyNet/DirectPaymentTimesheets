@@ -2,7 +2,7 @@
 
 DirectPaymentTimesheets is a local desktop application for administering UK Direct Payment Personal Assistant timesheets and the four-week payroll-provider workflow. It imports externally recorded work, prepares payroll timesheets, generates the provider PDF, sends timesheets and payslips, imports payroll documents, and preserves the evidence represented by submitted payroll.
 
-The **1.0.6 development** application uses SQLite schema **36**. It is a single-user local desktop application for the documented Direct Payment payroll workflow, not a general-purpose payroll product.
+The **1.0.6 development** application uses SQLite schema **40**. It is a single-user local desktop application for the documented Direct Payment payroll workflow, not a general-purpose payroll product.
 
 ## Download
 
@@ -389,3 +389,18 @@ review, and reactivation leaves archived history in place. Unrelated payroll wor
 remains usable when its required files are available. Upgrades use the verified
 pre-migration database/config backup; separately protect external business files.
 See [filing recovery](docs/ARCHITECTURE.md#recover-incomplete-filing-stage-6-schema39).
+
+## Stage 7 imported-hours corrections (1.0.6/schema40)
+
+**View Imported Hours** now shows original and effective evidence with reviewed
+Edit, Revert to original, Exclude and Restore actions. Record a reason; protected
+cycles also require explicit authorisation and subsequent financial review in
+Payroll Timesheet Preparation. Original rows, submissions and PDFs remain retained.
+Worked minutes stay independently authoritative; inconsistent elapsed/break values
+produce a warning, not automatic recalculation. PA identity and imported rate/amount
+cannot be reassigned here. Internal shift history supports searchable twelve-row
+pages and stale-safe deletion; protected shifts cannot be deleted.
+
+The schema40 upgrade uses the existing verified pre-migration recovery backup and
+isolated installation. Keep external business-file backups separately. No published
+release versions have changed.

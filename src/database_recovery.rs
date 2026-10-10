@@ -157,6 +157,7 @@ fn validate_current(db: &Connection) -> Result<()> {
         ("csv_import_contents", "sha256"),
         ("csv_import_rows", "source_id"),
         ("shift_change_events", "id"),
+        ("imported_hours_inclusion_events", "id,timesheet_id,before_excluded,after_excluded,reason,actor,recorded_at,review_signature,before_evidence,after_evidence,authorised"),
         ("shift_change_links", "old_id,new_id"),
         ("shift_review_deferrals", "id"),
         ("imported_payroll_documents", "id,sent_at"),
@@ -171,7 +172,7 @@ fn validate_current(db: &Connection) -> Result<()> {
     ] {
         db.prepare(&format!("SELECT {columns} FROM {} LIMIT 0", quote(table)))?;
         for operation in ["INSERT", "UPDATE", "DELETE"] {
-            let name = format!("dpt39_{table}_{operation}");
+            let name = format!("dpt40_{table}_{operation}");
             let exists: bool = db.query_row(
                 "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='trigger' AND name=?1)",
                 [name],
@@ -181,6 +182,10 @@ fn validate_current(db: &Connection) -> Result<()> {
                 return Err("Required current-schema protection is missing; preserve the database for verified recovery".into());
             }
         }
+    }
+    for name in ["imported_hours_inclusion_immutable","imported_hours_inclusion_retained","stage7_imported_correction_immutable","stage7_imported_correction_retained"] {
+        let exists:bool=db.query_row("SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='trigger' AND name=?1)",[name],|r|r.get(0))?;
+        if !exists {return Err("Required imported-hours audit retention protection is missing; preserve the database for verified recovery".into());}
     }
     bounded_integrity(db, 100)?;
     Ok(())
@@ -1186,7 +1191,7 @@ mod stage5_integrity_tests {
         let path = dir.path().join("database.sqlite");
         initialise(&path).unwrap();
         let db = crate::database::open(&path).unwrap();
-        db.execute_batch("DROP TRIGGER dpt39_timesheet_delivery_attempts_UPDATE")
+        db.execute_batch("DROP TRIGGER dpt40_timesheet_delivery_attempts_UPDATE")
             .unwrap();
         let before = fingerprint(&db).unwrap();
         assert!(initialise(&path).is_err());

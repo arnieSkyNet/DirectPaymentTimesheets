@@ -132,7 +132,10 @@ pub struct EnterHoursScreen {
     correction_reason: String,
     correction_review: Option<String>,
     correction_acknowledged: bool,
-    confirm_delete_shift_id: Option<i64>,
+    confirm_delete_shift_id: Option<DirectShift>,
+    history_query: String,
+    history_page: i64,
+    history_has_next: bool,
     status_message: String,
 }
 
@@ -155,6 +158,9 @@ impl EnterHoursScreen {
             correction_review: None,
             correction_acknowledged: false,
             confirm_delete_shift_id: None,
+            history_query: String::new(),
+            history_page: 0,
+            history_has_next: false,
             status_message: String::new(),
         }
     }
@@ -213,6 +219,8 @@ impl EnterHoursScreen {
                 });
         });
         if previous_pa != self.selected_pa_id {
+            self.history_page = 0;
+            self.history_query.clear();
             self.picker = None;
             self.completed_edit_field = None;
             self.confirm_undo = false;
@@ -265,7 +273,9 @@ impl EnterHoursScreen {
                 .get_running_for_pa(pa_id)?;
             self.recent_shifts = application
                 .direct_shift_repository
-                .recent_for_pa(pa_id, 12)?;
+                .history_for_pa(pa_id, &self.history_query, self.history_page * 12, 13)?;
+            self.history_has_next = self.recent_shifts.len() > 12;
+            self.recent_shifts.truncate(12);
         } else {
             self.running_shift = None;
             self.recent_shifts.clear();
@@ -518,7 +528,20 @@ impl EnterHoursScreen {
     }
 
     fn draw_recent_shifts(&mut self, ui: &mut egui::Ui, application: &Application) {
-        ui.heading("Recent Shifts");
+        ui.heading("Shift history");
+        let mut refresh = false;
+        ui.horizontal_wrapped(|ui| {
+            ui.label("Search dates (YYYY-MM-DD), times or notes:");
+            if ui.text_edit_singleline(&mut self.history_query).changed() { self.history_page=0; refresh=true; }
+            if ui.add_enabled(self.history_page>0,egui::Button::new("Newer page")).clicked(){self.history_page-=1;refresh=true;}
+            ui.label(format!("Page {}",self.history_page+1));
+            if ui.add_enabled(self.history_has_next,egui::Button::new("Older page")).clicked(){self.history_page+=1;refresh=true;}
+        });
+        if refresh {
+            self.cancel_completed_edit();
+            self.confirm_delete_shift_id=None;
+            if let Err(e)=self.load_selected_pa(application){self.status_message=format!("History unavailable: {e}");}
+        }
         let completed = self
             .recent_shifts
             .iter()
@@ -632,20 +655,21 @@ impl EnterHoursScreen {
                 });
         }
         if let Some(id) = delete_shift {
-            self.confirm_delete_shift_id = Some(id);
+            self.confirm_delete_shift_id = self.recent_shifts.iter().find(|s|s.id==id).cloned();
             self.completed_edit = None;
             self.picker = None;
             self.completed_edit_field = None;
         }
 
-        if let Some(id) = self.confirm_delete_shift_id {
+        if let Some(expected) = self.confirm_delete_shift_id.clone() {
             ui.group(|ui| {
                 ui.label(egui::RichText::new("Delete this completed shift?").strong());
+                ui.label(format!("Confirmed values: {} – {}; break {} minutes; notes {}",expected.start_time,expected.end_time.as_deref().unwrap_or(""),expected.break_minutes,expected.notes.as_deref().unwrap_or("(none)")));
                 ui.label("It will disappear from normal use, but its evidence and audit history will be retained.");
                 ui.horizontal(|ui| {
                     if ui.button("Yes, delete shift").clicked() {
-                        match application.direct_shift_repository.soft_delete_completed(
-                            id,
+                        match application.direct_shift_repository.soft_delete_completed_expected(
+                            &expected,
                             &Local::now().to_rfc3339(),
                         ) {
                             Ok(()) => {

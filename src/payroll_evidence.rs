@@ -124,12 +124,15 @@ fn load_scoped(db: &Connection, pa: Option<i64>) -> Result<Vec<WorkEvidence>> {
             .unwrap_or(value)
     };
     let mut result = Vec::new();
-    let mut stmt=db.prepare("SELECT t.id,t.personal_assistant_id,t.pa_name,
+    // Historical migration fixtures before schema 40 have no inclusion events.
+    let has_inclusion: bool=db.query_row("SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE name='imported_hours_inclusion_events')",[],|r|r.get(0))?;
+    let excluded_sql=if has_inclusion {"COALESCE((SELECT after_excluded FROM imported_hours_inclusion_events WHERE timesheet_id=t.id ORDER BY id DESC LIMIT 1),0)"} else {"0"};
+    let mut stmt=db.prepare(&format!("SELECT t.id,t.personal_assistant_id,t.pa_name,
         COALESCE(c.after_start_time,t.start_time),COALESCE(c.after_end_time,t.end_time),
         COALESCE(c.after_break_minutes,t.break_minutes),COALESCE(c.after_worked_minutes,t.worked_minutes),
-        CASE WHEN c.id IS NULL THEN t.notes ELSE c.after_notes END
+        CASE WHEN c.id IS NULL THEN t.notes ELSE c.after_notes END, {excluded_sql}
         FROM timesheets t LEFT JOIN timesheet_correction_events c ON c.id=(SELECT MAX(id) FROM timesheet_correction_events WHERE timesheet_id=t.id)
-        WHERE t.personal_assistant_id IS NOT NULL AND (?1 IS NULL OR t.personal_assistant_id=?1) ORDER BY t.id")?;
+        WHERE t.personal_assistant_id IS NOT NULL AND (?1 IS NULL OR t.personal_assistant_id=?1) ORDER BY t.id"))?;
     for row in stmt.query_map([pa], |r| {
         Ok(WorkEvidence {
             source: "imported".into(),
@@ -141,7 +144,7 @@ fn load_scoped(db: &Connection, pa: Option<i64>) -> Result<Vec<WorkEvidence>> {
             break_minutes: r.get(5)?,
             minutes: r.get(6)?,
             notes: r.get::<_, Option<String>>(7)?.unwrap_or_default(),
-            deleted: false,
+            deleted: r.get(8)?,
         })
     })? {
         result.push(row?);

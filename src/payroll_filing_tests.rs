@@ -533,7 +533,7 @@ fn verified_wal_upgrade_failure_keeps_populated_38_and_recovery_copy() {
     );
     db.execute_batch("DROP TRIGGER fail39").unwrap();
     crate::database_recovery::initialise(&path).unwrap();
-    assert_eq!(crate::database_recovery::version(&db).unwrap(), Some(39));
+    assert_eq!(crate::database_recovery::version(&db).unwrap(), Some(crate::database::CURRENT_SCHEMA_VERSION));
     assert_eq!(
         db.query_row::<i64, _, _>("SELECT COUNT(*) FROM payroll_file_moves", [], |r| r.get(0))
             .unwrap(),

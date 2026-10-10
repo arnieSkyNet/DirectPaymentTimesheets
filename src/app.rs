@@ -153,8 +153,8 @@ impl Application {
     pub fn get_timesheets(
         &self,
     ) -> Result<Vec<crate::models::TimesheetEntry>, Box<dyn std::error::Error>> {
-        // Payroll and the current imported-hours view deliberately consume raw
-        // immutable evidence until correction-aware payroll support is added.
+        // This view retains raw rows for source identity and ordering. Stage 7
+        // displays their effective projection; payroll reconciles effective evidence.
         Ok(self.repository.get_all_raw()?)
     }
 

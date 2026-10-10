@@ -480,3 +480,12 @@ Other filing entry points acquire the lock once. Preserve pre-migration verified
 backup/WAL/isolated-install safeguards and external-file recovery limitations.
 Tests in `payroll_filing_tests.rs` inject interruption points and use temporary
 file/database trees; native GUI and production records must never be used.
+
+## Stage 7 correction validation (1.0.6/schema40)
+
+Run `cargo test --offline stage7 -- --test-threads=1`, then the full suite and
+`cargo check --offline`. Fixtures cover original/effective rendering, reviewed
+edits/reversion, stale concurrent mutations, retained-cycle deletion, exclusion
+history, duplicate review, settlement carry, delivery uncertainty, immutable PDFs,
+midnight/week/year boundaries, existing holiday subtraction and populated schema39
+WAL upgrade/rollback. All records and files use isolated temporary test roots.

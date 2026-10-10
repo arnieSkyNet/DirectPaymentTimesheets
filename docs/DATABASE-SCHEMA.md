@@ -2,9 +2,9 @@
 
 ## Scope and versioning
 
-This is the implemented SQLite schema at version 39 (development application version `1.0.6`). It is derived from `create_schema` and migrations in `src/database.rs`; those migrations are authoritative.
+This is the implemented SQLite schema at version 40 (development application version `1.0.6`). It is derived from `create_schema` and migrations in `src/database.rs`; those migrations are authoritative.
 
-`schema_version` contains the current integer version. A new database begins at version 1 and receives each ordered migration through `CURRENT_SCHEMA_VERSION` 39. Existing databases receive a verified pre-upgrade database/configuration backup and an isolated migration chain before transactional installation. Migration 23 removes the short-lived revision-only tables introduced by migration 22 while retaining the operational legacy snapshot tables. Migration 24 adds an explicit contracted/variable hours basis to effective-dated Personal Assistant contracted-hours history while preserving existing records as contracted.
+`schema_version` contains the current integer version. A new database begins at version 1 and receives each ordered migration through `CURRENT_SCHEMA_VERSION` 40. Existing databases receive a verified pre-upgrade database/configuration backup and an isolated migration chain before transactional installation. Migration 23 removes the short-lived revision-only tables introduced by migration 22 while retaining the operational legacy snapshot tables. Migration 24 adds an explicit contracted/variable hours basis to effective-dated Personal Assistant contracted-hours history while preserving existing records as contracted.
 
 During unreleased schema-20 development, an earlier local database shape contained `direct_shifts` without soft-deletion columns or the audit table. Startup therefore performs an idempotent schema-20 compatibility check after normal migrations. When that exact incomplete shape is found, it transactionally rebuilds `direct_shifts` into the final constrained form while preserving IDs and row values, then creates the audit table/indexes. It does not fabricate historical audit events, and repeated startup does not duplicate existing audit rows.
 
@@ -578,7 +578,7 @@ configuration can contain credentials; backup directories are private on Unix.
 
 ## Schema 37: sickness protection and historical information corrections
 
-Stage 2 introduced schema37; current development 1.0.6 uses schema39. The existing verified pre-upgrade backup and isolated migration-chain installation apply to 36→37 and earlier supported databases. Migration37 transactionally rebuilds `personal_assistant_sickness_periods` with `INTEGER PRIMARY KEY AUTOINCREMENT`, preserving existing IDs, dates, PA references and the date index. It does not deduplicate existing records, backfill missing historic sickness dates, change legacy weekly hours or modify payroll settlement/submission records.
+Stage 2 introduced schema37; current development 1.0.6 uses schema40. The existing verified pre-upgrade backup and isolated migration-chain installation apply to 36→37 and earlier supported databases. Migration37 transactionally rebuilds `personal_assistant_sickness_periods` with `INTEGER PRIMARY KEY AUTOINCREMENT`, preserving existing IDs, dates, PA references and the date index. It does not deduplicate existing records, backfill missing historic sickness dates, change legacy weekly hours or modify payroll settlement/submission records.
 
 New tables:
 
@@ -652,7 +652,32 @@ are not rewritten. Restored metadata mismatches block automatic reconciliation.
 
 Migration39 uses the established verified WAL-inclusive database/configuration
 backup, isolated migration and transactional installation. It reads no business
-files. Current-schema startup validates the new metadata and schema39 guards.
+files. Its metadata remains part of current-schema startup validation.
 Schema39 rejects ordinary writes from schema38 connections; older executables
 still must not be used for restore/DDL or filesystem manipulation. Backups remain
 database/configuration recovery, not external-document recovery.
+
+### Stage 7 imported-hours correction UI (1.0.6/schema40)
+
+Migration40 adds `imported_hours_inclusion_events`: ID, immutable imported row ID,
+boolean before/after exclusion, required reason, actor, timestamp, authorisation,
+review signature and structured before/after source evidence. Latest event determines
+explicit exclusion; no event means included in ordinary duplicate/payroll review.
+Update/delete triggers retain all events. Restore appends a reversal; it never
+removes an exclusion event or bypasses duplicate/submission membership safeguards.
+Existing correction events continue to store edited dates, breaks, independently
+imported worked duration and notes. PA identity, source rate/amount and raw rows
+remain unchanged. No legacy exclusions or authorisations are fabricated.
+
+The existing PA/start-time index supports bounded internal shift history. Schema40 write guards protect all
+business tables against older schema connections. Current-schema validation checks
+the new ledger and guards. The existing verified database/configuration backup,
+WAL-safe isolated upgrade, transactional installation and rollback protections apply
+to 39→40 and earlier migration chains. External documents are not database backups;
+archive recovery provenance is unchanged. Published older binaries are not safe
+recovery/DDL tools for newer databases.
+
+The inclusion ledger’s `authorised` flag records the additional protected-cycle
+acknowledgement; editable-cycle actions still require a reason and explicit approval
+to save. Review signatures bind source versions, counterpart evidence, payroll state
+and financial reconciliation obligations.

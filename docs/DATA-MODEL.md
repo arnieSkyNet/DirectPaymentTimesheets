@@ -60,7 +60,7 @@ New imports are preflighted as a complete file. PA names are matched case-insens
 
 An imported row can now have an append-only correction history for start, end, break minutes, worked minutes and notes. Each event records actor/action/time, optional reason and complete before/after effective values. The raw `TimesheetEntry`, PA identity, imported rate and imported amount remain immutable. Reversion is another event, and an identical effective proposal creates no event. Explicit repository APIs distinguish raw evidence from a latest-event effective projection.
 
-Payroll preparation and generation consume effective imported corrections alongside completed direct shifts through shared evidence reconciliation. Raw import identity and View Imported Hours remain unchanged.
+Payroll preparation and generation consume effective imported corrections alongside completed direct shifts through shared evidence reconciliation. Raw import identity remains unchanged. View Imported Hours shows original and effective values, source eligibility, audit history and reviewed correction actions.
 
 ## Import audit and archive
 

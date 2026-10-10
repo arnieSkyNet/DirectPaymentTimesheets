@@ -325,25 +325,31 @@ impl DirectShiftRepository {
         Ok(after)
     }
 
+    #[cfg(test)]
     pub fn soft_delete_completed(&self, id: i64, at: &str) -> Result<(), DirectShiftError> {
+        let expected = self.get_including_deleted(id)?.ok_or(DirectShiftError::NotFound)?;
+        self.soft_delete_completed_expected(&expected, at)
+    }
+
+    pub fn soft_delete_completed_expected(&self, expected: &DirectShift, at: &str) -> Result<(), DirectShiftError> {
+        let id = expected.id;
         let _guard = crate::timesheet_delivery::production_lock(&self.connection)
             .map_err(|e| DirectShiftError::Safety(e.to_string()))?;
         let tx = self.connection.unchecked_transaction()?;
         tx.execute("UPDATE schema_version SET version=version", [])?;
         let before = get_on(&tx, id)?.ok_or(DirectShiftError::NotFound)?;
+        if &before != expected {
+            return Err(DirectShiftError::Safety("Shift changed since deletion was displayed; refresh and review again".into()));
+        }
         ensure_current(&before)?;
         if before.end_time.is_none() {
             return Err(DirectShiftError::NotCompleted);
         }
-        let review = crate::shift_changes::review(
-            &tx,
-            before.personal_assistant_id,
-            &[(
-                before.start()?,
-                before.end()?.ok_or(DirectShiftError::NotCompleted)?,
-            )],
-        )
-        .map_err(|e| DirectShiftError::Safety(e.to_string()))?;
+        let review = crate::shift_changes::direct_review(
+            &tx, &before, before.start()?,
+            before.end()?.ok_or(DirectShiftError::NotCompleted)?,
+            before.break_minutes, before.notes.as_deref(),
+        ).map_err(|e| DirectShiftError::Safety(e.to_string()))?;
         if review.protected {
             return Err(DirectShiftError::Safety(
                 "Protected shifts cannot be deleted here; review a payroll correction instead"
@@ -393,6 +399,7 @@ impl DirectShiftRepository {
         Ok(get_running_on(&self.connection, pa_id)?)
     }
 
+    #[cfg(test)]
     pub fn recent_for_pa(
         &self,
         pa_id: i64,
@@ -404,6 +411,13 @@ impl DirectShiftRepository {
         )?;
         let rows = statement.query_map(params![pa_id, limit], direct_shift_from_row)?;
         Ok(rows.collect::<Result<Vec<_>, _>>()?)
+    }
+
+    /// Bounded history; LIKE wildcards are avoided so search text is literal.
+    pub fn history_for_pa(&self, pa: i64, search: &str, offset: i64, limit: i64) -> Result<Vec<DirectShift>, DirectShiftError> {
+        let mut statement = self.connection.prepare("SELECT id,personal_assistant_id,start_time,end_time,break_minutes,notes,source_type,created_at,updated_at,deleted_at,deleted_by FROM direct_shifts WHERE personal_assistant_id=?1 AND deleted_at IS NULL AND end_time IS NOT NULL AND instr(lower(start_time||' '||COALESCE(end_time,'')||' '||COALESCE(notes,'')),lower(?2))>0 ORDER BY start_time DESC,id DESC LIMIT ?3 OFFSET ?4")?;
+        let rows = statement.query_map(params![pa,search,limit.clamp(1,101),offset.max(0)],direct_shift_from_row)?;
+        Ok(rows.collect::<Result<Vec<_>,_>>()?)
     }
 
     #[allow(dead_code)]

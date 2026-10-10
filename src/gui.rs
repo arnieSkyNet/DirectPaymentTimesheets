@@ -208,6 +208,7 @@ pub struct DirectPaymentApp {
     last_import: Option<ImportSummary>,
     payroll_document_import: Option<crate::archive::PayrollReturnImportResult>,
     timesheets: Vec<TimesheetEntry>,
+    imported_hours_ui: crate::imported_hours_ui::ImportedHoursUi,
     timesheet_sort: TimesheetSortState,
     timesheet_pa_filter: Option<String>,
     timesheet_all_cycles: bool,
@@ -272,6 +273,7 @@ impl DirectPaymentApp {
             last_import: None,
             payroll_document_import: None,
             timesheets: Vec::new(),
+            imported_hours_ui: Default::default(),
             timesheet_sort: TimesheetSortState::default(),
             timesheet_pa_filter: None,
             timesheet_all_cycles: false,
@@ -1870,7 +1872,7 @@ impl DirectPaymentApp {
 
     fn draw_dashboard(&mut self, ui: &mut egui::Ui) {
         if !self.duplicate_ui.pending.is_empty() {
-            self.duplicate_ui.show(ui, &self.application);
+            if self.duplicate_ui.show(ui, &self.application) { self.imported_hours_ui.refresh(); }
         }
         egui::ScrollArea::vertical().show(ui, |ui| {
             ui.heading("Dashboard");
@@ -1910,6 +1912,7 @@ impl DirectPaymentApp {
                                 }
                                 self.duplicate_ui.pending.retain(|g|g.candidates.iter().any(|e| e.date().is_ok_and(|d|summary.affected_pa_dates.contains(&(e.pa,d)))));
                             }
+                            self.imported_hours_ui.refresh();
                             self.last_import = Some(summary);
                         }
 
@@ -1925,6 +1928,7 @@ impl DirectPaymentApp {
                     match self.application.get_timesheets() {
                         Ok(entries) => {
                             self.timesheets = entries;
+                            self.imported_hours_ui.refresh();
                             self.timesheet_sort = TimesheetSortState::default();
                             self.timesheet_pa_filter = None;
                             self.timesheet_all_cycles = false;
@@ -2047,7 +2051,12 @@ impl DirectPaymentApp {
             });
             dashboard_status_panel(ui, 3, theme, |ui| {
                 let scope = imported_cycle_scope(&self.application.payroll_schedule_repository, chrono::Local::now().date_naive());
-                draw_timesheets(ui, &self.timesheets, &mut self.timesheet_sort, &mut self.timesheet_pa_filter, &mut self.timesheet_all_cycles, &scope);
+                draw_timesheets(ui, &self.timesheets, &mut self.timesheet_sort, &mut self.timesheet_pa_filter, &mut self.timesheet_all_cycles, &scope, &self.application, &mut self.imported_hours_ui);
+                if self.imported_hours_ui.show(ui.ctx(), &self.application) {
+                    self.payroll_timesheet_screen.reload();
+                    self.status_message=self.imported_hours_ui.message.clone();
+                    if let Err(e)=self.duplicate_ui.refresh(&self.application,None){self.status_message.push_str(&format!(" Duplicate review refresh failed: {e}"));}
+                }
             });
             dashboard_status_panel(ui, 4, theme, |ui| {
                 self.draw_timesheet_email_status(ui);
@@ -3808,10 +3817,13 @@ fn draw_timesheets(
     pa_filter: &mut Option<String>,
     all_cycles: &mut bool,
     scope: &Result<(chrono::NaiveDate, chrono::NaiveDate), String>,
+    app: &Application,
+    imported_ui: &mut crate::imported_hours_ui::ImportedHoursUi,
 ) {
     ui.separator();
 
-    ui.heading("Timesheets");
+    ui.heading("Imported Hours — original source values");
+    imported_ui.begin_frame(app);
 
     if timesheets.is_empty() {
         ui.label("No timesheets loaded.");
@@ -3881,8 +3893,10 @@ fn draw_timesheets(
         timesheets.len()
     ));
 
+    ui.label("Review actions are available beside each PA name; scroll horizontally for full original/effective evidence.");
+    egui::ScrollArea::horizontal().id_salt("imported_hours_horizontal").show(ui,|ui| {
     egui::Grid::new("timesheet_grid")
-        .num_columns(6)
+        .num_columns(7)
         .striped(true)
         .show(ui, |ui| {
             timesheet_control_heading(
@@ -3955,13 +3969,14 @@ fn draw_timesheets(
             timesheet_sort_heading(ui, sort_state, TimesheetSortColumn::Worked, "Worked");
             timesheet_sort_heading(ui, sort_state, TimesheetSortColumn::Rate, "Rate");
             timesheet_sort_heading(ui, sort_state, TimesheetSortColumn::Amount, "Amount");
+            ui.label("Effective evidence / review");
             ui.end_row();
 
             for entry in filtered_timesheets(timesheets, *sort_state, pa_filter.as_deref())
                 .into_iter()
                 .filter(|entry| imported_entry_in_scope(entry, *all_cycles, scope))
             {
-                for (text, width) in [
+                for (column, (text, width)) in [
                     entry.pa_name.clone(),
                     entry.start_time.clone(),
                     entry.end_time.clone(),
@@ -3971,11 +3986,13 @@ fn draw_timesheets(
                 ]
                 .into_iter()
                 .zip(TIMESHEET_COLUMN_WIDTHS)
+                .enumerate()
                 {
                     // add_sized uses a centered-and-justified layout. Use an
                     // explicit left-to-right cell instead, with the same text
                     // inset as the header button.
                     let padding = ui.spacing().button_padding.x;
+                    ui.vertical(|ui| {
                     ui.allocate_ui_with_layout(
                         egui::vec2(width, ui.spacing().interact_size.y),
                         egui::Layout::left_to_right(egui::Align::Center),
@@ -3985,10 +4002,14 @@ fn draw_timesheets(
                             ui.add(egui::Label::new(text).wrap());
                         },
                     );
+                    if column==0 && ui.button("Edit / review…").clicked(){imported_ui.open(app,entry.id);}
+                    });
                 }
+                ui.vertical(|ui| {ui.set_max_width(420.0); imported_ui.row(ui,app,entry.id)});
                 ui.end_row();
             }
         });
+    });
 }
 
 fn imported_cycle_scope(
@@ -6478,3 +6499,25 @@ mod payroll_period_eligibility_tests {
 }
 
 include!("payroll_production_workflow.rs");
+
+#[cfg(test)]
+mod stage7_view_tests {
+    use super::*;
+    fn text(shape:&egui::Shape,out:&mut String){match shape{egui::Shape::Text(t)=>{out.push_str(&t.galley.job.text);out.push('\n');},egui::Shape::Vec(v)=>{for s in v{text(s,out)}},_=>{}}}
+    #[test]
+    fn stage7_raw_effective_view_renders_authoritative_duration_and_review_controls() {
+        let(_dir,app)=crate::payroll_timesheet_screen::tests::test_application();
+        app.repository.connection().execute("INSERT INTO personal_assistants(id,first_name,surname) VALUES(1,'Example','PA')",[]).unwrap();
+        app.repository.insert(&TimesheetEntry{id:0,pa_name:"Example PA".into(),personal_assistant_id:Some(1),start_time:"2 April 2026 at 09:00".into(),end_time:"2 April 2026 at 10:00".into(),break_minutes:0,worked_minutes:60,hourly_rate:12.0,amount:12.0,notes:Some("original note".into())}).unwrap();
+        let db=app.repository.connection();let snapshot=crate::imported_hours::snapshot(db,1).unwrap();
+        let change=crate::imported_hours::Change::Edit(crate::repository::TimesheetCorrectionProposal{start_time:"2026-04-02T09:00".into(),end_time:"2026-04-02T11:00".into(),break_minutes:5,worked_minutes:97,notes:Some("effective note".into())});
+        let review=crate::imported_hours::review(db,&snapshot,&change).unwrap();crate::imported_hours::apply(db,&snapshot,&change,"UI evidence",&review.signature,false).unwrap();
+        let raw=app.get_timesheets().unwrap();let original=raw.clone();let context=egui::Context::default();let mut imported_ui=crate::imported_hours_ui::ImportedHoursUi::default();
+        let mut labels=String::new();for _ in 0..2{let output=context.run(egui::RawInput{screen_rect:Some(egui::Rect::from_min_size(egui::Pos2::ZERO,egui::vec2(1900.0,900.0))),..Default::default()},|ctx|{egui::CentralPanel::default().show(ctx,|ui|{draw_timesheets(ui,&raw,&mut TimesheetSortState::default(),&mut None,&mut true,&Err("test scope".into()),&app,&mut imported_ui);});});labels.clear();for s in &output.shapes{text(&s.shape,&mut labels);}}
+        assert!(labels.contains("Edit / review…"));
+        // Narrow windows retain a reachable review action and horizontal scrolling.
+        let output=context.run(egui::RawInput{screen_rect:Some(egui::Rect::from_min_size(egui::Pos2::ZERO,egui::vec2(900.0,900.0))),..Default::default()},|ctx|{egui::CentralPanel::default().show(ctx,|ui|{draw_timesheets(ui,&raw,&mut TimesheetSortState::default(),&mut None,&mut true,&Err("test scope".into()),&app,&mut imported_ui);});});
+        let mut narrow=String::new();for s in &output.shapes{text(&s.shape,&mut narrow);}assert!(narrow.contains("Edit / review…"));
+        assert!(labels.contains("1h 0m"));assert!(labels.contains("worked 97m"));assert!(labels.contains("break 5m"));assert!(labels.contains("Revert to original"));assert!(labels.contains("Exclude"));assert_eq!(app.get_timesheets().unwrap(),original);
+    }
+}

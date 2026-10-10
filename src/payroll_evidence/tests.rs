@@ -1321,3 +1321,6 @@ fn approve_group(
 
 #[path = "stage4_tests.rs"]
 mod stage4_tests;
+
+#[path = "stage7_tests.rs"]
+mod stage7_tests;
