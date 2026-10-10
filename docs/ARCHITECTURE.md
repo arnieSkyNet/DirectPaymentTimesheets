@@ -43,7 +43,7 @@ Principal persisted areas are:
 - schema-19 manual adjustments, worked-item snapshots and snapshot state/digest metadata;
 - dated annual leave, SQLite annual-leave settings and structured sickness periods;
 - duplicate decisions, immutable submissions, corrections and verified legacy settlement; and
-- schema31 cycle-independent P60/P45 documents, schema33 delivery-history reconciliation, schema34 file-cleanup journalling, and schema35 superseded documents/current payslip revisions.
+- schema31 cycle-independent P60/P45 documents, schema33 delivery-history reconciliation, schema34 file-cleanup journalling, schema35 superseded documents/current payslip revisions, and schema36 timesheet document/attempt/review evidence.
 
 Repositories isolate queries and identity rules. Important compound identities use payroll year plus internal cycle number, not row ID alone. Dates are currently stored as text in existing formats, so repository methods parse and compare calendar dates explicitly where ordering must be chronological.
 
@@ -181,3 +181,42 @@ Import never overwrites changed bytes. A supplement variant with the same PA/typ
 Ordinary legacy evidence is adopted lazily on first explicit replacement: the old PDF path/hash and cycle delivery marker are captured in `payslip_revisions`; the new revision is current and unsent. The cycle's sent marker and schedule completion flag are cleared for the new bytes, while the old revision retains its original marker, including indeterminate. Subsequent delivery transitions update the current revision and cycle together. A stale selected attachment cannot send after replacement, and current revision hashes are checked before delivery.
 
 Supplements retain their original registration and history; `superseded_by` links to the new current registration. Every corrected supplement starts with `history_state=unknown` and NULL `sent_at`. Nothing converts an unknown P45 to sent, external or needs_sending. The normal history-review UI must be used before the corrected supplement can be emailed. Superseded documents are excluded from automatic selection and reconciliation but remain available to filing and historical inspection. All prior rows are preserved by migration without filesystem access.
+
+
+## Timesheet production safety (schema36)
+
+`timesheet_delivery` owns stable document identity, immutable bytes, atomic intent
+claims, frozen submission payloads and audited uncertainty review. A database
+writer lock validates current document/routing/classification before claiming;
+a unique unresolved-attempt index blocks competing sends. An OS file lock spans
+transport and finalisation, preventing another instance from reviewing an active
+attempt. No database transaction is held during SMTP. Crashes leave durable
+uncertainty; OS locks release automatically. Accepted first sends archive the
+claimed payload once. Resends append attempts against the existing submission.
+`email_service` builds production MIME from the same approved bytes and returns
+conservative accepted/non-accepted/uncertain evidence. Preview/test and payslip
+paths retain their existing semantics. Published older binaries lack a future
+schema check, so schema36 write guards require a connection function that only
+compatible application connections register.
+
+
+## Recovery and maintenance safety (1.0.6/schema36)
+
+`database_recovery` backs up and verifies the original database/configuration
+before upgrades, migrates on an isolated copy and installs with one live SQLite
+transaction. `BackupService` preserves committed WAL content, verifies complete
+schema/typed-row fingerprints and inventories external business paths without
+copying their files. Supported legacy restore is reviewed on an isolated migrated
+copy. Exact-input approval, a reason and rollback acknowledgement are mandatory;
+unresolved delivery evidence blocks restoration. Newer evidence survives any
+approved rollback in the separate verified recovery snapshot and its decision
+manifest. Maintenance uses the dispatch OS lock and a live writer reservation. Production
+payslip/P45/P60 bundles share that lock without changing routing or delivery rules.
+See DATABASE-SCHEMA.md for recovery boundaries and partial config-install failure.
+Published old binaries lack these protections; ordinary SQL guards cannot block
+their backup-API restore. Close them and never target upgraded production data.
+
+Byte-identical generation preserves immutable document/submission identity and
+sent status. After successful PDF publication it updates only the current registered
+snapshot location, allowing recovery at a new output destination even when the
+former file is missing. Failed identical publication retains the old registration.

@@ -692,8 +692,9 @@ fn cleanup_with_verifier(
 /// or initiating ordinary filing. It also finishes committed cleanup for this PA,
 /// which may remove verified obsolete ordinary-payslip sources.
 pub fn apply(app: &Application, pa: &PersonalAssistant, save: bool) -> Result<Vec<String>> {
-    let repository =
-        PersonalAssistantRepository::new(Connection::open(&app.context.environment.database_path)?);
+    let repository = PersonalAssistantRepository::new(crate::database::open(
+        &app.context.environment.database_path,
+    )?);
     let previous = repository
         .get_all()?
         .into_iter()

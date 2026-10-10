@@ -2,19 +2,53 @@ use std::path::Path;
 
 use rusqlite::{Connection, Result};
 
-pub const CURRENT_SCHEMA_VERSION: i64 = 35;
+pub const CURRENT_SCHEMA_VERSION: i64 = 36;
 
-pub fn initialise_database(database_path: &Path) -> Result<()> {
-    let connection = Connection::open(database_path)?;
+pub fn initialise_database(database_path: &Path) -> crate::database_recovery::Result<()> {
+    crate::database_recovery::initialise(database_path)
+}
 
-    create_schema(&connection)?;
-
-    println!("Database initialised.");
-
+pub fn register_connection(connection: &Connection) -> Result<()> {
+    connection.busy_timeout(std::time::Duration::from_secs(5))?;
+    connection.create_scalar_function(
+        "dpt_schema_version",
+        0,
+        rusqlite::functions::FunctionFlags::SQLITE_DETERMINISTIC,
+        |_| Ok(CURRENT_SCHEMA_VERSION),
+    )?;
     Ok(())
 }
 
+pub fn open(path: impl AsRef<Path>) -> Result<Connection> {
+    let connection = Connection::open(path)?;
+    register_connection(&connection)?;
+    Ok(connection)
+}
+
+#[cfg(test)]
+pub fn open_in_memory() -> Result<Connection> {
+    let connection = Connection::open_in_memory()?;
+    register_connection(&connection)?;
+    Ok(connection)
+}
+
 pub fn create_schema(connection: &Connection) -> Result<()> {
+    register_connection(connection)?;
+    let has_version: bool = connection.query_row(
+        "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='schema_version')",
+        [],
+        |r| r.get(0),
+    )?;
+    if has_version {
+        let version: i64 = connection.query_row(
+            "SELECT COALESCE(MAX(version),1) FROM schema_version",
+            [],
+            |r| r.get(0),
+        )?;
+        if version > CURRENT_SCHEMA_VERSION {
+            return Err(rusqlite::Error::InvalidParameterName(format!("Database schema {version} is newer than supported schema {CURRENT_SCHEMA_VERSION}; use a newer application.")));
+        }
+    }
     connection.execute(
         "
         CREATE TABLE IF NOT EXISTS schema_version (
@@ -232,6 +266,9 @@ fn apply_migrations(connection: &Connection) -> Result<()> {
     }
     if current_version < 35 {
         migrate_to_version_35(connection)?;
+    }
+    if current_version < 36 {
+        crate::timesheet_delivery::migrate(connection)?;
     }
     Ok(())
 }
@@ -1221,7 +1258,31 @@ fn table_has_column(connection: &Connection, table: &str, column: &str) -> Resul
 
 #[cfg(test)]
 pub(crate) mod tests {
+    pub(crate) fn remove_schema_36_fixture(db: &Connection) {
+        if !super::table_exists(db, "timesheet_documents").unwrap() {
+            return;
+        }
+        let triggers = db
+            .prepare("SELECT name FROM sqlite_master WHERE type='trigger' AND name LIKE 'dpt36_%'")
+            .unwrap()
+            .query_map([], |r| r.get::<_, String>(0))
+            .unwrap()
+            .collect::<Result<Vec<_>>>()
+            .unwrap();
+        for name in triggers {
+            db.execute_batch(&format!("DROP TRIGGER {name}")).unwrap();
+        }
+        db.execute_batch("ALTER TABLE payroll_timesheet_snapshot_states DROP COLUMN document_id;
+            DROP INDEX timesheet_document_submission;
+            ALTER TABLE payroll_submissions DROP COLUMN document_id;
+            DROP TABLE timesheet_delivery_reviews;
+            DROP TABLE timesheet_delivery_attempts;
+            DROP TABLE timesheet_documents;
+            DROP TABLE timesheet_attempt_items; DROP TABLE timesheet_attempt_weeks;
+            DROP TABLE timesheet_attempt_leave; DROP TABLE timesheet_attempt_holidays; DROP TABLE timesheet_attempt_corrections;").unwrap();
+    }
     pub(crate) fn remove_schema_32_fixture(db: &rusqlite::Connection) {
+        remove_schema_36_fixture(db);
         db.execute_batch(
             "DROP TABLE payslip_revisions;
             ALTER TABLE imported_payroll_documents DROP COLUMN superseded_by;

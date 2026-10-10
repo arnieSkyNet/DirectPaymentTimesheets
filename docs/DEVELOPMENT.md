@@ -147,7 +147,22 @@ Production batches capture the optional selected schedule and selection revision
 
 ## Backup/restore development
 
-Keep filesystem and SQLite details in `BackupService`. A backup must use SQLite's online backup API, not copy an open database file. Restore must stay confined to recognised application backup directories, validate read-only integrity/schema, create a safety backup first and require restart after success. Tests use temporary roots only.
+Keep recovery details in `BackupService` and `database_recovery`. Use SQLite's
+online backup API with a consistent read snapshot, complete schema/typed-row
+verification and read-only integrity checks, never a main-file-only copy of an
+open WAL database. Startup must preserve a verified original before any legacy
+migration. Run the entire chain on an isolated copy; install transactionally with
+the live writer reservation and dispatch OS lock held. Do not call `create_schema`
+on a production connection to bypass recovery.
+
+Restore remains confined to recognised application backup directories. Legacy
+backups migrate in isolation; approval binds exact live/selected/staged evidence
+and configuration. Require a nonblank reason and rollback acknowledgement, reject
+stale approval and unresolved sends, and flush a separately verified recovery
+snapshot/decision manifest before installation. Restart after success. Inventory
+external file paths only: never silently copy/restore business files. Full recovery
+also requires separately protected business folders and signatures. Tests use
+isolated temporary roots, including WAL and child-process interruption fixtures.
 
 ## Current document and maintenance boundaries
 
@@ -276,16 +291,16 @@ in candidate evidence signatures.
 Dashboard **Generate Payroll Timesheets** opens a PA selection for the captured
 operational period. Available saved preparations are selected initially; use
 **Clear selection**, individual checkboxes or **Select all available** for one,
-some or all PAs. Missing preparation, submitted, settled and indeterminate records
+some or all PAs. Missing preparation, settled and indeterminate records
 are shown with reasons and cannot be selected. **Generate selected PAs** uses the
 ordinary per-PA candidate publication, including saved Payroll Department notes.
 
 Production **Email Payroll Timesheets** starts with a separate recipient selection.
-Only PAs with a current candidate at the expected path and matching digest are
+Only PAs with an unsent current PDF at the registered path and matching digest are
 initially selected. Continue to the existing optional email-body Additional Note
 controls, then review the selected names, period and candidate details before Send.
 The email-body note remains separate from the saved note printed in the PDF.
-Current evidence and candidate integrity are checked again for each actual send.
+Current evidence and candidate integrity are checked again for first sends. Sent versions remain visible unticked and can be explicitly acknowledged for immutable-byte resend. **Select all unsent** applies only to timesheet emailing.
 
 Selected IDs and period dates/revision are captured. Changing the operational
 period (even away and back), deleting it or changing its dates rejects execution.
@@ -296,12 +311,13 @@ other PA's duplicate decisions. Global import/review preflight remains available
 
 Results list every selected PA as completed, skipped, failed/needs attention or
 not attempted. Processing stops on the first failure; earlier successful results
-remain committed. A new selection excludes submitted/settled PAs. Retrying a
-captured selection skips successful sends. Indeterminate delivery stays protected;
-SMTP failure restores the candidate where possible. Legitimate replacements still
-require **Correct / Resubmit Timesheet** and retain the original submission,
-attachment, evidence and structured payroll note. Returned actual in-lieu hours
-are unaffected by generation and email. Selection is transient: no schema change.
+remain committed. A new selection leaves sent current documents unticked. Replaying
+an accepted intent skips it; a rejected intent requires a fresh selection.
+Indeterminate delivery stays protected; only established non-acceptance releases
+retry eligibility. Corrected regeneration and authorised correction workflows
+retain original submissions, evidence and settlement records. Returned actual
+in-lieu hours are unaffected. Selection/acknowledgement is transient; schema36
+persists document identities, transport attempts, frozen payloads and reviews.
 
 `src/payroll_production_tests.rs` exercises real generation and production dispatch
 using temporary databases/PDF directories and localhost mock SMTP. It covers
@@ -340,3 +356,23 @@ See [Release-build rehearsals](RELEASE-BUILDS.md) for the six architecture targe
 nine packages, explicit target/tool pins, local validation and required GitHub
 proof runs. This infrastructure does not publish releases or change application
 version/schema. Public downloads remain those documented in README.
+
+
+## Schema36 delivery invariants
+
+Use `database::open` for writable connections: it registers the schema compatibility
+function used by migration36 guards. Ordinary SQL mutations by raw older
+connections fail closed; SQLite backup restoration bypasses those triggers.
+Published 1.0.4/1.0.5 binaries do not have the new maintenance safeguards and must
+not open upgraded production data. `create_schema` rejects unsupported future versions before migration.
+Do not remove guards or silently reset schema_version. Schema35 is the upgrade
+source for published Linux/Windows 1.0.4 and macOS 1.0.5; earlier supported schema
+fixtures exercise the ordered chain through 36.
+
+Production timesheet dispatch must go through `timesheet_delivery::execute` with a
+captured intent and routing validation under the writer lock. Prepare MIME from
+approved verified bytes; never reopen a pathname during transport. Retain the OS
+`*.timesheet-delivery.lock` sidecar (do not unlink it while instances can be active).
+Do not treat an exception as proof of non-acceptance. Never create another payroll
+submission to record a resend. Test claim races, acknowledgement loss, stale
+confirmation, restart/review, partial retry and original correction applications.

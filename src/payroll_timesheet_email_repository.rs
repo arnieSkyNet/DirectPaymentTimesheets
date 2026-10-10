@@ -263,7 +263,7 @@ mod tests {
 
     #[test]
     fn tracks_timesheet_and_payslip_sends_independently() {
-        let connection = Connection::open_in_memory().unwrap();
+        let connection = crate::database::open_in_memory().unwrap();
         create_schema(&connection).unwrap();
         let repository = PayrollTimesheetEmailRepository::new(connection);
 

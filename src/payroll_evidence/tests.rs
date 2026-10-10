@@ -18,7 +18,7 @@ fn e(source: &str, id: i64, start: &str, end: &str) -> WorkEvidence {
     }
 }
 fn db() -> Connection {
-    let db = Connection::open_in_memory().unwrap();
+    let db = crate::database::open_in_memory().unwrap();
     crate::database::create_schema(&db).unwrap();
     db
 }

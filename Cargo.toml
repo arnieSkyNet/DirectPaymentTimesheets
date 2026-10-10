@@ -1,6 +1,6 @@
 [package]
 name = "direct_payment_timesheets"
-version = "1.0.5"
+version = "1.0.6"
 edition = "2021"
 license = "GPL-3.0-or-later"
 repository = "https://github.com/ArnieSkyNet/DirectPaymentTimesheets"
@@ -8,7 +8,7 @@ repository = "https://github.com/ArnieSkyNet/DirectPaymentTimesheets"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-rusqlite = { version = "0.31", features = ["backup", "bundled"] }
+rusqlite = { version = "0.31", features = ["backup", "bundled", "functions"] }
 csv = "1.3"
 serde = { version = "1.0", features = ["derive"] }
 toml = "0.8"

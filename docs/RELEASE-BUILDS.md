@@ -1,5 +1,10 @@
 # Release builds and artifact-only packaging rehearsals
 
+Current development is **1.0.6** (planned for every platform). Published Linux
+AMD64/ARM64/ARMHF and Windows x64/ARM64 remain **1.0.4**; published macOS Intel
+and Apple Silicon are **1.0.5**. The inventory below describes the historical
+1.0.4 release, not the latest macOS downloads.
+
 [v1.0.4](https://github.com/arnieSkyNet/DirectPaymentTimesheets/releases/tag/v1.0.4)
 was published on 01 October 2026 from source commit
 `20e84a54274e659a854af8959e7e23c99d13e676`. GitHub Actions rehearsal run

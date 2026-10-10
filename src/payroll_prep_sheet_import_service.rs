@@ -210,11 +210,10 @@ fn parse_schedule_date(
 pub(crate) mod tests {
     use super::*;
     use chrono::Duration;
-    use rusqlite::Connection;
     use std::time::{SystemTime, UNIX_EPOCH};
 
     fn repository() -> PayrollScheduleRepository {
-        let connection = Connection::open_in_memory().unwrap();
+        let connection = crate::database::open_in_memory().unwrap();
         crate::database::create_schema(&connection).unwrap();
         PayrollScheduleRepository::new(connection)
     }
@@ -525,15 +524,15 @@ pub(crate) mod tests {
     #[test]
     fn insertion_failure_rolls_back_the_complete_previous_schedule() {
         let path = temporary_database_path("atomic-schedule");
-        let connection = Connection::open(&path).unwrap();
+        let connection = crate::database::open(&path).unwrap();
         crate::database::create_schema(&connection).unwrap();
         drop(connection);
-        let repository = PayrollScheduleRepository::new(Connection::open(&path).unwrap());
+        let repository = PayrollScheduleRepository::new(crate::database::open(&path).unwrap());
         let service = PayrollPrepSheetImportService::new(&repository);
         service
             .import_text(&sheet("2027/28", date(2027, 3, 22)))
             .unwrap();
-        Connection::open(&path)
+        crate::database::open(&path)
             .unwrap()
             .execute_batch(
                 "CREATE TRIGGER reject_schedule_insert
@@ -557,15 +556,15 @@ pub(crate) mod tests {
     #[test]
     fn refuses_changed_schedule_when_prepared_payroll_history_exists() {
         let path = temporary_database_path("schedule-history");
-        let connection = Connection::open(&path).unwrap();
+        let connection = crate::database::open(&path).unwrap();
         crate::database::create_schema(&connection).unwrap();
         drop(connection);
-        let repository = PayrollScheduleRepository::new(Connection::open(&path).unwrap());
+        let repository = PayrollScheduleRepository::new(crate::database::open(&path).unwrap());
         let service = PayrollPrepSheetImportService::new(&repository);
         service
             .import_text(&sheet("2026/27", date(2026, 3, 23)))
             .unwrap();
-        Connection::open(&path)
+        crate::database::open(&path)
             .unwrap()
             .execute(
                 "INSERT INTO payroll_timesheets (

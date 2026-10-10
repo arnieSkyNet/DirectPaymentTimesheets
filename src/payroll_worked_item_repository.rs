@@ -50,7 +50,7 @@ pub struct SnapshotMetadata {
 }
 
 pub struct PayrollWorkedItemRepository {
-    connection: Connection,
+    pub(crate) connection: Connection,
 }
 
 impl PayrollWorkedItemRepository {
@@ -180,6 +180,22 @@ impl PayrollWorkedItemRepository {
             payroll_timesheet_id,
         )
         .map_err(|e| rusqlite::Error::InvalidParameterName(e.to_string()))?;
+        let previous:Option<(String,String,Option<String>)>=transaction.query_row("SELECT s.state,s.pdf_sha256,c.evidence_signature FROM payroll_timesheet_snapshot_states s LEFT JOIN payroll_candidate_checks c ON c.payroll_timesheet_id=s.payroll_timesheet_id WHERE s.payroll_timesheet_id=?1",[payroll_timesheet_id],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?))).optional()?;
+        // A byte-identical, evidence-identical regeneration is the same document,
+        // not a fresh first send. Material corrections still allocate a new identity.
+        if previous
+            .as_ref()
+            .is_some_and(|(state, digest, old_signature)| {
+                state != "indeterminate"
+                    && digest == pdf_sha256
+                    && old_signature.as_ref() == Some(&signature)
+            })
+            && self.get_snapshot_items(payroll_timesheet_id)? == items
+        {
+            // Publication updates the mutable location only after rename succeeds.
+            // Retain identity, sent state and original submission provenance.
+            return Ok(());
+        }
         transaction.execute("INSERT INTO payroll_candidate_checks VALUES (?1,?2) ON CONFLICT(payroll_timesheet_id) DO UPDATE SET evidence_signature=excluded.evidence_signature",params![payroll_timesheet_id,signature])?;
         let existing_state: Option<String> = transaction
             .query_row(
@@ -249,6 +265,9 @@ impl PayrollWorkedItemRepository {
                 params![week_totals_minutes[index] as f64 / 60.0, week_ids[index]],
             )?;
         }
+        transaction.execute("INSERT INTO timesheet_documents(payroll_timesheet_id,pdf_path,pdf_sha256,generated_at) VALUES (?1,?2,?3,?4)", params![payroll_timesheet_id,pdf_path,pdf_sha256,generated_at])?;
+        let document_id = transaction.last_insert_rowid();
+        transaction.execute("UPDATE payroll_timesheet_snapshot_states SET document_id=?1 WHERE payroll_timesheet_id=?2",params![document_id,payroll_timesheet_id])?;
         transaction.commit()?;
         Ok(())
     }
@@ -270,6 +289,7 @@ impl PayrollWorkedItemRepository {
         transaction.commit()
     }
 
+    #[cfg(test)]
     pub fn verify_current_evidence(
         &self,
         payroll_timesheet_id: i64,
@@ -280,6 +300,7 @@ impl PayrollWorkedItemRepository {
         )
     }
 
+    #[cfg(test)]
     pub fn protect_for_send(&self, payroll_timesheet_id: i64, at: &str) -> Result<bool> {
         Ok(self.connection.execute(
             "UPDATE payroll_timesheet_snapshot_states
@@ -289,17 +310,8 @@ impl PayrollWorkedItemRepository {
         )? == 1)
     }
 
-    pub fn restore_candidate_after_failed_send(&self, payroll_timesheet_id: i64) -> Result<()> {
-        self.connection.execute(
-            "UPDATE payroll_timesheet_snapshot_states
-             SET state = 'candidate', indeterminate_at = NULL
-             WHERE payroll_timesheet_id = ?1 AND state = 'indeterminate'",
-            [payroll_timesheet_id],
-        )?;
-        Ok(())
-    }
-
     #[allow(clippy::too_many_arguments)]
+    #[cfg(test)]
     pub fn mark_submitted_and_email_sent(
         &self,
         payroll_timesheet_id: i64,
@@ -374,11 +386,12 @@ mod tests {
     #[test]
     fn manual_adjustment_persists_and_reloads_with_reason() {
         let file = NamedTempFile::new().unwrap();
-        let setup = Connection::open(file.path()).unwrap();
+        let setup = crate::database::open(file.path()).unwrap();
         create_schema(&setup).unwrap();
         drop(setup);
 
-        let repository = PayrollWorkedItemRepository::new(Connection::open(file.path()).unwrap());
+        let repository =
+            PayrollWorkedItemRepository::new(crate::database::open(file.path()).unwrap());
         repository
             .set_manual_adjustment(
                 19,
@@ -392,7 +405,8 @@ mod tests {
             .unwrap();
         drop(repository);
 
-        let reloaded = PayrollWorkedItemRepository::new(Connection::open(file.path()).unwrap());
+        let reloaded =
+            PayrollWorkedItemRepository::new(crate::database::open(file.path()).unwrap());
         assert_eq!(
             reloaded.get_manual_adjustments(19).unwrap(),
             vec![ManualHoursAdjustment {

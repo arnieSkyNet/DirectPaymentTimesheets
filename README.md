@@ -2,11 +2,16 @@
 
 DirectPaymentTimesheets is a local desktop application for administering UK Direct Payment Personal Assistant timesheets and the four-week payroll-provider workflow. It imports externally recorded work, prepares payroll timesheets, generates the provider PDF, sends timesheets and payslips, imports payroll documents, and preserves the evidence represented by submitted payroll.
 
-The **1.0.5 development** application uses SQLite schema **35**. It is a single-user local desktop application for the documented Direct Payment payroll workflow, not a general-purpose payroll product.
+The **1.0.6 development** application uses SQLite schema **36**. It is a single-user local desktop application for the documented Direct Payment payroll workflow, not a general-purpose payroll product.
 
 ## Download
 
-**Development version: 1.0.5 · Latest released version: 1.0.4**
+**Development version: 1.0.6 · Published: Linux/Windows 1.0.4; macOS 1.0.5**
+
+Development 1.0.6 is intended for all platforms; its packages have not been released.
+Timesheet email selects only unsent current PDF versions by default. Sent versions
+remain visible for an explicitly acknowledged resend. Each production attempt is
+recorded; uncertain acceptance blocks retry until documented review.
 
 Choose your computer and installed operating system below. On Linux, choose either the `.deb` installer or the portable AppImage.
 
@@ -228,10 +233,18 @@ The Dashboard groups the workflow into three rows:
 
 ### Backup and restore
 
-- Manual consistent SQLite backups with optional `config.toml` and a human-readable manifest.
-- Discovery and validation of application-created backups.
-- Integrity/schema checks and a mandatory pre-restore safety backup.
-- SQLite-safe restore with optional configuration restore and required application restart.
+- Verified consistent SQLite backups, including committed WAL data, optional `config.toml` and a recovery manifest listing known external business paths.
+- Before any schema upgrade, startup preserves a verified original recovery copy, runs migrations in isolation and installs transactionally. Backup failure aborts the upgrade.
+- Supported legacy backups restore through isolated migration. Review identifies current rows absent/different in restored data; a documented reason and explicit rollback acknowledgement are required. Changed data invalidates approval; unresolved email uncertainty blocks restore.
+- A separate verified pre-restore copy retains original submissions, delivery evidence and settings. Restore requires closing other instances and restarting afterward.
+- PDFs, payslips, signatures and other business files are **not** copied/restored by database backup. Separately protect the complete application root and configured external folders/files before upgrade or rollback.
+
+`cargo run` uses normal configured data and automatically upgrades it. For a rehearsal,
+set `DIRECTPAYMENTTIMESHEETS_HOME` to an isolated copy **and** redirect its configured
+external folders; the root override alone does not isolate those paths. Do not use
+published 1.0.4/1.0.5 executables on upgraded data: their restore can replace newer
+schemas. Consult [recovery details](docs/DATABASE-SCHEMA.md#verified-startup-upgrades-and-legacy-restore)
+before the first launch or any rollback.
 
 ## Runtime data and configuration
 
@@ -281,7 +294,7 @@ User-facing labels use Payroll Week, the four-week date range and pay date. Inte
 - Backup/restore has no scheduling, retention cleanup, compression or cloud integration.
 - Restore accepts only recognised DirectPaymentTimesheets backup directories, not arbitrary SQLite files.
 - Historical annual-leave numeric rule history and sickness reference-period/accrual calculations are not implemented. Guidance's current sickness warning reads legacy weekly sickness hours, not structured sickness dates.
-- Durable CSV content identity/row-to-import provenance, automatic promotion/emailing of archival ordinary payslips, and user-facing indeterminate-email recovery remain future work.
+- Durable CSV content identity/row-to-import provenance, automatic promotion/emailing of archival ordinary payslips, and payslip/supplement indeterminate-email recovery remain future work. Timesheet uncertainty has an explicit audited review workflow.
 - Authentication, roles and web/mobile access are not implemented. `email_archive` has no actual email-archiving consumer.
 
 The existing user-triggered GitHub **Check for updates** reports newer versions and installation guidance; it does not download or install updates. Users must manually download and install the appropriate GitHub release asset.

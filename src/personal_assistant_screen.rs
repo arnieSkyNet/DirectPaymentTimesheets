@@ -675,7 +675,9 @@ impl PersonalAssistantScreen {
         match application.personal_assistant_repository.get_all() {
             Ok(assistants) => {
                 self.assistants = assistants;
-                if refresh_after_save && !self.status_message.starts_with("Personal Assistant saved.") {
+                if refresh_after_save
+                    && !self.status_message.starts_with("Personal Assistant saved.")
+                {
                     self.status_message = "Personal Assistant saved.".to_string();
                 } else if !refresh_after_save {
                     self.status_message = "Personal Assistants loaded.".to_string();
@@ -1257,7 +1259,7 @@ mod save_status_tests {
         // An unrelated later load retains its original status behaviour.
         screen.load(&application);
         assert_eq!(screen.status_message, "Personal Assistants loaded.");
-        rusqlite::Connection::open(&application.context.environment.database_path)
+        crate::database::open(&application.context.environment.database_path)
             .unwrap()
             .execute("DROP TABLE personal_assistants", [])
             .unwrap();

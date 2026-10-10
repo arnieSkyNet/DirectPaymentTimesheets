@@ -311,6 +311,7 @@ pub fn timesheet_path(
     Ok(output_root.join(timesheet_filename(personal_assistant_name, schedule)?))
 }
 
+#[cfg(test)]
 pub fn existing_timesheet_path(
     root: &Path,
     name: &str,

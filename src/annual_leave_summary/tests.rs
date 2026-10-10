@@ -391,9 +391,8 @@ fn absent_history_and_undated_legacy_evidence_are_explicitly_incomplete() {
 
 #[test]
 fn application_reads_operational_defaults_and_only_this_pas_definitively_sent_payslip() {
-    use rusqlite::Connection;
     let (_directory, app) = crate::payroll_timesheet_screen::tests::test_application();
-    let db = Connection::open(&app.context.environment.database_path).unwrap();
+    let db = crate::database::open(&app.context.environment.database_path).unwrap();
     let mut pa = evidence(HoursBasis::Variable).assistant;
     pa.employment_status = Some("Inactive".into()); // history remains accessible
     app.personal_assistant_repository.insert(&pa).unwrap();
@@ -584,9 +583,8 @@ fn historical_fallback_excludes_non_work_and_submitted_items_take_priority() {
 
 #[test]
 fn historical_fallback_load_uses_per_pa_production_payslip_status() {
-    use rusqlite::Connection;
     let (_directory, app) = crate::payroll_timesheet_screen::tests::test_application();
-    let db = Connection::open(&app.context.environment.database_path).unwrap();
+    let db = crate::database::open(&app.context.environment.database_path).unwrap();
     let mut pa = evidence(HoursBasis::Variable).assistant;
     pa.employment_status = Some("Inactive".into()); // history remains accessible
     app.personal_assistant_repository.insert(&pa).unwrap();

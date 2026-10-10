@@ -262,7 +262,7 @@ mod tests {
     }
 
     fn repository() -> ContractedHoursRepository {
-        let connection = Connection::open_in_memory().unwrap();
+        let connection = crate::database::open_in_memory().unwrap();
         create_schema(&connection).unwrap();
         ContractedHoursRepository::new(connection)
     }

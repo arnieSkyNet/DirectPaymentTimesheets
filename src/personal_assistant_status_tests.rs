@@ -75,7 +75,7 @@ fn status_fixture(
     PersonalAssistantScreen,
 ) {
     let (dir, app) = crate::payroll_timesheet_screen::tests::test_application();
-    rusqlite::Connection::open(&app.context.environment.database_path).unwrap().execute(
+    crate::database::open(&app.context.environment.database_path).unwrap().execute(
         "INSERT INTO personal_assistants(id, first_name, surname, employment_status, date_of_birth, start_date, email, telephone)
          VALUES(1, 'Example', 'Assistant', ?1, '1990-02-01', '2025-04-03', 'example@example.test', '01234567890')",
         [status],
@@ -101,7 +101,7 @@ fn save_editor(ctx: &egui::Context, screen: &mut PersonalAssistantScreen, app: &
 fn assert_status_reloaded(app: &Application, expected: &str) -> PersonalAssistant {
     use crate::personal_assistant_repository::PersonalAssistantRepository;
     // Reopen persistent storage and run the same schema initialization used at startup.
-    let db = rusqlite::Connection::open(&app.context.environment.database_path).unwrap();
+    let db = crate::database::open(&app.context.environment.database_path).unwrap();
     crate::database::create_schema(&db).unwrap();
     let raw: String = db
         .query_row(

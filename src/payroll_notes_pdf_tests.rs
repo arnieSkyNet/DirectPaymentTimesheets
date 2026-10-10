@@ -211,7 +211,7 @@ fn payroll_notes_overflow_refuses_without_overwriting_existing_pdf() {
 fn payroll_notes_failed_publication_preserves_candidate_identity_and_file() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("published.pdf");
-    let connection = rusqlite::Connection::open_in_memory().unwrap();
+    let connection = crate::database::open_in_memory().unwrap();
     crate::database::create_schema(&connection).unwrap();
     let repo = crate::payroll_worked_item_repository::PayrollWorkedItemRepository::new(connection);
     let schedule = schedule("05/04/2032", "30/04/2032");

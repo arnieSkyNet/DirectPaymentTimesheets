@@ -162,14 +162,13 @@ mod window_tests {
 #[cfg(test)]
 mod database_tests {
     use super::initialise_database;
-    use rusqlite::Connection;
 
     #[test]
     fn startup_initialises_a_fresh_database_without_historical_source_data() {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("database.sqlite");
         initialise_database(&path).unwrap();
-        let connection = Connection::open(&path).unwrap();
+        let connection = crate::database::open(&path).unwrap();
         let version: i64 = connection
             .query_row("SELECT version FROM schema_version", [], |row| row.get(0))
             .unwrap();
@@ -195,7 +194,7 @@ mod database_tests {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("database.sqlite");
         initialise_database(&path).unwrap();
-        let connection = Connection::open(&path).unwrap();
+        let connection = crate::database::open(&path).unwrap();
         connection.execute(
             "INSERT INTO personal_assistants (id, first_name, surname) VALUES (1, 'Test', 'Assistant')",
             [],

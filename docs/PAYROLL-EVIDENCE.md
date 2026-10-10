@@ -1,6 +1,6 @@
 # Payroll evidence and reconciliation (schema 29)
 
-Schema29 is the evidence-migration milestone described here; the development application is v1.0.5/schema35.
+Schema29 is the evidence-migration milestone described here; the development application is v1.0.6/schema36.
 
 ## Sources and possible duplicates
 
@@ -36,13 +36,14 @@ The existing `submitted_at` history is displayed in discrepancy details. It iden
 
 ## Selected payroll production
 
-Dashboard generation and production timesheet email capture an explicit set of
-PA IDs for the operational period. All available PAs are selected by default;
-checkboxes permit one or several. Submitted/settled and indeterminate PAs are
-unavailable. Email selection requires a current candidate, with path/digest and
-current evidence checked again at send time. Successful early submissions are
-excluded from later ordinary batches; replacements require the existing audited
-resubmission decision.
+Dashboard generation and production timesheet email capture the operational period.
+Generation retains intentional regeneration of submitted payroll; settled and
+indeterminate payroll cannot be regenerated. Email uses stable document identities:
+unsent current versions (including newly generated corrected PDFs) default selected;
+sent current versions remain visible and unticked. **Select all unsent** excludes
+resends. A manual resend requires explicit acknowledgement and separate final
+confirmation listing first sends/resends, actual To/CC/BCC recipients and the period.
+A changed selection/document/routing/classification invalidates confirmation.
 
 `load_for_pa` filters source rows in SQL before parsing. `preflight_for_pa` scopes
 both current evidence and the retained duplicate-decision inventory by source
@@ -50,7 +51,7 @@ ownership, so an omitted PA's decisions are not invalidated. Reconciliation and
 candidate signatures/verification use this scope. Global import/preparation
 preflight retains its original whole-inventory semantics. Selected processing
 stops at the first failure and reports completed, failed and unattempted PAs;
-previous successes remain committed and retry cannot resend submitted PAs.
+previous successes remain committed. Replaying an accepted dispatch intent skips it; a fresh retry selection defaults only to unsent candidates. A failed resend stays unticked because that document was previously sent.
 
 Saved Payroll Department notes follow the existing schema-32 PDF and retained
 submission path. Source shift notes still have no material evidence effect;
@@ -137,3 +138,43 @@ payable duration. Existing corrections and manual adjustments are already payabl
 values and are not rounded again. Submitted/settled history is not recalculated
 when settings change, and unchanged raw evidence does not create a discrepancy
 merely because its submitted payable duration was rounded.
+
+
+## Production timesheet attempts and review (schema36)
+
+`timesheet_delivery` retains immutable generated-document identities/bytes and
+records every transport attempt before SMTP. Claims are atomic and unique per
+unresolved timesheet, with a unique dispatch intent and Message-ID. The claimed
+items, weeks, leave, holidays, corrections and payroll note are frozen before
+transport. Accepted first sends append one submission from that payload; accepted
+resends attach delivery evidence to the existing submission. Original submission
+and settlement records remain unchanged.
+
+Explicit SMTP negative responses establish non-acceptance. Generic transport,
+timeout/TLS/I/O errors and interrupted claims remain uncertain. Acceptance means
+SMTP acceptance, not proof of recipient delivery. Dashboard history exposes all
+attempts and requires a reason/evidence plus a separate confirmation for review.
+The original uncertainty is retained alongside actor/time/decision evidence. A
+review establishing acceptance finalises the frozen payload; established
+non-acceptance releases eligibility; inconclusive evidence leaves it blocked.
+An OS sidecar lock prevents review during an active sender and is released by the
+kernel on process exit. Legacy uncertainty is reviewed without inventing attempts;
+acceptance cannot be finalised without the original PDF evidence.
+
+Migration36 preserves existing submissions and their bytes, corrections and
+settlements. Legacy missing bytes remain absent until a matching retained file is
+verified; no historical attempts or resend counts are inferred. No numbered PDF
+revision architecture is reintroduced. Preview/test email and payslip/P45/P60
+routing and delivery rules remain unchanged.
+
+Byte-identical regeneration with identical represented evidence retains the same
+document identity and sent status. Material corrections allocate a new identity.
+
+
+Restore cannot release unresolved attempts or legacy indeterminate email states.
+An approved destructive rollback may remove newer evidence from the active
+working database only after a separate verified original recovery copy and
+reason/decision manifest are durable. Review explicitly lists changed/absent
+current rows and warns of duplicate payroll processing. Reconcile any rollback
+with Payroll before further sending; preserved historical acceptance is not proof
+of recipient delivery. Published older executables lack these recovery safeguards.

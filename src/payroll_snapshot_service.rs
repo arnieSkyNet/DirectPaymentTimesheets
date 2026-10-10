@@ -1,3 +1,4 @@
+use rusqlite::OptionalExtension;
 use std::fmt;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -11,7 +12,6 @@ use crate::payroll_worked_item_repository::{
 #[derive(Debug)]
 pub enum SnapshotSafetyError {
     Refused(String),
-    Transport(String),
     Indeterminate(String),
     Operation(String),
 }
@@ -19,7 +19,7 @@ pub enum SnapshotSafetyError {
 impl fmt::Display for SnapshotSafetyError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Refused(message) | Self::Transport(message) | Self::Operation(message) => {
+            Self::Refused(message) | Self::Operation(message) => {
                 formatter.write_str(message)
             }
             Self::Indeterminate(message) => write!(
@@ -50,6 +50,13 @@ pub fn publish_candidate<F>(
 where
     F: FnOnce(&Path) -> Result<(), Box<dyn std::error::Error>>,
 {
+    // Publishing a replacement must not overlap sending, review, upgrade or restore.
+    let _dispatch = crate::timesheet_delivery::production_lock(&repository.connection)
+        .map_err(|e| SnapshotSafetyError::Operation(e.to_string()))?;
+    let previous_document: Option<i64> = repository.connection.query_row(
+        "SELECT document_id FROM payroll_timesheet_snapshot_states WHERE payroll_timesheet_id=?1",
+        [publication.payroll_timesheet_id], |r|r.get(0),
+    ).optional().map_err(operation_error)?.flatten();
     if let Some(metadata) = repository
         .snapshot_metadata(publication.payroll_timesheet_id)
         .map_err(operation_error)?
@@ -107,78 +114,71 @@ where
         return Err(operation_error(error));
     }
 
+    let bytes =
+        fs::read(&temporary_path).map_err(|e| SnapshotSafetyError::Operation(e.to_string()))?;
+    crate::timesheet_delivery::retain_current_bytes(
+        &repository.connection,
+        publication.payroll_timesheet_id,
+        &bytes,
+    )
+    .map_err(|e| SnapshotSafetyError::Operation(e.to_string()))?;
     if let Err(error) = fs::rename(&temporary_path, publication.final_pdf_path) {
-        let _ = repository.discard_candidate(publication.payroll_timesheet_id);
+        let current_document: Option<i64> = repository.connection.query_row(
+            "SELECT document_id FROM payroll_timesheet_snapshot_states WHERE payroll_timesheet_id=?1",
+            [publication.payroll_timesheet_id], |r|r.get(0),
+        ).optional().map_err(operation_error)?.flatten();
+        if current_document != previous_document {
+            let _ = repository.discard_candidate(publication.payroll_timesheet_id);
+        }
         let _ = fs::remove_file(&temporary_path);
         return Err(SnapshotSafetyError::Operation(format!(
             "Could not publish the generated payroll PDF; its candidate snapshot was invalidated: {error}"
         )));
     }
+    // A byte-identical regeneration may have retained the previous registered path.
+    // Change location after successful publication; immutable document/submission paths remain provenance.
+    repository.connection.execute(
+        "UPDATE payroll_timesheet_snapshot_states SET pdf_path=?1 WHERE payroll_timesheet_id=?2",
+        rusqlite::params![final_path, publication.payroll_timesheet_id],
+    ).map_err(operation_error)?;
     Ok(())
 }
 
+// Test adapter for low-level fixtures; production sends only captured GUI intents.
+#[cfg(test)]
 #[allow(clippy::too_many_arguments)]
 pub fn send_production_candidate<F>(
     repository: &PayrollWorkedItemRepository,
-    payroll_timesheet_id: i64,
-    personal_assistant_id: i64,
-    payroll_year: &str,
-    cycle_number: i64,
-    attachment_path: &Path,
-    attempted_at: &str,
+    record: i64,
+    _pa: i64,
+    _year: &str,
+    _cycle: i64,
+    path: &Path,
+    _at: &str,
     send: F,
 ) -> Result<(), SnapshotSafetyError>
 where
     F: FnOnce() -> Result<(), Box<dyn std::error::Error>>,
 {
-    if repository
-        .snapshot_metadata(payroll_timesheet_id)
-        .map_err(operation_error)?
-        .is_some_and(|metadata| metadata.state == SnapshotState::Submitted)
-    {
-        // Resend the retained attachment without recalculation or snapshot mutation.
-        verify_preview_or_test_attachment(repository, payroll_timesheet_id, attachment_path)?;
-        return send().map_err(|error| SnapshotSafetyError::Transport(error.to_string()));
-    }
-    verify_candidate(repository, payroll_timesheet_id, attachment_path)?;
-    if !repository
-        .protect_for_send(payroll_timesheet_id, attempted_at)
-        .map_err(operation_error)?
-    {
-        return Err(SnapshotSafetyError::Refused(
-            "The generated candidate could not be protected for production sending.".to_string(),
-        ));
-    }
-
-    if let Err(error) = send() {
-        repository
-            .restore_candidate_after_failed_send(payroll_timesheet_id)
-            .map_err(|restore_error| {
-                SnapshotSafetyError::Indeterminate(format!(
-                    "SMTP reported an error ({error}), and the protected state could not be restored: {restore_error}."
-                ))
-            })?;
-        return Err(SnapshotSafetyError::Transport(format!(
-            "Timesheet email failed before successful delivery was confirmed: {error}"
-        )));
-    }
-
-    let sent_at = chrono::Local::now().to_rfc3339();
-    repository
-        .mark_submitted_and_email_sent(
-            payroll_timesheet_id,
-            personal_assistant_id,
-            payroll_year,
-            cycle_number,
-            &sent_at,
-        )
-        .map_err(|error| {
-            SnapshotSafetyError::Indeterminate(format!(
-                "SMTP transport completed, but the submitted/frozen state could not be persisted: {error}."
-            ))
-        })
+    verify_preview_or_test_attachment(repository, record, path)?;
+    let intent = crate::timesheet_delivery::capture(&repository.connection, record)
+        .map_err(|e| SnapshotSafetyError::Refused(e.to_string()))?;
+    let bytes = crate::timesheet_delivery::bytes(&repository.connection, &intent)
+        .map_err(|e| SnapshotSafetyError::Refused(e.to_string()))?;
+    crate::timesheet_delivery::execute(
+        &repository.connection,
+        &intent,
+        "test transport",
+        &format!("<{}@test.local>", intent.intent_id),
+        &bytes,
+        |_| Ok(()),
+        || send().map_err(|e| crate::email_service::ProductionSendError::Uncertain(e.to_string())),
+    )
+    .map(|_| ())
+    .map_err(|e| SnapshotSafetyError::Indeterminate(e.to_string()))
 }
 
+#[cfg(test)]
 pub fn verify_candidate(
     repository: &PayrollWorkedItemRepository,
     payroll_timesheet_id: i64,
@@ -313,18 +313,17 @@ mod tests {
         preview_payroll_email, preview_test_payroll_email, send_test_payroll_email,
     };
     use crate::payroll_worked_item_repository::{SnapshotState, WorkedItemSnapshot};
-    use rusqlite::Connection;
     use tempfile::TempDir;
 
     fn repository() -> (TempDir, PayrollWorkedItemRepository) {
         let directory = TempDir::new().unwrap();
         let database = directory.path().join("test.sqlite");
-        let connection = Connection::open(&database).unwrap();
+        let connection = crate::database::open(&database).unwrap();
         create_schema(&connection).unwrap();
         drop(connection);
         (
             directory,
-            PayrollWorkedItemRepository::new(Connection::open(database).unwrap()),
+            PayrollWorkedItemRepository::new(crate::database::open(database).unwrap()),
         )
     }
 
@@ -608,7 +607,7 @@ mod tests {
     }
 
     #[test]
-    fn smtp_failure_restores_replaceable_candidate() {
+    fn generic_smtp_failure_leaves_uncertain_candidate() {
         let (directory, repository) = repository();
         let path = directory.path().join("timesheet.pdf");
         publish(&repository, &path, 1).unwrap();
@@ -623,12 +622,12 @@ mod tests {
             || Err("simulated SMTP failure".into()),
         )
         .unwrap_err();
-        assert!(matches!(error, SnapshotSafetyError::Transport(_)));
+        assert!(matches!(error, SnapshotSafetyError::Indeterminate(_)));
         assert_eq!(
             repository.snapshot_metadata(10).unwrap().unwrap().state,
-            SnapshotState::Candidate
+            SnapshotState::Indeterminate
         );
-        publish(&repository, &path, 2).unwrap();
+        assert!(publish(&repository, &path, 2).is_err());
     }
 
     #[test]
@@ -637,10 +636,6 @@ mod tests {
         let path = directory.path().join("timesheet.pdf");
         publish(&repository, &path, 1).unwrap();
         let database = directory.path().join("test.sqlite");
-        Connection::open(database)
-            .unwrap()
-            .execute("DROP TABLE payroll_timesheet_email_status", [])
-            .unwrap();
 
         let error = send_production_candidate(
             &repository,
@@ -650,7 +645,11 @@ mod tests {
             1,
             &path,
             "2027-03-01T12:00:00Z",
-            || Ok(()),
+            || {
+                crate::database::open(&database)?
+                    .execute("DROP TABLE payroll_timesheet_email_status", [])?;
+                Ok(())
+            },
         )
         .unwrap_err();
         assert!(matches!(error, SnapshotSafetyError::Indeterminate(_)));
@@ -740,7 +739,7 @@ mod tests {
         let path = directory.path().join("timesheet.pdf");
         fs::write(&path, "old published PDF").unwrap();
         let database = directory.path().join("test.sqlite");
-        Connection::open(database)
+        crate::database::open(database)
             .unwrap()
             .execute("DROP TABLE payroll_timesheet_weeks", [])
             .unwrap();

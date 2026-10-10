@@ -596,7 +596,6 @@ pub(crate) fn parse_timesheet_date(value: &str) -> Option<NaiveDate> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rusqlite::Connection;
     use tempfile::NamedTempFile;
 
     use crate::database::create_schema;
@@ -610,7 +609,7 @@ mod tests {
     }
 
     fn repository_with_rates(rates: &[(&str, f64, f64)]) -> PayRateRepository {
-        let connection = Connection::open_in_memory().unwrap();
+        let connection = crate::database::open_in_memory().unwrap();
         create_schema(&connection).unwrap();
         let repository = PayRateRepository::new(connection);
         for (effective_date, base, top_up) in rates {
@@ -655,10 +654,10 @@ mod tests {
         PayrollWorkedItemRepository,
     ) {
         let file = NamedTempFile::new().unwrap();
-        let setup = Connection::open(file.path()).unwrap();
+        let setup = crate::database::open(file.path()).unwrap();
         create_schema(&setup).unwrap();
         drop(setup);
-        let pay_rates = PayRateRepository::new(Connection::open(file.path()).unwrap());
+        let pay_rates = PayRateRepository::new(crate::database::open(file.path()).unwrap());
         for (effective_date, base, top_up) in rates {
             pay_rates
                 .insert(&PersonalAssistantPayRate {
@@ -671,7 +670,8 @@ mod tests {
                 })
                 .unwrap();
         }
-        let worked_items = PayrollWorkedItemRepository::new(Connection::open(file.path()).unwrap());
+        let worked_items =
+            PayrollWorkedItemRepository::new(crate::database::open(file.path()).unwrap());
         (file, pay_rates, worked_items)
     }
 

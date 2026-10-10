@@ -399,7 +399,7 @@ fn direct_shift_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<DirectShif
 mod tests {
     use super::*;
     fn repository() -> DirectShiftRepository {
-        let c = Connection::open_in_memory().unwrap();
+        let c = crate::database::open_in_memory().unwrap();
         crate::database::create_schema(&c).unwrap();
         DirectShiftRepository::new(c)
     }
@@ -436,7 +436,7 @@ mod tests {
     fn running_shift_survives_reopen_and_one_running_rule_remains() {
         let d = tempfile::TempDir::new().unwrap();
         let p = d.path().join("d.sqlite");
-        let c = Connection::open(&p).unwrap();
+        let c = crate::database::open(&p).unwrap();
         crate::database::create_schema(&c).unwrap();
         let r = DirectShiftRepository::new(c);
         let s = r.clock_in(3, time("2026-09-01T08:23"), "created").unwrap();
@@ -445,7 +445,7 @@ mod tests {
             Err(DirectShiftError::AlreadyRunning)
         ));
         drop(r);
-        let reopened = DirectShiftRepository::new(Connection::open(p).unwrap());
+        let reopened = DirectShiftRepository::new(crate::database::open(p).unwrap());
         assert_eq!(reopened.get_running_for_pa(3).unwrap().unwrap().id, s.id);
     }
     #[test]

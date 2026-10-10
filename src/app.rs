@@ -1,5 +1,3 @@
-use rusqlite::Connection;
-
 use crate::context::AppContext;
 use crate::contracted_hours_repository::ContractedHoursRepository;
 use crate::direct_shift_repository::DirectShiftRepository;
@@ -39,39 +37,40 @@ impl Application {
 
         let database_path = &context.environment.database_path;
 
-        let repository = TimesheetRepository::new(Connection::open(database_path)?);
+        let repository = TimesheetRepository::new(crate::database::open(database_path)?);
 
-        let employer_repository = EmployerRepository::new(Connection::open(database_path)?);
+        let employer_repository = EmployerRepository::new(crate::database::open(database_path)?);
 
         let personal_assistant_repository =
-            PersonalAssistantRepository::new(Connection::open(database_path)?);
+            PersonalAssistantRepository::new(crate::database::open(database_path)?);
 
-        let pay_rate_repository = PayRateRepository::new(Connection::open(database_path)?);
+        let pay_rate_repository = PayRateRepository::new(crate::database::open(database_path)?);
 
         let contracted_hours_repository =
-            ContractedHoursRepository::new(Connection::open(database_path)?);
+            ContractedHoursRepository::new(crate::database::open(database_path)?);
 
-        let direct_shift_repository = DirectShiftRepository::new(Connection::open(database_path)?);
+        let direct_shift_repository =
+            DirectShiftRepository::new(crate::database::open(database_path)?);
 
         let payroll_provider_repository =
-            PayrollProviderRepository::new(Connection::open(database_path)?);
+            PayrollProviderRepository::new(crate::database::open(database_path)?);
 
         let payroll_schedule_repository =
-            PayrollScheduleRepository::new(Connection::open(database_path)?);
+            PayrollScheduleRepository::new(crate::database::open(database_path)?);
 
         let payroll_timesheet_repository =
-            PayrollTimesheetRepository::new(Connection::open(database_path)?);
+            PayrollTimesheetRepository::new(crate::database::open(database_path)?);
 
         let payroll_worked_item_repository =
-            PayrollWorkedItemRepository::new(Connection::open(database_path)?);
+            PayrollWorkedItemRepository::new(crate::database::open(database_path)?);
 
         let payroll_timesheet_email_repository =
-            PayrollTimesheetEmailRepository::new(Connection::open(database_path)?);
+            PayrollTimesheetEmailRepository::new(crate::database::open(database_path)?);
 
         Ok(Self {
             annual_leave_settings_repository:
                 crate::annual_leave_settings_repository::AnnualLeaveSettingsRepository::new(
-                    Connection::open(database_path)?,
+                    crate::database::open(database_path)?,
                 ),
             context,
             repository,
@@ -107,7 +106,7 @@ impl Application {
     pub fn create_backup(&self) -> Result<std::path::PathBuf, Box<dyn std::error::Error>> {
         let config_path = self.context.environment.data_dir.join("config.toml");
 
-        Ok(crate::backup_service::BackupService::create(
+        Ok(crate::backup_service::BackupService::create_verified(
             &self.context.environment.database_path,
             &config_path,
             &self.context.environment.backups_dir,
@@ -120,12 +119,14 @@ impl Application {
         crate::backup_service::BackupService::discover(&self.context.environment.backups_dir)
     }
 
-    pub fn validate_backup(
+    pub fn preview_backup_restore(
         &self,
         backup_path: &std::path::Path,
-    ) -> Result<crate::backup_service::BackupValidation, crate::backup_service::BackupError> {
-        crate::backup_service::BackupService::validate(
+    ) -> Result<crate::backup_service::RestorePlan, crate::backup_service::BackupError> {
+        crate::backup_service::BackupService::preview_restore(
             backup_path,
+            &self.context.environment.database_path,
+            &self.context.environment.data_dir.join("config.toml"),
             &self.context.environment.backups_dir,
         )
     }
@@ -133,6 +134,7 @@ impl Application {
     pub fn restore_backup(
         &self,
         backup_path: &std::path::Path,
+        approval: &crate::backup_service::RestoreAuthorisation,
     ) -> Result<crate::backup_service::RestoreResult, crate::backup_service::RestoreError> {
         let config_path = self.context.environment.data_dir.join("config.toml");
 
@@ -141,6 +143,7 @@ impl Application {
             &self.context.environment.database_path,
             &config_path,
             &self.context.environment.backups_dir,
+            approval,
         )
     }
 
@@ -430,6 +433,7 @@ impl Application {
         crate::email_service::send_preview(host, port, username, password, preview, &path)
     }
 
+    #[allow(dead_code)] // Shared composition adapter retained for callers outside production timesheets.
     pub fn send_payroll_email(
         &self,
         payroll_department_email: &str,
@@ -461,6 +465,7 @@ impl Application {
         )
     }
 
+    #[allow(dead_code)]
     pub fn send_payroll_email_with_attachments<'a>(
         &self,
         payroll_department_email: &str,

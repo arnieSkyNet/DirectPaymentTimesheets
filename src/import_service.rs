@@ -330,7 +330,7 @@ mod tests {
     use super::*;
     use crate::database::create_schema;
     use crate::payroll_worked_item_repository::PayrollWorkedItemRepository;
-    use rusqlite::{params, Connection};
+    use rusqlite::params;
     use tempfile::TempDir;
 
     fn setup(names: &[(&str, &str)]) -> (TempDir, PathBuf, TimesheetRepository) {
@@ -338,7 +338,7 @@ mod tests {
         fs::create_dir(directory.path().join("import")).unwrap();
         fs::create_dir(directory.path().join("archive")).unwrap();
         let database_path = directory.path().join("database.sqlite");
-        let connection = Connection::open(&database_path).unwrap();
+        let connection = crate::database::open(&database_path).unwrap();
         create_schema(&connection).unwrap();
         for (first_name, surname) in names {
             connection
@@ -382,7 +382,7 @@ mod tests {
     }
 
     fn count(database_path: &Path, table: &str) -> i64 {
-        Connection::open(database_path)
+        crate::database::open(database_path)
             .unwrap()
             .query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |row| {
                 row.get(0)
@@ -414,7 +414,7 @@ mod tests {
             .iter()
             .all(|entry| entry.personal_assistant_id.is_some()));
         assert_eq!(entries[0].worked_minutes, 105);
-        let archived: String = Connection::open(&database_path)
+        let archived: String = crate::database::open(&database_path)
             .unwrap()
             .query_row(
                 "SELECT archive_filename FROM import_audit WHERE status = 'SUCCESS'",
@@ -519,7 +519,7 @@ mod tests {
         let entries = repository.get_all_raw().unwrap();
         assert_eq!(entries.len(), 2);
         assert_eq!(entries[0].id, existing_id);
-        let audit: (i64, i64, i64) = Connection::open(&database_path)
+        let audit: (i64, i64, i64) = crate::database::open(&database_path)
             .unwrap()
             .query_row(
                 "SELECT rows_processed, rows_imported, rows_skipped
@@ -618,7 +618,7 @@ mod tests {
             "valid.csv",
             &["Alex Smith,27 July 2026 at 09:00:00,27 July 2026 at 10:00:00,0h 00m,1h 00m,£12.00,£12.00,"],
         );
-        Connection::open(&database_path)
+        crate::database::open(&database_path)
             .unwrap()
             .execute_batch(
                 "CREATE TRIGGER fail_success_audit BEFORE INSERT ON import_audit
@@ -631,7 +631,7 @@ mod tests {
         assert_eq!(failed.orphaned_archives.len(), 1);
         assert_eq!(count(&database_path, "timesheets"), 0);
 
-        Connection::open(&database_path)
+        crate::database::open(&database_path)
             .unwrap()
             .execute_batch("DROP TRIGGER fail_success_audit")
             .unwrap();
@@ -656,7 +656,7 @@ mod tests {
             "02_succeeds.csv",
             &["Alex Smith,29 July 2026 at 09:00:00,29 July 2026 at 10:00:00,0h 00m,1h 00m,£12.00,£12.00,"],
         );
-        Connection::open(&database_path)
+        crate::database::open(&database_path)
             .unwrap()
             .execute_batch(
                 "CREATE TRIGGER fail_second_row BEFORE INSERT ON timesheets
@@ -670,7 +670,7 @@ mod tests {
         assert_eq!(summary.files_succeeded, 1);
         assert_eq!(count(&database_path, "timesheets"), 1);
 
-        Connection::open(&database_path)
+        crate::database::open(&database_path)
             .unwrap()
             .execute_batch("DROP TRIGGER fail_second_row")
             .unwrap();
@@ -697,7 +697,7 @@ mod tests {
         };
         repository.insert(&existing).unwrap();
         existing.id = repository.get_all_raw().unwrap()[0].id;
-        let connection = Connection::open(&database_path).unwrap();
+        let connection = crate::database::open(&database_path).unwrap();
         connection.execute("INSERT INTO payroll_timesheets (id, personal_assistant_id, payroll_year, cycle_number, created_at, updated_at) VALUES (10, 1, '2026 to 2027', 1, 'now', 'now')", []).unwrap();
         connection.execute("INSERT INTO payroll_timesheet_snapshot_states (payroll_timesheet_id, state, pdf_path, pdf_sha256, generated_at) VALUES (10, 'submitted', 'x', 'digest', 'now')", []).unwrap();
         connection.execute("INSERT INTO payroll_timesheet_worked_item_snapshots (payroll_timesheet_id, week_number, source_type, timesheet_id, work_date, worked_minutes, pay_rate_id, pay_rate_effective_date, total_hourly_rate, captured_at) VALUES (10, 1, 'imported_shift', ?1, '27/07/2026', 60, 1, '01/01/2026', 12.0, 'now')", [existing.id]).unwrap();
@@ -716,7 +716,8 @@ mod tests {
         assert_eq!(summary.rows_imported, 2);
         assert_eq!(repository.get_all_raw().unwrap().len(), 3);
         assert_eq!(repository.get_all_raw().unwrap()[0].id, existing.id);
-        let snapshots = PayrollWorkedItemRepository::new(Connection::open(&database_path).unwrap());
+        let snapshots =
+            PayrollWorkedItemRepository::new(crate::database::open(&database_path).unwrap());
         assert!(snapshots
             .submitted_snapshot_timesheet_ids(10)
             .unwrap()
@@ -736,7 +737,7 @@ mod tests {
             "02_good.csv",
             &["Alex Smith,27 July 2026 at 09:00:00,27 July 2026 at 10:00:00,0h 00m,1h 00m,£12.00,£12.00,"],
         );
-        Connection::open(&database_path)
+        crate::database::open(&database_path)
             .unwrap()
             .execute_batch(
                 "CREATE TRIGGER fail_refused_audit BEFORE INSERT ON import_audit

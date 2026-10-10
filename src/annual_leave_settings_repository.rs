@@ -109,7 +109,7 @@ mod tests {
     #[test]
     fn absent_row_returns_operational_defaults_without_ui_or_save() {
         for upgrading in [false, true] {
-            let connection = Connection::open_in_memory().unwrap();
+            let connection = crate::database::open_in_memory().unwrap();
             crate::database::create_schema(&connection).unwrap();
             if upgrading {
                 crate::database::tests::remove_schema_28_fixture(&connection);
@@ -145,7 +145,7 @@ mod tests {
 
     #[test]
     fn defaults_and_atomic_four_value_save() {
-        let connection = Connection::open_in_memory().unwrap();
+        let connection = crate::database::open_in_memory().unwrap();
         crate::database::create_schema(&connection).unwrap();
         let repository = AnnualLeaveSettingsRepository::new(connection);
         assert_eq!(repository.get().unwrap(), AnnualLeaveSettings::default());

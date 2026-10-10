@@ -15,6 +15,7 @@ mod context;
 mod contracted_hours_repository;
 mod csv_import;
 mod database;
+mod database_recovery;
 mod date_utils;
 mod direct_shift_repository;
 mod email_service;
@@ -55,6 +56,7 @@ mod personal_assistant_screen;
 mod repository;
 mod sickness_period_repository;
 mod theme;
+mod timesheet_delivery;
 mod update_check;
 
 fn main() {

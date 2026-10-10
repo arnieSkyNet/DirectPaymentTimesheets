@@ -357,7 +357,7 @@ mod tests {
     use crate::database::create_schema;
 
     fn test_repository() -> PersonalAssistantRepository {
-        let connection = Connection::open_in_memory().unwrap();
+        let connection = crate::database::open_in_memory().unwrap();
         create_schema(&connection).unwrap();
         PersonalAssistantRepository::new(connection)
     }
@@ -456,7 +456,7 @@ mod tests {
 
     #[test]
     fn leaving_date_round_trip_validation_and_status_preservation() {
-        let connection = Connection::open_in_memory().unwrap();
+        let connection = crate::database::open_in_memory().unwrap();
         crate::database::create_schema(&connection).unwrap();
         let repository = PersonalAssistantRepository::new(connection);
         let mut assistant = test_assistant();

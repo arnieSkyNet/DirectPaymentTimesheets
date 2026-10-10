@@ -2,10 +2,8 @@ use std::fmt;
 use std::fs;
 use std::fs::OpenOptions;
 use std::path::{Path, PathBuf};
-use std::time::Duration;
 
 use chrono::Local;
-use rusqlite::backup::Backup;
 use rusqlite::{Connection, DatabaseName, OpenFlags};
 
 const DATABASE_BACKUP_NAME: &str = "database.sqlite";
@@ -26,6 +24,28 @@ pub struct BackupValidation {
     pub schema_version: i64,
 }
 
+/// Approval is bound to the exact database, configuration and selected backup.
+#[derive(Clone, Debug)]
+pub struct RestorePlan {
+    pub backup: PathBuf,
+    pub schema_version: i64,
+    pub replaced_rows: Vec<(String, usize)>,
+    live_path: PathBuf,
+    staged_directory: std::sync::Arc<tempfile::TempDir>,
+    staged_database: String,
+    live_database: String,
+    backup_database: String,
+    live_config: Option<String>,
+    backup_config: Option<String>,
+}
+
+#[derive(Clone, Debug)]
+pub struct RestoreAuthorisation {
+    pub plan: RestorePlan,
+    pub reason: String,
+    pub acknowledged: bool,
+}
+
 #[derive(Debug, PartialEq, Eq)]
 pub struct RestoreResult {
     pub restored_backup: PathBuf,
@@ -34,7 +54,7 @@ pub struct RestoreResult {
 }
 
 #[derive(Debug)]
-pub struct BackupError(String);
+pub struct BackupError(pub(crate) String);
 
 impl fmt::Display for BackupError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -132,12 +152,17 @@ impl BackupService {
         backups_dir: &Path,
     ) -> Result<PathBuf, BackupError> {
         let created_at = Local::now();
-
+        // Fractional seconds avoid collisions between upgrade and restore recovery copies.
+        let name = format!(
+            "{}-{}",
+            created_at.format("%Y%m%d-%H%M%S"),
+            created_at.timestamp_subsec_nanos()
+        );
         Self::create_with_metadata(
             database_path,
             config_path,
             backups_dir,
-            &created_at.format("%Y%m%d-%H%M%S").to_string(),
+            &name,
             &created_at.to_rfc3339(),
         )
     }
@@ -164,6 +189,12 @@ impl BackupService {
             ))
         })?;
 
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&backup_dir, fs::Permissions::from_mode(0o700))
+                .map_err(|e| BackupError(e.to_string()))?;
+        }
         let result = Self::populate_backup(database_path, config_path, &backup_dir, created_at);
         if let Err(error) = result {
             if let Err(cleanup_error) = fs::remove_dir_all(&backup_dir) {
@@ -176,6 +207,10 @@ impl BackupService {
             return Err(error.into());
         }
 
+        #[cfg(unix)]
+        fs::File::open(backups_dir)
+            .and_then(|f| f.sync_all())
+            .map_err(|e| BackupError(format!("Could not flush backup directory: {e}")))?;
         Ok(backup_dir)
     }
 
@@ -260,7 +295,7 @@ impl BackupService {
                 .map_err(|error| {
                     BackupError(format!("Could not inspect backup schema: {error}"))
                 })?;
-            if !exists {
+            if !exists && !matches!(table, "employers" | "personal_assistants") {
                 return Err(BackupError(format!(
                     "The backup database is not recognisable as DirectPaymentTimesheets: required table {table} is missing."
                 )));
@@ -277,17 +312,95 @@ impl BackupService {
             .map_err(|error| {
                 BackupError(format!("Could not read backup schema version: {error}"))
             })?;
-        if versions.len() != 1 || versions[0] != crate::database::CURRENT_SCHEMA_VERSION {
+        if versions.len() != 1
+            || !(1..=crate::database::CURRENT_SCHEMA_VERSION).contains(&versions[0])
+        {
             return Err(BackupError(format!(
-                "The backup has an unsupported DirectPaymentTimesheets schema version: {:?} (required: {}).",
+                "The backup has an unsupported DirectPaymentTimesheets schema version: {:?} (supported: 1 through {}).",
                 versions,
                 crate::database::CURRENT_SCHEMA_VERSION
             )));
         }
 
+        if versions[0] >= 2 {
+            for table in ["employers", "personal_assistants"] {
+                let exists: bool = connection
+                    .query_row(
+                        "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE name=?1)",
+                        [table],
+                        |r| r.get(0),
+                    )
+                    .map_err(|e| BackupError(e.to_string()))?;
+                if !exists {
+                    return Err(BackupError(format!("Backup schema is missing {table}")));
+                }
+            }
+        }
         Ok(BackupValidation {
             schema_version: versions[0],
         })
+    }
+
+    pub fn create_verified(
+        database_path: &Path,
+        config_path: &Path,
+        backups_dir: &Path,
+    ) -> Result<PathBuf, BackupError> {
+        let backup = Self::create(database_path, config_path, backups_dir)?;
+        Self::validate(&backup, backups_dir)?;
+        Ok(backup)
+    }
+
+    pub fn preview_restore(
+        backup_dir: &Path,
+        database_path: &Path,
+        config_path: &Path,
+        backups_dir: &Path,
+    ) -> Result<RestorePlan, BackupError> {
+        let validation = Self::validate(backup_dir, backups_dir)?;
+        let result = (|| -> crate::database_recovery::Result<RestorePlan> {
+            let live = crate::database::open(database_path)?;
+            let _dispatch = crate::timesheet_delivery::production_lock(&live)?;
+            let tx = live.unchecked_transaction()?;
+            if crate::database_recovery::unresolved(&tx)? {
+                return Err("Restore blocked: resolve all uncertain email outcomes with evidence before reviewing a rollback.".into());
+            }
+            let source = open_read_only(&backup_dir.join(DATABASE_BACKUP_NAME))?;
+            let source_fingerprint = crate::database_recovery::fingerprint(&source)?;
+            let config_fingerprint =
+                crate::database_recovery::file_fingerprint(&backup_dir.join(CONFIG_BACKUP_NAME))?;
+            let (temporary, staged) = crate::database_recovery::staged_backup(backup_dir)?;
+            if crate::database_recovery::fingerprint(&source)? != source_fingerprint {
+                return Err("Selected backup changed during preparation".into());
+            }
+            if let Some(expected) = &config_fingerprint {
+                fs::copy(
+                    backup_dir.join(CONFIG_BACKUP_NAME),
+                    temporary.path().join(CONFIG_BACKUP_NAME),
+                )?;
+                if crate::database_recovery::file_fingerprint(
+                    &temporary.path().join(CONFIG_BACKUP_NAME),
+                )?
+                .as_ref()
+                    != Some(expected)
+                {
+                    return Err("Selected configuration changed during preparation".into());
+                }
+            }
+            Ok(RestorePlan {
+                backup: backup_dir.canonicalize()?,
+                schema_version: validation.schema_version,
+                replaced_rows: crate::database_recovery::losses(&tx, &staged)?,
+                live_path: database_path.canonicalize()?,
+                staged_database: crate::database_recovery::fingerprint(&staged)?,
+                staged_directory: std::sync::Arc::new(temporary),
+                live_database: crate::database_recovery::fingerprint(&tx)?,
+                backup_database: source_fingerprint,
+                live_config: crate::database_recovery::file_fingerprint(config_path)?,
+                backup_config: config_fingerprint,
+            })
+        })();
+        result.map_err(|e| BackupError(e.to_string()))
     }
 
     pub fn restore(
@@ -295,65 +408,100 @@ impl BackupService {
         database_path: &Path,
         config_path: &Path,
         backups_dir: &Path,
+        approval: &RestoreAuthorisation,
     ) -> Result<RestoreResult, RestoreError> {
+        // Validate before opening live data; no safety snapshot is made for invalid input.
         Self::validate(backup_dir, backups_dir)?;
-
-        let safety_backup =
-            Self::create(database_path, config_path, backups_dir).map_err(|error| {
-                RestoreError::from(BackupError(format!(
-                    "Restore aborted because the required pre-restore safety backup failed: {error}"
-                )))
-            })?;
-
-        let selected_config = backup_dir.join(CONFIG_BACKUP_NAME);
-        let staged_config = if selected_config.is_file() {
-            Some(stage_config(&selected_config, config_path).map_err(|error| {
-                RestoreError::from(BackupError(format!(
-                    "Restore aborted before changing live data because config.toml could not be staged: {error}"
-                )))
-            })?)
-        } else {
-            None
-        };
-
-        let source_path = backup_dir.join(DATABASE_BACKUP_NAME);
-        let source = open_read_only(&source_path)?;
-        let mut destination = Connection::open(database_path).map_err(|error| {
-            BackupError(format!(
-                "Could not open live database {} for restoration: {error}",
-                database_path.display()
-            ))
-        })?;
-        let restore_result = {
-            let backup = Backup::new(&source, &mut destination).map_err(|error| {
-                BackupError(format!("Could not initialise SQLite restoration: {error}"))
-            })?;
-            backup
-                .run_to_completion(100, Duration::from_millis(10), None)
-                .map_err(|error| BackupError(format!("SQLite restoration failed: {error}")))
-        };
-        if let Err(error) = restore_result {
-            if let Some(staged_config) = staged_config {
-                let _ = fs::remove_file(staged_config);
+        if !approval.acknowledged || approval.reason.trim().is_empty() {
+            return Err(BackupError(
+                "Restore requires explicit rollback acknowledgement and a documented reason."
+                    .into(),
+            )
+            .into());
+        }
+        let result = (|| -> crate::database_recovery::Result<RestoreResult> {
+            let mut live = crate::database::open(database_path)?;
+            let _dispatch = crate::timesheet_delivery::production_lock(&live)?;
+            live.pragma_update(None, "foreign_keys", false)?;
+            let tx = live.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+            if crate::database_recovery::unresolved(&tx)? {
+                return Err("Restore blocked: uncertain delivery evidence must be resolved first; rollback cannot release an uncertain attempt.".into());
             }
-            return Err(error.into());
-        }
-
-        if let Some(staged_config) = staged_config {
-            fs::rename(&staged_config, config_path).map_err(|error| RestoreError {
-                error: BackupError(format!(
-                        "The database was restored, but config.toml could not be installed from {}: {error}. Close and restart the application; the pre-restore safety backup is {}.",
-                        backup_dir.display(),
-                        safety_backup.display()
-                    )),
-                restart_required: true,
-            })?;
-        }
-
-        Ok(RestoreResult {
-            restored_backup: backup_dir.to_path_buf(),
-            safety_backup,
-            config_restored: selected_config.is_file(),
+            let source = open_read_only(&backup_dir.join(DATABASE_BACKUP_NAME))?;
+            if approval.plan.live_path != database_path.canonicalize()?
+                || approval.plan.backup != backup_dir.canonicalize()?
+                || approval.plan.live_database != crate::database_recovery::fingerprint(&tx)?
+                || approval.plan.backup_database != crate::database_recovery::fingerprint(&source)?
+                || approval.plan.live_config
+                    != crate::database_recovery::file_fingerprint(config_path)?
+                || approval.plan.backup_config
+                    != crate::database_recovery::file_fingerprint(
+                        &backup_dir.join(CONFIG_BACKUP_NAME),
+                    )?
+            {
+                return Err("Restore approval is stale: live data, configuration or selected backup changed. Review and authorise again.".into());
+            }
+            let staged = crate::database::open(
+                approval.plan.staged_directory.path().join("restore.sqlite"),
+            )?;
+            if crate::database_recovery::fingerprint(&staged)? != approval.plan.staged_database {
+                return Err("Reviewed isolated restore copy changed; restore refused.".into());
+            }
+            // Recheck the captured source after staging (selected backups are never changed).
+            if approval.plan.backup_database
+                != crate::database_recovery::fingerprint(&open_read_only(
+                    &backup_dir.join(DATABASE_BACKUP_NAME),
+                )?)?
+            {
+                return Err("Selected backup changed during preparation; restore refused.".into());
+            }
+            let safety_backup = Self::create_verified(database_path, config_path, backups_dir)?;
+            use std::io::Write;
+            let mut manifest = OpenOptions::new()
+                .append(true)
+                .open(safety_backup.join(README_NAME))?;
+            writeln!(manifest,"\nExplicit destructive restore authorised at {}\nActor: local employer\nSelected backup: {}\nReason: {}\nCurrent database fingerprint: {}\nSelected database fingerprint: {}\nCurrent rows absent/different in selected data: {:?}\nRestoring old email evidence can cause duplicate payroll processing; consult this recovery copy and Payroll before sending.",Local::now().to_rfc3339(),backup_dir.display(),approval.reason.trim(),approval.plan.live_database,approval.plan.backup_database,approval.plan.replaced_rows)?;
+            manifest.sync_all()?;
+            let selected_config = approval
+                .plan
+                .staged_directory
+                .path()
+                .join(CONFIG_BACKUP_NAME);
+            if crate::database_recovery::file_fingerprint(&selected_config)?
+                != approval.plan.backup_config
+            {
+                return Err("Reviewed isolated configuration changed; restore refused".into());
+            }
+            let staged_config = if selected_config.is_file() {
+                Some(stage_config(&selected_config, config_path)?)
+            } else {
+                None
+            };
+            if let Err(e) = crate::database_recovery::install(&tx, &staged)
+                .and_then(|_| tx.commit().map_err(Into::into))
+            {
+                if let Some(path) = staged_config {
+                    let _ = fs::remove_file(path);
+                }
+                return Err(format!("Restore failed; live database transaction rolled back. Verified recovery: {}. {e}",safety_backup.display()).into());
+            }
+            if let Some(path) = staged_config {
+                if let Err(e) = fs::rename(&path, config_path) {
+                    return Err(format!("DATABASE RESTORED; RESTART REQUIRED: configuration could not be restored: {e}. Verified recovery: {}",safety_backup.display()).into());
+                }
+            }
+            Ok(RestoreResult {
+                restored_backup: backup_dir.to_path_buf(),
+                safety_backup,
+                config_restored: selected_config.is_file(),
+            })
+        })();
+        result.map_err(|e| {
+            let message = e.to_string();
+            RestoreError {
+                restart_required: message.contains("RESTART REQUIRED"),
+                error: BackupError(message),
+            }
         })
     }
 
@@ -363,12 +511,17 @@ impl BackupService {
         backup_dir: &Path,
         created_at: &str,
     ) -> Result<(), BackupError> {
-        let source = Connection::open(database_path).map_err(|error| {
+        let source = open_read_only(database_path).map_err(|error| {
             BackupError(format!(
                 "Could not open database {} for backup: {error}",
                 database_path.display()
             ))
         })?;
+        let read_snapshot = source
+            .unchecked_transaction()
+            .map_err(|e| BackupError(e.to_string()))?;
+        let expected = crate::database_recovery::fingerprint(&read_snapshot)
+            .map_err(|e| BackupError(e.to_string()))?;
         let database_backup_path = backup_dir.join(DATABASE_BACKUP_NAME);
         source
             .backup(DatabaseName::Main, &database_backup_path, None)
@@ -379,6 +532,18 @@ impl BackupService {
                 ))
             })?;
 
+        let verified = open_read_only(&database_backup_path)?;
+        crate::database_recovery::integrity(&verified).map_err(|e| BackupError(e.to_string()))?;
+        if crate::database_recovery::fingerprint(&verified)
+            .map_err(|e| BackupError(e.to_string()))?
+            != expected
+        {
+            return Err(BackupError(
+                "Backup content verification failed; original database was not modified.".into(),
+            ));
+        }
+        sync_file(&database_backup_path)
+            .map_err(|e| BackupError(format!("Could not flush database backup: {e}")))?;
         let mut backed_up_files = vec![DATABASE_BACKUP_NAME];
         if config_path.exists() {
             let config_backup_path = backup_dir.join(CONFIG_BACKUP_NAME);
@@ -389,6 +554,14 @@ impl BackupService {
                     config_backup_path.display()
                 ))
             })?;
+            if fs::read(config_path).map_err(|e| BackupError(e.to_string()))?
+                != fs::read(&config_backup_path).map_err(|e| BackupError(e.to_string()))?
+            {
+                return Err(BackupError(
+                    "Configuration backup verification failed".into(),
+                ));
+            }
+            sync_file(&config_backup_path).map_err(|e| BackupError(e.to_string()))?;
             backed_up_files.push(CONFIG_BACKUP_NAME);
         }
 
@@ -397,8 +570,9 @@ impl BackupService {
             .map(|name| format!("- {name}"))
             .collect::<Vec<_>>()
             .join("\n");
+        let inventory = recovery_inventory(&source, config_path)?;
         let readme = format!(
-            "{BACKUP_IDENTITY}\n\nCreated: {created_at}\n\nBacked-up files:\n{file_list}\n"
+            "{BACKUP_IDENTITY}\n\nCreated: {created_at}\n\nBacked-up files:\n{file_list}\n\nVerified consistent SQLite snapshot (including committed WAL data): {expected}\nThis is DATABASE AND CONFIGURATION recovery, not a complete application-data backup.\nExternal PDFs, payslips, signatures, imported/archive files and fonts are NOT copied or restored.\nBefore an upgrade/rollback, close every application instance and separately protect the full application root and these business files/folders. Do not copy a live SQLite file without its WAL; prefer this verified snapshot.\nUse 1.0.6 Restore Backup to validate and migrate legacy data on an isolated copy. A rollback needs fresh explicit approval; unresolved email uncertainty blocks it. Keep old binaries away from upgraded data: their restore tools can overwrite newer schemas.\nRecovery inventory (paths only; no external files copied):\n{inventory}\n"
         );
         let readme_path = backup_dir.join(README_NAME);
         fs::write(&readme_path, readme).map_err(|error| {
@@ -408,17 +582,109 @@ impl BackupService {
             ))
         })?;
 
+        sync_file(&readme_path).map_err(|e| BackupError(e.to_string()))?;
+        #[cfg(unix)]
+        fs::File::open(backup_dir)
+            .and_then(|f| f.sync_all())
+            .map_err(|e| BackupError(e.to_string()))?;
         Ok(())
     }
 }
 
+fn sync_file(path: &Path) -> std::io::Result<()> {
+    // Windows FlushFileBuffers requires a writable handle.
+    OpenOptions::new().write(true).open(path)?.sync_all()
+}
+
+fn recovery_inventory(db: &Connection, config: &Path) -> Result<String, BackupError> {
+    let mut paths = std::collections::BTreeSet::new();
+    if let Some(root) = config.parent() {
+        paths.insert(format!(
+            "Application root: {} (including internal import/archive folders)",
+            root.display()
+        ));
+    }
+    if config.is_file() {
+        // Read raw TOML only: loading AppConfig would create business directories.
+        if let Ok(value) = fs::read_to_string(config)
+            .unwrap_or_default()
+            .parse::<toml::Value>()
+        {
+            for section in ["folders", "pdf"] {
+                if let Some(values) = value.get(section).and_then(toml::Value::as_table) {
+                    for (key, value) in values {
+                        if let Some(path) = value.as_str() {
+                            paths.insert(format!("{section}.{key}: {path}"));
+                        }
+                    }
+                }
+            }
+        }
+    }
+    let tables = db
+        .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'")
+        .and_then(|mut s| {
+            s.query_map([], |r| r.get::<_, String>(0))?
+                .collect::<rusqlite::Result<Vec<_>>>()
+        })
+        .map_err(|e| BackupError(e.to_string()))?;
+    for table in tables {
+        let columns = db
+            .prepare(&format!(
+                "PRAGMA table_info({})",
+                crate::database_recovery::quote(&table)
+            ))
+            .and_then(|mut s| {
+                s.query_map([], |r| r.get::<_, String>(1))?
+                    .collect::<rusqlite::Result<Vec<_>>>()
+            })
+            .map_err(|e| BackupError(e.to_string()))?;
+        for column in columns.iter().filter(|c| {
+            matches!(
+                c.as_str(),
+                "signature"
+                    | "employer_signature"
+                    | "stored_path"
+                    | "pdf_path"
+                    | "source_path"
+                    | "destination_path"
+            )
+        }) {
+            let sql = format!(
+                "SELECT DISTINCT {} FROM {} WHERE {} IS NOT NULL",
+                crate::database_recovery::quote(column),
+                crate::database_recovery::quote(&table),
+                crate::database_recovery::quote(column)
+            );
+            let values = db
+                .prepare(&sql)
+                .and_then(|mut s| {
+                    s.query_map([], |r| r.get::<_, String>(0))?
+                        .collect::<rusqlite::Result<Vec<_>>>()
+                })
+                .map_err(|e| BackupError(e.to_string()))?;
+            for path in values {
+                if !path.trim().is_empty() {
+                    paths.insert(format!("{table}.{column}: {path}"));
+                }
+            }
+        }
+    }
+    Ok(paths.into_iter().collect::<Vec<_>>().join("\n"))
+}
+
 fn is_timestamp_name(name: &str) -> bool {
-    name.len() == 15
-        && name.as_bytes()[8] == b'-'
-        && name
+    let base = name.get(..15).unwrap_or("");
+    base.len() == 15
+        && base.as_bytes()[8] == b'-'
+        && base
             .bytes()
             .enumerate()
-            .all(|(index, byte)| index == 8 || byte.is_ascii_digit())
+            .all(|(n, b)| n == 8 || b.is_ascii_digit())
+        && (name.len() == 15
+            || name.get(15..).is_some_and(|s| {
+                s.starts_with('-') && s.len() > 1 && s[1..].bytes().all(|b| b.is_ascii_digit())
+            }))
 }
 
 fn has_backup_identity(readme: &str) -> bool {
@@ -529,8 +795,28 @@ mod tests {
     use super::*;
     use tempfile::TempDir;
 
+    fn restore_test(
+        backup: &Path,
+        live: &Path,
+        config: &Path,
+        root: &Path,
+    ) -> Result<RestoreResult, RestoreError> {
+        let plan = BackupService::preview_restore(backup, live, config, root)?;
+        BackupService::restore(
+            backup,
+            live,
+            config,
+            root,
+            &RestoreAuthorisation {
+                plan,
+                reason: "Verified test rollback".into(),
+                acknowledged: true,
+            },
+        )
+    }
+
     fn create_test_database(path: &Path) {
-        let connection = Connection::open(path).unwrap();
+        let connection = crate::database::open(path).unwrap();
         connection
             .execute("CREATE TABLE example (value TEXT NOT NULL)", [])
             .unwrap();
@@ -540,7 +826,7 @@ mod tests {
     }
 
     fn create_application_database(path: &Path, marker: &str) {
-        let connection = Connection::open(path).unwrap();
+        let connection = crate::database::open(path).unwrap();
         crate::database::create_schema(&connection).unwrap();
         connection
             .execute("CREATE TABLE restore_test_marker (value TEXT NOT NULL)", [])
@@ -554,7 +840,7 @@ mod tests {
     }
 
     fn read_marker(path: &Path) -> String {
-        Connection::open(path)
+        crate::database::open(path)
             .unwrap()
             .query_row("SELECT value FROM restore_test_marker", [], |row| {
                 row.get(0)
@@ -598,7 +884,8 @@ mod tests {
 
         assert_eq!(backup_dir, backups_dir.join("20260831-142530"));
         assert!(backup_dir.is_dir());
-        let backup_connection = Connection::open(backup_dir.join(DATABASE_BACKUP_NAME)).unwrap();
+        let backup_connection =
+            crate::database::open(backup_dir.join(DATABASE_BACKUP_NAME)).unwrap();
         let value: String = backup_connection
             .query_row("SELECT value FROM example", [], |row| row.get(0))
             .unwrap();
@@ -665,8 +952,7 @@ mod tests {
         );
 
         let result =
-            BackupService::restore(&selected_backup, &live_database, &live_config, &backups_dir)
-                .unwrap();
+            restore_test(&selected_backup, &live_database, &live_config, &backups_dir).unwrap();
 
         assert_eq!(result.restored_backup, selected_backup);
         assert!(result.safety_backup.is_dir());
@@ -702,8 +988,7 @@ mod tests {
         .unwrap();
 
         let error =
-            BackupService::restore(&corrupt_backup, &live_database, &live_config, &backups_dir)
-                .unwrap_err();
+            restore_test(&corrupt_backup, &live_database, &live_config, &backups_dir).unwrap_err();
 
         assert!(error.to_string().contains("integrity_check"));
         assert_eq!(read_marker(&live_database), "current live data");
@@ -729,7 +1014,7 @@ mod tests {
             "20260101-010101",
         );
 
-        let error = BackupService::restore(
+        let error = restore_test(
             &unrelated_backup,
             &live_database,
             &live_config,
@@ -762,8 +1047,7 @@ mod tests {
         );
 
         let result =
-            BackupService::restore(&selected_backup, &live_database, &live_config, &backups_dir)
-                .unwrap();
+            restore_test(&selected_backup, &live_database, &live_config, &backups_dir).unwrap();
 
         assert!(!result.config_restored);
         assert_eq!(read_marker(&live_database), "selected backup data");

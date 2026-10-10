@@ -109,6 +109,7 @@ impl PayrollTimesheetEmailRepository {
         rows.collect()
     }
 
+    #[cfg(test)]
     pub fn transition_payroll_bundle(
         &self,
         pa: i64,
@@ -200,7 +201,7 @@ mod tests {
     fn schema30_to31_preserves_all_18_payslip_and_3_timesheet_statuses_and_reopens() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("schema.sqlite");
-        let connection = Connection::open(&path).unwrap();
+        let connection = crate::database::open(&path).unwrap();
         create_schema(&connection).unwrap();
         crate::database::tests::remove_schema_32_fixture(&connection);
         connection
@@ -232,15 +233,15 @@ mod tests {
             CURRENT_SCHEMA_VERSION
         );
         drop(connection);
-        let reopened = Connection::open(path).unwrap();
+        let reopened = crate::database::open(path).unwrap();
         create_schema(&reopened).unwrap();
         assert_eq!(statuses(&reopened), before);
-        assert_eq!(CURRENT_SCHEMA_VERSION, 35);
+        assert_eq!(CURRENT_SCHEMA_VERSION, 36);
     }
 
     #[test]
     fn schema31_migration_is_atomic_on_version_write_failure() {
-        let connection = Connection::open_in_memory().unwrap();
+        let connection = crate::database::open_in_memory().unwrap();
         create_schema(&connection).unwrap();
         crate::database::tests::remove_schema_32_fixture(&connection);
         connection.execute_batch("DROP TABLE imported_payroll_documents; UPDATE schema_version SET version = 30;
@@ -262,7 +263,7 @@ mod tests {
     #[test]
     fn document_identity_reimport_preserves_state_and_checks_content_and_pa() {
         let dir = tempfile::tempdir().unwrap();
-        let connection = Connection::open_in_memory().unwrap();
+        let connection = crate::database::open_in_memory().unwrap();
         create_schema(&connection).unwrap();
         connection.execute_batch("INSERT INTO personal_assistants(id, first_name, surname) VALUES (1, 'Test', 'One'), (2, 'Test', 'Two');").unwrap();
         let repository = PayrollTimesheetEmailRepository::new(connection);
@@ -303,8 +304,9 @@ mod tests {
     fn schema33_preserves_evidence_and_reconciliation_persists_without_timestamps() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("migration.sqlite");
-        let db = Connection::open(&path).unwrap();
+        let db = crate::database::open(&path).unwrap();
         create_schema(&db).unwrap();
+        crate::database::tests::remove_schema_36_fixture(&db);
         db.execute_batch("DROP TABLE payslip_revisions; ALTER TABLE imported_payroll_documents DROP COLUMN superseded_by; DROP TABLE payroll_file_moves; ALTER TABLE imported_payroll_documents DROP COLUMN history_state; UPDATE schema_version SET version=32;
             INSERT INTO personal_assistants(id,first_name,surname) VALUES(1,'Fixture','PA');").unwrap();
         let markers = [
@@ -357,7 +359,7 @@ mod tests {
         assert!(repo.reconcile_document(4, true).unwrap());
         assert!(!repo.reconcile_document(1, true).unwrap());
         drop(repo);
-        let db = Connection::open(&path).unwrap();
+        let db = crate::database::open(&path).unwrap();
         create_schema(&db).unwrap();
         let repo = PayrollTimesheetEmailRepository::new(db);
         let docs = repo.documents_for_pa(1).unwrap();
@@ -381,7 +383,7 @@ mod tests {
     #[test]
     fn unknown_history_is_not_sendable_and_identical_copies_cannot_bypass_history() {
         let dir = tempfile::tempdir().unwrap();
-        let db = Connection::open_in_memory().unwrap();
+        let db = crate::database::open_in_memory().unwrap();
         create_schema(&db).unwrap();
         db.execute_batch(
             "INSERT INTO personal_assistants(id,first_name,surname) VALUES(1,'Fixture','PA');",

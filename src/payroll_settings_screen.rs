@@ -541,7 +541,7 @@ mod annual_leave_settings_tests {
             screen.annual_leave.variable_from = "1/9".into();
             screen.annual_leave.percentage = "13".into();
             let connection =
-                rusqlite::Connection::open(&application.context.environment.database_path).unwrap();
+                crate::database::open(&application.context.environment.database_path).unwrap();
             match scenario {
                 "invalid" => screen.annual_leave.variable_from = "31/02".into(),
                 "config_failure" => std::fs::create_dir(directory.path().join("config.toml")).unwrap(),

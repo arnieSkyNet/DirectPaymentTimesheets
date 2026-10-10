@@ -2,7 +2,7 @@
 
 ## Scope and versioning
 
-This is the implemented SQLite schema at version 35 (development application version `1.0.5`). It is derived from `create_schema` and migrations in `src/database.rs`; those migrations are authoritative.
+This is the implemented SQLite schema at version 36 (development application version `1.0.6`). It is derived from `create_schema` and migrations in `src/database.rs`; those migrations are authoritative.
 
 `schema_version` contains the current integer version. A new database begins at version 1 and receives each ordered migration through `CURRENT_SCHEMA_VERSION` 35. Existing databases are upgraded in place. Migration 23 removes the short-lived revision-only tables introduced by migration 22 while retaining the operational legacy snapshot tables. Migration 24 adds an explicit contracted/variable hours basis to effective-dated Personal Assistant contracted-hours history while preserving existing records as contracted.
 
@@ -400,7 +400,7 @@ The table checks `end_date >= start_date`; repository validation additionally re
 
 ## Schema 31: cycle-independent PA payroll documents
 
-Migration 31 creates the following table and index in one transaction and advances `schema_version` to 31. It does not read, rewrite or migrate `payroll_timesheet_email_status`: existing payslip/timesheet rows and settlement semantics remain unchanged. There are no historical P60/P45 delivery associations to invent or backfill. The current development application is 1.0.5; schema 31 is the introduction point for this table, subsequently extended by schemas 33 and 35 below.
+Migration 31 creates the following table and index in one transaction and advances `schema_version` to 31. It does not read, rewrite or migrate `payroll_timesheet_email_status`: existing payslip/timesheet rows and settlement semantics remain unchanged. There are no historical P60/P45 delivery associations to invent or backfill. The current development application is 1.0.6; schema 31 is the introduction point for this table, subsequently extended by schemas 33 and 35 below.
 
 ### `imported_payroll_documents`
 
@@ -483,3 +483,94 @@ Migration 35 atomically adds nullable `imported_payroll_documents.superseded_by 
 A supplement replacement inserts an unknown/NULL-sent registration and links the superseded row to it. Current-document readers filter `superseded_by IS NULL`; filing reads all revisions. Duplicate semantic import identities are refused conservatively at registration; the schema intentionally preserves legacy multiple registrations rather than merging their evidence.
 
 The existing move journal now supports configured payslip and PDF roots. Filing updates `stored_path` in both document registries and `pdf_path` in snapshot/submission records, preserving all hash/evidence fields. Replacements retain originals permanently; they do not enqueue deletion of superseded evidence.
+
+## Schema 36: immutable timesheets and transport-attempt evidence
+
+Migration36 is transactional and follows schema35 (used by published Linux/Windows
+1.0.4 and macOS 1.0.5). It adds `document_id INTEGER REFERENCES
+timesheet_documents(id)` to `payroll_timesheet_snapshot_states` and
+`payroll_submissions`. A partial unique index on submission `document_id` permits
+one payroll submission per generated document. Original rows, represented
+payloads, corrections, timestamps and settlement statuses are preserved.
+
+| Table | Columns |
+|---|---|
+| `timesheet_documents` | `id INTEGER PRIMARY KEY`, `payroll_timesheet_id INTEGER NOT NULL`, `pdf_path TEXT NOT NULL` (original generation location), `pdf_sha256 TEXT NOT NULL`, `pdf_bytes BLOB`, `generated_at TEXT NOT NULL`, `legacy INTEGER NOT NULL DEFAULT 0`, `legacy_submission_id INTEGER UNIQUE` |
+| `timesheet_delivery_attempts` | `id INTEGER PRIMARY KEY`, `intent_id TEXT NOT NULL UNIQUE`, `payroll_timesheet_id INTEGER NOT NULL`, `document_id INTEGER NOT NULL REFERENCES timesheet_documents(id)`, `submission_id INTEGER REFERENCES payroll_submissions(id)`, `classification TEXT NOT NULL` (`first_send`/`resend`), `recipients TEXT NOT NULL`, `pdf_path TEXT NOT NULL` (approved dispatch location), `message_id TEXT NOT NULL UNIQUE`, `started_at TEXT NOT NULL`, `completed_at TEXT`, `outcome TEXT NOT NULL` (`uncertain`/`accepted`/`confirmed_not_sent`), `detail TEXT NOT NULL`, `resolved_at TEXT`, `payroll_department_notes TEXT` |
+| `timesheet_delivery_reviews` | `id INTEGER PRIMARY KEY`, `attempt_id INTEGER REFERENCES timesheet_delivery_attempts(id)` (NULL for legacy review), `payroll_timesheet_id INTEGER NOT NULL`, `decision TEXT NOT NULL` (`accepted`/`confirmed_not_sent`), nonblank `reason TEXT NOT NULL`, `actor TEXT NOT NULL`, `reviewed_at TEXT NOT NULL`, `original_evidence TEXT NOT NULL` |
+
+The five `timesheet_attempt_items/weeks/leave/holidays/corrections` tables prepend
+`attempt_id` to the corresponding current snapshot/preparation/correction-application
+columns. Claiming a first send copies those rows before SMTP. Finalisation copies
+them into existing submission tables, excluding the correction application's
+current-timesheet association. These payload tables are retained and immutable.
+
+The unresolved-attempt partial unique index covers `payroll_timesheet_id` where
+`outcome='uncertain' AND resolved_at IS NULL`. Attempts begin uncertain before SMTP;
+only established acceptance/non-acceptance finalises transport evidence. Reviews
+retain the original uncertain outcome and append their decision, rather than
+rewriting it. Identity/recipient/message fields and completed evidence are guarded
+against replacement; attempts, documents and reviews cannot be deleted.
+
+Document bytes may transition from NULL to verified bytes once; retained bytes,
+digest and generation identity cannot be rewritten. Legacy submissions are each
+assigned a document identity without inventing delivery attempts. Missing legacy
+bytes are not guessed. Current registered snapshot paths remain authoritative
+when filing moves a document; original document location remains provenance.
+
+Every table has ordinary INSERT/UPDATE/DELETE compatibility triggers requiring
+`dpt_schema_version()=36`. Compatible connections register it through
+`database::open`. These guards are limited: published 1.0.4/1.0.5 executables have
+no future-schema rejection or new maintenance lock, and their SQLite backup-based
+restore can overwrite a schema36 database. Never reopen upgraded production data
+with those executables. No retroactive protection is claimed.
+
+### Verified startup upgrades and legacy restore
+
+Normal startup (including `cargo run`) uses the configured application root; it
+is not a development database unless `DIRECTPAYMENTTIMESHEETS_HOME` is explicitly
+set. Before loading/saving configuration or creating external business folders,
+`database_recovery::initialise` obtains the dispatch OS lock and a SQLite writer
+reservation. Existing schema1–35 databases receive a separate verified database
+and optional configuration snapshot before any upgrade. SQLite's backup API
+includes committed WAL data without copying a live main file alone. Integrity,
+complete schema/typed-row fingerprints and configuration bytes are verified and
+recovery files flushed. Backup creation/verification failure aborts startup
+without changing the original database. New empty databases need no original
+recovery snapshot; future schemas are refused.
+
+All ordered migrations, including individually committed older steps, run on an
+isolated working copy. Only a fully migrated, verified schema36 copy is installed
+in one live SQLite transaction, under the same writer reservation. Failure or
+interruption before commit retains the original; restart does not adopt abandoned
+work copies. SQL transfer preserves tables, rows, indexes, triggers, views,
+AUTOINCREMENT high-water marks, application_id and user_version. Maintenance
+connections temporarily disable foreign-key enforcement during transfer so
+existing legacy logical references remain intact; normal connections are unchanged.
+
+Recognised legacy backups are integrity/schema-validated, migrated in isolation,
+and reviewed before restore. Approval binds the live database/configuration,
+selected backup and isolated result. Changed inputs invalidate approval. The UI
+lists current rows absent/different in restored data, requires a documented reason
+and explicit destructive-rollback acknowledgement, and explains duplicate-email
+risks. Unresolved ledger or legacy indeterminate email outcomes block rollback
+regardless of acknowledgement. A separate verified live recovery snapshot and
+rollback decision manifest are flushed before installation. Newer submissions,
+accepted attempts and settlement evidence may leave the active database only with
+this informed approval; their exact original data remains in the recovery copy.
+Restoring older evidence requires reconciliation with Payroll before further sends.
+
+Restore, upgrade, timesheet publication, production timesheet and payslip/P45/P60
+sending, and uncertainty review use the same OS sidecar lock. SQLite writer locking prevents concurrent
+edits during recovery capture/installation; the final install is transactional.
+Database/configuration replacement is not one atomic filesystem operation: if
+configuration installation fails after database commit, restart is required and
+both originals remain in the verified recovery snapshot. Close all other instances
+before a rollback and restart after it; other instances' cached UI is not refreshed.
+
+Recovery snapshots do NOT copy or restore externally stored PDFs, payslips,
+signatures, CSV/archive files or fonts. Their manifest inventories configured
+business folders and registered document/signature paths without reading those
+business files. Complete application-data recovery needs a separate protected
+copy of the entire application root plus configured external folders/files. Raw
+configuration can contain credentials; backup directories are private on Unix.

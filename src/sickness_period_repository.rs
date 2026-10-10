@@ -126,7 +126,7 @@ mod tests {
     use super::*;
 
     fn repository() -> SicknessPeriodRepository {
-        let connection = Connection::open_in_memory().unwrap();
+        let connection = crate::database::open_in_memory().unwrap();
         crate::database::create_schema(&connection).unwrap();
         connection.execute_batch("INSERT INTO personal_assistants (id, first_name, surname) VALUES (1, 'One', 'PA'), (2, 'Two', 'PA');").unwrap();
         SicknessPeriodRepository::new(connection)
@@ -201,7 +201,7 @@ mod tests {
     fn migration_from_29_is_atomic_repeatable_and_records_survive_reopen() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("sickness.sqlite");
-        let connection = Connection::open(&path).unwrap();
+        let connection = crate::database::open(&path).unwrap();
         crate::database::create_schema(&connection).unwrap();
         crate::database::tests::remove_schema_32_fixture(&connection);
         connection.execute_batch("DROP TABLE personal_assistant_sickness_periods; UPDATE schema_version SET version = 29;
@@ -238,7 +238,7 @@ mod tests {
         let r = SicknessPeriodRepository::new(connection);
         let id = r.insert(1, "2026-09-01", "2026-10-10").unwrap();
         drop(r);
-        let connection = Connection::open(path).unwrap();
+        let connection = crate::database::open(path).unwrap();
         crate::database::create_schema(&connection).unwrap();
         let r = SicknessPeriodRepository::new(connection);
         assert_eq!(r.get_by_id(id).unwrap().unwrap().end_date, "2026-10-10");

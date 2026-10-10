@@ -6,7 +6,7 @@ use std::error::Error;
 use std::fs;
 use std::path::Path;
 
-#[derive(Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PayrollEmailPreview {
     pub from: String,
     pub to: String,
@@ -954,14 +954,89 @@ mod tests {
             "Payslip for {Personal Assistant Name}",
         )
         .unwrap();
-        preview.attachment_filenames =
-            canonical_attachment_filenames(&bundle, "Fictional Middletest Samplepa", Some(&schedule))
-                .unwrap();
+        preview.attachment_filenames = canonical_attachment_filenames(
+            &bundle,
+            "Fictional Middletest Samplepa",
+            Some(&schedule),
+        )
+        .unwrap();
         let mime = String::from_utf8(build_message(&preview, &path).unwrap().formatted()).unwrap();
-        let expected =
-            crate::payroll_file_naming::payslip_filename("Fictional Middletest Samplepa", &schedule).unwrap();
+        let expected = crate::payroll_file_naming::payslip_filename(
+            "Fictional Middletest Samplepa",
+            &schedule,
+        )
+        .unwrap();
         assert!(mime.contains(&expected), "expected {expected} in {mime}");
         assert!(!mime.contains("revision") && !mime.contains("012345abcdef"));
         assert!(path.exists());
     }
+}
+
+#[derive(Debug)]
+pub enum ProductionSendError {
+    NotSent(String),
+    Uncertain(String),
+}
+
+/// Build from approved bytes rather than rereading a mutable attachment path.
+pub fn prepare_timesheet_message(
+    preview: &PayrollEmailPreview,
+    pdf: &[u8],
+    message_id: &str,
+) -> Result<Message, Box<dyn Error>> {
+    if !preview.additional_attachment_paths.is_empty() {
+        return Err("Unexpected timesheet attachments".into());
+    }
+    let mut builder = Message::builder()
+        .from(preview.from.parse::<Mailbox>()?)
+        .to(preview.to.parse::<Mailbox>()?)
+        .subject(&preview.subject)
+        .message_id(Some(message_id.to_owned()));
+    if let Some(cc) = &preview.cc {
+        builder = builder.cc(cc.parse::<Mailbox>()?);
+    }
+    if let Some(bcc) = &preview.bcc {
+        builder = builder.bcc(bcc.parse::<Mailbox>()?);
+    }
+    let filename = preview
+        .attachment_filenames
+        .first()
+        .cloned()
+        .unwrap_or_else(|| "timesheet.pdf".into());
+    Ok(builder.multipart(
+        MultiPart::mixed()
+            .singlepart(SinglePart::plain(preview.body.clone()))
+            .singlepart(
+                Attachment::new(filename)
+                    .body(pdf.to_vec(), ContentType::parse("application/pdf")?),
+            ),
+    )?)
+}
+
+pub fn send_prepared_timesheet(
+    config: &crate::config::EmailConfig,
+    message: &Message,
+) -> Result<(), ProductionSendError> {
+    let server = config.smtp_transport == "SMTP Server";
+    let mut builder = SmtpTransport::builder_dangerous(if server {
+        config.smtp_host.trim()
+    } else {
+        "localhost"
+    })
+    .port(if server { config.smtp_port } else { 25 });
+    if server && !config.smtp_username.trim().is_empty() {
+        builder = builder.credentials(Credentials::new(
+            config.smtp_username.trim().into(),
+            config.smtp_password.clone(),
+        ));
+    }
+    builder.build().send(message).map(|_| ()).map_err(|error| {
+        // An explicit SMTP negative response proves this transaction was rejected.
+        // I/O, timeout, TLS and generic errors cannot establish non-acceptance.
+        if error.status().is_some() && (error.is_transient() || error.is_permanent()) {
+            ProductionSendError::NotSent(error.to_string())
+        } else {
+            ProductionSendError::Uncertain(error.to_string())
+        }
+    })
 }

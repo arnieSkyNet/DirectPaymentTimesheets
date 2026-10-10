@@ -2210,10 +2210,10 @@ pub(crate) mod tests {
         // production validation must still reject symlink ancestors.
         let root = directory.path().canonicalize().unwrap();
         let database_path = root.join("test.sqlite");
-        let connection = Connection::open(&database_path).unwrap();
+        let connection = crate::database::open(&database_path).unwrap();
         crate::database::create_schema(&connection).unwrap();
         drop(connection);
-        let open = || Connection::open(&database_path).unwrap();
+        let open = || crate::database::open(&database_path).unwrap();
         let environment = AppEnvironment {
             data_dir: root.clone(),
             database_path: database_path.clone(),
@@ -2227,7 +2227,7 @@ pub(crate) mod tests {
         let application = Application {
             annual_leave_settings_repository:
                 crate::annual_leave_settings_repository::AnnualLeaveSettingsRepository::new(
-                    Connection::open(&database_path).unwrap(),
+                    crate::database::open(&database_path).unwrap(),
                 ),
             context: AppContext {
                 environment,
@@ -2273,7 +2273,7 @@ pub(crate) mod tests {
     include!("payroll_leaving_note_tests.rs");
 
     fn setup_connection(application: &Application) -> Connection {
-        Connection::open(&application.context.environment.database_path).unwrap()
+        crate::database::open(&application.context.environment.database_path).unwrap()
     }
 
     fn insert_schedule(

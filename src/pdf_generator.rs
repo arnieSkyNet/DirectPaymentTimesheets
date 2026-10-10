@@ -1476,7 +1476,7 @@ mod tests {
 
     #[test]
     fn sickness_projection_is_read_only_and_preserves_full_cross_week_dates() {
-        let connection = rusqlite::Connection::open_in_memory().unwrap();
+        let connection = crate::database::open_in_memory().unwrap();
         crate::database::create_schema(&connection).unwrap();
         connection.execute_batch("INSERT INTO personal_assistants (id, first_name, surname) VALUES (1, 'Test', 'PA'), (2, 'Other', 'PA');").unwrap();
         let repo = crate::sickness_period_repository::SicknessPeriodRepository::new(connection);

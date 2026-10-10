@@ -251,7 +251,7 @@ mod tests {
     use crate::database::create_schema;
 
     fn create_test_repository() -> PayRateRepository {
-        let connection = Connection::open_in_memory().unwrap();
+        let connection = crate::database::open_in_memory().unwrap();
 
         create_schema(&connection).unwrap();
 

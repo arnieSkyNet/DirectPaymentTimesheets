@@ -275,7 +275,13 @@ fn registered_legacy_repair_preserves_every_history_state_and_leaves_active_pays
 #[test]
 fn archive_collision_preserves_destination_and_saved_inactive_status() {
     let (_dir, app) = fixture();
-    let source = register(&app, 4, "p45", "2026/27", "P45 for Fictional Middletest Samplepa.pdf");
+    let source = register(
+        &app,
+        4,
+        "p45",
+        "2026/27",
+        "P45 for Fictional Middletest Samplepa.pdf",
+    );
     let target = source
         .parent()
         .unwrap()
@@ -298,7 +304,13 @@ fn archive_collision_preserves_destination_and_saved_inactive_status() {
 #[test]
 fn registry_failure_keeps_saved_inactive_and_continues_other_files() {
     let (_dir, app) = fixture();
-    let source = register(&app, 4, "p45", "2026/27", "P45 for Fictional Middletest Samplepa.pdf");
+    let source = register(
+        &app,
+        4,
+        "p45",
+        "2026/27",
+        "P45 for Fictional Middletest Samplepa.pdf",
+    );
     let earlier = register(
         &app,
         4,
@@ -390,7 +402,7 @@ fn journal_cleanup_restarts_safely_and_refuses_changed_or_missing_destination() 
     assert!(cleanup(db, 4, std::slice::from_ref(base)).is_err());
     assert!(source.exists());
     pdf(&destination, b"%PDF-1.4 original");
-    let reopened = Connection::open(&app.context.environment.database_path).unwrap();
+    let reopened = crate::database::open(&app.context.environment.database_path).unwrap();
     cleanup(&reopened, 4, std::slice::from_ref(base)).unwrap();
     assert!(!source.exists());
     assert!(destination.exists());
@@ -499,6 +511,7 @@ fn schema34_journal_migration_is_atomic_and_preserves_schema33_history() {
     let (_dir, app) = fixture();
     register(&app, 4, "p45", "2026/27", "P45 original.pdf");
     let db = &app.payroll_timesheet_email_repository.connection;
+    crate::database::tests::remove_schema_36_fixture(db);
     db.execute_batch("UPDATE imported_payroll_documents SET history_state='application',sent_at='original-sent'; DROP TABLE payslip_revisions; ALTER TABLE imported_payroll_documents DROP COLUMN superseded_by; DROP TABLE payroll_file_moves; UPDATE schema_version SET version=33;").unwrap();
     let before = facts(&app, 4);
     db.execute_batch("CREATE TRIGGER fail_schema BEFORE UPDATE ON schema_version BEGIN SELECT RAISE(ABORT,'failure'); END;").unwrap();
@@ -655,9 +668,11 @@ fn maintained_name_edits_normalise_old_documents_and_preserve_delivery_lookup() 
             let (_dir, app) = fixture();
             let root = &app.context.config.folders.payslip_folder;
             let schedule = rename_schedule();
-            let old = naming::payslip_path(root, "Fictional Middletest Samplepa", &schedule).unwrap();
+            let old =
+                naming::payslip_path(root, "Fictional Middletest Samplepa", &schedule).unwrap();
             pdf(&old, b"%PDF-1.4 ordinary old name");
-            let other = naming::payslip_path(root, "Imaginary Middletwo Fixturepa", &schedule).unwrap();
+            let other =
+                naming::payslip_path(root, "Imaginary Middletwo Fixturepa", &schedule).unwrap();
             pdf(&other, b"%PDF-1.4 other PA");
             let mut edited = pa(&app, 4);
             edited.first_name = given.into();
@@ -761,8 +776,9 @@ fn name_edit_keeps_archived_history_and_unassociated_evidence_in_place() {
     let root = &app.context.config.folders.payslip_folder;
     let archived =
         root.join("2025 to 2026/Archived/Payslip for Week 22 for Testgiven Middleone Van Testfamily-Testlast.pdf");
-    let unassociated =
-        root.join("2026 to 2027/PA 4/Employee Payslip for Week 26 for Testgiven Van Testfamily-Testlast.pdf");
+    let unassociated = root.join(
+        "2026 to 2027/PA 4/Employee Payslip for Week 26 for Testgiven Van Testfamily-Testlast.pdf",
+    );
     pdf(&archived, b"%PDF-1.4 historic ordinary");
     pdf(&unassociated, b"%PDF-1.4 unassociated");
     let original = register(
@@ -786,13 +802,17 @@ fn name_edit_keeps_archived_history_and_unassociated_evidence_in_place() {
         .join("2025 to 2026/Archived/Payslip for Week 22 for Changedgiven Middletwo De la Testfamily.pdf")
         .is_file());
     assert!(root
-        .join("2026 to 2027/PA 4/Payslip for Week 26 for Changedgiven Middletwo De la Testfamily.pdf")
+        .join(
+            "2026 to 2027/PA 4/Payslip for Week 26 for Changedgiven Middletwo De la Testfamily.pdf"
+        )
         .is_file());
-    assert!(
-        !naming::existing_payslip_path(root, "Changedgiven Middletwo De la Testfamily", &rename_schedule())
-            .unwrap()
-            .exists()
-    );
+    assert!(!naming::existing_payslip_path(
+        root,
+        "Changedgiven Middletwo De la Testfamily",
+        &rename_schedule()
+    )
+    .unwrap()
+    .exists());
     assert!(crate::payslip_delivery_service::select_payroll_documents(
         &app.payroll_timesheet_email_repository,
         4,
@@ -807,7 +827,8 @@ fn ambiguous_old_or_new_names_and_name_change_collisions_refuse_without_mutation
     for scenario in ["old ambiguous", "new ambiguous", "collision"] {
         let (_dir, app) = fixture();
         let root = &app.context.config.folders.payslip_folder;
-        let old = root.join("2026 to 2027/Payslip for Week 26 for Fictional Middletest Samplepa.pdf");
+        let old =
+            root.join("2026 to 2027/Payslip for Week 26 for Fictional Middletest Samplepa.pdf");
         pdf(&old, b"%PDF-1.4 original");
         let mut edited = pa(&app, 4);
         edited.surname = "Renamedpa".into();
@@ -817,7 +838,9 @@ fn ambiguous_old_or_new_names_and_name_change_collisions_refuse_without_mutation
             app.payroll_timesheet_email_repository.connection.execute_batch("UPDATE personal_assistants SET first_name='Fictional Middletest',surname='Renamedpa' WHERE id=5;").unwrap();
         } else {
             pdf(
-                &root.join("2026 to 2027/Payslip for Week 26 for Fictional Middletest Renamedpa.pdf"),
+                &root.join(
+                    "2026 to 2027/Payslip for Week 26 for Fictional Middletest Renamedpa.pdf",
+                ),
                 b"%PDF-1.4 unrelated existing",
             );
         }
@@ -826,8 +849,10 @@ fn ambiguous_old_or_new_names_and_name_change_collisions_refuse_without_mutation
         assert_eq!(fs::read(&old).unwrap(), b"%PDF-1.4 original");
         if scenario == "collision" {
             assert_eq!(
-                fs::read(root.join("2026 to 2027/Payslip for Week 26 for Fictional Middletest Renamedpa.pdf"))
-                    .unwrap(),
+                fs::read(root.join(
+                    "2026 to 2027/Payslip for Week 26 for Fictional Middletest Renamedpa.pdf"
+                ))
+                .unwrap(),
                 b"%PDF-1.4 unrelated existing"
             );
         }
@@ -864,10 +889,12 @@ fn name_change_registry_failure_rolls_back_name_paths_and_files() {
 fn active_repair_finishes_committed_ordinary_cleanup_without_new_ordinary_filing() {
     let (_dir, app) = fixture();
     let root = &app.context.config.folders.payslip_folder;
-    let obsolete = root.join("2025 to 2026/Payslip for Week 22 for Fictional Middletest Samplepa.pdf");
-    let committed =
-        root.join("2025 to 2026/Archived/Payslip for Week 22 for Fictional Middletest Samplepa.pdf");
-    let current = root.join("2026 to 2027/Payslip for Week 26 for Fictional Middletest Samplepa.pdf");
+    let obsolete =
+        root.join("2025 to 2026/Payslip for Week 22 for Fictional Middletest Samplepa.pdf");
+    let committed = root
+        .join("2025 to 2026/Archived/Payslip for Week 22 for Fictional Middletest Samplepa.pdf");
+    let current =
+        root.join("2026 to 2027/Payslip for Week 26 for Fictional Middletest Samplepa.pdf");
     pdf(&obsolete, b"%PDF-1.4 committed ordinary");
     pdf(&committed, b"%PDF-1.4 committed ordinary");
     pdf(&current, b"%PDF-1.4 current ordinary");
@@ -903,8 +930,10 @@ fn name_change_reuses_only_proven_interrupted_publication_not_new_name_lookalike
     for with_old_source in [false, true] {
         let (_dir, app) = fixture();
         let root = &app.context.config.folders.payslip_folder;
-        let old = root.join("2026 to 2027/Payslip for Week 26 for Fictional Middletest Samplepa.pdf");
-        let new = root.join("2026 to 2027/Payslip for Week 26 for Fictional Middletest Renamedpa.pdf");
+        let old =
+            root.join("2026 to 2027/Payslip for Week 26 for Fictional Middletest Samplepa.pdf");
+        let new =
+            root.join("2026 to 2027/Payslip for Week 26 for Fictional Middletest Renamedpa.pdf");
         pdf(&new, b"%PDF-1.4 same content");
         if with_old_source {
             pdf(&old, b"%PDF-1.4 same content");
@@ -915,7 +944,11 @@ fn name_change_reuses_only_proven_interrupted_publication_not_new_name_lookalike
         assert_eq!(result.is_ok(), with_old_source);
         assert_eq!(
             pa(&app, 4).surname,
-            if with_old_source { "Renamedpa" } else { "Samplepa" }
+            if with_old_source {
+                "Renamedpa"
+            } else {
+                "Samplepa"
+            }
         );
         assert_eq!(fs::read(&new).unwrap(), b"%PDF-1.4 same content");
         assert!(!old.exists());

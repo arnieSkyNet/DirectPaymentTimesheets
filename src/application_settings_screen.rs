@@ -30,6 +30,9 @@ pub struct ApplicationSettingsScreen {
     backups: Vec<BackupInfo>,
     selected_backup: Option<std::path::PathBuf>,
     confirm_restore: bool,
+    restore_plan: Option<crate::backup_service::RestorePlan>,
+    restore_reason: String,
+    restore_acknowledged: bool,
     restart_message: Option<String>,
 }
 
@@ -60,6 +63,9 @@ impl ApplicationSettingsScreen {
             backups: Vec::new(),
             selected_backup: None,
             confirm_restore: false,
+            restore_plan: None,
+            restore_reason: String::new(),
+            restore_acknowledged: false,
             restart_message: None,
         }
     }
@@ -388,7 +394,7 @@ impl ApplicationSettingsScreen {
         ui.separator();
 
         ui.heading("Backup");
-        ui.label("Create a manual backup of the database and application configuration.");
+        ui.label("Create a verified database/configuration recovery copy, including committed WAL data. External PDFs, payslips, signatures and business folders are not copied; protect those separately. The recovery manifest lists their known locations.");
 
         if ui.button("Create Backup").clicked() {
             match application.create_backup() {
@@ -441,6 +447,9 @@ impl ApplicationSettingsScreen {
                         .clicked()
                     {
                         self.selected_backup = Some(backup.path.clone());
+                        self.confirm_restore = false;
+                        self.restore_plan = None;
+                        self.restore_acknowledged = false;
                     }
                 }
             });
@@ -454,12 +463,15 @@ impl ApplicationSettingsScreen {
             .clicked()
         {
             let selected = self.selected_backup.as_ref().unwrap();
-            match application.validate_backup(selected) {
+            match application.preview_backup_restore(selected) {
                 Ok(validation) => {
                     self.status_message = format!(
                         "Backup validated successfully (schema version {}). Confirmation required.",
                         validation.schema_version
                     );
+                    self.restore_plan = Some(validation);
+                    self.restore_acknowledged = false;
+                    self.restore_reason.clear();
                     self.confirm_restore = true;
                 }
                 Err(error) => {
@@ -469,14 +481,26 @@ impl ApplicationSettingsScreen {
         }
 
         if self.confirm_restore {
-            let selected = self.selected_backup.clone().unwrap();
+            let plan = self.restore_plan.clone().unwrap();
+            let selected = plan.backup.clone();
             let mut confirm = false;
             let mut cancel = false;
             egui::Window::new("Confirm Backup Restoration")
                 .collapsible(false)
-                .resizable(false)
+                .default_width(600.0)
+                .resizable(true)
                 .show(ui.ctx(), |ui| {
-                    ui.heading("Current application data and settings will be replaced");
+                    ui.heading("Destructive rollback: current database and settings will be replaced");
+                    ui.colored_label(ui.visuals().warn_fg_color,"Newer payroll submissions, accepted sends and other evidence may be removed from the active database. This can cause duplicate payroll processing. They remain in the separate verified recovery copy.");
+                    egui::ScrollArea::vertical().max_height(180.0).show(ui, |ui| {
+                        for (table,count) in &plan.replaced_rows {
+                            ui.label(format!("{count} current row(s) absent or different in the restored data: {table}"));
+                        }
+                    });
+                    ui.label("PDFs, payslips, signatures and other external business files are NOT restored. Protect/reconcile these separately. Close all other application instances before proceeding.");
+                    ui.label("Document the reason and evidence for this rollback:");
+                    ui.text_edit_multiline(&mut self.restore_reason);
+                    ui.checkbox(&mut self.restore_acknowledged,"I explicitly authorise this reviewed rollback, including loss of the listed active evidence, and understand the duplicate-email risk.");
                     ui.label(format!("Restore from: {}", selected.display()));
                     ui.label(
                         "A safety backup of the current database and configuration will be created first.",
@@ -486,7 +510,7 @@ impl ApplicationSettingsScreen {
                     );
                     ui.horizontal(|ui| {
                         if ui
-                            .button("Restore Backup and Replace Current Data")
+                            .add_enabled(self.restore_acknowledged && !self.restore_reason.trim().is_empty(), egui::Button::new("Restore Backup and Replace Current Data"))
                             .clicked()
                         {
                             confirm = true;
@@ -499,10 +523,17 @@ impl ApplicationSettingsScreen {
 
             if cancel {
                 self.confirm_restore = false;
+                self.restore_plan = None;
+                self.restore_acknowledged = false;
                 self.status_message = "Backup restoration cancelled; no data was changed.".into();
             } else if confirm {
                 self.confirm_restore = false;
-                match application.restore_backup(&selected) {
+                let approval = crate::backup_service::RestoreAuthorisation {
+                    plan,
+                    reason: self.restore_reason.clone(),
+                    acknowledged: self.restore_acknowledged,
+                };
+                match application.restore_backup(&selected, &approval) {
                     Ok(result) => {
                         let config_note = if result.config_restored {
                             "config.toml was restored."

@@ -414,7 +414,7 @@ mod tests {
     }
 
     fn repository_with_schedules(schedules: &[(&str, i64, &str)]) -> PayrollScheduleRepository {
-        let connection = Connection::open_in_memory().unwrap();
+        let connection = crate::database::open_in_memory().unwrap();
         crate::database::create_schema(&connection).unwrap();
         for (year, cycle, first_week) in schedules {
             let first = date(first_week);

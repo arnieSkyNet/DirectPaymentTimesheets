@@ -12,6 +12,9 @@ impl AppContext {
     pub fn initialise() -> Result<Self, AppError> {
         let environment = AppEnvironment::initialise()?;
 
+        // Upgrade safety runs before configuration/default folders can be changed.
+        crate::database::initialise_database(&environment.database_path)
+            .map_err(|error| AppError::Config(format!("Database startup refused: {error}")))?;
         let config_path = environment.data_dir.join("config.toml");
 
         let config = AppConfig::load(&config_path)?;

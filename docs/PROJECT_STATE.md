@@ -4,8 +4,8 @@ This document describes the implementation on `main`. Source code, migrations an
 
 ## Current release and platform
 
-- Development application version: `1.0.5`; latest published release: `1.0.3`.
-- Database schema: version 35, upgraded in place by ordered SQLite migrations.
+- Development application version: `1.0.6`; published Linux/Windows: `1.0.4`; published macOS: `1.0.5`.
+- Database schema: version 36, upgraded in place by ordered SQLite migrations.
 - Desktop UI: Rust with `eframe`/`egui`.
 - Persistence: SQLite through `rusqlite` (bundled SQLite).
 - Documents and integration: `printpdf`, PDF text extraction, ZIP import and SMTP via `lettre`.
@@ -107,7 +107,7 @@ The PDF displays reconciled weekly Hours Worked totals using configured font rol
 
 Generation writes a temporary PDF, persists a candidate snapshot and SHA-256 digest, then publishes the final PDF. Required output parents are created only when writing. A generic PDF root remains flat; an already year-suffixed root such as `2026 to 2027` rolls over to a sibling year directory.
 
-Only a successful production timesheet send freezes the candidate as the immutable submitted baseline. Preview and test email do not. Production verifies the exact candidate path and digest. SMTP failure leaves the candidate replaceable. If transport may have succeeded but persisting the submitted state fails, the record enters protected indeterminate state to prevent an unsafe automatic resend or regeneration. Production payslip delivery likewise writes durable per-PA indeterminate state before SMTP, restores unsent only after a reported SMTP failure, and records definitive sent state after successful transport. A crash or failed final status write leaves the payslip visibly uncertain and blocks automatic resend; recovery remains an explicit future workflow.
+Only a successful production timesheet send freezes the candidate as the immutable submitted baseline. Preview and test email do not. Production verifies the exact approved document identity, path, digest, bytes, routing and classification. Schema36 records each attempt before SMTP. Explicit non-acceptance restores candidate eligibility; ambiguous SMTP errors, interrupted attempts and failed finalisation remain protected until an audited review. Accepted resends refer to the existing submission and do not reapply corrections. Production payslip delivery likewise writes durable per-PA indeterminate state before SMTP, restores unsent only after a reported SMTP failure, and records definitive sent state after successful transport. A crash or failed final status write leaves the payslip visibly uncertain and blocks automatic resend; payslip/supplement recovery remains an explicit future workflow. Timesheet review is available in Dashboard delivery-attempt history.
 
 Generation and production timesheet email use the same selected-period employment eligibility as preparation. Payslip/document email additionally includes PAs with unsent imported P60/P45, independent of employment overlap.
 
@@ -153,3 +153,27 @@ Known limitations and deliberately deferred work include:
 ### Payroll filing and explicit replacements
 
 Schema35 implements deliberate corrected-document replacement and complete safely identified PA document filing. Maintenance offers **Replace payroll document…** with identity/hash/history review and confirmation; old bytes/evidence remain retained. Corrected ordinary payslips are current and unsent; corrected supplements start unknown with NULL sent_at and link to the superseding registration. P45/P60 remain independent. MIME names for ordinary/P45/P60 attachments use canonical names built from structured identities; hash/revision basenames remain private. Active-to-Inactive transitions file registered/revised payroll documents and generated/historical on-disk timesheets directly into shared year-level Archived folders with no PA subfolder, updating durable readers/paths. Late documents for inactive PAs go straight to Archived. Repeated inactive saves only retry existing cleanup; reactivation never restores files. Shared information/CSV/P30 and external assets are excluded. The schema34 journal retains verified move pairs until post-commit source cleanup succeeds. [Implementation and platform limits](ARCHITECTURE.md#inactive-pa-filing-and-registered-supplement-repair).
+
+
+## Stage 1 timesheet resend prevention (1.0.6/schema36)
+
+Current unsent PDF versions default selected, including regenerated corrections
+whose older versions were sent. Sent current versions remain visible unticked;
+Select all unsent excludes them. Intentional manual resends require explicit
+acknowledgement and final confirmation separating first sends/resends and actual
+Payroll/employer/optional PA routing. Changing selection or approved document
+invalidates acknowledgement. Each attempt has a durable intent, document/submission
+association, recipients, Message-ID and transport evidence. Accepted replay skips
+rather than sends; partial-batch successes stay unticked in a new selection.
+Uncertainty requires documented review with a separate confirmation. Reviewed
+original outcomes and submission evidence remain retained. Schema36 guards reject
+ordinary old-connection SQL writes, but published older executables can still
+replace upgraded data through restore; keep them away from production data.
+
+Startup upgrades now create and verify a WAL-safe database/configuration recovery
+snapshot, migrate the full chain in isolation and install transactionally. Restore
+accepts supported legacy backups through isolated migration, blocks uncertainty,
+invalidates stale approval and requires a documented destructive rollback decision.
+A separately verified original snapshot retains newer delivery/payroll evidence.
+External business files are inventoried only and need independent protection.
+See DATABASE-SCHEMA.md for recovery limits and maintenance locking.

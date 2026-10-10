@@ -13,6 +13,15 @@ pub fn stage(db: &Connection, record: &PayrollTimesheet) -> Result<Stage> {
     let status = |kind: &str| -> Result<Option<String>> {
         Ok(db.query_row("SELECT sent_at FROM payroll_timesheet_email_status WHERE personal_assistant_id=?1 AND payroll_year=?2 AND cycle_number=?3 AND email_type=?4",params![record.personal_assistant_id,record.payroll_year,record.cycle_number,kind],|r|r.get(0)).optional()?.flatten())
     };
+    // Delivery uncertainty blocks mutations even when payroll was already settled.
+    let has_ledger: bool = db.query_row(
+        "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE name='timesheet_delivery_attempts')",
+        [],
+        |r| r.get(0),
+    )?;
+    if has_ledger && crate::timesheet_delivery::blocked(db, record.id)? {
+        return Ok(Stage::Indeterminate);
+    }
     if let Some(sent) = status("payslip")? {
         return Ok(if sent.starts_with("indeterminate:") {
             Stage::Indeterminate
@@ -48,7 +57,10 @@ pub fn latest(db: &Connection, record: i64) -> Result<Option<i64>> {
 /// Called inside the same transaction as successful submission state persistence.
 pub fn archive_submission(db: &Connection, record: i64, at: &str) -> Result<()> {
     let (path,digest):(String,String) = db.query_row("SELECT pdf_path,pdf_sha256 FROM payroll_timesheet_snapshot_states WHERE payroll_timesheet_id=?1",[record],|r|Ok((r.get(0)?,r.get(1)?)))?;
-    let bytes = if std::path::Path::new(&path).exists() {
+    let retained:Option<Vec<u8>>=db.query_row("SELECT d.pdf_bytes FROM timesheet_documents d JOIN payroll_timesheet_snapshot_states s ON s.document_id=d.id WHERE s.payroll_timesheet_id=?1",[record],|r|r.get(0)).optional()?.flatten();
+    let bytes = if retained.is_some() {
+        retained
+    } else if std::path::Path::new(&path).exists() {
         Some(std::fs::read(&path)?)
     } else {
         None
@@ -59,7 +71,7 @@ pub fn archive_submission(db: &Connection, record: i64, at: &str) -> Result<()> 
     {
         return Err("Submission attachment changed".into());
     }
-    db.execute("INSERT INTO payroll_submissions(payroll_timesheet_id,submitted_at,supersedes_id,pdf_path,pdf_sha256,pdf_bytes,payroll_department_notes) VALUES (?1,?2,?3,?4,?5,?6,(SELECT payroll_department_notes FROM payroll_timesheets WHERE id=?1))",params![record,at,latest(db,record)?,path,digest,bytes])?;
+    db.execute("INSERT INTO payroll_submissions(payroll_timesheet_id,submitted_at,supersedes_id,pdf_path,pdf_sha256,pdf_bytes,payroll_department_notes,document_id) VALUES (?1,?2,?3,?4,?5,?6,(SELECT payroll_department_notes FROM payroll_timesheets WHERE id=?1),(SELECT document_id FROM payroll_timesheet_snapshot_states WHERE payroll_timesheet_id=?1))",params![record,at,latest(db,record)?,path,digest,bytes])?;
     let id = db.last_insert_rowid();
     for (target, source) in [
         (

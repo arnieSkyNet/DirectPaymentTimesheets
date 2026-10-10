@@ -2,7 +2,7 @@
 
 ## Purpose
 
-This document describes the implemented business entities and their relationships. It is intentionally conceptual; [DATABASE-SCHEMA.md](DATABASE-SCHEMA.md) is the exact schema35 table/column reference and the Rust source remains authoritative.
+This document describes the implemented business entities and their relationships. It is intentionally conceptual; [DATABASE-SCHEMA.md](DATABASE-SCHEMA.md) is the exact schema36 table/column reference and the Rust source remains authoritative.
 
 The model preserves imported facts, effective-dated employment terms, prepared payroll values and the exact worked-item evidence represented by a generated or submitted timesheet.
 
@@ -66,7 +66,7 @@ Payroll preparation and generation consume effective imported corrections alongs
 
 An import-audit record captures import time, original/archive filenames, row counts, status and optional error. Validated source bytes are written first to a unique, non-overwriting file in `archive/YYYY/MM/`; all imported rows and the SUCCESS audit are then committed in one SQLite transaction. A database failure leaves the archive as reported recoverable evidence and rolls back all rows. Failed/refused audits are best-effort.
 
-The current schema35 still has no CSV imported-file content hash or row-to-import relationship. Historical successful-import detection therefore remains based on the original pathname: changed content at an already-successful pathname is conservatively skipped, while renamed identical content is preflighted again and exact already-stored raw rows are skipped. Correction events do not change raw collision identity. Durable content identity and row provenance require a future migration.
+The current schema36 still has no CSV imported-file content hash or row-to-import relationship. Historical successful-import detection therefore remains based on the original pathname: changed content at an already-successful pathname is conservatively skipped, while renamed identical content is preflighted again and exact already-stored raw rows are skipped. Correction events do not change raw collision identity. Durable content identity and row provenance require a future migration.
 
 ## DirectShift
 
@@ -218,3 +218,26 @@ Employment status, document filing and delivery history remain separate facts. I
 
 
 Explicit corrections preserve superseded supplement registrations through `superseded_by`. Ordinary corrections retain immutable `payslip_revisions`, with one current revision per PA/payroll-year/cycle. Delivery evidence belongs to the bytes/revision it described; corrected supplement history starts unknown. File location changes on deactivation preserve identity, hashes, submission facts and embedded evidence. See the schema35 and architecture sections for transaction and lookup behaviour.
+
+
+## Timesheet document and delivery identity (schema36)
+
+A generated timesheet has a stable immutable document identity distinct from its
+PA/payroll period and file location. Its digest and retained bytes identify the
+approved artifact. The current snapshot points to that document; successful first
+delivery links it to one payroll submission. Each resend references that existing
+submission. Delivery attempts retain intent, recipients, Message-ID, timestamps,
+classification and transport outcome. Separate append-only reviews resolve
+uncertainty while preserving original evidence. Claimed payroll payloads remain
+immutable for post-crash finalisation. These entities do not settle payroll;
+ordinary payslip status retains that responsibility.
+
+Byte-identical regeneration with identical represented evidence retains the same
+document identity and sent status. Material corrections allocate a new identity.
+
+
+Current snapshot location may change after successful byte-identical PDF
+regeneration; immutable document location and original submission paths remain
+provenance. Database/config recovery is distinct from external business-file
+recovery. Explicit rollback decisions and exact pre-restore evidence are retained
+in a separately verified recovery snapshot; uncertainty cannot be cleared by restore.

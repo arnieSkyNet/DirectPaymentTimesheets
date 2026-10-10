@@ -588,6 +588,7 @@ mod tests {
         let (_dir, app) = fixture();
         seed(&app, "p45");
         let db = &app.payroll_timesheet_email_repository.connection;
+        crate::database::tests::remove_schema_36_fixture(db);
         db.execute_batch("DROP TABLE payslip_revisions; ALTER TABLE imported_payroll_documents DROP COLUMN superseded_by; UPDATE imported_payroll_documents SET history_state='unknown'; UPDATE schema_version SET version=34; CREATE TRIGGER refuse35 BEFORE UPDATE ON schema_version BEGIN SELECT RAISE(ABORT,'fixture'); END;").unwrap();
         assert!(crate::database::create_schema(db).is_err());
         assert!(db

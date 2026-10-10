@@ -329,7 +329,7 @@ fn actual_in_lieu_validation_isolation_and_stale_preparation_save() {
 fn payroll_notes_schema32_upgrade_is_atomic_preserves_history_and_reopens() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("upgrade.sqlite");
-    let db = Connection::open(&path).unwrap();
+    let db = crate::database::open(&path).unwrap();
     crate::database::create_schema(&db).unwrap();
     crate::database::tests::remove_schema_32_fixture(&db);
     db.execute_batch("UPDATE schema_version SET version=31;
@@ -377,7 +377,7 @@ fn payroll_notes_schema32_upgrade_is_atomic_preserves_history_and_reopens() {
         .unwrap();
     assert_eq!(historical, (None, vec![0x12, 0x34], "submitted".into()));
     drop(db);
-    let reopened = Connection::open(path).unwrap();
+    let reopened = crate::database::open(path).unwrap();
     crate::database::create_schema(&reopened).unwrap();
     assert_eq!(
         reopened

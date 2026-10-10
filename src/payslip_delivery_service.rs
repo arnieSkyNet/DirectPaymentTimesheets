@@ -196,6 +196,9 @@ pub fn send_payroll_bundle<F>(
 where
     F: FnOnce() -> Result<(), Box<dyn std::error::Error>>,
 {
+    // Share the maintenance lock without changing payslip/P45/P60 routing or outcomes.
+    let _dispatch = crate::timesheet_delivery::production_lock(&repository.connection)
+        .map_err(|e| PayslipDeliveryError::Refused(e.to_string()))?;
     let payslip = bundle.email_types.contains(&"payslip");
     if (!payslip && bundle.document_ids.is_empty())
         || bundle
@@ -292,12 +295,11 @@ mod tests {
     use super::*;
     use crate::database::create_schema;
     use crate::email_service::{preview_payroll_email, preview_test_payslip_email};
-    use rusqlite::Connection;
 
     fn repository() -> (tempfile::TempDir, PayrollTimesheetEmailRepository) {
         let directory = tempfile::TempDir::new().unwrap();
         let database = directory.path().join("delivery.sqlite");
-        let connection = Connection::open(database).unwrap();
+        let connection = crate::database::open(database).unwrap();
         create_schema(&connection).unwrap();
         connection.execute_batch("INSERT INTO personal_assistants(id, first_name, surname) VALUES (1, 'Test', 'One'), (2, 'Test', 'Two');").unwrap();
         (directory, PayrollTimesheetEmailRepository::new(connection))
@@ -601,7 +603,7 @@ mod tests {
         let database = directory.path().join("delivery.sqlite");
         let error =
             send_production_payslip(&repository, identity(), "2026-09-01T10:00:00Z", || {
-                Connection::open(&database).unwrap().execute_batch(
+                crate::database::open(&database).unwrap().execute_batch(
                     "CREATE TRIGGER refuse_payslip_sent
                      BEFORE UPDATE OF sent_at ON payroll_timesheet_email_status
                      WHEN OLD.sent_at LIKE 'indeterminate:%'
@@ -617,7 +619,8 @@ mod tests {
         assert!(error.to_string().contains("Delivery may have occurred"));
         drop(repository);
 
-        let reloaded = PayrollTimesheetEmailRepository::new(Connection::open(database).unwrap());
+        let reloaded =
+            PayrollTimesheetEmailRepository::new(crate::database::open(database).unwrap());
         assert!(matches!(
             state(&reloaded),
             EmailDeliveryState::Indeterminate { .. }
@@ -641,7 +644,8 @@ mod tests {
             .unwrap());
         drop(repository);
 
-        let reloaded = PayrollTimesheetEmailRepository::new(Connection::open(database).unwrap());
+        let reloaded =
+            PayrollTimesheetEmailRepository::new(crate::database::open(database).unwrap());
         let mut send_called = false;
         let error = send_production_payslip(&reloaded, identity(), "2026-09-01T11:00:00Z", || {
             send_called = true;
@@ -694,7 +698,7 @@ mod tests {
     fn schedule_is_marked_only_after_every_required_pa_is_definitively_sent() {
         let (directory, repository) = repository();
         let database = directory.path().join("delivery.sqlite");
-        let schedule_connection = Connection::open(&database).unwrap();
+        let schedule_connection = crate::database::open(&database).unwrap();
         schedule_connection
             .execute(
                 "INSERT INTO payroll_schedules (
@@ -787,5 +791,45 @@ mod tests {
             .get_for_pa_and_cycle(1, "2026/27", 6, "payslip")
             .unwrap()
             .is_none());
+    }
+    #[test]
+    fn payroll_bundle_and_restore_exclude_each_other_without_changing_delivery_rules() {
+        use crate::backup_service::{BackupService, RestoreAuthorisation};
+        let (directory, repository) = repository();
+        let database = directory.path().join("delivery.sqlite");
+        let config = directory.path().join("config.toml");
+        let backups = directory.path().join("backups");
+        let selected = BackupService::create_verified(&database, &config, &backups).unwrap();
+        let plan = BackupService::preview_restore(&selected, &database, &config, &backups).unwrap();
+        let guard = crate::timesheet_delivery::production_lock(&repository.connection).unwrap();
+        assert!(
+            send_production_payslip(&repository, identity(), "attempt", || panic!(
+                "Locked send must not reach transport"
+            ))
+            .is_err()
+        );
+        assert_eq!(state(&repository), EmailDeliveryState::Unsent);
+        drop(guard);
+        send_production_payslip(&repository, identity(), "attempt", || {
+            let error = BackupService::restore(
+                &selected,
+                &database,
+                &config,
+                &backups,
+                &RestoreAuthorisation {
+                    plan,
+                    reason: "Explicit temporary-data rollback".into(),
+                    acknowledged: true,
+                },
+            )
+            .unwrap_err();
+            assert!(error.to_string().contains("active"));
+            Ok(())
+        })
+        .unwrap();
+        assert!(matches!(
+            state(&repository),
+            EmailDeliveryState::Sent { .. }
+        ));
     }
 }

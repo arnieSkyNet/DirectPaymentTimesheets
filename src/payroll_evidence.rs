@@ -11,7 +11,9 @@ pub fn now() -> String {
     chrono::Local::now().to_rfc3339()
 }
 pub fn open(app: &Application) -> Result<Connection> {
-    Ok(Connection::open(&app.context.environment.database_path)?)
+    Ok(crate::database::open(
+        &app.context.environment.database_path,
+    )?)
 }
 pub fn migrate(db: &Connection) -> rusqlite::Result<()> {
     let tx = db.unchecked_transaction()?;
@@ -251,7 +253,13 @@ fn preflight_scoped(
 ) -> Result<Preflight> {
     let groups = groups(evidence)?;
     let active: HashSet<_> = groups.iter().map(|g| g.fingerprint.clone()).collect();
-    let tx = db.unchecked_transaction()?;
+    // Claim validation can run under an existing immediate/writer transaction.
+    let transaction = if db.is_autocommit() {
+        Some(db.unchecked_transaction()?)
+    } else {
+        None
+    };
+    let tx = transaction.as_ref().map(|t| &**t).unwrap_or(db);
     let decisions = tx.prepare("SELECT id,group_fingerprint FROM payroll_duplicate_decisions WHERE invalidated_at IS NULL AND (?1 IS NULL OR id IN (
             SELECT m.decision_id FROM payroll_duplicate_members m
             LEFT JOIN timesheets t ON m.source='imported' AND t.id=m.source_id
@@ -280,7 +288,9 @@ fn preflight_scoped(
             unresolved.push(group);
         }
     }
-    tx.commit()?;
+    if let Some(transaction) = transaction {
+        transaction.commit()?;
+    }
     Ok(Preflight {
         unresolved,
         eligible: evidence
