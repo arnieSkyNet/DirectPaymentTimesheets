@@ -8,6 +8,8 @@ pub struct DuplicateUi {
     selections: BTreeMap<String, String>,
     error: String,
     through: Option<NaiveDate>,
+    reviews: BTreeMap<String, String>,
+    acknowledged: bool,
 }
 impl DuplicateUi {
     pub fn refresh(&mut self, app: &Application, through: Option<NaiveDate>) -> Result<()> {
@@ -26,6 +28,14 @@ impl DuplicateUi {
                 })
             })
             .collect();
+        self.reviews.clear();
+        self.acknowledged = false;
+        let db = open(app)?;
+        for g in &self.pending {
+            if let Ok(review) = crate::shift_changes::group_review(&db, g) {
+                self.reviews.insert(g.fingerprint.clone(), review.signature);
+            }
+        }
         self.prepared = Some(preflight);
         self.selections
             .retain(|k, _| self.pending.iter().any(|g| &g.fingerprint == k));
@@ -41,8 +51,9 @@ impl DuplicateUi {
             return false;
         }
         ui.heading("Resolve possible duplicate shifts");
+        ui.label("Review possible corrections and before/after alternatives");
         ui.label(
-            "Original evidence is retained. Select exactly one payable candidate in every group.",
+            "Original evidence is retained. Compare the alternatives and approve one payable version, retain legitimate separate shifts, or defer. Protected financial corrections still require the existing payroll review.",
         );
         egui::ScrollArea::vertical()
             .max_height(450.0)
@@ -56,6 +67,11 @@ impl DuplicateUi {
                         })
                         .show(ui, |ui| {
                             ui.strong(format!("Group {} — {}", index + 1, g.candidates[0].pa_name));
+                            if ui.radio(self.selections.get(&g.fingerprint).is_some_and(|s|s=="separate"),"Retain both / all as legitimate separate shifts").clicked(){self.selections.insert(g.fingerprint.clone(),"separate".into());self.acknowledged=false;}
+                            let exact=g.candidates.windows(2).all(|w|w[0].start==w[1].start && w[0].end==w[1].end && w[0].break_minutes==w[1].break_minutes && w[0].minutes==w[1].minutes);
+                            ui.label(if exact {"Matching shift intervals and durations — possible duplicate records"}else{"Possible correction or separate overlapping/moved shifts — compare retained alternatives"});
+                            if let Ok(db)=open(app){match crate::shift_changes::group_review(&db,g){Ok(review)=>{if review.protected{ui.label(format!("Protected payroll review: {}",review.description));}},Err(e)=>{ui.colored_label(ui.visuals().error_fg_color,e.to_string());}}}
+                            ui.small("Choosing one version excludes the other alternatives from payable work, retaining every original. Retain all only if these are genuinely separate shifts.");
                             for e in &g.candidates {
                                 let selected =
                                     self.selections.get(&g.fingerprint) == Some(&e.key());
@@ -75,7 +91,9 @@ impl DuplicateUi {
                                     .clicked()
                                 {
                                     self.selections.insert(g.fingerprint.clone(), e.key());
+                                    self.acknowledged=false;
                                 }
+                                if e.source=="imported" {if let Ok(db)=open(app){if let Ok(Some(raw))=crate::repository::get_raw_on(&db,e.id){ui.small(format!("Imported rate £{:.2}/h; amount £{:.2} (retained source values)",raw.hourly_rate,raw.amount));}}}
                                 if !e.notes.is_empty() {
                                     ui.label(&e.notes);
                                 }
@@ -85,12 +103,35 @@ impl DuplicateUi {
                 }
             });
         let complete = self.pending.iter().filter(relevant).all(|g| {
-            self.selections
-                .get(&g.fingerprint)
-                .is_some_and(|key| g.candidates.iter().any(|e| &e.key() == key))
+            self.selections.get(&g.fingerprint).is_some_and(|key| {
+                key == "separate" || g.candidates.iter().any(|e| &e.key() == key)
+            })
         });
+        ui.checkbox(&mut self.acknowledged,"I approve these displayed choices and authorise affected protected-cycle source corrections");
         if ui
-            .add_enabled(complete, egui::Button::new("Apply duplicate selections"))
+            .button("Defer review — continue unrelated work")
+            .clicked()
+        {
+            let groups = self
+                .pending
+                .iter()
+                .filter(relevant)
+                .cloned()
+                .collect::<Vec<_>>();
+            match open(app).and_then(|db| crate::shift_changes::defer(&db, &groups)) {
+                Ok(()) => {
+                    self.pending.retain(|g| !relevant(&g));
+                    self.prepared = None;
+                    return false;
+                }
+                Err(e) => self.error = e.to_string(),
+            }
+        }
+        if ui
+            .add_enabled(
+                complete && self.acknowledged,
+                egui::Button::new("Approve reviewed choices"),
+            )
             .clicked()
         {
             let result = (|| -> Result<()> {
@@ -105,7 +146,7 @@ impl DuplicateUi {
                         )
                     })
                     .collect::<Vec<_>>();
-                resolve(&open(app)?, &load(app)?, &choices)
+                resolve_reviewed(&open(app)?, &load(app)?, &choices, &self.reviews)
             })();
             match result {
                 Ok(()) => {

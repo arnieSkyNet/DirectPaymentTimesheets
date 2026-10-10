@@ -2,7 +2,7 @@ use std::path::Path;
 
 use rusqlite::{Connection, Result};
 
-pub const CURRENT_SCHEMA_VERSION: i64 = 37;
+pub const CURRENT_SCHEMA_VERSION: i64 = 38;
 
 pub fn initialise_database(database_path: &Path) -> crate::database_recovery::Result<()> {
     crate::database_recovery::initialise(database_path)
@@ -282,6 +282,9 @@ fn apply_migrations(connection: &Connection, target: i64) -> Result<()> {
     }
     if current_version < 37 && target >= 37 {
         crate::sickness_service::migrate(connection)?;
+    }
+    if current_version < 38 && target >= 38 {
+        crate::shift_changes::migrate(connection)?;
     }
     Ok(())
 }
@@ -1271,12 +1274,31 @@ fn table_has_column(connection: &Connection, table: &str, column: &str) -> Resul
 
 #[cfg(test)]
 pub(crate) mod tests {
+    pub(crate) fn remove_schema_38_fixture(db: &Connection) {
+        if !super::table_exists(db, "shift_change_events").unwrap() {
+            return;
+        }
+        let guards = db
+            .prepare("SELECT name FROM sqlite_master WHERE type='trigger' AND name LIKE 'dpt38_%'")
+            .unwrap()
+            .query_map([], |r| r.get::<_, String>(0))
+            .unwrap()
+            .collect::<Result<Vec<_>>>()
+            .unwrap();
+        for name in guards {
+            db.execute_batch(&format!("DROP TRIGGER {name}")).unwrap();
+        }
+        db.execute_batch("DROP TABLE IF EXISTS shift_review_deferrals; DROP TABLE IF EXISTS shift_change_events; DROP TABLE IF EXISTS shift_change_links; DROP TABLE IF EXISTS csv_import_rows; DROP TABLE IF EXISTS csv_import_contents;").unwrap();
+        db.execute("UPDATE schema_version SET version=37", [])
+            .unwrap();
+    }
     pub(crate) fn remove_schema_36_fixture(db: &Connection) {
+        remove_schema_38_fixture(db);
         if !super::table_exists(db, "timesheet_documents").unwrap() {
             return;
         }
         let triggers = db
-            .prepare("SELECT name FROM sqlite_master WHERE type='trigger' AND (name LIKE 'dpt36_%' OR name LIKE 'dpt37_%')")
+            .prepare("SELECT name FROM sqlite_master WHERE type='trigger' AND (name LIKE 'dpt36_%' OR name LIKE 'dpt37_%' OR name LIKE 'dpt38_%')")
             .unwrap()
             .query_map([], |r| r.get::<_, String>(0))
             .unwrap()
@@ -1285,7 +1307,7 @@ pub(crate) mod tests {
         for name in triggers {
             db.execute_batch(&format!("DROP TRIGGER {name}")).unwrap();
         }
-        db.execute_batch("DROP TABLE IF EXISTS sickness_attempt_evidence; DROP TABLE IF EXISTS sickness_submission_evidence;
+        db.execute_batch("DROP TABLE IF EXISTS shift_change_events; DROP TABLE IF EXISTS shift_change_links; DROP TABLE IF EXISTS csv_import_contents; DROP TABLE IF EXISTS csv_import_rows; DROP TABLE IF EXISTS shift_review_deferrals; DROP TABLE IF EXISTS sickness_attempt_evidence; DROP TABLE IF EXISTS sickness_submission_evidence;
             DROP TABLE IF EXISTS sickness_document_evidence; DROP TABLE IF EXISTS sickness_corrections;
             DROP TABLE IF EXISTS sickness_cycle_overrides; DROP TABLE IF EXISTS sickness_changes;").unwrap();
         db.execute_batch("ALTER TABLE payroll_timesheet_snapshot_states DROP COLUMN document_id;

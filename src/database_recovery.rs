@@ -720,7 +720,7 @@ mod tests {
     #[test]
     fn future_schema_startup_is_rejected_without_backup_or_downgrade() {
         let (dir, db) = fixture();
-        db.execute("UPDATE schema_version SET version=38", [])
+        db.execute("UPDATE schema_version SET version=39", [])
             .unwrap();
         let before = fingerprint(&db).unwrap();
         assert!(initialise(&dir.path().join("database.sqlite")).is_err());

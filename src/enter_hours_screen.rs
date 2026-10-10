@@ -128,6 +128,10 @@ pub struct EnterHoursScreen {
     completed_edit_field: Option<RecentShiftEditField>,
     confirm_undo: bool,
     completed_edit: Option<CompletedShiftEdit>,
+    edit_original: Option<DirectShift>,
+    correction_reason: String,
+    correction_review: Option<String>,
+    correction_acknowledged: bool,
     confirm_delete_shift_id: Option<i64>,
     status_message: String,
 }
@@ -146,6 +150,10 @@ impl EnterHoursScreen {
             completed_edit_field: None,
             confirm_undo: false,
             completed_edit: None,
+            edit_original: None,
+            correction_reason: String::new(),
+            correction_review: None,
+            correction_acknowledged: false,
             confirm_delete_shift_id: None,
             status_message: String::new(),
         }
@@ -729,11 +737,36 @@ impl EnterHoursScreen {
             let notes_width = ui.available_width();
             self.draw_inline_notes(ui, notes_width);
             ui.label("Saving preserves the previous values in immutable audit history.");
+            let before=self.edit_original.as_ref().expect("editor original");
+            ui.label(format!("Original: {} — {}, break {} minutes, notes {}",before.start_time,before.end_time.as_deref().unwrap_or(""),before.break_minutes,before.notes.as_deref().unwrap_or("")));
+            let edit=self.completed_edit.as_ref().expect("editor");
+            let proposed=format!("{}:{}:{}:{}",edit.start,edit.end,edit.break_minutes,edit.notes);
+            let review=(|| -> crate::shift_changes::Result<_> {
+                let db=crate::payroll_evidence::open(application)?;
+                crate::shift_changes::direct_review(&db,before,edit.start,edit.end,edit.break_minutes,Some(&edit.notes))
+            })();
+            let mut allowed=false;
+            match review {
+                Ok(review)=>{
+                    let token=format!("{}:{proposed}",review.signature);
+                    if self.correction_review.as_ref()!=Some(&token){self.correction_acknowledged=false;self.correction_review=Some(token);}
+                    allowed=true;
+                    if review.protected {
+                        ui.label(format!("Protected payroll: {}. Original submissions and settled amounts remain unchanged. Financial corrections require Payroll Timesheet Preparation review.",review.description));
+                        ui.label("Correction reason:");
+                        if ui.text_edit_singleline(&mut self.correction_reason).changed(){self.correction_acknowledged=false;}
+                        ui.checkbox(&mut self.correction_acknowledged,"I authorise the displayed before-and-after shift correction");
+                        allowed=self.correction_acknowledged && !self.correction_reason.trim().is_empty();
+                    }
+                }
+                Err(error)=>{ui.colored_label(ui.visuals().error_fg_color,error.to_string());}
+            }
+
             let mut save = false;
             let mut cancel = false;
             ui.horizontal(|ui| {
                 save = ui
-                    .add_sized([130.0, 36.0], egui::Button::new("Save changes"))
+                    .add_enabled(allowed, egui::Button::new("Approve and save changes"))
                     .clicked();
                 cancel = ui
                     .add_sized([90.0, 36.0], egui::Button::new("Cancel"))
@@ -930,6 +963,10 @@ impl EnterHoursScreen {
                     end_text: String::new(),
                 };
                 edit.refresh_date_time_text();
+                self.edit_original = Some(shift.clone());
+                self.correction_reason.clear();
+                self.correction_review = None;
+                self.correction_acknowledged = false;
                 self.completed_edit = Some(edit);
                 self.picker = None;
                 self.completed_edit_field = None;
@@ -951,13 +988,49 @@ impl EnterHoursScreen {
 
     fn save_completed_edit(&mut self, application: &Application) {
         let edit = self.completed_edit.clone().expect("editor remains");
-        match application.direct_shift_repository.edit_completed(
-            edit.shift_id,
+        let before = self.edit_original.as_ref().expect("editor original");
+        let review = (|| -> crate::shift_changes::Result<_> {
+            let db = crate::payroll_evidence::open(application)?;
+            crate::shift_changes::direct_review(
+                &db,
+                before,
+                edit.start,
+                edit.end,
+                edit.break_minutes,
+                Some(&edit.notes),
+            )
+        })();
+        let review = match review {
+            Ok(r) => r,
+            Err(e) => {
+                self.status_message = e.to_string();
+                return;
+            }
+        };
+        if self
+            .correction_review
+            .as_ref()
+            .and_then(|t| t.split_once(':'))
+            .map(|(signature, _)| signature)
+            != Some(review.signature.as_str())
+        {
+            self.correction_acknowledged = false;
+            self.status_message = "Shift or payroll changed; review again before saving".into();
+            return;
+        }
+        if review.protected && !self.correction_acknowledged {
+            self.status_message = "Authorise the displayed correction first".into();
+            return;
+        }
+        match application.direct_shift_repository.edit_completed_reviewed(
+            before,
             edit.start,
             edit.end,
             edit.break_minutes,
             Some(&edit.notes),
             &Local::now().to_rfc3339(),
+            &self.correction_reason,
+            &review.signature,
         ) {
             Ok(shift) => {
                 self.cancel_completed_edit();

@@ -2,9 +2,9 @@
 
 ## Scope and versioning
 
-This is the implemented SQLite schema at version 36 (development application version `1.0.6`). It is derived from `create_schema` and migrations in `src/database.rs`; those migrations are authoritative.
+This is the implemented SQLite schema at version 38 (development application version `1.0.6`). It is derived from `create_schema` and migrations in `src/database.rs`; those migrations are authoritative.
 
-`schema_version` contains the current integer version. A new database begins at version 1 and receives each ordered migration through `CURRENT_SCHEMA_VERSION` 35. Existing databases are upgraded in place. Migration 23 removes the short-lived revision-only tables introduced by migration 22 while retaining the operational legacy snapshot tables. Migration 24 adds an explicit contracted/variable hours basis to effective-dated Personal Assistant contracted-hours history while preserving existing records as contracted.
+`schema_version` contains the current integer version. A new database begins at version 1 and receives each ordered migration through `CURRENT_SCHEMA_VERSION` 38. Existing databases receive a verified pre-upgrade database/configuration backup and an isolated migration chain before transactional installation. Migration 23 removes the short-lived revision-only tables introduced by migration 22 while retaining the operational legacy snapshot tables. Migration 24 adds an explicit contracted/variable hours basis to effective-dated Personal Assistant contracted-hours history while preserving existing records as contracted.
 
 During unreleased schema-20 development, an earlier local database shape contained `direct_shifts` without soft-deletion columns or the audit table. Startup therefore performs an idempotent schema-20 compatibility check after normal migrations. When that exact incomplete shape is found, it transactionally rebuilds `direct_shifts` into the final constrained form while preserving IDs and row values, then creates the audit table/indexes. It does not fabricate historical audit events, and repeated startup does not duplicate existing audit rows.
 
@@ -578,7 +578,7 @@ configuration can contain credentials; backup directories are private on Unix.
 
 ## Schema 37: sickness protection and historical information corrections
 
-Current development 1.0.6 uses schema37. The existing verified pre-upgrade backup and isolated migration-chain installation apply to 36→37 and earlier supported databases. Migration37 transactionally rebuilds `personal_assistant_sickness_periods` with `INTEGER PRIMARY KEY AUTOINCREMENT`, preserving existing IDs, dates, PA references and the date index. It does not deduplicate existing records, backfill missing historic sickness dates, change legacy weekly hours or modify payroll settlement/submission records.
+Stage 2 introduced schema37; current development 1.0.6 uses schema38. The existing verified pre-upgrade backup and isolated migration-chain installation apply to 36→37 and earlier supported databases. Migration37 transactionally rebuilds `personal_assistant_sickness_periods` with `INTEGER PRIMARY KEY AUTOINCREMENT`, preserving existing IDs, dates, PA references and the date index. It does not deduplicate existing records, backfill missing historic sickness dates, change legacy weekly hours or modify payroll settlement/submission records.
 
 New tables:
 
@@ -612,3 +612,12 @@ owner's signature column transactionally under the delivery/recovery lock;
 existing files, submissions and PDF evidence are retained. Signature image assets
 are excluded from database/config backup even when inside the data root: protect
 the full root separately. Unsigned generation never clears a stored reference.
+
+
+### Stage 4 shift reviews and CSV content identity (1.0.6/schema38)
+
+Migration38 is additive. `csv_import_contents` identifies successfully retained CSV bytes by SHA-256 plus pathname and associates a real import audit. `csv_import_rows` retains raw shift membership for those bytes. `shift_change_links` connects possible replacement/counterpart identities without deleting or changing either source. `shift_change_events` retains prospective before/after evidence, reason, review signature, actor and time. `shift_review_deferrals` is an append-only deferred-review history. Existing duplicate decisions/members retain approved payable choices; `winner_source='separate'` represents explicit authorisation to retain all displayed candidates as separate shifts.
+
+No legacy source, audit, duplicate/reconciliation decision, correction component/application, submission, settlement or PDF is reclassified by migration38. New tables start empty. A user-requested import may register a legacy CSV archive's verified content and raw membership against its existing audit; it does not fabricate a new legacy audit or mark unchanged rows as new changes. An unavailable legacy archive refuses comparison with an actionable error. No archive/business files are read by migration38 itself.
+
+The established verified WAL-safe backup and isolated installation cover 35→36→37→38 and 37→38. Migration38 and its schema guard replacement are transactional. Schema38 guards reject ordinary business/version writes from schema37 connections. This does not make previously published executables safe recovery tools: keep old binaries away from upgraded data, because filesystem-level restore and schema-altering operations are outside these guards.

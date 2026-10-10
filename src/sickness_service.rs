@@ -91,7 +91,7 @@ pub fn migrate(db: &Connection) -> rusqlite::Result<()> {
         .collect::<rusqlite::Result<Vec<_>>>()?;
     for table in tables {
         for op in ["INSERT", "UPDATE", "DELETE"] {
-            tx.execute_batch(&format!("CREATE TRIGGER dpt37_{table}_{op} BEFORE {op} ON {table} BEGIN SELECT CASE WHEN dpt_schema_version()<>37 THEN RAISE(ABORT,'Incompatible application schema') END; END;"))?;
+            tx.execute_batch(&format!("CREATE TRIGGER dpt37_{table}_{op} BEFORE {op} ON {table} BEGIN SELECT CASE WHEN dpt_schema_version()<37 THEN RAISE(ABORT,'Incompatible application schema') END; END;"))?;
         }
     }
     tx.commit()

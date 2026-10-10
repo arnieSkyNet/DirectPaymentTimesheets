@@ -17,6 +17,7 @@ pub struct Component {
     pub aggregate: bool,
 }
 pub struct Changes {
+    source_signature: String,
     pub signature: String,
     pub description: String,
     pub changed: bool,
@@ -247,7 +248,25 @@ pub(crate) fn changes_prepared(
             });
         }
     }
-    let signature = hash(&format!("{sid}:{}", lifecycle::fingerprint(&current)));
+    let mut signature = hash(&format!("{sid}:{}", lifecycle::fingerprint(&current)));
+    let source_signature = signature.clone();
+    let mut prospective = false;
+    for e in &current {
+        prospective |= crate::shift_changes::prospective(&db, &e.source, e.id)?;
+    }
+    for item in &old {
+        if let Some(key) = lifecycle::item_key(item) {
+            if let Some((source, id)) = key.split_once(':') {
+                if let Ok(id) = id.parse::<i64>() {
+                    prospective |= crate::shift_changes::prospective(&db, source, id)?;
+                }
+            }
+        }
+    }
+    if prospective {
+        signature = hash(&format!("{signature}:{components:?}"));
+    }
+
     let requires_complete = components.iter().any(|c| c.aggregate && c.minutes < 0);
     let sent_at: Option<String> = db
         .query_row(
@@ -281,11 +300,12 @@ pub(crate) fn changes_prepared(
         description
     );
     Ok(Changes {
+        source_signature: source_signature.clone(),
         signature: signature.clone(),
         description,
         changed: (materially_changed
             && lifecycle::stage(&db, record)? != Stage::Settled
-            && !lifecycle::has_decision(&db, record.id, "carry", &signature)?)
+            && !lifecycle::has_decision(&db, record.id, "carry", &source_signature)?)
             || !components.is_empty(),
         components,
         requires_complete,
@@ -340,9 +360,12 @@ pub fn carry(
     expected: &str,
     complete: bool,
 ) -> Result<()> {
-    let change = changes(app, record)?;
     let db = open(app)?;
+    let _guard = crate::timesheet_delivery::production_lock(&db)?;
     let tx = db.unchecked_transaction()?;
+    tx.execute("UPDATE schema_version SET version=version", [])?;
+    let change = changes(app, record)?;
+
     if !matches!(
         lifecycle::stage(&tx, record)?,
         Stage::Submitted | Stage::Settled
@@ -369,8 +392,14 @@ pub fn carry(
             &change.description,
         )?;
     }
-    let decision =
-        lifecycle::record_decision(&tx, record.id, sid, "carry", expected, &change.description)?;
+    let decision = lifecycle::record_decision(
+        &tx,
+        record.id,
+        sid,
+        "carry",
+        &change.source_signature,
+        &change.description,
+    )?;
     let evidence = load_for_pa(&db, record.personal_assistant_id)?;
     let (start, _) = period(app, record)?;
     for c in &change.components {
@@ -551,6 +580,14 @@ pub(crate) fn plan_prepared(
                 break;
             }
             if stage == Stage::Settled {
+                if lifecycle::has_exact_intervals(previous_items)
+                    && crate::shift_changes::prospective(&db, &e.source, e.id)?
+                    && !lifecycle::has_decision(&db, previous.id, "unpaid", &e.fingerprint())?
+                {
+                    notices.push(format!("{}: new historical evidence requires reviewed Carry correction forward in its original payroll preparation", e.key()));
+                    held = true;
+                    break;
+                }
                 if super::legacy_baseline::contains(&db, previous.id, &e)? {
                     held = true;
                     break;
@@ -875,7 +912,13 @@ pub fn sync_settled_corrections(app: &Application, pa: i64) -> Result<()> {
                                 .is_some_and(|e| e.deleted || e.minutes != i.worked_minutes)
                     })
                 });
-            if exact || known_edit {
+            // Stage 4 approvals concern source changes only. Financial carry-forward
+            // still requires the existing explicit historical reconciliation action.
+            let prospective = match (&c.source, c.source_id) {
+                (Some(source), Some(id)) => crate::shift_changes::prospective(&tx, source, id)?,
+                _ => false,
+            };
+            if (exact || known_edit) && !prospective {
                 insert_component(
                     &tx,
                     &record,
@@ -903,7 +946,7 @@ pub fn historical_save_notice(
     {
         let (start, end) = period(app, &r)?;
         if date >= start && date <= end && lifecycle::stage(&db, &r)? == Stage::Settled {
-            return Ok(Some("This shift belongs to a payroll period whose payslip has already been sent. It will be checked against paid evidence and, if outstanding, carried forward. Settled payroll remains unchanged.".into()));
+            return Ok(Some("This shift belongs to a payroll period whose payslip has already been sent. Review it against paid evidence in the original Payroll Timesheet Preparation and explicitly approve any correction to carry forward. Settled payroll remains unchanged.".into()));
         }
     }
     Ok(None)
@@ -912,6 +955,30 @@ pub fn historical_save_notice(
 pub fn audit_lines(app: &Application, record: &PayrollTimesheet) -> Result<Vec<String>> {
     let db = open(app)?;
     let mut lines = Vec::new();
+    let mut changes=db.prepare("SELECT e.recorded_at,e.source,e.source_id,e.reason,e.before_evidence,e.after_evidence FROM shift_change_events e LEFT JOIN timesheets t ON e.source='imported' AND t.id=e.source_id LEFT JOIN direct_shifts d ON e.source='direct' AND d.id=e.source_id WHERE COALESCE(t.personal_assistant_id,d.personal_assistant_id)=?1 ORDER BY e.id")?;
+    for row in changes.query_map([record.personal_assistant_id], |r| {
+        Ok(format!(
+            "{}: {}:{} — {}\nBefore: {}\nAfter: {}",
+            r.get::<_, String>(0)?,
+            r.get::<_, String>(1)?,
+            r.get::<_, i64>(2)?,
+            r.get::<_, String>(3)?,
+            r.get::<_, String>(4)?,
+            r.get::<_, String>(5)?
+        ))
+    })? {
+        lines.push(row?);
+    }
+    let mut deferred=db.prepare("SELECT deferred_at,evidence FROM shift_review_deferrals WHERE personal_assistant_id=?1 ORDER BY id")?;
+    for row in deferred.query_map([record.personal_assistant_id], |r| {
+        Ok(format!(
+            "{}: Shift review deferred; affected payroll remains blocked until review\n{}",
+            r.get::<_, String>(0)?,
+            r.get::<_, String>(1)?
+        ))
+    })? {
+        lines.push(row?);
+    }
     let baseline: bool = db.query_row(
         "SELECT EXISTS(SELECT 1 FROM payroll_legacy_settlements WHERE payroll_timesheet_id=?1)",
         [record.id],

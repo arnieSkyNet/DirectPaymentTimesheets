@@ -66,7 +66,7 @@ Payroll preparation and generation consume effective imported corrections alongs
 
 An import-audit record captures import time, original/archive filenames, row counts, status and optional error. Validated source bytes are written first to a unique, non-overwriting file in `archive/YYYY/MM/`; all imported rows and the SUCCESS audit are then committed in one SQLite transaction. A database failure leaves the archive as reported recoverable evidence and rolls back all rows. Failed/refused audits are best-effort.
 
-The current schema37 still has no CSV imported-file content hash or row-to-import relationship. Historical successful-import detection therefore remains based on the original pathname: changed content at an already-successful pathname is conservatively skipped, while renamed identical content is preflighted again and exact already-stored raw rows are skipped. Correction events do not change raw collision identity. Durable content identity and row provenance require a future migration.
+Schema38 adds SHA-256 source identities, row-to-content membership, possible-correction links and immutable prospective review events. Changed bytes at an already imported pathname are processed and separately archived; repeated content/path combinations are skipped. Renamed identical content receives its own archive/audit while exact retained raw rows remain idempotent. Missing rows never imply deletion. Original schema37 evidence and financial correction obligations are preserved; verified legacy archive membership is registered only during a requested import. Correction events do not change raw collision identity.
 
 ## DirectShift
 
@@ -75,6 +75,8 @@ A direct shift is separate application-created source evidence linked to one mai
 Completed actual worked minutes are derived from end minus start minus break and are never payroll-rounded. Completed rows can be corrected, but every mutation and soft deletion atomically appends an immutable audit row containing actor, action, time and the relevant before/after snapshots. The current actor is `local_employer`; the text identity can later hold authenticated actors without claiming that authentication exists today. Cancelling an accidental running clock-in retains creation/cancellation history even though its current row is removed.
 
 Completed, non-deleted direct shifts feed shared payroll reconciliation and audited duplicate resolution alongside effective imported evidence. Running shifts are excluded; direct rows are never copied into `timesheets`.
+
+New completed-shift edits validate the union of original, proposed and retained submission periods under the dispatch lock and a database writer transaction. Protected-cycle edits require captured before/after authorisation; uncertain delivery blocks them. Protected deletion is refused. Prior audited edits and financial obligations retain their original rules. Cross-source duplicates and possible revisions require an explicit payable-version or retain-all-as-separate decision; deferral preserves evidence and blocks only affected payroll.
 
 ## Payroll schedule
 

@@ -118,6 +118,10 @@ impl TimesheetRepository {
         Self { connection }
     }
 
+    pub(crate) fn connection(&self) -> &Connection {
+        &self.connection
+    }
+
     #[cfg(test)]
     pub fn insert(&self, entry: &TimesheetEntry) -> Result<()> {
         let personal_assistant_id: Option<i64> = self
@@ -239,7 +243,11 @@ impl TimesheetRepository {
         if action_at.trim().is_empty() {
             return Err(TimesheetCorrectionError::MissingActionTime);
         }
+        let _guard = crate::timesheet_delivery::production_lock(&self.connection).map_err(|e| {
+            TimesheetCorrectionError::Database(rusqlite::Error::InvalidParameterName(e.to_string()))
+        })?;
         let transaction = self.connection.unchecked_transaction()?;
+        transaction.execute("UPDATE schema_version SET version=version", [])?;
         let raw = get_raw_on(&transaction, timesheet_id)?
             .ok_or(TimesheetCorrectionError::NotFound(timesheet_id))?;
         let after = match proposal {
@@ -253,6 +261,54 @@ impl TimesheetRepository {
             })?,
         };
         let current = effective_entry_on(&transaction, raw)?;
+        let before_start =
+            crate::csv_import::parse_supported_timestamp(&current.effective.start_time)
+                .or_else(|| {
+                    NaiveDateTime::parse_from_str(
+                        &current.effective.start_time,
+                        CORRECTION_TIME_FORMAT,
+                    )
+                    .ok()
+                })
+                .ok_or_else(|| {
+                    TimesheetCorrectionError::InvalidTimestamp(current.effective.start_time.clone())
+                })?;
+        let before_end = crate::csv_import::parse_supported_timestamp(&current.effective.end_time)
+            .or_else(|| {
+                NaiveDateTime::parse_from_str(&current.effective.end_time, CORRECTION_TIME_FORMAT)
+                    .ok()
+            })
+            .ok_or_else(|| {
+                TimesheetCorrectionError::InvalidTimestamp(current.effective.end_time.clone())
+            })?;
+        let next_start = NaiveDateTime::parse_from_str(&after.start_time, CORRECTION_TIME_FORMAT)
+            .map_err(|_| {
+            TimesheetCorrectionError::InvalidTimestamp(after.start_time.clone())
+        })?;
+        let next_end = NaiveDateTime::parse_from_str(&after.end_time, CORRECTION_TIME_FORMAT)
+            .map_err(|_| TimesheetCorrectionError::InvalidTimestamp(after.end_time.clone()))?;
+        if current.raw.personal_assistant_id.is_none() {
+            let retained: bool = transaction.query_row(
+                "SELECT EXISTS(SELECT 1 FROM payroll_submission_items WHERE timesheet_id=?1)",
+                [timesheet_id],
+                |r| r.get(0),
+            )?;
+            if retained {
+                return Err(TimesheetCorrectionError::Database(rusqlite::Error::InvalidParameterName("Unassigned historical evidence requires an explicit payroll identity review".into())));
+            }
+        }
+        let review = crate::shift_changes::review(
+            &transaction,
+            current.raw.personal_assistant_id.unwrap_or(0),
+            &[(before_start, before_end), (next_start, next_end)],
+        )
+        .map_err(|e| {
+            TimesheetCorrectionError::Database(rusqlite::Error::InvalidParameterName(e.to_string()))
+        })?;
+        if review.protected && current.effective != after {
+            return Err(TimesheetCorrectionError::Database(rusqlite::Error::InvalidParameterName("Protected imported evidence requires reviewed candidate selection and the existing payroll correction workflow".into())));
+        }
+
         if current.effective == after {
             transaction.commit()?;
             return Ok(AppendCorrectionResult {
@@ -288,6 +344,18 @@ impl TimesheetRepository {
             ],
         )?;
         let event_id = transaction.last_insert_rowid();
+        crate::shift_changes::event(
+            &transaction,
+            "imported",
+            timesheet_id,
+            &format!("{:?}", current.effective),
+            &format!("{after:?}"),
+            reason.as_deref().unwrap_or("Editable imported correction"),
+            &review.signature,
+        )
+        .map_err(|e| {
+            TimesheetCorrectionError::Database(rusqlite::Error::InvalidParameterName(e.to_string()))
+        })?;
         transaction.commit()?;
         Ok(AppendCorrectionResult {
             event_id: Some(event_id),
@@ -362,14 +430,23 @@ impl TimesheetRepository {
         rows_processed: i64,
         rows_skipped: i64,
     ) -> Result<()> {
-        let transaction = self.connection.unchecked_transaction()?;
+        let owned = self.connection.is_autocommit();
+        let transaction = if owned {
+            Some(self.connection.unchecked_transaction()?)
+        } else {
+            None
+        };
+        let transaction_db = transaction
+            .as_ref()
+            .map(|t| &**t)
+            .unwrap_or(&self.connection);
         for entry in entries {
             let personal_assistant_id = entry.personal_assistant_id.ok_or_else(|| {
                 rusqlite::Error::InvalidParameterName(
                     "CSV import requires a uniquely resolved personal_assistant_id".to_string(),
                 )
             })?;
-            transaction.execute(
+            transaction_db.execute(
                 "INSERT INTO timesheets (
                     pa_name, personal_assistant_id, start_time, end_time,
                     break_minutes, worked_minutes, hourly_rate, amount, notes
@@ -387,7 +464,7 @@ impl TimesheetRepository {
                 ],
             )?;
         }
-        transaction.execute(
+        transaction_db.execute(
             "INSERT INTO import_audit (
                 import_time, original_filename, archive_filename, rows_processed,
                 rows_imported, rows_skipped, status, error_message
@@ -401,7 +478,10 @@ impl TimesheetRepository {
                 rows_skipped,
             ],
         )?;
-        transaction.commit()
+        if let Some(transaction) = transaction {
+            transaction.commit()?;
+        }
+        Ok(())
     }
 
     pub fn add_import_audit(
@@ -444,6 +524,7 @@ impl TimesheetRepository {
         Ok(())
     }
 
+    #[cfg(test)]
     pub fn has_successful_import(&self, filename: &str) -> Result<bool> {
         let mut statement = self.connection.prepare(
             "
@@ -475,7 +556,7 @@ fn timesheet_from_row(row: &rusqlite::Row<'_>) -> Result<TimesheetEntry> {
     })
 }
 
-fn get_raw_on(connection: &Connection, id: i64) -> Result<Option<TimesheetEntry>> {
+pub(crate) fn get_raw_on(connection: &Connection, id: i64) -> Result<Option<TimesheetEntry>> {
     connection
         .query_row(
             "SELECT id, pa_name, personal_assistant_id, start_time, end_time,

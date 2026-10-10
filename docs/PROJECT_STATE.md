@@ -185,3 +185,8 @@ Implemented transactional cross-cycle sickness review, reasons/authorisation, ex
 
 
 Stage 2 final-review corrections close the retained-view transfer gap: source/destination ranges are fully reviewed, safe transfers persist a fresh active identity, and conflicts/uncertainty refuse without partial changes. Historical corrections bind original financial evidence and validated carry-forward; preparation indicators refresh after saves. Genuine populated schema35/schema36 upgrade/restore and full PA archive/reactivation regressions extend recovery coverage. No schema/version increase is required.
+
+
+## Stage 4 shift change protection (1.0.6/schema38)
+
+Current development remains version 1.0.6 and now uses additive schema38. Semantic CSV headers support the verified Hours Keeper format and existing synthetic aliases regardless of column order. Content identity detects changed same-path exports. Shared review protects imported/internal counterparts and cross-midnight overlaps; original evidence, archival bytes and omitted rows remain retained. Review supports a payable-version choice, explicit separate shifts and audited deferral. New protected edits require prospective authorisation and the existing contextual financial correction workflow; pre-existing obligations are preserved. The established verified database/config backup and isolated upgrade installation remain mandatory; external business files need separate protection.

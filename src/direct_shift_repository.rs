@@ -64,6 +64,7 @@ pub struct DirectShiftAudit {
 #[derive(Debug)]
 pub enum DirectShiftError {
     Database(rusqlite::Error),
+    Safety(String),
     InvalidTimestamp(String),
     EndBeforeStart,
     InvalidBreak,
@@ -77,6 +78,7 @@ pub enum DirectShiftError {
 impl fmt::Display for DirectShiftError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::Safety(error) => write!(formatter, "{error}"),
             Self::Database(error) => write!(formatter, "database error: {error}"),
             Self::InvalidTimestamp(value) => write!(formatter, "invalid shift date/time: {value}"),
             Self::EndBeforeStart => {
@@ -122,7 +124,10 @@ impl DirectShiftRepository {
         start: NaiveDateTime,
         at: &str,
     ) -> Result<DirectShift, DirectShiftError> {
+        let _guard = crate::timesheet_delivery::production_lock(&self.connection)
+            .map_err(|e| DirectShiftError::Safety(e.to_string()))?;
         let tx = self.connection.unchecked_transaction()?;
+        tx.execute("UPDATE schema_version SET version=version", [])?;
         if get_running_on(&tx, pa_id)?.is_some() {
             return Err(DirectShiftError::AlreadyRunning);
         }
@@ -146,7 +151,10 @@ impl DirectShiftRepository {
         notes: Option<&str>,
         at: &str,
     ) -> Result<DirectShift, DirectShiftError> {
+        let _guard = crate::timesheet_delivery::production_lock(&self.connection)
+            .map_err(|e| DirectShiftError::Safety(e.to_string()))?;
         let tx = self.connection.unchecked_transaction()?;
+        tx.execute("UPDATE schema_version SET version=version", [])?;
         let before = get_on(&tx, id)?.ok_or(DirectShiftError::NotRunning)?;
         ensure_current(&before)?;
         if before.end_time.is_some() {
@@ -166,6 +174,24 @@ impl DirectShiftRepository {
         )?;
         let after = get_on(&tx, id)?.ok_or(DirectShiftError::NotRunning)?;
         insert_audit(&tx, id, "clock_out", at, Some(&before), Some(&after))?;
+        crate::shift_changes::link_possible_counterparts(&tx, "direct", id, &[])
+            .map_err(|e| DirectShiftError::Safety(e.to_string()))?;
+        let review = crate::shift_changes::review(
+            &tx,
+            after.personal_assistant_id,
+            &[(after.start()?, end)],
+        )
+        .map_err(|e| DirectShiftError::Safety(e.to_string()))?;
+        crate::shift_changes::event(
+            &tx,
+            "direct",
+            id,
+            &format!("{before:?}"),
+            &format!("{after:?}"),
+            "New completed shift; historical payment remains subject to review",
+            &review.signature,
+        )
+        .map_err(|e| DirectShiftError::Safety(e.to_string()))?;
         tx.commit()?;
         Ok(after)
     }
@@ -176,7 +202,10 @@ impl DirectShiftRepository {
         notes: Option<&str>,
         at: &str,
     ) -> Result<(), DirectShiftError> {
+        let _guard = crate::timesheet_delivery::production_lock(&self.connection)
+            .map_err(|e| DirectShiftError::Safety(e.to_string()))?;
         let tx = self.connection.unchecked_transaction()?;
+        tx.execute("UPDATE schema_version SET version=version", [])?;
         let before = get_on(&tx, id)?.ok_or(DirectShiftError::NotRunning)?;
         ensure_current(&before)?;
         if before.end_time.is_some() {
@@ -189,6 +218,7 @@ impl DirectShiftRepository {
         Ok(())
     }
 
+    #[cfg(test)]
     pub fn edit_completed(
         &self,
         id: i64,
@@ -198,12 +228,70 @@ impl DirectShiftRepository {
         notes: Option<&str>,
         at: &str,
     ) -> Result<DirectShift, DirectShiftError> {
+        self.edit_completed_inner(id, start, end, break_minutes, notes, at, None)
+    }
+
+    pub fn edit_completed_reviewed(
+        &self,
+        expected: &DirectShift,
+        start: NaiveDateTime,
+        end: NaiveDateTime,
+        break_minutes: i64,
+        notes: Option<&str>,
+        at: &str,
+        reason: &str,
+        signature: &str,
+    ) -> Result<DirectShift, DirectShiftError> {
+        self.edit_completed_inner(
+            expected.id,
+            start,
+            end,
+            break_minutes,
+            notes,
+            at,
+            Some((expected, reason, signature)),
+        )
+    }
+
+    fn edit_completed_inner(
+        &self,
+        id: i64,
+        start: NaiveDateTime,
+        end: NaiveDateTime,
+        break_minutes: i64,
+        notes: Option<&str>,
+        at: &str,
+        authorisation: Option<(&DirectShift, &str, &str)>,
+    ) -> Result<DirectShift, DirectShiftError> {
         validate_completion(start, end, break_minutes)?;
+        let _guard = crate::timesheet_delivery::production_lock(&self.connection)
+            .map_err(|e| DirectShiftError::Safety(e.to_string()))?;
         let tx = self.connection.unchecked_transaction()?;
+        tx.execute("UPDATE schema_version SET version=version", [])?;
         let before = get_on(&tx, id)?.ok_or(DirectShiftError::NotFound)?;
         ensure_current(&before)?;
         if before.end_time.is_none() {
             return Err(DirectShiftError::NotCompleted);
+        }
+        let review =
+            crate::shift_changes::direct_review(&tx, &before, start, end, break_minutes, notes)
+                .map_err(|e| DirectShiftError::Safety(e.to_string()))?;
+        if let Some((expected, reason, signature)) = authorisation {
+            if expected != &before || signature != review.signature {
+                return Err(DirectShiftError::Safety(
+                    "Shift or payroll changed; review again before saving".into(),
+                ));
+            }
+            if review.protected && reason.trim().is_empty() {
+                return Err(DirectShiftError::Safety(
+                    "Record a reason and authorise this protected-cycle correction".into(),
+                ));
+            }
+        } else if review.protected {
+            return Err(DirectShiftError::Safety(
+                "Review and authorise the correction before changing a protected payroll cycle"
+                    .into(),
+            ));
         }
         let start_time = format_shift_time(start);
         let end_time = format_shift_time(end);
@@ -222,27 +310,68 @@ impl DirectShiftRepository {
             params![start_time,end_time,break_minutes,notes,at,id],
         )?;
         let after = get_on(&tx, id)?.ok_or(DirectShiftError::NotFound)?;
+        crate::shift_changes::event(
+            &tx,
+            "direct",
+            id,
+            &format!("{before:?}"),
+            &format!("{after:?}"),
+            authorisation.map_or("Editable shift correction", |(_, reason, _)| reason),
+            &review.signature,
+        )
+        .map_err(|e| DirectShiftError::Safety(e.to_string()))?;
         insert_audit(&tx, id, "edit", at, Some(&before), Some(&after))?;
         tx.commit()?;
         Ok(after)
     }
 
     pub fn soft_delete_completed(&self, id: i64, at: &str) -> Result<(), DirectShiftError> {
+        let _guard = crate::timesheet_delivery::production_lock(&self.connection)
+            .map_err(|e| DirectShiftError::Safety(e.to_string()))?;
         let tx = self.connection.unchecked_transaction()?;
+        tx.execute("UPDATE schema_version SET version=version", [])?;
         let before = get_on(&tx, id)?.ok_or(DirectShiftError::NotFound)?;
         ensure_current(&before)?;
         if before.end_time.is_none() {
             return Err(DirectShiftError::NotCompleted);
         }
+        let review = crate::shift_changes::review(
+            &tx,
+            before.personal_assistant_id,
+            &[(
+                before.start()?,
+                before.end()?.ok_or(DirectShiftError::NotCompleted)?,
+            )],
+        )
+        .map_err(|e| DirectShiftError::Safety(e.to_string()))?;
+        if review.protected {
+            return Err(DirectShiftError::Safety(
+                "Protected shifts cannot be deleted here; review a payroll correction instead"
+                    .into(),
+            ));
+        }
         tx.execute("UPDATE direct_shifts SET deleted_at=?1,deleted_by=?2,updated_at=?1 WHERE id=?3 AND end_time IS NOT NULL AND deleted_at IS NULL", params![at,LOCAL_ACTOR_ID,id])?;
         let after = get_on(&tx, id)?.ok_or(DirectShiftError::NotFound)?;
         insert_audit(&tx, id, "delete", at, Some(&before), Some(&after))?;
+        crate::shift_changes::event(
+            &tx,
+            "direct",
+            id,
+            &format!("{before:?}"),
+            &format!("{after:?}"),
+            "Editable shift deletion",
+            &review.signature,
+        )
+        .map_err(|e| DirectShiftError::Safety(e.to_string()))?;
         tx.commit()?;
         Ok(())
     }
 
     pub fn undo_clock_in(&self, id: i64, at: &str) -> Result<(), DirectShiftError> {
+        let _guard = crate::timesheet_delivery::production_lock(&self.connection)
+            .map_err(|e| DirectShiftError::Safety(e.to_string()))?;
         let tx = self.connection.unchecked_transaction()?;
+        tx.execute("UPDATE schema_version SET version=version", [])?;
         let before = get_on(&tx, id)?.ok_or(DirectShiftError::NotRunning)?;
         ensure_current(&before)?;
         if before.end_time.is_some() {

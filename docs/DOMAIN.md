@@ -24,7 +24,7 @@ Schema 21 introduced an append-only correction-event layer for the effective sta
 
 Payroll evidence now projects these audited corrections for calculation, while import repeat detection and the imported-hours view retain the original raw source.
 
-The established duration rule assigns an entire shift to its start calendar date; real project shifts do not cross midnight. Imported clock values are not rewritten by preparation corrections.
+The established duration rule assigns an entire shift to its start calendar date. Duplicate detection compares complete timestamp intervals, including overlaps across midnight and different start dates, without changing payroll allocation. Imported clock values are not rewritten by preparation corrections.
 
 ## Directly recorded work
 
@@ -33,6 +33,8 @@ A DirectShift is application-created source evidence stored independently from i
 Direct shift evidence represents what actually happened. Payroll allocation derives payable time and rates from it, but must never rewrite evidence as a side effect. Deliberate completed-shift corrections update the current record only while atomically appending immutable before/after audit evidence. Delete is a soft deletion: deleted rows remain stored and audited but are excluded from normal use. Cancelling an accidental running clock-in removes its current row only after recording a cancellation audit snapshot.
 
 Every mutation records action type/time and actor. The desktop actor is currently the stable `local_employer` identity; the text actor field is intentionally suitable for future authenticated identities, but authentication, accounts and web/mobile access do not yet exist. Actual worked minutes are derived as end minus start minus break, without payroll rounding. Completed, non-deleted direct shifts feed the shared payroll evidence reconciliation and duplicate resolver, without being copied to imported rows.
+
+Stage4 authorisation applies prospectively: new edits affecting protected cycles require a reason and explicit before/after review, delivery uncertainty blocks changes, and financial correction still requires the existing payroll review. Earlier audited edits, submitted applications and obligations remain intact. New open-cycle edits remain straightforward; protected deletions are refused. Possible duplicates can be approved as one payable version, explicitly retained as separate shifts, or deferred without deleting evidence.
 
 ## Payroll years, periods and Payroll Week
 

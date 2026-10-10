@@ -1833,7 +1833,6 @@ impl DirectPaymentApp {
     fn draw_dashboard(&mut self, ui: &mut egui::Ui) {
         if !self.duplicate_ui.pending.is_empty() {
             self.duplicate_ui.show(ui, &self.application);
-            return;
         }
         egui::ScrollArea::vertical().show(ui, |ui| {
             ui.heading("Dashboard");

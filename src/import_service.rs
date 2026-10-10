@@ -92,6 +92,7 @@ impl<'a> ImportService<'a> {
     }
 
     pub fn run(&self) -> Result<ImportSummary, Box<dyn Error>> {
+        let _guard = crate::timesheet_delivery::production_lock(self.repository.connection())?;
         let mut summary = ImportSummary::default();
         let mut csv_files = Vec::new();
         for entry in fs::read_dir(&self.import_dir)? {
@@ -110,24 +111,25 @@ impl<'a> ImportService<'a> {
 
         for path in csv_files {
             let filename = path.to_string_lossy().into_owned();
-            match self.repository.has_successful_import(&filename) {
-                Ok(true) => {
-                    summary.files_already_imported += 1;
-                    continue;
-                }
-                Ok(false) => {}
+            let bytes = match fs::read(&path) {
+                Ok(bytes) => bytes,
                 Err(error) => {
                     summary.files_failed += 1;
-                    summary.failure_messages.push(format!(
-                        "{}: could not check import history: {error}",
-                        path.display()
-                    ));
+                    summary
+                        .failure_messages
+                        .push(format!("{}: {error}", path.display()));
                     continue;
                 }
+            };
+            let digest = crate::shift_changes::digest(&bytes);
+            if crate::shift_changes::content_seen(self.repository.connection(), &digest, &filename)?
+            {
+                summary.files_already_imported += 1;
+                continue;
             }
 
             summary.files_processed += 1;
-            match self.process_file(&path) {
+            match self.process_file(&path, &bytes, &digest) {
                 Ok(result) => {
                     summary.files_succeeded += 1;
                     summary.rows_processed += result.rows_processed;
@@ -177,20 +179,47 @@ impl<'a> ImportService<'a> {
         Ok(summary)
     }
 
-    fn process_file(&self, path: &Path) -> Result<FileImportResult, FileFailure> {
-        let bytes = fs::read(path).map_err(|error| FileFailure::failed(error, 0))?;
+    fn process_file(
+        &self,
+        path: &Path,
+        bytes: &[u8],
+        digest: &str,
+    ) -> Result<FileImportResult, FileFailure> {
+        let db = self.repository.connection();
+        let tx = db
+            .unchecked_transaction()
+            .map_err(|e| FileFailure::failed(e, 0))?;
+        tx.execute("UPDATE schema_version SET version=version", [])
+            .map_err(|e| FileFailure::failed(e, 0))?;
         let mut rows =
-            csv_import::import_csv_bytes(&bytes).map_err(|error| FileFailure::refused(error, 0))?;
+            csv_import::import_csv_bytes(bytes).map_err(|error| FileFailure::refused(error, 0))?;
         let row_count = rows.len() as i64;
         self.resolve_personal_assistants(&mut rows, row_count)?;
         let affected_pa_dates = rows
             .iter()
             .filter_map(|r| r.entry.personal_assistant_id.map(|id| (id, r.start.date())))
             .collect();
+        let all_rows: Vec<_> = rows.iter().map(|r| r.entry.clone()).collect();
         let (entries, rows_skipped) = self.classify_collisions(rows, row_count)?;
 
-        let archive_path = archive::archive_csv_bytes(path, &bytes, self.archive_dir)
+        let archive_path = archive::archive_csv_bytes(path, bytes, self.archive_dir)
             .map_err(|error| FileFailure::failed(format!("archive failed: {error}"), row_count))?;
+        let db_failure = |error: Box<dyn Error>| FileFailure {
+            kind: FailureKind::Failed,
+            message: format!(
+                "Database import rolled back; recoverable orphan archive: {} ({error})",
+                archive_path.display()
+            ),
+            rows_processed: row_count,
+            orphaned_archive: Some(archive_path.clone()),
+        };
+        crate::shift_changes::seed_legacy_path(&tx, path.to_string_lossy().as_ref())
+            .map_err(&db_failure)?;
+        let prior_max: i64 = tx
+            .query_row("SELECT COALESCE(MAX(id),0) FROM timesheets", [], |r| {
+                r.get(0)
+            })
+            .map_err(|e| db_failure(Box::new(e)))?;
         if let Err(error) = self.repository.import_file_atomically(
             &entries,
             &import_time(),
@@ -209,6 +238,15 @@ impl<'a> ImportService<'a> {
                 orphaned_archive: Some(archive_path),
             });
         }
+        crate::shift_changes::record_import(
+            &tx,
+            digest,
+            path.to_string_lossy().as_ref(),
+            &all_rows,
+            prior_max,
+        )
+        .map_err(&db_failure)?;
+        tx.commit().map_err(|e| db_failure(Box::new(e)))?;
         Ok(FileImportResult {
             affected_pa_dates,
             rows_processed: row_count,
@@ -282,7 +320,7 @@ impl<'a> ImportService<'a> {
     }
 }
 
-fn existing_row_is_materially_identical(
+pub(crate) fn existing_row_is_materially_identical(
     existing: &TimesheetEntry,
     incoming: &ParsedTimesheetRow,
 ) -> bool {
@@ -725,7 +763,7 @@ mod tests {
     }
 
     #[test]
-    fn failed_audit_is_best_effort_and_changed_successful_path_is_conservatively_skipped() {
+    fn failed_audit_is_best_effort_and_changed_successful_path_is_imported() {
         let (directory, database_path, repository) = setup(&[("Alex", "Smith")]);
         write_source(
             &directory,
@@ -756,7 +794,8 @@ mod tests {
             source(&["Alex Smith,28 July 2026 at 09:00:00,28 July 2026 at 10:00:00,0h 00m,1h 00m,£12.00,£12.00,"]),
         ).unwrap();
         let retry = run(&directory, &repository);
-        assert_eq!(retry.files_already_imported, 1);
-        assert_eq!(count(&database_path, "timesheets"), 1);
+        assert_eq!(retry.files_already_imported, 0);
+        assert_eq!(retry.rows_imported, 1);
+        assert_eq!(count(&database_path, "timesheets"), 2);
     }
 }

@@ -266,16 +266,16 @@ fn submitted_then_explicit_resubmission_keeps_original_pdf_and_items() {
     submit(&app, &r, &w);
     let db = open(&app).unwrap();
     let first = lifecycle::latest(&db, r.id).unwrap().unwrap();
-    app.direct_shift_repository
-        .edit_completed(
-            id,
-            crate::direct_shift_repository::parse_shift_time("2026-04-02T09:00").unwrap(),
-            crate::direct_shift_repository::parse_shift_time("2026-04-02T11:00").unwrap(),
-            0,
-            None,
-            "changed",
-        )
-        .unwrap();
+    reviewed_edit(
+        &app,
+        id,
+        crate::direct_shift_repository::parse_shift_time("2026-04-02T09:00").unwrap(),
+        crate::direct_shift_repository::parse_shift_time("2026-04-02T11:00").unwrap(),
+        0,
+        None,
+        "changed",
+    )
+    .unwrap();
     assert_eq!(lifecycle::stage(&db, &r).unwrap(), Stage::Submitted);
     assert!(reconciliation::calculate(&app, &r, &w, None).is_err());
     assert_eq!(lifecycle::items(&db, first).unwrap()[0].worked_minutes, 60);
@@ -461,16 +461,26 @@ fn concrete_settled_edit_creates_difference_without_blanket_completeness() {
     let id = direct(&app, "2026-04-02T09:00", "2026-04-02T12:00");
     submit(&app, &r, &w);
     settle(&app, &r);
-    app.direct_shift_repository
-        .edit_completed(
-            id,
-            crate::direct_shift_repository::parse_shift_time("2026-04-02T09:00").unwrap(),
-            crate::direct_shift_repository::parse_shift_time("2026-04-02T10:00").unwrap(),
-            0,
-            None,
-            "changed",
-        )
-        .unwrap();
+    reviewed_edit(
+        &app,
+        id,
+        crate::direct_shift_repository::parse_shift_time("2026-04-02T09:00").unwrap(),
+        crate::direct_shift_repository::parse_shift_time("2026-04-02T10:00").unwrap(),
+        0,
+        None,
+        "changed",
+    )
+    .unwrap();
+    reconciliation::sync_settled_corrections(&app, 1).unwrap();
+    assert_eq!(
+        open(&app)
+            .unwrap()
+            .query_row::<i64, _, _>("SELECT COUNT(*) FROM payroll_corrections", [], |r| r.get(0))
+            .unwrap(),
+        0
+    );
+    let change = reconciliation::changes(&app, &r).unwrap();
+    reconciliation::carry(&app, &r, &change.signature, false).unwrap();
     let (next, nw) = period(&app, 2, "2026-04-29", 1);
     reconciliation::calculate(&app, &next, &nw, None).unwrap();
     assert_eq!(
@@ -502,16 +512,16 @@ fn notes_only_does_not_invalidate_candidate_but_new_shift_does() {
     let (r, w) = period(&app, 1, "2026-04-01", 1);
     let id = direct(&app, "2026-04-02T09:00", "2026-04-02T10:00");
     let path = candidate(&app, &r, &w);
-    app.direct_shift_repository
-        .edit_completed(
-            id,
-            crate::direct_shift_repository::parse_shift_time("2026-04-02T09:00").unwrap(),
-            crate::direct_shift_repository::parse_shift_time("2026-04-02T10:00").unwrap(),
-            0,
-            Some("notes only"),
-            "changed",
-        )
-        .unwrap();
+    reviewed_edit(
+        &app,
+        id,
+        crate::direct_shift_repository::parse_shift_time("2026-04-02T09:00").unwrap(),
+        crate::direct_shift_repository::parse_shift_time("2026-04-02T10:00").unwrap(),
+        0,
+        Some("notes only"),
+        "changed",
+    )
+    .unwrap();
     crate::payroll_snapshot_service::verify_candidate(
         &app.payroll_worked_item_repository,
         r.id,
@@ -611,12 +621,14 @@ fn paid_duplicate_replacement_reconciles_only_the_difference() {
         .unwrap()
         .unresolved
         .remove(0);
-    resolve(
+    approve_group(
         &open(&app).unwrap(),
         &all,
         &[(g.fingerprint, format!("direct:{replacement}"))],
     )
     .unwrap();
+    let change = reconciliation::changes(&app, &r).unwrap();
+    reconciliation::carry(&app, &r, &change.signature, false).unwrap();
     let (next, nw) = period(&app, 2, "2026-04-29", 1);
     let result = reconciliation::calculate(&app, &next, &nw, None).unwrap();
     assert_eq!(result.week_totals_minutes, [60, 0, 0, 0]);
@@ -656,7 +668,7 @@ fn mixed_imported_and_direct_selected_evidence_is_paid_once_with_historical_rate
         .unwrap()
         .unresolved
         .remove(0);
-    resolve(
+    approve_group(
         &open(&app).unwrap(),
         &all,
         &[(
@@ -761,16 +773,16 @@ fn pending_replacement_keeps_original_membership_reserved_elsewhere() {
     let (old, ow) = period(&app, 1, "2026-04-01", 1);
     let id = direct(&app, "2026-04-02T09:00", "2026-04-02T10:00");
     submit(&app, &old, &ow);
-    app.direct_shift_repository
-        .edit_completed(
-            id,
-            crate::direct_shift_repository::parse_shift_time("2026-04-02T09:00").unwrap(),
-            crate::direct_shift_repository::parse_shift_time("2026-04-02T11:00").unwrap(),
-            0,
-            None,
-            "test",
-        )
-        .unwrap();
+    reviewed_edit(
+        &app,
+        id,
+        crate::direct_shift_repository::parse_shift_time("2026-04-02T09:00").unwrap(),
+        crate::direct_shift_repository::parse_shift_time("2026-04-02T11:00").unwrap(),
+        0,
+        None,
+        "test",
+    )
+    .unwrap();
     let change = reconciliation::changes(&app, &old).unwrap();
     lifecycle::authorize_resubmission(&app, &old, &change.signature).unwrap();
     let (next, nw) = period(&app, 2, "2026-04-29", 1);
@@ -813,16 +825,16 @@ fn individual_then_aggregate_negative_differences_are_not_counted_twice() {
         .unwrap();
     submit(&app, &r, &w);
     settle(&app, &r);
-    app.direct_shift_repository
-        .edit_completed(
-            id,
-            crate::direct_shift_repository::parse_shift_time("2026-04-02T09:00").unwrap(),
-            crate::direct_shift_repository::parse_shift_time("2026-04-02T10:00").unwrap(),
-            0,
-            None,
-            "changed",
-        )
-        .unwrap();
+    reviewed_edit(
+        &app,
+        id,
+        crate::direct_shift_repository::parse_shift_time("2026-04-02T09:00").unwrap(),
+        crate::direct_shift_repository::parse_shift_time("2026-04-02T10:00").unwrap(),
+        0,
+        None,
+        "changed",
+    )
+    .unwrap();
     reconciliation::sync_settled_corrections(&app, 1).unwrap();
     let change = reconciliation::changes(&app, &r).unwrap();
     assert_eq!(
@@ -878,6 +890,8 @@ fn retained_legacy_import_membership_uses_matching_original_intervals_without_fa
     )
     .unwrap();
     direct(&app, "2026-04-03T09:00", "2026-04-03T10:00");
+    let change = reconciliation::changes(&app, &old).unwrap();
+    reconciliation::carry(&app, &old, &change.signature, false).unwrap();
     let (next, nw) = period(&app, 2, "2026-04-29", 1);
     assert!(reconciliation::plan(&app, &next)
         .unwrap()
@@ -941,7 +955,7 @@ fn migration_29_repairs_live_shape_preserves_duplicate_and_excludes_post_cutover
     db.execute("UPDATE direct_shifts SET start_time='2026-04-02T09:15',end_time='2026-04-02T10:15' WHERE id=2",[]).unwrap();
     let all = load(&app).unwrap();
     let group = groups(&all).unwrap().remove(0);
-    resolve(&db, &all, &[(group.fingerprint.clone(), all[0].key())]).unwrap();
+    approve_group(&db, &all, &[(group.fingerprint.clone(), all[0].key())]).unwrap();
     let decisions: String = db
         .query_row(
             "SELECT decided_at FROM payroll_duplicate_decisions",
@@ -1257,3 +1271,53 @@ fn rounding_changes_do_not_recalculate_submitted_settled_or_correction_history()
         7
     );
 }
+
+fn reviewed_edit(
+    app: &Application,
+    id: i64,
+    start: chrono::NaiveDateTime,
+    end: chrono::NaiveDateTime,
+    break_minutes: i64,
+    notes: Option<&str>,
+    at: &str,
+) -> std::result::Result<
+    crate::direct_shift_repository::DirectShift,
+    crate::direct_shift_repository::DirectShiftError,
+> {
+    let before = app
+        .direct_shift_repository
+        .get_including_deleted(id)?
+        .unwrap();
+    let db = open(app).unwrap();
+    let review =
+        crate::shift_changes::direct_review(&db, &before, start, end, break_minutes, notes)
+            .unwrap();
+    app.direct_shift_repository.edit_completed_reviewed(
+        &before,
+        start,
+        end,
+        break_minutes,
+        notes,
+        at,
+        "Reviewed regression correction",
+        &review.signature,
+    )
+}
+fn approve_group(
+    db: &Connection,
+    all: &[WorkEvidence],
+    selections: &[(String, String)],
+) -> Result<()> {
+    let groups = crate::shift_changes::linked_groups(db, all)?;
+    let mut reviews = std::collections::BTreeMap::new();
+    for g in groups {
+        reviews.insert(
+            g.fingerprint.clone(),
+            crate::shift_changes::group_review(db, &g)?.signature,
+        );
+    }
+    resolve_reviewed(db, all, selections, &reviews)
+}
+
+#[path = "stage4_tests.rs"]
+mod stage4_tests;

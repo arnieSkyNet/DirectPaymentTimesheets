@@ -364,3 +364,6 @@ stable database IDs, not filenames. Existing assets are never overwritten or
 renamed, including earlier hexadecimal filenames. Existing external paths remain
 supported. Neither external nor managed signature images are copied by database/configuration
 backup: separately protect the complete data root and external business assets.
+
+
+Development 1.0.6 Stage 4 uses schema38 for CSV content identity and prospective shift review across Hours Keeper and Hours Shift. Changed files at the same pathname are detected; originals and omitted rows are retained. Overnight overlaps and moved counterparts require explicit payable-version/separate-shift review, with audited deferral available. New protected edits require authorisation and contextual financial correction; legacy obligations remain unchanged. Upgrades use the existing verified recovery process. See [Stage 4 development notes](docs/DEVELOPMENT.md#stage-4-shift-change-protection-106schema38).

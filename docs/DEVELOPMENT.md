@@ -426,7 +426,7 @@ Directories, symlinks and unreferenced files reserve names; identical ink also
 receives a new filename. Legacy hash/external references are never rewritten.
 An interrupted save may leave an unreferenced immutable asset, never a partially
 replaced signature. Existing assets are deliberately retained, not cleaned up.
-No schema migration is required: development version remains 1.0.6/schema37.
+Stage 3 required no schema migration and retained 1.0.6/schema37; Stage 4 subsequently introduces schema38.
 
 `signature`-filtered tests cover format variants, bounds, corruption, renamed
 files, replacement preservation, drawing pixels/ownership, stale saves and
@@ -441,3 +441,12 @@ rehearsal is part of automated validation.
 Database/config backups do not copy managed `signatures/` assets or external
 images. Preserve the full configured data root and external assets separately;
 restoration keeps those files untouched and restores only stored references.
+
+
+## Stage 4 shift change protection (1.0.6/schema38)
+
+`shift_changes` owns additive schema38, content identity, legacy-archive registration, retained counterpart links and prospective review signatures. CSV imports hold the production OS lock and a writer reservation before resolving PAs/classifying rows; source/archive bytes are captured once. All logger writes use the same lock and transactional writer reservation. Edits compare an original record and a reviewed complete payload, checking both old/new ranges plus retained submission membership. Never seed legacy authorisation events or rewrite historical correction obligations during migration.
+
+The CSV parser maps semantic headers independently of ordering. Supported aliases are Client Name/PA, Start Time/Start, End Time/End, Break Time/Break, Worked Hours/Worked, Rate/h/Rate, Amount and Note. Names ignore case, surrounding whitespace and a leading BOM; missing, unknown and duplicate semantic fields are refused. Both real and synthetic test variants remain supported. Tests use only synthetic temporary CSVs/databases; production exports must not be opened by development tests.
+
+Duplicate review retains original sources, supports explicit retain-all and audited deferral, and requires fresh authorisation if displayed evidence/payroll changes. New protected edits cannot use the repository's ordinary editing API as a bypass. Financial changes use existing contextual resubmission/carry-forward, with original settlements and PDFs preserved. Regression coverage is in `payroll_evidence/stage4_tests.rs`, header tests, populated schema37 migration tests, and the existing production/recovery suites. No public-holiday, sickness, signature, PDF-layout or SMTP policy changes are part of Stage 4.

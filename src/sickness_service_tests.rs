@@ -711,6 +711,7 @@ fn deleted_sickness_period_ids_are_never_reused() {
 }
 
 fn legacy36(db: &Connection) {
+    crate::database::tests::remove_schema_38_fixture(db);
     let triggers = db
         .prepare("SELECT name FROM sqlite_master WHERE type='trigger' AND name LIKE 'dpt37_%'")
         .unwrap()
@@ -759,7 +760,7 @@ fn verified_version36_upgrade_preserves_dates_submissions_attempts_and_original_
     assert_eq!(
         db.query_row::<i64, _, _>("SELECT version FROM schema_version", [], |r| r.get(0))
             .unwrap(),
-        37
+        crate::database::CURRENT_SCHEMA_VERSION
     );
     assert_eq!(count(&db, "personal_assistant_sickness_periods"), 1);
     assert_eq!(count(&db, "payroll_submissions"), 1);
@@ -1223,7 +1224,7 @@ fn genuinely_populated_schema35_and36_upgrade_and_restore_preserve_original_data
         assert_eq!(
             db.query_row::<i64, _, _>("SELECT version FROM schema_version", [], |r| r.get(0))
                 .unwrap(),
-            37
+            crate::database::CURRENT_SCHEMA_VERSION
         );
         assert_eq!(stored(&db, 42).unwrap().unwrap().end_date, "2026-09-03");
         assert_eq!(count(&db, "payroll_submissions"), 1);

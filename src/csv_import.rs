@@ -42,8 +42,39 @@ pub fn import_csv_bytes(bytes: &[u8]) -> Result<Vec<ParsedTimesheetRow>, Box<dyn
         )
         .into());
     }
-    if headers.iter().any(|header| header.trim().is_empty()) {
-        return Err("Invalid CSV header on physical row 2: column names must not be empty".into());
+    let names: [&[&str]; 8] = [
+        &["client name", "pa"],
+        &["start time", "start"],
+        &["end time", "end"],
+        &["break time", "break"],
+        &["worked hours", "worked"],
+        &["rate/h", "rate"],
+        &["amount"],
+        &["note"],
+    ];
+    let mut columns = [usize::MAX; 8];
+    for (index, header) in headers.iter().enumerate() {
+        let normal = header
+            .trim()
+            .trim_start_matches('\u{feff}')
+            .trim()
+            .to_lowercase();
+        let field = names
+            .iter()
+            .position(|aliases| aliases.contains(&normal.as_str()))
+            .ok_or_else(|| {
+                format!("Invalid CSV header on physical row 2: unknown field {header:?}")
+            })?;
+        if columns[field] != usize::MAX {
+            return Err(format!(
+                "Invalid CSV header on physical row 2: duplicate field {header:?}"
+            )
+            .into());
+        }
+        columns[field] = index;
+    }
+    if columns.contains(&usize::MAX) {
+        return Err("Invalid CSV header on physical row 2: missing required field".into());
     }
 
     let mut entries = Vec::new();
@@ -58,12 +89,12 @@ pub fn import_csv_bytes(bytes: &[u8]) -> Result<Vec<ParsedTimesheetRow>, Box<dyn
             .into());
         }
 
-        let pa_name = record[0].trim().to_string();
+        let pa_name = record[columns[0]].trim().to_string();
         if pa_name.is_empty() {
             return Err(format!("Invalid CSV row {source_row}: missing PA name").into());
         }
-        let start_time = record[1].trim().to_string();
-        let end_time = record[2].trim().to_string();
+        let start_time = record[columns[1]].trim().to_string();
+        let end_time = record[columns[2]].trim().to_string();
         let start = parse_supported_timestamp(&start_time).ok_or_else(|| {
             format!("Invalid CSV row {source_row} start timestamp: unsupported timestamp {start_time:?}")
         })?;
@@ -79,13 +110,13 @@ pub fn import_csv_bytes(bytes: &[u8]) -> Result<Vec<ParsedTimesheetRow>, Box<dyn
             .into());
         }
 
-        let break_minutes = parse_duration(&record[3])
+        let break_minutes = parse_duration(&record[columns[3]])
             .map_err(|error| format!("Invalid CSV row {source_row} break duration: {error}"))?;
-        let worked_minutes = parse_duration(&record[4])
+        let worked_minutes = parse_duration(&record[columns[4]])
             .map_err(|error| format!("Invalid CSV row {source_row} worked duration: {error}"))?;
-        let hourly_rate = parse_money(&record[5])
+        let hourly_rate = parse_money(&record[columns[5]])
             .map_err(|error| format!("Invalid CSV row {source_row} hourly rate: {error}"))?;
-        let amount = parse_money(&record[6])
+        let amount = parse_money(&record[columns[6]])
             .map_err(|error| format!("Invalid CSV row {source_row} amount: {error}"))?;
 
         entries.push(ParsedTimesheetRow {
@@ -102,10 +133,10 @@ pub fn import_csv_bytes(bytes: &[u8]) -> Result<Vec<ParsedTimesheetRow>, Box<dyn
                 worked_minutes,
                 hourly_rate,
                 amount,
-                notes: if record[7].trim().is_empty() {
+                notes: if record[columns[7]].trim().is_empty() {
                     None
                 } else {
-                    Some(record[7].trim().to_string())
+                    Some(record[columns[7]].trim().to_string())
                 },
             },
         });
@@ -230,5 +261,42 @@ mod tests {
     fn rejects_invalid_utf8() {
         let error = import_csv_bytes(&[0xff, b'\n']).unwrap_err().to_string();
         assert!(error.contains("UTF-8"));
+    }
+}
+
+#[cfg(test)]
+mod stage4_header_tests {
+    use super::*;
+    const ROW:&str="Example PA,2 April 2026 at 09:00:00,2 April 2026 at 10:00:00,0h 00m,0h 45m,£12.00,£9.00,note";
+    #[test]
+    fn real_and_synthetic_headers_preserve_authoritative_duration() {
+        for header in [
+            "Client Name,Start Time,End Time,Break Time,Worked Hours,Rate/h,Amount,Note",
+            "PA,Start,End,Break,Worked,Rate,Amount,Note",
+        ] {
+            let rows =
+                import_csv_bytes(format!("\u{feff}period\n{header}\n{ROW}\n").as_bytes()).unwrap();
+            assert_eq!(rows[0].entry.worked_minutes, 45);
+        }
+    }
+    #[test]
+    fn reordered_quoted_bom_case_and_whitespace_headers_map_semantically() {
+        let rows=import_csv_bytes("period\n\u{feff}\" nOtE \",Amount,Rate/h,Worked Hours,Break Time,End Time,Start Time,Client Name\n\"a,b\",£9.00,£12.00,0h 45m,0h 00m,2 April 2026 at 10:00:00,2 April 2026 at 09:00:00,Example PA\n".as_bytes()).unwrap();
+        assert_eq!(rows[0].entry.pa_name, "Example PA");
+        assert_eq!(rows[0].entry.worked_minutes, 45);
+        assert_eq!(rows[0].entry.notes.as_deref(), Some("a,b"));
+    }
+    #[test]
+    fn missing_unknown_and_duplicate_semantic_headers_refuse_before_rows() {
+        for header in [
+            "PA,Start,End,Break,Worked,Rate,Amount",
+            "PA,Start,End,Break,Worked,Rate,Amount,Unknown",
+            "PA,Client Name,End,Break,Worked,Rate,Amount,Note",
+        ] {
+            let err = import_csv_bytes(format!("period\n{header}\n{ROW}").as_bytes())
+                .unwrap_err()
+                .to_string();
+            assert!(err.contains("header"));
+        }
     }
 }

@@ -427,7 +427,7 @@ pub fn candidate_signature(db: &Connection, id: i64) -> Result<String> {
         .into_iter()
         .filter(|e| e.pa == pa && through.is_none_or(|end| e.date().is_ok_and(|d| d <= end)))
         .collect::<Vec<_>>();
-    let group_keys = groups(&relevant)?
+    let group_keys = crate::shift_changes::linked_groups(db, &relevant)?
         .into_iter()
         .map(|g| g.fingerprint)
         .collect::<HashSet<_>>();

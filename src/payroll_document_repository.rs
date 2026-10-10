@@ -236,7 +236,7 @@ mod tests {
         let reopened = crate::database::open(path).unwrap();
         create_schema(&reopened).unwrap();
         assert_eq!(statuses(&reopened), before);
-        assert_eq!(CURRENT_SCHEMA_VERSION, 37);
+        assert_eq!(CURRENT_SCHEMA_VERSION, 38);
     }
 
     #[test]

@@ -183,14 +183,14 @@ pub struct DuplicateGroup {
     pub candidates: Vec<WorkEvidence>,
 }
 pub fn groups(evidence: &[WorkEvidence]) -> Result<Vec<DuplicateGroup>> {
-    let mut by_day: BTreeMap<(i64, NaiveDate), Vec<WorkEvidence>> = BTreeMap::new();
+    let mut by_day: BTreeMap<i64, Vec<WorkEvidence>> = BTreeMap::new();
     for e in evidence.iter().filter(|e| !e.deleted) {
         if e.end_time()
             .ok()
             .zip(e.start_time().ok())
             .is_some_and(|(end, start)| end > start)
         {
-            by_day.entry((e.pa, e.date()?)).or_default().push(e.clone());
+            by_day.entry(e.pa).or_default().push(e.clone());
         }
     }
     let mut result = Vec::new();
@@ -251,7 +251,7 @@ fn preflight_scoped(
     evidence: &[WorkEvidence],
     pa: Option<i64>,
 ) -> Result<Preflight> {
-    let groups = groups(evidence)?;
+    let groups = crate::shift_changes::linked_groups(db, evidence)?;
     let active: HashSet<_> = groups.iter().map(|g| g.fingerprint.clone()).collect();
     // Claim validation can run under an existing immediate/writer transaction.
     let transaction = if db.is_autocommit() {
@@ -279,7 +279,10 @@ fn preflight_scoped(
         for e in &group.candidates {
             if winner
                 .as_ref()
-                .is_none_or(|(source, id)| source != &e.source || *id != e.id)
+                .is_none_or(|(source, _)| source != "separate")
+                && winner
+                    .as_ref()
+                    .is_none_or(|(source, id)| source != &e.source || *id != e.id)
             {
                 excluded.insert(e.key());
             }
@@ -300,13 +303,51 @@ fn preflight_scoped(
             .collect(),
     })
 }
+#[cfg(test)]
 pub fn resolve(
     db: &Connection,
     evidence: &[WorkEvidence],
     selections: &[(String, String)],
 ) -> Result<()> {
-    let current = groups(evidence)?;
+    resolve_inner(db, evidence, selections, None)
+}
+pub fn resolve_reviewed(
+    db: &Connection,
+    evidence: &[WorkEvidence],
+    selections: &[(String, String)],
+    reviews: &std::collections::BTreeMap<String, String>,
+) -> Result<()> {
+    resolve_inner(db, evidence, selections, Some(reviews))
+}
+fn resolve_inner(
+    db: &Connection,
+    evidence: &[WorkEvidence],
+    selections: &[(String, String)],
+    reviews: Option<&std::collections::BTreeMap<String, String>>,
+) -> Result<()> {
+    let _guard = crate::timesheet_delivery::production_lock(db)?;
     let tx = db.unchecked_transaction()?;
+    tx.execute("UPDATE schema_version SET version=version", [])?;
+    // Repository-only tests may supply synthetic evidence. Real records must match
+    // a fresh locked read, including notes, before a displayed choice is applied.
+    let fresh = load_connection(&tx)?;
+    for e in evidence {
+        if let Some(current) = fresh.iter().find(|c| c.key() == e.key()) {
+            if current != e {
+                return Err("Evidence changed; refresh the review".into());
+            }
+        } else if !(cfg!(test) && reviews.is_none() && fresh.is_empty()) {
+            return Err("Reviewed shift no longer exists; refresh".into());
+        }
+    }
+    let current = crate::shift_changes::linked_groups(
+        &tx,
+        if fresh.is_empty() && cfg!(test) {
+            evidence
+        } else {
+            &fresh
+        },
+    )?;
     for (fingerprint, key) in selections {
         let group = current
             .iter()
@@ -316,8 +357,34 @@ pub fn resolve(
             .candidates
             .iter()
             .find(|e| &e.key() == key)
-            .ok_or("Select exactly one candidate per group")?;
-        tx.execute("INSERT INTO payroll_duplicate_decisions(group_fingerprint,winner_source,winner_id,decided_at,actor) VALUES (?1,?2,?3,?4,'local_employer')",params![fingerprint,winner.source,winner.id,now()])?;
+            .or_else(|| {
+                if key == "separate" {
+                    group.candidates.first()
+                } else {
+                    None
+                }
+            })
+            .ok_or("Select a payable candidate or retain both as separate shifts")?;
+        let review = crate::shift_changes::group_review(&tx, group)?;
+        if let Some(reviews) = reviews {
+            if reviews.get(fingerprint) != Some(&review.signature) {
+                return Err("Payroll state changed; refresh and authorise the review again".into());
+            }
+        } else if review.protected {
+            return Err("Explicit protected-cycle review authorisation is required".into());
+        }
+        for e in &group.candidates {
+            crate::shift_changes::event(
+                &tx,
+                &e.source,
+                e.id,
+                &toml::to_string(e)?,
+                &format!("Reviewed group {fingerprint}; choice {key}"),
+                "Explicit duplicate/correction review",
+                &review.signature,
+            )?;
+        }
+        tx.execute("INSERT INTO payroll_duplicate_decisions(group_fingerprint,winner_source,winner_id,decided_at,actor) VALUES (?1,?2,?3,?4,'local_employer')",params![fingerprint,if key=="separate"{"separate"}else{&winner.source},if key=="separate"{0}else{winner.id},now()])?;
         let id = tx.last_insert_rowid();
         for e in &group.candidates {
             tx.execute(
