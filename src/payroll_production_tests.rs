@@ -2379,3 +2379,101 @@ fn stage8_timesheet_pa_bcc_stays_optional_with_employer_cc_enabled_or_disabled()
         assert_eq!(envelope,if enabled {vec!["payroll@example.test".to_string(),"employer@example.test".to_string()]} else {vec!["payroll@example.test".to_string()]});
     }
 }
+
+#[test]
+fn regional_holiday_generation_approval_rejects_changed_region_under_lock() {
+    let (_dir, mut app, _) = fixture();
+    app.begin_generation();
+    let mut pending = app.pending_generation.take().unwrap();
+    pending.selected_ids = vec![1];
+    let before = facts(&app, 1);
+    app.application.context.config.payroll.public_holiday_region =
+        crate::public_holidays::PublicHolidayRegion::Scotland;
+    let report = app.generate_selection(&pending).unwrap();
+    assert!(matches!(report.entries[0].2, ProductionOutcome::Failed(_)));
+    assert_eq!(facts(&app, 1), before);
+}
+
+#[test]
+fn regional_holiday_dispatch_rejects_changed_dates_without_creating_attempt_or_sending() {
+    let (_dir, mut app, _) = fixture();
+    let cache = app.application.context.environment.cache_dir.clone();
+    crate::public_holidays::tests::seed(&cache, 100);
+    assert_eq!(generate(&mut app, &[1]).completed(), 1);
+    let batch = email_batch(&mut app, &[1]);
+    let before = facts(&app, 1);
+    let path = cache.join("bank-holidays-v1.json");
+    // Valid replacement with a published date inside the approved period changed.
+    let mut value: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    let payload = value["payload"]
+        .as_str()
+        .unwrap()
+        .replace("2026-04-06", "2026-04-07");
+    value["payload"] = payload.clone().into();
+    value["sha256"] = crate::payroll_delivery::digest(payload.as_bytes()).into();
+    std::fs::write(path, serde_json::to_vec(&value).unwrap()).unwrap();
+    assert!(app.validate_email_confirmation(&batch).is_err());
+    let report = app.dispatch_timesheet_selection(&batch).unwrap();
+    assert!(matches!(report.entries[0].2, ProductionOutcome::Failed(_)));
+    assert_eq!(facts(&app, 1), before);
+}
+
+#[test]
+fn regional_holiday_refresh_timestamp_does_not_invalidate_email_approval() {
+    let (_dir, mut app, _) = fixture();
+    let cache = app.application.context.environment.cache_dir.clone();
+    crate::public_holidays::tests::seed(&cache, 100);
+    generate(&mut app, &[1]);
+    let batch = email_batch(&mut app, &[1]);
+    crate::public_holidays::tests::seed(&cache, 200);
+    app.validate_email_confirmation(&batch).unwrap();
+}
+
+#[test]
+fn regional_holiday_configuration_from_another_instance_requires_fresh_review() {
+    let (_dir, app, schedule) = fixture();
+    app.application.save_config().unwrap();
+    let start = crate::date_utils::parse_legacy(&schedule.first_week_commencing).unwrap();
+    let binding = crate::public_holidays::for_application(&app.application, start).binding;
+    let path = app
+        .application
+        .context
+        .environment
+        .data_dir
+        .join("config.toml");
+    let mut other = crate::config::AppConfig::load(&path).unwrap();
+    other.payroll.public_holiday_region =
+        crate::public_holidays::PublicHolidayRegion::NorthernIreland;
+    other.save(&path).unwrap();
+    assert!(crate::public_holidays::verify(&app.application, start, &binding).is_err());
+}
+
+#[test]
+fn regional_holiday_submitted_pdf_and_evidence_survive_region_change_and_resend() {
+    let (_dir, mut app, schedule) = fixture();
+    let smtp = Smtp::new(&mut app);
+    generate(&mut app, &[1]);
+    let batch = email_batch(&mut app, &[1]);
+    assert_eq!(
+        app.dispatch_timesheet_selection(&batch)
+            .unwrap()
+            .completed(),
+        1
+    );
+    let pdf = std::fs::read(path(&app, &schedule, 1)).unwrap();
+    let original: Vec<(i64, String, Vec<u8>)> = db(&app).prepare("SELECT id,pdf_sha256,pdf_bytes FROM timesheet_documents WHERE payroll_timesheet_id=1 ORDER BY id").unwrap().query_map([], |r|Ok((r.get(0)?,r.get(1)?,r.get(2)?))).unwrap().collect::<rusqlite::Result<_>>().unwrap();
+    app.application.context.config.payroll.public_holiday_region =
+        crate::public_holidays::PublicHolidayRegion::Scotland;
+    let fresh = email_batch(&mut app, &[1]);
+    assert_eq!(
+        app.dispatch_timesheet_selection(&fresh)
+            .unwrap()
+            .completed(),
+        1
+    );
+    assert_eq!(std::fs::read(path(&app, &schedule, 1)).unwrap(), pdf);
+    let retained: Vec<(i64, String, Vec<u8>)> = db(&app).prepare("SELECT id,pdf_sha256,pdf_bytes FROM timesheet_documents WHERE payroll_timesheet_id=1 ORDER BY id").unwrap().query_map([], |r|Ok((r.get(0)?,r.get(1)?,r.get(2)?))).unwrap().collect::<rusqlite::Result<_>>().unwrap();
+    assert_eq!(retained, original);
+    assert_eq!(smtp.count(), 2);
+}

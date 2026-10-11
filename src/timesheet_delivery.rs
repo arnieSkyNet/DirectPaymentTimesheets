@@ -1108,6 +1108,27 @@ pub(crate) fn production_lock(db: &Connection) -> Result<Option<std::fs::File>> 
             )
         })?
         .with_extension("timesheet-delivery.lock");
+    Ok(Some(lock_file(&path)?))
+}
+
+/// Public metadata publication must share the dispatch lock even while recovery
+/// has temporarily moved the database. Do not open/create a database to lock it.
+pub(crate) fn production_lock_path(database: &std::path::Path) -> Result<std::fs::File> {
+    let path = match std::fs::canonicalize(database) {
+        Ok(path) => path,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            if !matches!(std::fs::symlink_metadata(database), Err(e) if e.kind() == std::io::ErrorKind::NotFound) {
+                return Err("Cannot locate the dispatch lock for an unreadable database reference".into());
+            }
+            let parent = database.parent().ok_or("Database parent is unavailable")?;
+            std::fs::canonicalize(parent)?.join(database.file_name().ok_or("Database filename is unavailable")?)
+        }
+        Err(_) => return Err("Cannot locate the dispatch lock; check database access and permissions".into()),
+    }.with_extension("timesheet-delivery.lock");
+    lock_file(&path)
+}
+
+fn lock_file(path: &std::path::Path) -> Result<std::fs::File> {
     let file = std::fs::OpenOptions::new()
         .create(true)
         .truncate(false)
@@ -1121,7 +1142,7 @@ pub(crate) fn production_lock(db: &Connection) -> Result<Option<std::fs::File>> 
             )
         })?;
     file.try_lock().map_err(lock_error)?;
-    Ok(Some(file))
+    Ok(file)
 }
 
 #[cfg(test)]

@@ -150,6 +150,8 @@ impl Default for PdfConfig {
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct PayrollConfig {
+    #[serde(default)]
+    pub public_holiday_region: crate::public_holidays::PublicHolidayRegion,
     pub frequency: String,
     pub rounding_minutes: i64,
 
@@ -236,6 +238,7 @@ fn default_payslip_email_body() -> String {
 impl Default for PayrollConfig {
     fn default() -> Self {
         Self {
+            public_holiday_region: Default::default(),
             frequency: "Every Four Weeks".to_string(),
             rounding_minutes: 15,
             rounding_direction: "Up".to_string(),

@@ -125,7 +125,9 @@ Schema35 also adds `payslip_revisions`, keyed by PA/year/cycle with immutable st
 
 ## Public-holiday detail
 
-Public-holiday detail rows belong to a payroll timesheet and identify a week, holiday date and editable hours. Preparation creates the implemented England/Wales bank-holiday dates for editable records.
+Public-holiday detail rows belong to a payroll timesheet and identify a week, holiday date and editable hours. New preparation creates zero-hour suggestions for the configured UK region using published GOV.UK dates or the explicitly incomplete England/Wales fallback. Existing drafts are compared with the selected calendar without deleting, overwriting or automatically adding rows.
+
+The typed `payroll.public_holiday_region` is configuration, not a schema migration. Validated feed data lives in `cache/bank-holidays-v1.json` under the internal data root, with format version, successful-check timestamp and SHA-256 of the retained payload. The cache is replaceable public metadata, not historical payroll evidence; loss of the cache never reconstructs or changes submitted holiday rows. Calendar bindings used during review contain region, relevant dates and per-year source, excluding freshness timestamps.
 
 The individual holiday rows and the weekly aggregate `public_holiday_hours` remain distinct existing representations. The aggregate supplies the PDF hours value; positive detail rows supply displayed holiday-date information.
 

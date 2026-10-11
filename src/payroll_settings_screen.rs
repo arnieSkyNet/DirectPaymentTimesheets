@@ -10,6 +10,8 @@ pub struct PayrollSettingsScreen {
     loaded: bool,
     annual_leave: AnnualLeaveSettings,
 
+    public_holiday_region: crate::public_holidays::PublicHolidayRegion,
+    holiday_refresh: crate::public_holidays::Refresh,
     frequency: String,
     rounding_minutes: i64,
     rounding_direction: String,
@@ -37,6 +39,8 @@ impl PayrollSettingsScreen {
             loaded: false,
             annual_leave: AnnualLeaveSettings::default(),
 
+            public_holiday_region: Default::default(),
+            holiday_refresh: Default::default(),
             frequency: "Every Four Weeks".to_string(),
             rounding_minutes: 15,
             rounding_direction: "Up".to_string(),
@@ -152,6 +156,47 @@ impl PayrollSettingsScreen {
 
         ui.separator();
 
+        ui.heading("Public holidays");
+        ui.label("Public-holiday region");
+        crate::gui_controls::combo_box("public_holiday_region")
+            .selected_text(self.public_holiday_region.label())
+            .show_ui(ui, |ui| {
+                for region in crate::public_holidays::PublicHolidayRegion::ALL {
+                    ui.selectable_value(&mut self.public_holiday_region, region, region.label());
+                }
+            });
+        ui.label("Public-holiday region — save settings to apply. Identification never automatically subtracts worked hours or establishes contractual entitlement.");
+        let today = chrono::Local::now().date_naive();
+        let calendar = crate::public_holidays::period(
+            &application.context.environment.cache_dir,
+            self.public_holiday_region,
+            today,
+            today,
+            chrono::Utc::now().timestamp(),
+        );
+        ui.label(&calendar.status);
+        for warning in &calendar.warnings {
+            ui.label(warning);
+        }
+        if ui
+            .add_enabled(
+                !self.holiday_refresh.running(),
+                egui::Button::new("Refresh holiday data"),
+            )
+            .clicked()
+        {
+            self.holiday_refresh.tick(
+                &application.context.environment.cache_dir,
+                &application.context.environment.database_path,
+                chrono::Utc::now().timestamp(),
+                ui.ctx(),
+                true,
+            );
+        }
+        if let Some(status) = &self.holiday_refresh.status {
+            ui.label(status);
+        }
+        ui.separator();
         ui.heading("Payroll Rules");
 
         ui.horizontal(|ui| {
@@ -268,10 +313,21 @@ impl PayrollSettingsScreen {
         open_email_settings
     }
 
+    pub fn refresh_holidays(&mut self, application: &Application, ctx: &egui::Context) {
+        self.holiday_refresh.tick(
+            &application.context.environment.cache_dir,
+            &application.context.environment.database_path,
+            chrono::Utc::now().timestamp(),
+            ctx,
+            false,
+        );
+    }
+
     fn load(&mut self, application: &Application) {
         let payroll = &application.context.config.payroll;
 
         self.annual_leave.load(application);
+        self.public_holiday_region = payroll.public_holiday_region;
         self.frequency = payroll.frequency.clone();
         self.rounding_minutes = payroll.rounding_minutes;
         self.rounding_direction = payroll.rounding_direction.clone();
@@ -309,6 +365,20 @@ impl PayrollSettingsScreen {
     }
 
     fn save_settings(&mut self, application: &mut Application) {
+        let db = match crate::payroll_evidence::open(application) {
+            Ok(db) => db,
+            Err(error) => {
+                self.status_message = error.to_string();
+                return;
+            }
+        };
+        let _guard = match crate::timesheet_delivery::production_lock(&db) {
+            Ok(guard) => guard,
+            Err(error) => {
+                self.status_message = error.to_string();
+                return;
+            }
+        };
         // Validate all annual-leave inputs before any existing payroll writes.
         let annual_leave = match self.annual_leave.draft() {
             Ok(settings) => settings,
@@ -322,6 +392,7 @@ impl PayrollSettingsScreen {
         };
         let payroll = &mut application.context.config.payroll;
 
+        payroll.public_holiday_region = self.public_holiday_region;
         payroll.frequency = self.frequency.clone();
 
         payroll.rounding_minutes = self.rounding_minutes;

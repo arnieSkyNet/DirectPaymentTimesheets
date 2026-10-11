@@ -513,3 +513,14 @@ failed persistence, legacy review, append-only decisions, mixed bundles, unrelat
 PAs, OS-lock contention and verified schema40 upgrade. Existing loopback SMTP
 integration fixtures require permission to bind local sockets. Never use production
 payroll data or launch the GUI against it for these checks.
+
+
+## Regional public-holiday calendar
+
+`public_holidays.rs` owns typed regions, strict GOV.UK JSON parsing, bounded HTTPS reads and atomic last-good caching. The fixed endpoint is `https://www.gov.uk/bank-holidays.json`; the existing ureq Rustls/WebPKI configuration validates certificates/hostnames, requires HTTPS and accepts no redirects. Requests have a 15-second global timeout and a 1 MiB decoded-body limit; each of the three matching divisions has 1–2,000 bounded-text, unique-date events. Malformed data never replaces a valid cache. SHA-256 detects payload corruption, not deliberate local tampering; the feed itself does not sign responses or promise complete years. The application must never infer legal entitlement from its suggestions.
+
+Refresh uses a worker/channel, checks freshness at most once per minute, refreshes seven-day-old data and backs off one hour after failure. Cache publication uses the same OS production lock as PDF publication, sending and recovery, after download completes. Busy dispatch defers replacement. Settings changes also take that lock. Data refresh never writes payroll rows. Existing drafts receive comparison warnings, including retained dates absent from the selected region, rather than automatic row replacement.
+
+Preparation-save, generation and email-confirmation calendar bindings contain the region, sorted relevant dates and per-year source. Sending rechecks disk configuration and cache inside the dispatch claim. Timestamp-only refreshes and holiday title changes do not invalidate an approval; relevant date or source changes do. No schema change is required: schema41 historical holiday/PDF/delivery evidence remains authoritative. Calendar approvals are application review state; no region is fabricated for legacy records. After restart, review the stored preparation/PDF with current calendar warnings again.
+
+Deterministic tests use synthetic feeds, injected clock/fetch outcomes, isolated cache/database paths and the existing loopback SMTP fixture. Release acceptance still needs real GOV.UK HTTPS/trust/network behaviour on each packaged platform, without production payroll data.

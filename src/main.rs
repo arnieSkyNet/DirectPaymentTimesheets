@@ -52,6 +52,7 @@ mod payroll_worked_item_repository;
 mod payslip_delivery_service;
 mod payroll_delivery;
 mod pdf_generator;
+mod public_holidays;
 mod personal_assistant_repository;
 mod personal_assistant_screen;
 mod repository;

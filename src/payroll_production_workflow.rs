@@ -14,6 +14,7 @@ struct PendingGeneration {
     choices: Vec<ProductionChoice>,
     unsigned_signatures: HashSet<crate::signature::Owner>,
     review_signatures: bool,
+    holiday_binding: crate::public_holidays::CalendarBinding,
     reviewed_signature_issues: Option<Vec<(crate::signature::Owner, String, String)>>,
 }
 #[derive(Debug, PartialEq, Eq)]
@@ -209,6 +210,11 @@ impl DirectPaymentApp {
                 choices,
                 unsigned_signatures: HashSet::new(),
                 review_signatures: false,
+                holiday_binding: crate::public_holidays::for_application(
+                    &self.application,
+                    crate::date_utils::parse_legacy(&schedule.first_week_commencing)?,
+                )
+                .binding,
                 reviewed_signature_issues: None,
             })
         })();
@@ -243,10 +249,11 @@ impl DirectPaymentApp {
     ) -> Result<ProductionReport, Box<dyn std::error::Error>> {
         let schedule = self.validated_generation_schedule(pending)?;
         self.process_selected(&schedule, &pending.selected_ids, "Generation", |pa| {
-            self.generate_payroll_timesheet_with_unsigned(
+            self.generate_payroll_timesheet_calendar(
                 &schedule,
                 pa,
                 &pending.unsigned_signatures,
+                &pending.holiday_binding,
             )
         })
     }
@@ -458,6 +465,7 @@ impl DirectPaymentApp {
         } else {
             egui::Window::new("Generate payroll timesheets — select PAs").collapsible(false).show(ui.ctx(), |ui| {
                 ui.label(&pending.period.display_label);
+                ui.label(format!("Holiday review: {} — {:?}. Stored preparation is retained; dates do not establish entitlement or automatically subtract worked hours.", pending.holiday_binding.region.label(), pending.holiday_binding.sources));
                 draw_production_choices(ui,&pending.choices,&mut pending.selected_ids,false);
                 ui.label("Optional: draw an authorised signature for this and future PDFs. Leaving signatures unconfigured keeps printable blank boxes.");
                 if let Ok(db)=crate::payroll_evidence::open(&self.application) {

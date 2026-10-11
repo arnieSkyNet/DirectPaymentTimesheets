@@ -4,7 +4,6 @@ mod mileage_editor;
 #[path = "payroll_sickness_editor.rs"]
 mod sickness_editor;
 
-use chrono::Datelike;
 use eframe::egui;
 use std::collections::HashMap;
 
@@ -112,6 +111,7 @@ pub struct PayrollTimesheetScreen {
     records: Vec<PayrollTimesheet>,
     weeks: Vec<(PayrollTimesheet, Vec<PayrollTimesheetWeek>, String)>,
     public_holidays: Vec<Vec<PayrollTimesheetPublicHoliday>>,
+    holiday_binding: Option<crate::public_holidays::CalendarBinding>,
     annual_leave: HashMap<i64, Vec<PayrollTimesheetAnnualLeave>>,
     worked_hours_baselines: HashMap<(i64, i64), i64>,
     snapshot_states: HashMap<i64, SnapshotState>,
@@ -149,6 +149,7 @@ impl PayrollTimesheetScreen {
             records: Vec::new(),
             weeks: Vec::new(),
             public_holidays: Vec::new(),
+            holiday_binding: None,
             annual_leave: HashMap::new(),
             worked_hours_baselines: HashMap::new(),
             snapshot_states: HashMap::new(),
@@ -199,6 +200,39 @@ impl PayrollTimesheetScreen {
         operational_schedule: &PayrollSchedule,
         period_label: &str,
     ) {
+        if let Some(start) = parse_date(&operational_schedule.first_week_commencing) {
+            let calendar = crate::public_holidays::for_application(application, start);
+            ui.label(&calendar.status);
+            for warning in &calendar.warnings {
+                ui.label(warning);
+            }
+            if self
+                .holiday_binding
+                .as_ref()
+                .is_some_and(|binding| *binding != calendar.binding)
+            {
+                ui.colored_label(
+                    egui::Color32::YELLOW,
+                    "Holiday calendar changed: reload preparation before saving or generating.",
+                );
+            }
+            for (record, holidays) in self.records.iter().zip(&self.public_holidays) {
+                let differences = crate::public_holidays::comparison(&calendar.binding, holidays);
+                if !differences.is_empty() {
+                    ui.collapsing(
+                        format!(
+                            "Holiday calendar comparison — PA {} (stored values retained)",
+                            record.personal_assistant_id
+                        ),
+                        |ui| {
+                            for difference in differences {
+                                ui.label(difference);
+                            }
+                        },
+                    );
+                }
+            }
+        }
         let frame = ui.ctx().cumulative_frame_nr();
         if !self.has_unsaved_changes()
             && self.last_frame.is_some_and(|previous| frame > previous + 1)
@@ -957,6 +991,24 @@ impl PayrollTimesheetScreen {
         &mut self,
         application: &Application,
     ) -> Result<(), Box<dyn std::error::Error>> {
+        let db = crate::payroll_evidence::open(application)?;
+        let _guard = crate::timesheet_delivery::production_lock(&db)?;
+        let start = parse_date(
+            &self
+                .schedule
+                .as_ref()
+                .ok_or("No period selected")?
+                .first_week_commencing,
+        )
+        .ok_or("Invalid period date")?;
+        crate::public_holidays::verify(
+            application,
+            start,
+            self.holiday_binding
+                .as_ref()
+                .ok_or("Reload preparation to review holiday data")?,
+        )?;
+
         let index = self
             .weeks
             .iter()
@@ -1124,12 +1176,13 @@ impl PayrollTimesheetScreen {
         ];
 
         // ------------------------------------------------------------
-        // Determine the government-published England & Wales bank
+        // Determine selected regional public-holiday
         // holidays that fall within this four-week payroll cycle.
         // ------------------------------------------------------------
 
-        let bank_holidays =
-            bank_holidays_for_period(first_week, first_week + chrono::Duration::days(27));
+        let calendar = crate::public_holidays::for_application(application, first_week);
+        self.holiday_binding = Some(calendar.binding.clone());
+        let bank_holidays = calendar.binding.dates;
 
         let holiday_definitions: Vec<(i64, String)> = bank_holidays
             .into_iter()
@@ -1417,16 +1470,20 @@ impl PayrollTimesheetScreen {
                 .get_weeks(record.id)?;
 
             // --------------------------------------------------------
-            // Ensure all government bank-holiday dates for this
+            // Suggest selected calendar dates for new preparation in this
             // payroll cycle exist for this PA.
             //
             // Existing records are preserved, including their hours.
             // New records are created with zero hours.
             // --------------------------------------------------------
 
-            application
-                .payroll_timesheet_repository
-                .create_missing_public_holidays(record.id, &holiday_definitions)?;
+            // Only new preparation receives suggestions. Existing drafts retain all
+            // rows, including zero-hour entries whose original provenance is unknown.
+            if !existing_personal_assistant_ids.contains(&assistant.id) {
+                application
+                    .payroll_timesheet_repository
+                    .create_missing_public_holidays(record.id, &holiday_definitions)?;
+            }
 
             let holidays = application
                 .payroll_timesheet_repository
@@ -2108,143 +2165,6 @@ fn full_text_selection(text: &str) -> egui::text::CCursorRange {
     )
 }
 
-fn bank_holidays_for_period(
-    start_date: chrono::NaiveDate,
-    end_date: chrono::NaiveDate,
-) -> Vec<chrono::NaiveDate> {
-    let mut holidays = Vec::new();
-
-    for year in start_date.year()..=end_date.year() {
-        holidays.extend(bank_holidays_for_year(year));
-    }
-
-    holidays.retain(|date| *date >= start_date && *date <= end_date);
-
-    holidays.sort();
-
-    holidays.dedup();
-
-    holidays
-}
-
-fn bank_holidays_for_year(year: i32) -> Vec<chrono::NaiveDate> {
-    use chrono::Weekday;
-
-    let mut holidays = Vec::new();
-
-    // New Year's Day.
-    let new_year = chrono::NaiveDate::from_ymd_opt(year, 1, 1).expect("Invalid New Year's Day");
-
-    holidays.push(observed_monday_if_weekend(new_year));
-
-    // Easter-related bank holidays.
-    let easter_sunday = calculate_easter_sunday(year);
-
-    holidays.push(easter_sunday - chrono::Duration::days(2)); // Good Friday
-    holidays.push(easter_sunday + chrono::Duration::days(1)); // Easter Monday
-
-    // Early May bank holiday - first Monday in May.
-    holidays.push(first_monday_of_month(year, 5));
-
-    // Spring bank holiday - last Monday in May.
-    holidays.push(last_monday_of_month(year, 5));
-
-    // Summer bank holiday - last Monday in August.
-    holidays.push(last_monday_of_month(year, 8));
-
-    // Christmas Day and Boxing Day.
-    //
-    // Where either falls on a weekend, use the published
-    // substitute-day arrangement.
-    let christmas = chrono::NaiveDate::from_ymd_opt(year, 12, 25).expect("Invalid Christmas Day");
-
-    let boxing_day = chrono::NaiveDate::from_ymd_opt(year, 12, 26).expect("Invalid Boxing Day");
-
-    match (christmas.weekday(), boxing_day.weekday()) {
-        (Weekday::Sat, Weekday::Sun) => {
-            holidays.push(
-                chrono::NaiveDate::from_ymd_opt(year, 12, 27)
-                    .expect("Invalid Christmas substitute day"),
-            );
-
-            holidays.push(
-                chrono::NaiveDate::from_ymd_opt(year, 12, 28)
-                    .expect("Invalid Boxing Day substitute day"),
-            );
-        }
-
-        (Weekday::Sun, Weekday::Mon) => {
-            holidays.push(boxing_day);
-
-            holidays.push(
-                chrono::NaiveDate::from_ymd_opt(year, 12, 27)
-                    .expect("Invalid Christmas substitute day"),
-            );
-        }
-
-        (_, Weekday::Sat) => {
-            holidays.push(christmas);
-
-            holidays.push(boxing_day + chrono::Duration::days(2));
-        }
-
-        _ => {
-            holidays.push(christmas);
-            holidays.push(boxing_day);
-        }
-    }
-
-    holidays
-}
-
-fn observed_monday_if_weekend(date: chrono::NaiveDate) -> chrono::NaiveDate {
-    match date.weekday() {
-        chrono::Weekday::Sat => date + chrono::Duration::days(2),
-        chrono::Weekday::Sun => date + chrono::Duration::days(1),
-        _ => date,
-    }
-}
-
-fn first_monday_of_month(year: i32, month: u32) -> chrono::NaiveDate {
-    let first =
-        chrono::NaiveDate::from_ymd_opt(year, month, 1).expect("Invalid first day of month");
-
-    first + chrono::Duration::days((7 - first.weekday().num_days_from_monday()) as i64 % 7)
-}
-
-fn last_monday_of_month(year: i32, month: u32) -> chrono::NaiveDate {
-    let next_month = if month == 12 {
-        chrono::NaiveDate::from_ymd_opt(year + 1, 1, 1).expect("Invalid next year")
-    } else {
-        chrono::NaiveDate::from_ymd_opt(year, month + 1, 1).expect("Invalid next month")
-    };
-
-    let last_day = next_month - chrono::Duration::days(1);
-
-    last_day - chrono::Duration::days(last_day.weekday().num_days_from_monday() as i64)
-}
-
-fn calculate_easter_sunday(year: i32) -> chrono::NaiveDate {
-    let a = year % 19;
-    let b = year / 100;
-    let c = year % 100;
-    let d = b / 4;
-    let e = b % 4;
-    let f = (b + 8) / 25;
-    let g = (b - f + 1) / 3;
-    let h = (19 * a + b - d - g + 15) % 30;
-    let i = c / 4;
-    let k = c % 4;
-    let l = (32 + 2 * e + 2 * i - h - k) % 7;
-    let m = (a + 11 * h + 22 * l) / 451;
-
-    let month = (h + l - 7 * m + 114) / 31;
-    let day = ((h + l - 7 * m + 114) % 31) + 1;
-
-    chrono::NaiveDate::from_ymd_opt(year, month as u32, day as u32)
-        .expect("Invalid calculated Easter Sunday")
-}
-
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
@@ -2361,6 +2281,73 @@ pub(crate) mod tests {
                 params![id, name, status],
             )
             .unwrap();
+    }
+
+    #[test]
+    fn regional_holiday_existing_draft_preserves_dates_hours_and_manual_adjustments() {
+        let (_dir, mut app, schedule, mut screen) = load_active_record();
+        setup_connection(&app).execute("INSERT INTO personal_assistant_pay_rates(personal_assistant_id,effective_date,base_hourly_rate,employer_top_up_rate,created_at) VALUES (1,'01/01/2026',12,0,'synthetic')", []).unwrap();
+        screen.public_holidays[0][0].hours = 7.0;
+        screen.weeks[0].1[0].worked_hours = 3.0;
+        screen.save_current(&app).unwrap();
+        let record = screen.records[0].id;
+        let holidays = app
+            .payroll_timesheet_repository
+            .get_public_holidays(record)
+            .unwrap();
+        let adjustments = app
+            .payroll_worked_item_repository
+            .get_manual_adjustments(record)
+            .unwrap();
+        app.context.config.payroll.public_holiday_region =
+            crate::public_holidays::PublicHolidayRegion::Scotland;
+        crate::public_holidays::tests::seed(&app.context.environment.cache_dir, 100);
+        screen.load(&app, &schedule, "test").unwrap();
+        assert!(public_holidays_equal(&holidays, &screen.public_holidays[0]));
+        assert_eq!(
+            app.payroll_worked_item_repository
+                .get_manual_adjustments(record)
+                .unwrap(),
+            adjustments
+        );
+        assert!(!crate::public_holidays::comparison(
+            screen.holiday_binding.as_ref().unwrap(),
+            &holidays
+        )
+        .is_empty());
+    }
+
+    #[test]
+    fn regional_holiday_stale_preparation_cannot_save_after_region_change() {
+        let (_dir, mut app, _schedule, mut screen) = load_active_record();
+        let before = crate::database_recovery::fingerprint(&setup_connection(&app)).unwrap();
+        screen.public_holidays[0][0].hours = 7.0;
+        app.context.config.payroll.public_holiday_region =
+            crate::public_holidays::PublicHolidayRegion::NorthernIreland;
+        assert!(screen.save_current(&app).is_err());
+        assert_eq!(
+            crate::database_recovery::fingerprint(&setup_connection(&app)).unwrap(),
+            before
+        );
+    }
+
+    #[test]
+    fn regional_holiday_new_preparation_uses_selected_region_without_worked_subtraction() {
+        let (_dir, mut app) = test_application();
+        app.context.config.payroll.public_holiday_region =
+            crate::public_holidays::PublicHolidayRegion::Scotland;
+        crate::public_holidays::tests::seed(&app.context.environment.cache_dir, 100);
+        let schedule = insert_schedule(&app, "2026/27", 1, "01/08/2026", "28/08/2026");
+        insert_pa(&app, 1, "Synthetic", Some("Active"));
+        let mut screen = PayrollTimesheetScreen::new();
+        screen.load(&app, &schedule, "test").unwrap();
+        assert_eq!(screen.public_holidays[0].len(), 1);
+        assert_eq!(screen.public_holidays[0][0].holiday_date, "03/08/2026");
+        assert_eq!(screen.public_holidays[0][0].hours, 0.0);
+        assert!(screen.weeks[0]
+            .1
+            .iter()
+            .all(|week| week.worked_hours == 0.0));
     }
 
     fn load_active_record() -> (

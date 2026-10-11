@@ -121,6 +121,7 @@ struct PendingEmailBatch {
     approved_selection: Vec<i64>,
     approved_bundles: HashMap<i64, crate::payroll_delivery::Approval>,
     approved_settings: String,
+    approved_holidays: Option<crate::public_holidays::CalendarBinding>,
     resend_acknowledged: bool,
 }
 
@@ -137,6 +138,7 @@ impl PendingEmailBatch {
         self.approved.clear();
         self.approved_bundles.clear();
         self.approved_settings.clear();
+        self.approved_holidays = None;
         self.approved_selection.clear();
         if self.stage == EmailBatchNoteStage::SelectRecipients
             && !self.selected_personal_assistant_ids.is_empty()
@@ -319,6 +321,8 @@ impl DirectPaymentApp {
 
 impl eframe::App for DirectPaymentApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        self.payroll_settings_screen
+            .refresh_holidays(&self.application, ctx);
         crate::date_utils::set_display(ctx, self.application.context.config.date_display_format);
         if self.initial_size_pending {
             self.initial_size_pending = false;
@@ -711,6 +715,7 @@ impl DirectPaymentApp {
             approved_selection: Vec::new(),
             approved_bundles: Default::default(),
             approved_settings: String::new(),
+            approved_holidays: None,
             resend_acknowledged: false,
         });
     }
@@ -873,6 +878,7 @@ impl DirectPaymentApp {
                         if let Some(a)=batch.approved_bundles.get(&choice.id) {
                             for (filename, hash) in a.preview.attachment_filenames.iter().zip(&a.digests) { ui.label(format!("{filename}; SHA-256 {hash}")); }
                         }
+                        if let Some(calendar) = &batch.approved_holidays { ui.label(format!("Reviewed calendar: {} — {:?}; suggested dates {:?}. Stored PDF bytes are unchanged.", calendar.region.label(), calendar.sources, calendar.dates)); }
                         if let Some(p)=batch.approved.get(&choice.id) {ui.label(format!("To: {}; CC: {}; BCC: {}",p.to,p.cc.as_deref().unwrap_or("none"),p.bcc.as_deref().unwrap_or("none")));}
                     }
                     if resends>0 {
@@ -2744,6 +2750,9 @@ impl DirectPaymentApp {
         let schedule = self
             .validated_schedule_for_email_batch(batch)?
             .ok_or("Timesheet period required")?;
+        let holiday_start = crate::date_utils::parse_legacy(&schedule.first_week_commencing)?;
+        batch.approved_holidays =
+            Some(crate::public_holidays::for_application(&self.application, holiday_start).binding);
         let db = crate::payroll_evidence::open(&self.application)?;
         let mut approved = std::collections::HashMap::new();
         for id in &batch.selected_personal_assistant_ids {
@@ -2804,6 +2813,14 @@ impl DirectPaymentApp {
         let schedule = self
             .validated_schedule_for_email_batch(batch)?
             .ok_or("Period missing")?;
+        crate::public_holidays::verify(
+            &self.application,
+            crate::date_utils::parse_legacy(&schedule.first_week_commencing)?,
+            batch
+                .approved_holidays
+                .as_ref()
+                .ok_or("Holiday calendar approval missing")?,
+        )?;
         let db = crate::payroll_evidence::open(&self.application)?;
         for id in &batch.selected_personal_assistant_ids {
             let intent = batch
@@ -2866,7 +2883,17 @@ impl DirectPaymentApp {
             &message_id,
             &bytes,
             |locked| {
-                if self.email_settings_digest()? != batch.approved_settings { return Err("Email settings changed during claim".into()); }
+                if self.email_settings_digest()? != batch.approved_settings {
+                    return Err("Email settings changed during claim".into());
+                }
+                crate::public_holidays::verify(
+                    &self.application,
+                    crate::date_utils::parse_legacy(&schedule.first_week_commencing)?,
+                    batch
+                        .approved_holidays
+                        .as_ref()
+                        .ok_or("Holiday calendar approval missing")?,
+                )?;
                 let fresh=crate::personal_assistant_repository::PersonalAssistantRepository::get_by_id_on(locked,assistant.id)?;
                 let current_schedule = self
                     .validated_schedule_for_email_batch(batch)?
@@ -3061,14 +3088,32 @@ impl DirectPaymentApp {
         self.generate_payroll_timesheet_with_unsigned(schedule, assistant, &HashSet::new())
     }
 
+    #[cfg(test)]
     fn generate_payroll_timesheet_with_unsigned(
         &self,
         current_schedule: &PayrollSchedule,
         assistant: &crate::models::PersonalAssistant,
         unsigned: &HashSet<crate::signature::Owner>,
     ) -> Result<bool, Box<dyn std::error::Error>> {
+        let start = crate::date_utils::parse_legacy(&current_schedule.first_week_commencing)?;
+        let binding = crate::public_holidays::for_application(&self.application, start).binding;
+        self.generate_payroll_timesheet_calendar(current_schedule, assistant, unsigned, &binding)
+    }
+
+    fn generate_payroll_timesheet_calendar(
+        &self,
+        current_schedule: &PayrollSchedule,
+        assistant: &crate::models::PersonalAssistant,
+        unsigned: &HashSet<crate::signature::Owner>,
+        binding: &crate::public_holidays::CalendarBinding,
+    ) -> Result<bool, Box<dyn std::error::Error>> {
         let generation_db = crate::payroll_evidence::open(&self.application)?;
         let _generation_lock = crate::timesheet_delivery::production_lock(&generation_db)?;
+        crate::public_holidays::verify(
+            &self.application,
+            crate::date_utils::parse_legacy(&current_schedule.first_week_commencing)?,
+            binding,
+        )?;
         // Signature drawing saves immediately; never use a cached PA signature.
         let fresh_assistant =
             crate::personal_assistant_repository::PersonalAssistantRepository::get_by_id_on(
@@ -3351,6 +3396,7 @@ impl DirectPaymentApp {
             payroll_weeks[2].id,
             payroll_weeks[3].id,
         ];
+        crate::public_holidays::verify(&self.application, first_week, binding)?;
         crate::payroll_snapshot_service::publish_candidate_locked(
             &self.application.payroll_worked_item_repository,
             crate::payroll_snapshot_service::CandidatePublication {
