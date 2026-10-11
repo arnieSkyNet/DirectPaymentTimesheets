@@ -2,6 +2,10 @@
 
 This document describes the implementation on `main`. Source code, migrations and tests are the authority if this summary becomes stale.
 
+The functionality below describes unreleased development 1.0.6/schema41. Published
+Linux/Windows v1.0.4 and macOS v1.0.5 do not include the Stage 1–8 changes. Historical
+stage headings retain their introduction schema numbers.
+
 ## Current release and platform
 
 - Development application version: `1.0.6`; published Linux/Windows: `1.0.4`; published macOS: `1.0.5`.
@@ -14,7 +18,7 @@ The application is a single-user desktop tool for importing externally recorded 
 
 ## Runtime data and configuration
 
-The application data root is `~/.directpaymenttimesheets`, or the path in `DIRECTPAYMENTTIMESHEETS_HOME`. Initialisation creates:
+The application data root is `~/.directpaymenttimesheets` on Unix or `%LOCALAPPDATA%/DirectPaymentTimesheets` on Windows. `DIRECTPAYMENTTIMESHEETS_HOME` overrides either default verbatim; use an absolute path and separately redirect external business folders. Initialisation creates:
 
 ```text
 <data-root>/
@@ -30,7 +34,7 @@ The application data root is `~/.directpaymenttimesheets`, or the path in `DIREC
 
 Configured business folders are separate from this internal data root: CSV import, PDF output, email archive, payslips and payroll information. Paths and PDF fonts/sizes are edited in Application Settings. `email_archive` is persisted but currently has no production consumer; Payroll Return information deliberately uses `payroll_information_folder` instead. SMTP/test-address settings and payroll subject/body templates are edited in Email Settings, although the template fields are stored in `PayrollConfig`. Existing unknown TOML keys are ignored, including the removed `public_holiday_enabled` key.
 
-First-run and missing-key business-folder defaults are provider-neutral `~/Documents/DirectPaymentTimesheets/` subdirectories. Runtime expansion uses the current user's home directory; explicitly persisted absolute or relative paths are not rewritten on upgrade.
+First-run and missing-key business-folder defaults are provider-neutral `~/Documents/DirectPaymentTimesheets/` subdirectories on Unix, or beneath the discovered Windows Documents directory. Runtime expansion uses the current user's home directory; explicitly persisted absolute or relative paths are not rewritten on upgrade.
 
 ## Implemented workflow
 
@@ -46,7 +50,7 @@ CSV import parses provider rows, skips exact already-stored raw matches, retains
 
 Schema 21 adds append-only imported-row correction events with actor/action metadata, optional reason and complete before/after start, end, break, worked-minute and note values. Raw and effective repository queries are explicit; the immutable imported row remains the raw source and reversion appends history. Payroll preparation, duplicate resolution and generation consume effective imported corrections through shared reconciliation. Import repeat detection and View Imported Hours retain raw source values. Schema28 submission history does not restore the removed PDF revision architecture.
 
-After a successful import, the source CSV is copied to the internal `archive/YYYY/MM/` hierarchy with a timestamped filename and is not subsequently modified by the application. Successes and failures are recorded in `import_audit`, including row counts, source/archive paths and errors where applicable.
+Before committing a successful import, the validated source CSV bytes are archived to the internal `archive/YYYY/MM/` hierarchy with a timestamped filename and are not subsequently modified by the application. Successes and failures are recorded in `import_audit`, including row counts, source/archive paths and errors where applicable.
 
 ### Direct hours/shift evidence
 
@@ -91,7 +95,7 @@ If editable reconciliation or a save changes data represented by an existing gen
 
 For each positive imported shift, the authoritative pay rate is the newest PA rate effective on or before the shift's start calendar date. Stored `DD/MM/YYYY` dates are parsed as dates; equal effective dates are ordered deterministically by newest row ID. Base rate plus employer top-up forms the applicable total. Future rates never apply early, and generation fails clearly if worked time has no effective rate.
 
-Rate allocation is retained internally by integer minutes. A cycle or week may contain several rates. Shifts are assigned wholly to their start date; the real workflow does not contain midnight-crossing shifts. A positive manual adjustment uses the higher/newer rate genuinely applicable within that week; a negative adjustment uses the lower/older rate; a one-rate week uses that rate. These allocations are snapshot/accounting data and are not printed on the provider PDF.
+Rate allocation is retained internally by integer minutes. A cycle or week may contain several rates. Shifts are assigned wholly to their start date; cross-midnight shifts are supported without splitting their payroll allocation, and overlap review compares full intervals across dates. A positive manual adjustment uses the higher/newer rate genuinely applicable within that week; a negative adjustment uses the lower/older rate; a one-rate week uses that rate. These allocations are snapshot/accounting data and are not printed on the provider PDF.
 
 Contracted weekly hours are informational. Each PDF week resolves the newest contracted-hours record effective on or before that week's commencing date. Future records are excluded and a week before the first record is shown as unavailable. A single value retains the original header; differing values use a compact week-labelled header summary. Contracted hours do not change worked hours or pay.
 
@@ -117,7 +121,7 @@ Timesheet preview and test operations require the operational period; P60/P45-on
 
 Email Payslips first lists all unknown P60/P45 histories, identifying PA, type, filename and year. Each document offers Already delivered externally or Needs sending; decisions persist immediately without changing `sent_at`. Unknown documents remain excluded if the user continues, and Cancel sends nothing while retaining saved decisions. New imports also start unknown. It then asks about additional notes and shows individual PA checkboxes using the existing production selection controls. Available recipients are initially selected; Select all available and Clear selection are supported. Rows show unsent document types, including P45/P60 supplements. A separate final confirmation lists the selected PAs and count; an empty selection cannot send. Only selected recipients are dispatched and receive their chosen notes. Existing sent/indeterminate protections remain in force.
 
-Production timesheets retain To payroll department, CC employer and BCC PA when available. Production payslips use a dedicated composer: To the selected PA, BCC the employer, no CC or payroll department recipient. Missing/invalid PA addresses are unavailable. One message contains that PA's eligible bundle. Ordinary payslip subjects are `Payslip for Week <PAYE week>` from the captured schedule, independent of the timesheet subject setting; configured payslip body, notes and signature are retained. Payslip test email uses only the configured PA test address.
+Production timesheets retain To payroll department, default-enabled optional CC employer and optional BCC PA. Email Settings controls only employer CC for first/corrected/resend emails. Production payslips use a dedicated composer: To the selected PA, BCC the employer, no CC or payroll department recipient. Missing/invalid PA addresses are unavailable. One message contains that PA's eligible bundle. Ordinary payslip subjects are `Payslip for Week <PAYE week>` from the captured schedule, independent of the timesheet subject setting; configured payslip body, notes and signature are retained. Payslip test email uses only the configured PA test address.
 
 A production email batch captures the optional selected schedule key and material facts when it starts; timesheets require a schedule, standalone documents do not. Confirmation displays the Payroll Week/date/pay-date label and warns for historical or future periods. Before dispatch, the schedule and global selection are revalidated; changed, missing or materially re-imported schedules are refused. Ordinary cycle attachments and status use captured schedule facts; P60/P45 use their own document identities. Standalone wording never borrows the Dashboard period. Cancel sends nothing and changes no status or snapshot.
 
@@ -127,13 +131,13 @@ Import Payroll Documents handles prep sheets, ordinary payslips, PA-specific P60
 
 The PAYE week is calculated from `PayrollSchedule.pay_date`: the tax year starts on 6 April of the pay date's year, or the previous year when the pay date precedes 6 April; week is `floor(days / 7) + 1`, including week 53 when applicable. The period code remains `YYYYMMwWW`, where `YYYYMM` comes from the first week commencing date.
 
-Year folders use `YYYY to YYYY`. If a configured root already ends with any year suffix in that form, its parent is treated as the reusable base before the selected schedule's year is appended. Associated payslips use the schedule year. Other documents use their own explicit filename year; yearless information uses the configured information root. Schedule-derived directories are created on actual import/write, not selection/viewing; saving configuration also ensures business roots exist.
+Year folders use `YYYY to YYYY`. If a configured root already ends with any year suffix in that form, its parent is treated as the reusable base before the selected schedule's year is appended. Associated payslips use the schedule year. Other documents use their own explicit filename year; yearless information uses the configured information root. Schedule-derived directories are created on actual import/write, not selection/viewing; saving configuration preserves paths without creating business roots; background checks warn, and workflows create their required outputs when used.
 
 ### Backup and restore
 
-Application Settings can create timestamped backups under `<data-root>/backups/YYYYMMDD-HHMMSS/` containing `database.sqlite`, optional `config.toml` and `README.txt`. SQLite's online backup API creates a consistent snapshot of the live connection.
+Application Settings can create timestamped backups under `<data-root>/backups/YYYYMMDD-HHMMSS-<nanoseconds>/` containing `database.sqlite`, optional `config.toml` and `README.txt`. SQLite's online backup API creates a consistent snapshot of the live connection.
 
-Restore accepts only recognised backup directories beneath that backup root. It checks identity, paths/symlinks, required files, schema and read-only opening, and requires exactly one `PRAGMA integrity_check` result equal to `ok` case-insensitively. A mandatory safety backup is made first. SQLite's backup API restores into the live database safely; config is restored only when present. Success requires application restart so in-memory state is not used after restoration. There is no automatic scheduling, retention/deletion, compression or cloud backup.
+Restore accepts only recognised backup directories beneath that backup root. It checks identity, paths/symlinks, required files, schema and read-only opening, and requires exactly one `PRAGMA integrity_check` result equal to `ok` case-insensitively. Restore migrates an isolated copy and requires review of lost/changed current rows, a reason and explicit rollback acknowledgement. Approval binds live, selected and staged data/configuration; changed evidence invalidates it, and uncertainty blocks restore. A verified original recovery snapshot and decision manifest precede transactional installation under the OS lock and SQLite writer reservation. Config is restored only when present, separately from database commit. Close other instances and restart after success or post-commit config failure. External files are not restored; retained attachment bytes inside SQLite are included. See [recovery safeguards](DATABASE-SCHEMA.md#verified-startup-upgrades-and-legacy-restore). There is no automatic scheduling, retention/deletion, compression or cloud backup.
 
 ## Tests and current limitations
 
@@ -147,7 +151,7 @@ Known limitations and deliberately deferred work include:
 - no production consumer for the configured `email_archive` path;
 - no arbitrary-file restore or automated backup retention/scheduling;
 - public-holiday weekly aggregate hours and individual holiday rows remain distinct existing representations; and
-- see [README limitations](../README.md#current-limitations) for packaging, access, annual-leave algorithms, CSV provenance, archival-payslip promotion and indeterminate-delivery recovery boundaries.
+- see [README limitations](../README.md#current-limitations) for packaging, access, annual-leave algorithms, archival-payslip promotion and indeterminate-delivery recovery boundaries.
 
 
 ### Payroll filing and explicit replacements

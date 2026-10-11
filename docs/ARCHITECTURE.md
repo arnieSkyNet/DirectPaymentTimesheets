@@ -1,5 +1,9 @@
 # DirectPaymentTimesheets architecture
 
+This describes unreleased development 1.0.6 on `main`, schema41. Stage/schema
+headings identify historical introductions. Published Linux/Windows v1.0.4 and
+macOS v1.0.5 remain separate; see [downloads](../README.md#download).
+
 ## Shape of the application
 
 DirectPaymentTimesheets is a local Rust desktop application. `main.rs` wires modules and calls `application::run`. Startup orchestration lives in `application.rs`, `Application::initialise` and context/environment code, including database initialisation and `eframe`/`egui` launch. There is no server process or web API.
@@ -30,7 +34,7 @@ Configured business paths may point outside the data root. `email_archive` is cu
 
 ## SQLite and repositories
 
-`database.rs` creates the original schema and applies ordered migrations through `CURRENT_SCHEMA_VERSION` 38. Each repository opens/uses its own `rusqlite::Connection` to the same database path. Schema-changing work belongs in a migration; tests exercise fresh initialisation and upgrades, including preservation of existing history.
+`database.rs` creates the original schema and applies ordered migrations through `CURRENT_SCHEMA_VERSION` 41. Each repository opens/uses its own `rusqlite::Connection` to the same database path. Schema-changing work belongs in a migration; tests exercise fresh initialisation and upgrades, including preservation of existing history.
 
 Principal persisted areas are:
 
@@ -42,8 +46,9 @@ Principal persisted areas are:
 - per-timesheet email status;
 - schema-19 manual adjustments, worked-item snapshots and snapshot state/digest metadata;
 - dated annual leave, SQLite annual-leave settings and structured sickness periods;
-- duplicate decisions, immutable submissions, corrections and verified legacy settlement; and
-- schema31 cycle-independent P60/P45 documents, schema33 delivery-history reconciliation, schema34 file-cleanup journalling, schema35 superseded documents/current payslip revisions, and schema36 timesheet document/attempt/review evidence.
+- duplicate decisions, immutable submissions, corrections and verified legacy settlement;
+- schema31 cycle-independent P60/P45 documents, schema33 delivery-history reconciliation, schema34 file-cleanup journalling, schema35 superseded documents/current payslip revisions, and schema36 timesheet document/attempt/review evidence; and
+- schema38 CSV identity/provenance and shift reviews, schema39 filing recovery intents, schema40 imported-hours inclusion history, and schema41 immutable PA bundle attachment/transport/review evidence.
 
 Repositories isolate queries and identity rules. Important compound identities use payroll year plus internal cycle number, not row ID alone. Dates are currently stored as text in existing formats, so repository methods parse and compare calendar dates explicitly where ordering must be chronological.
 
@@ -98,7 +103,7 @@ Late-shift detection uses only a successfully submitted snapshot as membership e
 4. reconcile required database aggregates; and
 5. publish/rename the final file.
 
-Failures clean up or invalidate candidate state so a new PDF is not silently paired with old evidence. Production send verifies the file path/digest, sends it, then freezes the submitted baseline. Transport failure keeps the candidate mutable. Failure to persist state after possible successful transport creates protected `indeterminate` state.
+Failures clean up or invalidate candidate state so a new PDF is not silently paired with old evidence. Production send verifies the file path/digest, sends it, then freezes the submitted baseline. Only reliably established non-acceptance releases the candidate for a fresh approval. Generic SMTP errors, interrupted claims and failures persisting a potentially accepted result retain protected `indeterminate` state. SMTP acceptance does not prove recipient inbox receipt.
 
 ## File naming and storage
 
@@ -116,7 +121,7 @@ The GUI's `PendingEmailBatch` captures its kind/stage, selected PA IDs, an optio
 
 `BackupService` owns discovery, creation, validation and restore. The GUI supplies configured paths and displays confirmation/status only.
 
-Creation uses `rusqlite::backup::Backup`, copies config when present and writes a human-readable identity manifest. Validation confines selection to recognised timestamp directories under the backup root, rejects unsafe links, opens the database read-only, requires one `integrity_check` result equal to `ok` case-insensitively, and checks the DirectPaymentTimesheets schema/version. Restore first creates a safety backup, then uses SQLite's backup API into the live database. Restored config is optional and restart is required.
+Creation uses `rusqlite::backup::Backup`, copies config when present and writes a human-readable identity manifest. Validation confines selection to recognised timestamp directories under the backup root, rejects unsafe links, opens the database read-only, requires one `integrity_check` result equal to `ok` case-insensitively, and checks the DirectPaymentTimesheets schema/version. Restore prepares and migrates a recognised backup in isolation, reviews changed/absent current rows and binds approval to live, selected and staged data/configuration. A reason and destructive rollback acknowledgement are mandatory; unresolved delivery uncertainty blocks restore. A separately verified original recovery copy and decision manifest are flushed before transactional SQL installation under the production OS lock and SQLite writer reservation. Config is restored only when present; its installation is separate from database commit. Close other instances and restart after restore, including a post-commit config-install failure. See [recovery safeguards](DATABASE-SCHEMA.md#verified-startup-upgrades-and-legacy-restore).
 
 ## UI structure
 
@@ -128,7 +133,7 @@ Unit and integration-style module tests use temporary directories and SQLite dat
 
 ## Deliberate boundaries
 
-The current architecture does not provide authentication/multi-user coordination, an overtime engine, scheduled/cloud backups, retention cleanup or arbitrary SQLite restore. These are limitations, not partially implemented promises.
+The current architecture does not provide accounts, authentication or shared multi-user workflows, an overtime engine, scheduled/cloud backups, retention cleanup or arbitrary SQLite restore. Cross-process OS locks coordinate sensitive operations between cooperating local instances; they are not an authenticated access-control system. These are limitations, not partially implemented promises.
 
 
 ## Schema-28 reconciliation extension

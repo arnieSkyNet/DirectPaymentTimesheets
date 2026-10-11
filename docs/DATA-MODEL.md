@@ -1,5 +1,9 @@
 # DirectPaymentTimesheets conceptual data model
 
+Current scope is unreleased development 1.0.6 on `main`, schema41. Historical
+schema references identify feature introductions; published package capabilities
+are separate from this model. See [downloads](../README.md#download).
+
 ## Purpose
 
 This document describes the implemented business entities and their relationships. It is intentionally conceptual; [DATABASE-SCHEMA.md](DATABASE-SCHEMA.md) is the exact current-schema table/column reference and the Rust source remains authoritative.
@@ -161,7 +165,7 @@ Each snapshotted payroll timesheet has one state row containing:
 - generation timestamp; and
 - optional submitted/indeterminate timestamps.
 
-A candidate is replaceable until production send. Successful timesheet transport freezes it as submitted. If transport may have succeeded but final database persistence fails, indeterminate state protects against unsafe resend/regeneration.
+A candidate is replaceable until production send. Successful timesheet transport freezes it as submitted. Generic SMTP failures, interrupted claims and failed persistence after possible or known acceptance retain indeterminate protection against unsafe resend/regeneration. Accepted means SMTP acceptance or an explicitly evidenced sending review, not inbox receipt.
 
 ## Main relationships
 

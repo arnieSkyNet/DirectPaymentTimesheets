@@ -1,5 +1,9 @@
 # DirectPaymentTimesheets database schema
 
+Current development is unreleased application 1.0.6 on `main`, schema41. Numbered
+schema sections retain historical migration milestones; they do not identify
+separate current schemas or publicly downloadable builds.
+
 ## Scope and versioning
 
 This is the implemented SQLite schema at version 41 (development application version `1.0.6`). It is derived from `create_schema` and migrations in `src/database.rs`; those migrations are authoritative.
@@ -531,7 +535,7 @@ Normal startup (including `cargo run`) uses the configured application root; it
 is not a development database unless `DIRECTPAYMENTTIMESHEETS_HOME` is explicitly
 set. Before loading/saving configuration or creating external business folders,
 `database_recovery::initialise` obtains the dispatch OS lock and a SQLite writer
-reservation. Existing schema1–35 databases receive a separate verified database
+reservation. Existing supported schema1–40 databases receive a separate verified database
 and optional configuration snapshot before any upgrade. SQLite's backup API
 includes committed WAL data without copying a live main file alone. Integrity,
 complete schema/typed-row fingerprints and configuration bytes are verified and
@@ -574,6 +578,12 @@ business folders and registered document/signature paths without reading those
 business files. Complete application-data recovery needs a separate protected
 copy of the entire application root plus configured external folders/files. Raw
 configuration can contain credentials; backup directories are private on Unix.
+
+Retained PDF and attachment BLOBs inside SQLite are part of the verified database
+snapshot and restore, including schema41 bundle evidence. This does not recreate
+their external files or make the database/config backup a complete filesystem
+backup. Immutable attachment retention increases database and backup size; there
+is no automatic retention cleanup.
 
 
 ## Schema 37: sickness protection and historical information corrections
@@ -625,7 +635,7 @@ The established verified WAL-safe backup and isolated installation cover 35→36
 
 ### Stage 5 startup validation (schema38 unchanged)
 
-Ordinary current-schema startup validates critical table/column and schema38 write-guard metadata, then runs a bounded `quick_check(1)`. Its progress callback stops at approximately 100,000 VM operations or 250 ms; an individual filesystem I/O can exceed the callback budget. Budget exhaustion is not treated as corruption and unchecked pages are not certified. Detected corruption/missing protections is fatal without automatic repair. Verified backup, staged upgrade and transactional installation still perform their full checks.
+Stage 5 introduced validation of critical table/column and schema38 write-guard metadata. Current development validates schema41 guards and required retention protections, then runs a bounded `quick_check(1)`. Its progress callback stops at approximately 100,000 VM operations or 250 ms; an individual filesystem I/O can exceed the callback budget. Budget exhaustion is not treated as corruption and unchecked pages are not certified. Detected corruption/missing protections is fatal without automatic repair. Verified backup, staged upgrade and transactional installation still perform their full checks.
 
 Fresh empty databases are now staged and installed transactionally rather than applying the migration chain directly to live data. Unknown/nonempty databases are never treated as fresh. Existing upgrade backup/WAL/rollback/recovery semantics are unchanged. Configuration or graphics failure after a successful upgrade leaves that upgrade applied and reports the location of its pre-upgrade recovery folder. Business-folder availability does not bypass database or dispatch locks. No schema migration accompanies Stage5.
 

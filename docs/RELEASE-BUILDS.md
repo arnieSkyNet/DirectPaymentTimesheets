@@ -155,7 +155,7 @@ actual distributed bundle without launching it.
 Intel macOS 11.4 and Apple Silicon macOS 12.0 acceptance testing remains pending.
 The macOS 15 runner alone cannot establish backwards compatibility. Test a rebuilt
 Intel artifact on an Intel Mac running exactly macOS 11.4, including first launch,
-rendering, file dialogs, accessibility, database/backup, PDF operations and SMTP TLS.
+rendering, file dialogs, accessibility, database/backup and PDF operations. Review the actual SMTP transport configuration/security; the current production adapter does not enable TLS/STARTTLS.
 Browser-downloaded unsigned/
 unnotarised builds may need System Settings > Privacy & Security > Open Anyway
 after the first attempted launch; do not disable Gatekeeper globally. Test that
@@ -200,7 +200,7 @@ locked executable behaviour, and uninstall preserving disposable payroll data.
 Check wrong-architecture rejection on x64 hardware. No ARM64 runtime compatibility
 claim follows from compiling on an x64 Windows Server runner.
 The earlier 1.0.2 x64 candidate was tested on Windows 10; that does not validate
-the published 1.0.3 ARM64 or rebuilt x64 packages.
+the later published 1.0.3/1.0.4 ARM64 or rebuilt x64 packages.
 
 ## Validation and future rehearsal runs
 
@@ -213,7 +213,7 @@ mismatches and artifact-only workflow constraints. On an x86 Linux host with
 packaging tools, a disposable C executable also exercises real Debian packaging;
 it is never executed or retained as an application package.
 
-Florence cannot run Docker/QEMU or native macOS/Windows tools in the current setup.
+The historical local audit environment could not run Docker/QEMU or native macOS/Windows tools.
 Full rehearsal 35541897015 at source
 `15bd2620a45459bce3330453c4eb8a3b8bba1eb9` produced all nine 1.0.2 packages.
 Those 1.0.2 Windows 10 and ARMHF packages received real-hardware testing. A later
@@ -270,17 +270,62 @@ LXDE menu configuration is part of the package.
 
 ## Public downloads and future publication checks
 
-The README links to all ten actual v1.0.4 release assets using fixed
-`/releases/download/v1.0.4/` URLs, including
-`DirectPaymentTimesheets-1.0.4-windows-arm64-setup.exe`. Asset names and URLs were
-checked against the published GitHub release. The actual macOS bundle is
+The README links ten published packages: six Linux and two Windows assets use
+fixed `/releases/download/v1.0.4/` URLs; the two macOS DMGs use
+`/releases/download/v1.0.5/`. This includes the v1.0.4 Windows ARM64 installer.
+Asset names were checked against the published release inventories during the
+Stage 9 read-only audit. No button targets unreleased v1.0.6. The actual macOS bundle is
 `Direct Payments Timesheets.app` (with spaces), not `DirectPaymentTimesheets.app`.
 The published v1.0.4 bundles have minimum deployment target 12.0 on both
 architectures; changing the build configuration does not change those downloads.
-Future rebuilt Intel packages target 11.4; Apple Silicon remains at 12.0.
+The published Mac-only v1.0.5 release and current packaging configuration target
+11.4 for Intel and 12.0 for Apple Silicon; minimum-OS hardware acceptance remains
+pending. These minimums do not retroactively change the historical v1.0.4 DMGs.
 The signature is ad-hoc, not Developer ID/notarised.
 
 For future publication, verify the ten-package inventory, same-source provenance
 and checksums, confirm each asset name matches the README, and record the status
 of ARM32 window behaviour, Mac first-launch/minimum-OS and ARM64 hardware checks.
 Documentation edits do not authorise a tag, release change, upload or workflow run.
+
+### Release-readiness checklist for development 1.0.6/schema41
+
+These are checks for an authorised future release, not completed acceptance claims.
+Published Linux/Windows v1.0.4 and macOS v1.0.5 remain the downloads until matching
+new assets are actually published.
+
+- Verify Cargo/version, source SHA and manifest identity at one reviewed revision
+  across all seven platform/architecture combinations and ten packages. Validate
+  package digests, adjacent provenance/checksum files and the complete manifest;
+  do not mix successful artifacts from different revisions.
+- Verify every public asset name, download URL and checksum after authorised
+  publication. Update badges only to assets that exist. Keep historical releases
+  and macOS minimums clearly distinguished from current development.
+- With disposable databases and separately isolated business folders, verify
+  populated schema35-to-41 upgrades including committed WAL, verified original
+  backups, failed/interrupted migration rollback and restart. Exercise reviewed
+  legacy restore, stale approval, uncertainty blocking, transactional installation,
+  post-commit configuration failure and retained recovery evidence. Never use an
+  older executable as a recovery tool on upgraded data.
+- Run Stage 1–8 payroll and delivery regressions: immutable resend acknowledgement,
+  sickness corrections, signatures, source-change approvals, startup diagnostics,
+  incomplete filing recovery, imported-hours corrections and audited uncertainty.
+  Include default-enabled/disabled employer CC for first/corrected/resend timesheets,
+  unchanged PA document routing, exact recipients/bytes, ambiguous SMTP errors,
+  rejection, accepted transport with failed finalisation, interrupted claims,
+  partial success and concurrent-instance locks. Preserve original PDFs, attempts,
+  supplements, historical settlement and correction applications.
+- Review SMTP transport security and deployment relay requirements explicitly.
+  The current production adapter does not enable TLS/STARTTLS; do not claim
+  encrypted application SMTP from TLS dependencies or successful email alone.
+- Record actual hardware acceptance for each claimed platform: ARM32 window and
+  graphics behaviour, ARM64 Linux/Windows, Windows upgrade/uninstall, and both Mac
+  architectures including Intel 11.4/ARM64 12.0 and browser-download first launch.
+  Compilation, QEMU and modern CI runners do not establish those hardware results.
+- Review documentation, fixtures, logs, package contents and provenance for private
+  data, credentials and identifying local paths. Keep production databases/config,
+  payroll files and real signatures out of packages and repository history.
+
+See [SMTP settings](DOMAIN.md#smtp-configuration-and-security),
+[delivery review](DOMAIN.md#reviewing-uncertain-delivery) and
+[recovery safeguards](DATABASE-SCHEMA.md#verified-startup-upgrades-and-legacy-restore).

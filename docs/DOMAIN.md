@@ -1,5 +1,10 @@
 # DirectPaymentTimesheets domain guide
 
+This describes unreleased development 1.0.6 on `main`, schema41, including Stages
+1–8. Historical schema references identify feature introductions, not the current
+schema. See [published downloads](../README.md#download) for Linux/Windows v1.0.4
+and macOS v1.0.5.
+
 ## Purpose and terminology
 
 DirectPaymentTimesheets supports an employer who uses a UK direct payment to employ Personal Assistants (PAs) and submit information to an external payroll provider.
@@ -113,13 +118,13 @@ A selected-period payroll record can be:
 - **Unsent/no snapshot**: editable preparation with no generated candidate.
 - **Candidate**: editable preparation paired with a generated PDF, worked-item snapshot and SHA-256 digest.
 - **Submitted**: immutable baseline representing the production PDF successfully sent.
-- **Indeterminate**: protected state where SMTP may have succeeded but recording submission failed.
+- **Indeterminate**: protected state where acceptance is unknown after an ambiguous SMTP error or interrupted claim, or finalisation failed after possible/known acceptance.
 
 Submitted and indeterminate records are read-only in preparation. Changing represented data for a candidate invalidates it before the change is persisted, requiring regeneration. Opening unchanged data does not invalidate it. Stale-bound screens cannot save after the operational selection or material schedule dates change.
 
 ## Public holidays
 
-Public-holiday handling is always active. Payroll preparation calculates the implemented England/Wales bank-holiday dates for the four-week period and stores individual holiday rows that can be edited. Weekly payroll rows also contain the established public-holiday-hours aggregate used in the PDF, while individual rows supply holiday-date information. These are existing distinct representations; they have not been redesigned into a single model.
+Public-holiday handling is always active. Payroll preparation calculates the implemented England/Wales bank-holiday dates for the four-week period and stores individual holiday rows that can be edited. Weekly payroll rows also contain the established public-holiday-hours aggregate used in the PDF, while individual rows supply holiday-date information. These are existing distinct representations; they have not been redesigned into a single model. The date calculation covers recurring England/Wales rules, not a maintained feed of exceptional one-off holidays or other UK regions. CSV notes are not classified as holiday work. Deliberate subtraction from Hours Worked is a saved manual adjustment; entering holiday detail does not automatically subtract source hours. Existing adjustments survive source corrections and must not be deducted again.
 
 There is no `public_holiday_enabled` business rule. An obsolete config key is ignored for compatibility.
 
@@ -141,7 +146,53 @@ Production and Test Payslip Email share read-only attachment selection: an eligi
 
 If an ordinary payslip is included, ordinary and combined bundles use `Payslip for Week <PAYE week>` from the captured schedule and retain the configured Payslip Email Body. The timesheet subject setting does not apply. P60/P45-only bundles use `Payroll documents - {Personal Assistant Name}` and `Please find attached your payroll document.` (one attachment) or `Please find attached your payroll documents.` (multiple), regardless of Dashboard selection. Production payslips are sent separately to each selected PA: To that PA, BCC employer, no CC or payroll-department recipient. Existing notes and employer signature are appended normally. MIME filenames for ordinary payslip, P45 and P60 use clean canonical names from structured document type/year and PA/schedule identity; internal revision/hash filenames are never exposed. Standalone test subjects are `TEST: Payroll documents - {Personal Assistant Name}`. Test sends retain TEST subject/body markers and go only to the configured PA test address, with no CC/BCC; they never mutate delivery, sent, settlement, schedule or evidence state.
 
-Supplement `history_state` is a reconciliation declaration, separate from `sent_at`: `unknown` is excluded until explicitly reviewed; the user can record `external` (already delivered elsewhere) or `needs_sending`. Only `needs_sending` with NULL `sent_at` is eligible. `application` describes existing app delivery evidence; Sent and indeterminate `sent_at` evidence takes precedence. Reconciliation changes history_state only, not sent_at. Production protects selected ordinary status and specific P45/P60 IDs atomically before transport and marks successful delivery afterwards. Explicit SMTP rejection restores unsent state; uncertain finalisation remains protected. P60/P45 delivery never establishes ordinary-payslip settlement or schedule completion. See [schema31 introduction](DATABASE-SCHEMA.md#schema-31-cycle-independent-pa-payroll-documents) and [schema33 history](DATABASE-SCHEMA.md#schema-33-explicit-supplement-delivery-history).
+Supplement `history_state` is a reconciliation declaration, separate from `sent_at`: `unknown` is excluded until explicitly reviewed; the user can record `external` (already delivered elsewhere) or `needs_sending`. Only `needs_sending` with NULL `sent_at` is eligible. `application` describes existing app delivery evidence; Sent and indeterminate `sent_at` evidence takes precedence. Supplement-history classification changes history_state only, not sent_at; this is separate from audited uncertain-attempt reconciliation, which can finalise protected sent_at markers. Production protects selected ordinary status and specific P45/P60 IDs atomically before transport and records SMTP acceptance afterwards, without claiming inbox receipt. Reliably established non-acceptance restores unsent state; generic SMTP errors, interrupted claims and uncertain finalisation remain protected. P60/P45 delivery never establishes ordinary-payslip settlement or schedule completion. See [schema31 introduction](DATABASE-SCHEMA.md#schema-31-cycle-independent-pa-payroll-documents) and [schema33 history](DATABASE-SCHEMA.md#schema-33-explicit-supplement-delivery-history).
+
+### Reviewing uncertain delivery
+
+1. Open **Dashboard → Timesheet Email Status** and expand the timesheet or
+   payslip/P45/P60 history. Review the PA, document identities and SHA-256 hashes,
+   known recipients, Message-ID, transport status, timestamps and prior decisions.
+   Legacy unknown facts remain unknown; a registered file hash does not prove the
+   bytes dispatched by a legacy attempt.
+2. Gather external evidence and enter a reason explaining what it establishes.
+   Choose **acceptance/external sending established**, **reliably confirmed not
+   sent**, or **still uncertain**. SMTP acceptance and receipt of an employer copy
+   do not prove delivery to another recipient's inbox.
+3. Review the separate final confirmation. The application records the decision,
+   reason, `local_employer` application identity and timestamp without deleting the
+   original attempt. This identity is not an authenticated user account. An active
+   dispatch holds the cross-process lock and cannot be reconciled concurrently.
+4. Still uncertain retains the block. Confirmed not sent permits a new selection
+   with fresh recipient and attachment approval, not replay of the old approval.
+   Accepted/external-sent review finalises only the evidence-backed protected state;
+   it sends no email. Retained SMTP acceptance cannot be contradicted by a not-sent
+   bundle review. Repeated terminal resolution is refused.
+
+Timesheet resends preserve immutable submitted bytes and require the existing
+explicit acknowledgement. PA document bundles can continue for other safely
+eligible PAs after an individual failure; timesheet batches stop on first failure
+and retain earlier successes. Start a fresh selection for any remaining eligible
+work. Resolution never silently reapplies corrections or reopens settled payroll.
+
+### SMTP configuration and security
+
+In **Settings → Email Settings**, **Local SMTP Server** uses `localhost:25`.
+**SMTP Server** uses the configured host and port, with username/password
+authentication when a username is supplied. Defaults are local SMTP and port 25.
+Set the dedicated test addresses for test email; test recipients do not replace
+production routing. Review the final production To/CC/BCC display before sending.
+
+The inspected production implementation (`email_service::send_prepared_timesheet`,
+also used for PA bundles) uses `SmtpTransport::builder_dangerous` and **does not
+enable TLS/STARTTLS**. Selecting a remote host, supplying credentials or choosing
+port 465/587 does not enable encryption. There is no TLS mode in the current
+settings UI. An independently configured relay may secure its onward connection;
+that does not establish encryption for the application's connection to the relay.
+Document and assess that transport before production use; a TLS-required server
+may reject this client. Configuration and backups can contain SMTP credentials;
+protect them along with retained recipients, email intent and attachment bytes.
+No inbox-receipt checking is implemented.
 
 ## Payroll document files
 
@@ -151,7 +202,7 @@ P60/P45 are PA-specific supplements and use their own explicit filename tax year
 
 ## Backup and restore
 
-A backup is an application-owned timestamp directory containing a consistent SQLite snapshot, optional config and identity README. Restore is limited to recognised backups, validates integrity/schema, creates a mandatory safety backup, restores config only if present and requires restart. Backups are never automatically removed.
+A backup is an application-owned timestamp directory containing a consistent SQLite snapshot, optional config and identity README. Restore is limited to recognised backups, validates integrity/schema, migrates in isolation and reviews changed/absent live rows. A reason, rollback acknowledgement and unchanged live/selected/staged evidence are required; unresolved delivery blocks restore. A verified original recovery copy precedes transactional installation under the OS lock and SQLite writer reservation. Config is installed separately only if present; close other instances and restart after restore or post-commit config failure. Retained SQLite attachment bytes are included, but external files require separate backups. See [recovery safeguards](DATABASE-SCHEMA.md#verified-startup-upgrades-and-legacy-restore). Backups are never automatically removed.
 
 ## Boundaries
 

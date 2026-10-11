@@ -4,7 +4,7 @@
 
 This is a local Rust/egui/SQLite application. Prefer small, evidence-led changes that preserve payroll history and existing provider output. Inspect the current source, schema and tests before changing behaviour; documentation and conversation history are secondary evidence.
 
-Current package version is `1.0.0`; current SQLite schema version is 31. Do not change either unless a task explicitly requires it.
+Current unreleased development package version is `1.0.6`; current SQLite schema version is 41. Historical sections retain the schema numbers at feature introduction. Do not change either unless a task explicitly requires it.
 
 ## Local setup
 
@@ -16,7 +16,7 @@ cargo test
 cargo run
 ```
 
-By default, running the application uses `~/.directpaymenttimesheets`. For development against disposable data, set `DIRECTPAYMENTTIMESHEETS_HOME` to a dedicated temporary/test directory. Never point exploratory runs or tests at the real database.
+By default, running the application uses `~/.directpaymenttimesheets` on Unix or `%LOCALAPPDATA%/DirectPaymentTimesheets` on Windows. For development against disposable data, set `DIRECTPAYMENTTIMESHEETS_HOME` to a dedicated temporary/test directory. Never point exploratory runs or tests at the real database.
 
 The application creates `database.sqlite`, `config.toml` and its internal subdirectories beneath that root. Configured PDF, payslip, payroll-information and other business folders can be elsewhere, so inspect configuration before any manual integration test that writes files.
 
@@ -35,7 +35,7 @@ git diff --check
 git status --short
 ```
 
-For documentation-only work, `git diff --check`, `cargo check` and `cargo test` provide formatting and regression assurance. Review `git diff --stat` and the complete diff before handoff. Do not commit or push unless explicitly requested.
+For documentation-only work, run `git diff --check`, verify local Markdown links/headings and compare claims with source, manifests and packaging metadata. Builds/tests are unnecessary when no implementation changes are made; respect task-specific validation constraints. Review `git diff --stat` and the complete diff before handoff. Do not commit or push unless explicitly requested.
 
 ## Source organisation
 
@@ -141,9 +141,15 @@ Keep preview, test and production semantics distinct:
 - test sends use configured test recipients and markers and do not freeze snapshots;
 - production uses established employer/payroll/PA routing and updates status/snapshot state.
 
-That production route is the employer as sender, payroll department as recipient, employer as CC and PA as BCC when available for both timesheets and payslips. Payslip test email instead targets the configured PA test address. `PendingEmailBatch` captures selected PA IDs and period facts/revision, not resolved email addresses. Timesheets use selected-period eligibility; payslip/document batches additionally include unsent P60/P45 recipients. Standalone documents need no schedule; see [Email rules](DOMAIN.md#email).
+Production timesheets use employer From, Payroll To, default-enabled optional employer CC and optional PA BCC. The Email Settings checkbox controls only employer CC for first sends, corrected timesheets and resends. Payslip/P45/P60 production uses To PA, BCC employer, with no CC or Payroll recipient. Payslip test email targets only the configured PA test address. `PendingEmailBatch` captures selected PA IDs and period facts/revision; final approval also binds exact resolved recipients, settings fingerprints, document identities and approved attachment bytes/SHA-256. Dispatch revalidates under the cross-process production lock and prepares MIME only from verified bytes. Timesheets use selected-period eligibility; payslip/document batches additionally include unsent P60/P45 recipients. Standalone documents need no schedule; see [Email rules](DOMAIN.md#email).
 
 Production batches capture the optional selected schedule and selection revision; timesheets require a schedule. For period-associated sends, final dispatch must re-fetch and validate that schedule, refuse a changed global selection and use only captured/re-fetched period facts. Standalone document attachments/status use document IDs and neutral wording, never a fabricated period. Never re-resolve today during dispatch.
+
+Generic SMTP errors never prove non-acceptance. Keep durable attempts protected
+until reliable rejection or an explicit audited review; never equate acceptance
+with inbox receipt. See [delivery review](DOMAIN.md#reviewing-uncertain-delivery)
+and [SMTP configuration/security](DOMAIN.md#smtp-configuration-and-security): the
+current production adapter does not enable TLS/STARTTLS.
 
 ## Backup/restore development
 
@@ -352,8 +358,8 @@ protected records, persistence/reopen and candidate invalidation on deliberate S
 
 ## Artifact-only package rehearsals
 
-See [Release-build rehearsals](RELEASE-BUILDS.md) for the six architecture targets,
-nine packages, explicit target/tool pins, local validation and required GitHub
+See [Release-build rehearsals](RELEASE-BUILDS.md) for the seven platform/architecture combinations,
+ten packages, explicit target/tool pins, local validation and required GitHub
 proof runs. This infrastructure does not publish releases or change application
 version/schema. Public downloads remain those documented in README.
 
@@ -399,7 +405,7 @@ A retained period whose PA-wide row was deleted can be shortened or deleted loca
 
 Sickness-only correction authority binds the exact original submission's financial evidence fingerprint. Generation and first delivery compare retained worked membership, correction applications, weekly values, dated leave/public-holiday records and carry-forward. New publication timestamps and row IDs are excluded from business-value comparison. Carry-forward is recovered from original late-work/legacy-carry/correction items, never inferred from today's mutable preparation value; inconsistent or insufficient legacy evidence refuses the correction and requests recovery/reconciliation. Original settlement values and original PDFs remain unchanged. This adds no SSP calculation or public-holiday classification/subtraction changes.
 
-Regression tests include populated schema35/schema36 databases created by the actual ordered migration steps (with the original non-AUTOINCREMENT sickness table), WAL-backed upgrade/restore, a failure after schema36 commits on the isolated copy, retained transfers across lifecycle states, nonzero worked/carry/correction evidence, parent indicators and full PA archive/reactivation with retained sickness snapshots and delivery history. Schema remains 37 and application version remains 1.0.6.
+Regression tests include populated schema35/schema36 databases created by the actual ordered migration steps (with the original non-AUTOINCREMENT sickness table), WAL-backed upgrade/restore, a failure after schema36 commits on the isolated copy, retained transfers across lifecycle states, nonzero worked/carry/correction evidence, parent indicators and full PA archive/reactivation with retained sickness snapshots and delivery history. At this Stage 2 milestone the schema remained 37; current development is 1.0.6/schema41.
 
 ## Stage 3 signature validation and drawing
 

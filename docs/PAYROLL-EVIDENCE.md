@@ -1,6 +1,9 @@
 # Payroll evidence and reconciliation (schema 29)
 
-Schema29 is the evidence-migration milestone described here; the development application is v1.0.6/schema38.
+Schema29 is the historical evidence-migration milestone described here. Current
+scope is unreleased development v1.0.6 on `main`, schema41, including Stage 1–8
+protections. Published Linux/Windows v1.0.4 and macOS v1.0.5 remain separate;
+see [downloads](../README.md#download).
 
 ## Sources and possible duplicates
 
@@ -24,9 +27,9 @@ Milestones are per PA/payroll period, not schedule-wide:
 
 Ordinary payslips are cycle-associated and settle only through their per-PA cycle status. `payslip_revisions` retains each explicitly corrected file's path, SHA-256, current flag and delivery marker; replacement makes the new bytes current and unsent while preserving the old bytes and their prior sent/indeterminate evidence. The old marker continues to describe the old bytes, not the corrected ones.
 
-P45/P60 are separate PA-specific, cycle-independent documents. Their `history_state` is `unknown`, `external`, `needs_sending` or `application`; this declaration is distinct from `sent_at`, which records application transport evidence or an indeterminate attempt. New/corrected documents begin unknown with NULL `sent_at`. Reconciliation changes only `history_state`; only needs_sending plus NULL `sent_at` is eligible for production. Corrected documents link to the superseding registration, while older rows and hashes remain for history. P30 and other shared payroll-information documents have no PA delivery identity and are never part of a PA email bundle.
+P45/P60 are separate PA-specific, cycle-independent documents. Their `history_state` is `unknown`, `external`, `needs_sending` or `application`; this declaration is distinct from `sent_at`, which records application transport evidence or an indeterminate attempt. New/corrected documents begin unknown with NULL `sent_at`. Supplement-history classification changes only `history_state`; audited uncertain-attempt review is a separate workflow that can finalise protected delivery markers. Only needs_sending plus NULL `sent_at` is eligible for production. Corrected documents link to the superseding registration, while older rows and hashes remain for history. P30 and other shared payroll-information documents have no PA delivery identity and are never part of a PA email bundle.
 
-Email Payslips selects recipients individually. For each selected PA, production sends one bundle To that PA, BCCs the employer, and has no CC or payroll-department recipient. A normal ordinary/combined subject is `Payslip for Week <PAYE week>` from the captured schedule and uses the configured payslip body; a standalone P45/P60 bundle uses neutral `Payroll documents - {Personal Assistant Name}` wording. MIME filenames use clean canonical names from structured document identity, not internal replacement revision/hash storage basenames. Delivery evidence is updated only by production transport; test-email sends do not update it.
+Email Payslips selects recipients individually. For each selected PA, production sends one bundle To that PA, BCCs the employer, and has no CC or payroll-department recipient. A normal ordinary/combined subject is `Payslip for Week <PAYE week>` from the captured schedule and uses the configured payslip body; a standalone P45/P60 bundle uses neutral `Payroll documents - {Personal Assistant Name}` wording. MIME filenames use clean canonical names from structured document identity, not internal replacement revision/hash storage basenames. Production transport and explicit audited uncertainty reviews append delivery evidence and may finalise protected markers. Test-email sends do not update delivery or settlement evidence.
 
 `payroll_submissions` and its item/week/leave/holiday child tables preserve submission history. Successful resubmission links to the prior submission with `supersedes_id`; the latest successful submission is the expected submitted baseline. Production submissions retain the attachment bytes and digest. Migration copies only retained submitted data; an unavailable legacy attachment or submission timestamp remains unavailable. There are no user-facing PDF revision numbers and normal filenames are unchanged.
 

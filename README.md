@@ -2,13 +2,13 @@
 
 DirectPaymentTimesheets is a local desktop application for administering UK Direct Payment Personal Assistant timesheets and the four-week payroll-provider workflow. It imports externally recorded work, prepares payroll timesheets, generates the provider PDF, sends timesheets and payslips, imports payroll documents, and preserves the evidence represented by submitted payroll.
 
-The **1.0.6 development** application uses SQLite schema **40**. It is a single-user local desktop application for the documented Direct Payment payroll workflow, not a general-purpose payroll product.
+The **1.0.6 development** application uses SQLite schema **41**. It is a single-user local desktop application for the documented Direct Payment payroll workflow, not a general-purpose payroll product.
 
 ## Download
 
 **Development version: 1.0.6 · Published: Linux/Windows 1.0.4; macOS 1.0.5**
 
-Development 1.0.6 is intended for all platforms; its packages have not been released.
+Development 1.0.6 on `main` is unreleased and intended for all platforms. The downloads below are published Linux/Windows v1.0.4 and macOS v1.0.5; they do not include the Stage 1–8 development changes described here.
 Timesheet email selects only unsent current PDF versions by default. Sent versions
 remain visible for an explicitly acknowledged resend. Each production attempt is
 recorded; uncertain acceptance blocks retry until documented review.
@@ -173,6 +173,8 @@ Use disposable data for development as described under [Runtime data and configu
 
 ## Implemented functionality
 
+This section describes unreleased development **1.0.6 on main (schema41)**, not the capabilities of the published packages linked above. Historical schema numbers below identify when features were introduced.
+
 ### Records and settings
 
 - Employer, payroll-provider and Personal Assistant maintenance.
@@ -237,7 +239,7 @@ The Dashboard groups the workflow into three rows:
 - Before any schema upgrade, startup preserves a verified original recovery copy, runs migrations in isolation and installs transactionally. Backup failure aborts the upgrade.
 - Supported legacy backups restore through isolated migration. Review identifies current rows absent/different in restored data; a documented reason and explicit rollback acknowledgement are required. Changed data invalidates approval; unresolved email uncertainty blocks restore.
 - A separate verified pre-restore copy retains original submissions, delivery evidence and settings. Restore requires closing other instances and restarting afterward.
-- PDFs, payslips, signatures and other business files are **not** copied/restored by database backup. Separately protect the complete application root and configured external folders/files before upgrade or rollback.
+- External PDF, payslip, signature, CSV/archive and other business files are **not** copied/restored by database backup. Immutable submitted PDF and dispatch attachment bytes already retained inside SQLite **are included**, along with recipients and delivery evidence. These sensitive records increase database/backup size; no automatic retention cleanup is provided. Separately protect the complete application root and configured external folders/files before upgrade or rollback.
 
 `cargo run` uses normal configured data and automatically upgrades it. For a rehearsal,
 set `DIRECTPAYMENTTIMESHEETS_HOME` to an isolated copy **and** redirect its configured
@@ -248,17 +250,13 @@ before the first launch or any rollback.
 
 ## Runtime data and configuration
 
-The default application data root is:
+The default application data root is `~/.directpaymenttimesheets/` on Unix (Linux/macOS), or `%LOCALAPPDATA%/DirectPaymentTimesheets` on Windows.
 
-```text
-~/.directpaymenttimesheets/
-```
-
-Set `DIRECTPAYMENTTIMESHEETS_HOME` before launching to use a different data root, which is strongly recommended for disposable development/manual-test data.
+Set `DIRECTPAYMENTTIMESHEETS_HOME` before launching to override either default, which is strongly recommended for disposable development/manual-test data. The override is used verbatim: use an absolute path; shell-quoted `~` is not expanded by this override. Redirect configured external business paths separately.
 
 The application root contains `database.sqlite`, `config.toml` and internal import, archive, backup, log, template and cache directories. Application Settings also configures external business folders for CSV import, generated PDFs, payslips and returned payroll information. These paths can be outside the application root and may contain sensitive payroll data. Inspect them before running a workflow that writes files.
 
-New configurations use provider-neutral paths beneath `~/Documents/DirectPaymentTimesheets/` for those business folders. The `~` prefix is expanded to the current user's home directory at runtime. Existing configured paths are preserved and remain editable in Application Settings. Startup checks business folders in the background and warns without preventing Settings access. Saving configuration preserves the selected paths without creating those folders. Workflows validate their own required locations and create outputs only when actually used; no alternate folder is silently substituted.
+New configurations use provider-neutral paths beneath `~/Documents/DirectPaymentTimesheets/` on Unix, or the discovered Windows Documents directory’s `DirectPaymentTimesheets` subfolder, for those business folders. The `~` prefix is expanded to the current user's home directory at runtime. Existing configured paths are preserved and remain editable in Application Settings. Startup checks business folders in the background and warns without preventing Settings access. Saving configuration preserves the selected paths without creating those folders. Workflows validate their own required locations and create outputs only when actually used; no alternate folder is silently substituted.
 
 The configured `email_archive` path is currently persisted but has no production consumer. Returned payroll information uses the separate payroll-information folder.
 
@@ -288,13 +286,13 @@ User-facing labels use Payroll Week, the four-week date range and pay date. Inte
 ## Current limitations
 
 - This is a single-user local desktop application.
-- Authentication and multi-user coordination are not implemented.
+- User accounts, authentication, roles and shared multi-user workflows are not implemented. Cross-process OS locks coordinate cooperating local instances during dispatch, reconciliation, generation, filing and recovery; they do not provide user authentication.
 - Persisted frequency, workweek and overtime choices are not downstream configurable calculation rules; no overtime engine is implemented.
 - Payroll Prep Sheet PDF import is implemented; DOCX import is recognised but not implemented.
 - Backup/restore has no scheduling, retention cleanup, compression or cloud integration.
 - Restore accepts only recognised DirectPaymentTimesheets backup directories, not arbitrary SQLite files.
 - Historical annual-leave numeric rule history and sickness reference-period/accrual calculations are not implemented. Guidance's current sickness warning reads legacy weekly sickness hours, not structured sickness dates.
-- Durable CSV content identity/row-to-import provenance, automatic promotion/emailing of archival ordinary payslips remain future work. Timesheet and payslip/supplement uncertainty have explicit audited review workflows.
+- Automatic promotion/emailing of archival ordinary payslips remains future work. Durable CSV SHA-256 content/path identity and row provenance are implemented (schema38). Timesheet and payslip/supplement uncertainty have explicit audited review workflows.
 - Authentication, roles and web/mobile access are not implemented. `email_archive` has no actual email-archiving consumer.
 
 The existing user-triggered GitHub **Check for updates** reports newer versions and installation guidance; it does not download or install updates. Users must manually download and install the appropriate GitHub release asset.
@@ -331,7 +329,7 @@ Third-party dependencies and bundled font components remain subject to their res
 Corrected payroll PDFs are handled through Personal Assistant Maintenance → **Replace payroll document…**: select the existing identity, choose an individual corrected PDF, review both hashes/history, and confirm. Original bytes, hashes and delivery evidence remain retained. Revision/hash filenames are internal; payroll emails use canonical recipient-visible filenames. A saved Active-to-Inactive transition files safely identified PA-owned timesheets and payroll PDFs directly into shared year-level `Archived` folders, without a PA subfolder. New documents for inactive PAs go there directly; reactivation does not restore historical files. A durable move journal supports post-commit cleanup retries. See [filing and replacement details](docs/ARCHITECTURE.md#inactive-pa-filing-and-registered-supplement-repair).
 
 
-Development 1.0.6 Stage 2 uses schema37 to protect sickness dates across payroll cycles. Changes require a reason and reviewed scope; protected cycles require authorised sickness-only corrections, and uncertain delivery remains blocked. Corrected historical PDFs preserve settled work and original evidence, display revised dates in the ordinary weekly table and explain the change in the notes area. Payroll assesses financial implications; the application does not calculate SSP or classify CSV notes as sickness. Upgrades retain verified database/config recovery; external business files need separate protection. See [Stage 2 workflow](docs/DEVELOPMENT.md#stage-2-sickness-protection-106schema37).
+Stage 2 introduced schema37 in development 1.0.6 (current schema41) to protect sickness dates across payroll cycles. Changes require a reason and reviewed scope; protected cycles require authorised sickness-only corrections, and uncertain delivery remains blocked. Corrected historical PDFs preserve settled work and original evidence, display revised dates in the ordinary weekly table and explain the change in the notes area. Payroll assesses financial implications; the application does not calculate SSP or classify CSV notes as sickness. Upgrades retain verified database/config recovery; external business files need separate protection. See [Stage 2 workflow](docs/DEVELOPMENT.md#stage-2-sickness-protection-106schema37).
 
 ### Signature images and drawing (development 1.0.6)
 
@@ -366,7 +364,7 @@ supported. Neither external nor managed signature images are copied by database/
 backup: separately protect the complete data root and external business assets.
 
 
-Development 1.0.6 Stage 4 uses schema38 for CSV content identity and prospective shift review across Hours Keeper and Hours Shift. Changed files at the same pathname are detected; originals and omitted rows are retained. Overnight overlaps and moved counterparts require explicit payable-version/separate-shift review, with audited deferral available. New protected edits require authorisation and contextual financial correction; legacy obligations remain unchanged. Upgrades use the existing verified recovery process. See [Stage 4 development notes](docs/DEVELOPMENT.md#stage-4-shift-change-protection-106schema38).
+Stage 4 introduced schema38 in development 1.0.6 (current schema41) for CSV content identity and prospective shift review across Hours Keeper and Hours Shift. Changed files at the same pathname are detected; originals and omitted rows are retained. Overnight overlaps and moved counterparts require explicit payable-version/separate-shift review, with audited deferral available. New protected edits require authorisation and contextual financial correction; legacy obligations remain unchanged. Upgrades use the existing verified recovery process. See [Stage 4 development notes](docs/DEVELOPMENT.md#stage-4-shift-change-protection-106schema38).
 
 
 ## Stage 5 startup reliability (1.0.6/schema38)
@@ -426,3 +424,5 @@ or still uncertain. The application records reviewer identity and time. Still
 uncertain stays blocked; confirmed not sent allows a fresh approval, preserving the
 original attempt. No uncertain email is automatically retried. Legacy records do
 not acquire invented recipients, Message-IDs or attachment evidence.
+
+See [delivery review](docs/DOMAIN.md#reviewing-uncertain-delivery) for the review sequence and [SMTP settings](docs/DOMAIN.md#smtp-configuration-and-security) for transport/security limitations.
