@@ -38,6 +38,7 @@ fn evidence(basis: HoursBasis) -> Evidence {
         history: vec![entry(1, "01/04/2026", basis, "20")],
         cycles: vec![],
         schedule_dates: vec![],
+        sickness: vec![],
     }
 }
 fn cycle(number: i64, start: &str, items: Vec<WorkedItemSnapshot>) -> CycleEvidence {
@@ -846,4 +847,114 @@ fn summary_screen_loads_its_bold_font_and_preserves_precise_evidence() {
     assert!(screen.evidence.is_some());
     assert!(screen.error.is_none());
     assert_eq!(screen.loaded_for, Some((1, today)));
+}
+
+fn sickness(pa: i64, first: &str, last: &str) -> crate::sickness_period_repository::SicknessPeriod {
+    crate::sickness_period_repository::SicknessPeriod {
+        id: 1,
+        personal_assistant_id: pa,
+        start_date: first.into(),
+        end_date: last.into(),
+    }
+}
+#[test]
+fn structured_legacy_and_combined_sickness_warn_without_changing_totals() {
+    for (structured, legacy) in [(true, false), (false, true), (true, true)] {
+        let mut evidence = evidence(HoursBasis::Variable);
+        evidence
+            .cycles
+            .push(cycle(1, "01/04/2026", vec![work("01/04/2026", 600)]));
+        let before = summary(&evidence);
+        if structured {
+            evidence
+                .sickness
+                .push(sickness(1, "2026-04-01", "2026-04-08"));
+        }
+        if legacy {
+            evidence.cycles[0].weeks[0].sick_leave_hours = 4.0;
+        }
+        let after = summary(&evidence);
+        assert_eq!(
+            after.incomplete.len(),
+            usize::from(structured) + usize::from(legacy)
+        );
+        approx(after.entitlement, before.entitlement);
+        approx(after.taken, before.taken);
+        assert_eq!(after.calculated_to, before.calculated_to);
+    }
+}
+#[test]
+fn structured_sickness_warns_only_for_relevant_employed_variable_dates() {
+    for (basis, pa, first, last) in [
+        (HoursBasis::Contracted, 1, "2026-04-01", "2026-04-08"),
+        (HoursBasis::Variable, 2, "2026-04-01", "2026-04-08"),
+        (HoursBasis::Variable, 1, "2025-04-01", "2025-04-08"),
+        (HoursBasis::Variable, 1, "2026-10-01", "2026-10-08"),
+    ] {
+        let mut evidence = evidence(basis);
+        evidence.sickness.push(sickness(pa, first, last));
+        assert!(summary(&evidence).incomplete.is_empty());
+    }
+    let mut evidence = evidence(HoursBasis::Variable);
+    evidence.assistant.start_date = Some("01/05/2026".into());
+    evidence.assistant.leaving_date = Some("31/05/2026".into());
+    evidence
+        .sickness
+        .push(sickness(1, "2026-04-01", "2026-04-08"));
+    evidence
+        .sickness
+        .push(sickness(1, "2026-06-01", "2026-06-08"));
+    assert!(summary(&evidence).incomplete.is_empty());
+}
+#[test]
+fn structured_sickness_crosses_year_and_basis_boundaries_conservatively() {
+    let mut evidence = evidence(HoursBasis::Contracted);
+    evidence
+        .history
+        .push(entry(2, "01/05/2026", HoursBasis::Variable, ""));
+    evidence
+        .sickness
+        .push(sickness(1, "2026-03-30", "2026-05-01"));
+    assert_eq!(summary(&evidence).incomplete.len(), 1);
+    evidence.sickness[0].end_date = "2026-04-30".into();
+    assert!(summary(&evidence).incomplete.is_empty());
+}
+#[test]
+fn guidance_loads_structured_sickness_read_only_and_preserves_historical_evidence() {
+    let (_directory, app) = crate::payroll_timesheet_screen::tests::test_application();
+    let pa = evidence(HoursBasis::Variable).assistant;
+    app.personal_assistant_repository.insert(&pa).unwrap();
+    let id = app.personal_assistant_repository.get_all().unwrap()[0].id;
+    let mut history = entry(0, "01/04/2026", HoursBasis::Variable, "");
+    history.personal_assistant_id = id;
+    app.contracted_hours_repository.insert(&history).unwrap();
+    let db = crate::database::open(&app.context.environment.database_path).unwrap();
+    db.execute("INSERT INTO personal_assistant_sickness_periods(personal_assistant_id,start_date,end_date) VALUES(?1,'2026-04-01','2026-04-08')", [id]).unwrap();
+    let before = crate::database_recovery::fingerprint(&db).unwrap();
+    let loaded = Evidence::load(&app, id).unwrap();
+    assert_eq!(summary(&loaded).incomplete.len(), 1);
+    assert_eq!(crate::database_recovery::fingerprint(&db).unwrap(), before);
+}
+
+#[test]
+fn historical_sickness_warning_preserves_submitted_work_and_entitlements() {
+    let mut evidence = evidence(HoursBasis::Variable);
+    evidence.assistant.start_date = Some("01/04/2025".into());
+    evidence.history[0].effective_date = "01/04/2025".into();
+    let mut retained = cycle(1, "01/04/2025", vec![work("01/04/2025", 600)]);
+    retained.record.payroll_year = "2025/26".into();
+    retained.leave.push(leave(1, "02/04/2025", 2.0));
+    evidence.cycles.push(retained);
+    let before = calculate(&evidence, LeaveYear(2025), date("08/09/2026")).unwrap();
+    let original_minutes = evidence.cycles[0].items[0].worked_minutes;
+    evidence
+        .sickness
+        .push(sickness(1, "2025-04-01", "2025-04-08"));
+    let after = calculate(&evidence, LeaveYear(2025), date("08/09/2026")).unwrap();
+    approx(after.entitlement, before.entitlement);
+    approx(after.taken, before.taken);
+    assert_eq!(after.calculated_to, before.calculated_to);
+    assert_eq!(evidence.cycles[0].items[0].worked_minutes, original_minutes);
+    assert!(evidence.cycles[0].sent);
+    assert_eq!(after.incomplete.len(), before.incomplete.len() + 1);
 }

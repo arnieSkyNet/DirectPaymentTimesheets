@@ -52,6 +52,7 @@ struct Evidence {
     history: Vec<ContractedHoursEntry>,
     cycles: Vec<CycleEvidence>,
     schedule_dates: Vec<NaiveDate>,
+    sickness: Vec<crate::sickness_period_repository::SicknessPeriod>,
 }
 impl Evidence {
     fn load(application: &Application, pa_id: i64) -> Result<Self> {
@@ -107,6 +108,10 @@ impl Evidence {
             });
         }
         Ok(Self {
+            sickness: crate::sickness_period_repository::SicknessPeriodRepository::new(
+                crate::database::open(&application.context.environment.database_path)?,
+            )
+            .get_for_pa(pa_id)?,
             assistant,
             settings,
             history,
@@ -279,6 +284,28 @@ fn calculate(evidence: &Evidence, year: LeaveYear, today: NaiveDate) -> Result<S
             && employed(date)
             && basis_at(date).is_some_and(|entry| entry.hours_basis == HoursBasis::Variable)
     };
+    // Read-only warning evidence, never additional accrual or SSP amounts.
+    // Clip before iterating, so a long period examines at most one leave year.
+    for period in &evidence.sickness {
+        if period.personal_assistant_id != evidence.assistant.id {
+            continue;
+        }
+        let first = checked_date(&period.start_date, "sickness start date")?;
+        let last = checked_date(&period.end_date, "sickness end date")?;
+        if last < first {
+            return Err("Sickness end date precedes start date.".into());
+        }
+        let relevant_start = first.max(year.start()).max(employment_start);
+        let relevant_end = last.min(year.end()).min(employment_end).min(today);
+        if relevant_start <= relevant_end
+            && (0..=(relevant_end - relevant_start).num_days())
+                .any(|day| qualifying(relevant_start + Duration::days(day)))
+        {
+            result.incomplete.insert(format!(
+                "Variable-basis structured sickness {} to {}: additional sickness-related annual-leave review required; no sickness accrual has been calculated.",
+                display(first), display(last)));
+        }
+    }
     let days = (year.end() - year.start()).num_days() + 1;
     for offset in 0..days {
         let date = year.start() + Duration::days(offset);

@@ -42,7 +42,7 @@ First-run and missing-key business-folder defaults are provider-neutral `~/Docum
 
 The application maintains employer, payroll-provider and Personal Assistant (PA) records. PA maintenance retains pay-rate and contracted-hours histories, including future-dated rows. Themes include system, light/dark variants, blue and high contrast. See [maintenance and Dashboard layout](../README.md#implemented-functionality) for the current Employer/PA controls and three-row workflow. Annual-leave rule values are stored in SQLite, and guidance is read-only; see [Domain](DOMAIN.md#annual-leave-guidance).
 
-Payroll Settings persists payroll frequency, rounding choice, workweek start and overtime enabled. Payable allocation applies the configured increment and direction (default 15 minutes Up) to selected imported/internal source durations, preserving raw minutes. Frequency and workweek choices do not override schedule dates, and no overtime calculation is implemented. Public-holiday handling is permanently active and has no enable/disable setting. Email subject/body templates are configured separately through Email Settings.
+Payroll Settings retains stored frequency, workweek and overtime preferences as read-only unsupported notices; rounding remains editable and functional. Payable allocation applies the configured increment and direction (default 15 minutes Up) to selected imported/internal source durations, preserving raw minutes. Frequency and workweek choices do not override schedule dates, and no overtime calculation is implemented. Public-holiday handling is permanently active and has no enable/disable setting. Email subject/body templates are configured separately through Email Settings.
 
 ### Importing work
 
@@ -248,3 +248,5 @@ mandatory with no downgrade. Phase-aware setup failures are not sent; ambiguous
 submission remains protected. Credentials and retained backup evidence are still
 unencrypted at rest. Platform hardware/trust-store and Windows ACL acceptance
 remain release requirements. See [SMTP security](DOMAIN.md#smtp-configuration-and-security).
+
+Annual-leave guidance now flags relevant structured sickness alongside legacy sickness hours for additional variable-hours review; it never adds sickness accrual figures or changes payroll evidence.

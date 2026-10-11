@@ -158,25 +158,11 @@ impl PayrollSettingsScreen {
             ui.vertical(|ui| {
                 ui.label("Payroll Frequency");
 
-                crate::gui_controls::combo_box("payroll_frequency")
-                    .selected_text(&self.frequency)
-                    .show_ui(ui, |ui| {
-                        for option in [
-                            "Weekly",
-                            "Bi-Weekly",
-                            "Semi-Monthly",
-                            "Monthly",
-                            "Every Four Weeks",
-                            "Quarterly",
-                        ] {
-                            crate::gui_controls::combo_value(
-                                ui,
-                                &mut self.frequency,
-                                option.to_string(),
-                                option,
-                            );
-                        }
-                    });
+                ui.label(format!(
+                    "Stored preference: {} (not applied)",
+                    self.frequency
+                ));
+                ui.label("Payroll periods come from the imported four-week schedule.");
             });
 
             ui.add_space(30.0);
@@ -225,32 +211,18 @@ impl PayrollSettingsScreen {
             ui.vertical(|ui| {
                 ui.label("Start of Workweek");
 
-                crate::gui_controls::combo_box("workweek_start")
-                    .selected_text(&self.start_of_workweek)
-                    .show_ui(ui, |ui| {
-                        for day in [
-                            "Sunday",
-                            "Monday",
-                            "Tuesday",
-                            "Wednesday",
-                            "Thursday",
-                            "Friday",
-                            "Saturday",
-                        ] {
-                            crate::gui_controls::combo_value(
-                                ui,
-                                &mut self.start_of_workweek,
-                                day.to_string(),
-                                day,
-                            );
-                        }
-                    });
+                ui.label(format!(
+                    "Stored preference: {} (not applied)",
+                    self.start_of_workweek
+                ));
+                ui.label("Week commencing dates come from the imported payroll schedule.");
             });
         });
 
         ui.separator();
 
-        ui.checkbox(&mut self.overtime_enabled, "Enable overtime calculations");
+        ui.label(self.unsupported_overtime_notice());
+        ui.label("These unsupported preferences are retained for compatibility. Saving settings does not enable their calculations.");
         self.annual_leave.show(ui);
 
         ui.separator();
@@ -318,6 +290,17 @@ impl PayrollSettingsScreen {
         }
 
         self.status_message = "Payroll settings loaded.".to_string();
+    }
+
+    fn unsupported_overtime_notice(&self) -> String {
+        format!(
+            "Overtime calculation is not implemented. Stored preference: {} (not applied).",
+            if self.overtime_enabled {
+                "enabled"
+            } else {
+                "disabled"
+            }
+        )
     }
 
     fn save(&mut self, application: &mut Application) {
@@ -610,5 +593,81 @@ mod annual_leave_settings_tests {
         assert_eq!(settings.variable_effective_from, "15/09");
         editor.variable_from = "15/09/2026".into();
         assert!(editor.draft().is_err());
+    }
+}
+
+#[cfg(test)]
+mod pre_release_safeguard_tests {
+    use super::*;
+    #[test]
+    fn unsupported_preferences_are_presented_as_not_applied_without_edit_controls() {
+        let (_directory, mut app) = crate::payroll_timesheet_screen::tests::test_application();
+        app.context.config.payroll.frequency = "Monthly".into();
+        app.context.config.payroll.start_of_workweek = "Sunday".into();
+        app.context.config.payroll.overtime_enabled = true;
+        let mut screen = PayrollSettingsScreen::new();
+        let ctx = egui::Context::default();
+        let output = ctx.run(
+            egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(1400.0, 2200.0),
+                )),
+                ..Default::default()
+            },
+            |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    screen.show(ui, &mut app);
+                });
+            },
+        );
+        fn collect(shape: &egui::Shape, text: &mut String) {
+            match shape {
+                egui::Shape::Text(value) => {
+                    text.push_str(&value.galley.job.text);
+                    text.push('\n');
+                }
+                egui::Shape::Vec(shapes) => {
+                    for shape in shapes {
+                        collect(shape, text);
+                    }
+                }
+                _ => {}
+            }
+        }
+        let mut text = String::new();
+        for shape in output.shapes {
+            collect(&shape.shape, &mut text);
+        }
+        assert!(text.contains("Monthly (not applied)"));
+        assert!(text.contains("Sunday (not applied)"));
+        assert!(text.contains("Overtime calculation is not implemented"));
+        assert!(!text.contains("Enable overtime calculations"));
+        assert!(text.contains("Rounding Minutes"));
+        assert_eq!(screen.frequency, "Monthly");
+        assert_eq!(screen.start_of_workweek, "Sunday");
+        assert!(screen.overtime_enabled);
+    }
+    #[test]
+    fn saving_functioning_settings_preserves_legacy_unsupported_preferences() {
+        for overtime in [false, true] {
+            let (directory, mut app) = crate::payroll_timesheet_screen::tests::test_application();
+            app.context.config.payroll.frequency = "Legacy custom frequency".into();
+            app.context.config.payroll.start_of_workweek = "Sunday".into();
+            app.context.config.payroll.overtime_enabled = overtime;
+            let mut screen = PayrollSettingsScreen::new();
+            screen.load(&app);
+            screen.rounding_minutes = 5;
+            screen.rounding_direction = "Down".into();
+            screen.save(&mut app);
+            assert_eq!(screen.status_message, "Payroll settings saved.");
+            let persisted =
+                crate::config::AppConfig::load(&directory.path().join("config.toml")).unwrap();
+            assert_eq!(persisted.payroll.frequency, "Legacy custom frequency");
+            assert_eq!(persisted.payroll.start_of_workweek, "Sunday");
+            assert_eq!(persisted.payroll.overtime_enabled, overtime);
+            assert_eq!(persisted.payroll.rounding_minutes, 5);
+            assert_eq!(persisted.payroll.rounding_direction, "Down");
+        }
     }
 }

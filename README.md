@@ -287,11 +287,11 @@ User-facing labels use Payroll Week, the four-week date range and pay date. Inte
 
 - This is a single-user local desktop application.
 - User accounts, authentication, roles and shared multi-user workflows are not implemented. Cross-process OS locks coordinate cooperating local instances during dispatch, reconciliation, generation, filing and recovery; they do not provide user authentication.
-- Persisted frequency, workweek and overtime choices are not downstream configurable calculation rules; no overtime engine is implemented.
+- Frequency, workweek and overtime preferences are displayed read-only as unsupported, retaining stored values. They do not configure downstream calculations; no overtime engine is implemented.
 - Payroll Prep Sheet PDF import is implemented; DOCX import is recognised but not implemented.
 - Backup/restore has no scheduling, retention cleanup, compression or cloud integration.
 - Restore accepts only recognised DirectPaymentTimesheets backup directories, not arbitrary SQLite files.
-- Historical annual-leave numeric rule history and sickness reference-period/accrual calculations are not implemented. Guidance's current sickness warning reads legacy weekly sickness hours, not structured sickness dates.
+- Historical annual-leave numeric rule history and sickness reference-period/accrual calculations are not implemented. Guidance flags relevant legacy sickness hours and structured sickness dates for additional variable-hours review without adding sickness accrual figures.
 - Automatic promotion/emailing of archival ordinary payslips remains future work. Durable CSV SHA-256 content/path identity and row provenance are implemented (schema38). Timesheet and payslip/supplement uncertainty have explicit audited review workflows.
 - Authentication, roles and web/mobile access are not implemented. `email_archive` has no actual email-archiving consumer.
 
