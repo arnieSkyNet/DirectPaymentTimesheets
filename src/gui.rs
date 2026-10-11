@@ -119,6 +119,8 @@ struct PendingEmailBatch {
     operational_selection_revision: u64,
     approved: std::collections::HashMap<i64, crate::email_service::PayrollEmailPreview>,
     approved_selection: Vec<i64>,
+    approved_bundles: HashMap<i64, crate::payroll_delivery::Approval>,
+    approved_settings: String,
     resend_acknowledged: bool,
 }
 
@@ -133,6 +135,8 @@ impl PendingEmailBatch {
     fn confirm_selection(&mut self) {
         self.resend_acknowledged = false;
         self.approved.clear();
+        self.approved_bundles.clear();
+        self.approved_settings.clear();
         self.approved_selection.clear();
         if self.stage == EmailBatchNoteStage::SelectRecipients
             && !self.selected_personal_assistant_ids.is_empty()
@@ -228,6 +232,7 @@ pub struct DirectPaymentApp {
     production_report: Option<ProductionReport>,
     delivery_review_reason: String,
     pending_delivery_review: Option<(i64, String, String, bool)>,
+    pending_bundle_review: Option<(String, String, String, String)>,
     pending_payroll_return_import: Option<PendingPayrollReturnImport>,
     email_settings_employer: Option<crate::models::Employer>,
     email_settings_payroll_provider: Option<crate::payroll_provider_repository::PayrollProvider>,
@@ -293,6 +298,7 @@ impl DirectPaymentApp {
             production_report: None,
             delivery_review_reason: String::new(),
             pending_delivery_review: None,
+            pending_bundle_review: None,
             pending_payroll_return_import: None,
             email_settings_employer: None,
             email_settings_payroll_provider: None,
@@ -703,6 +709,8 @@ impl DirectPaymentApp {
             operational_selection_revision: self.operational_payroll_period.revision,
             approved: Default::default(),
             approved_selection: Vec::new(),
+            approved_bundles: Default::default(),
+            approved_settings: String::new(),
             resend_acknowledged: false,
         });
     }
@@ -804,12 +812,11 @@ impl DirectPaymentApp {
         }
 
         if self.pending_email_batch.as_ref().is_some_and(|b| {
-            matches!(b.kind, PayrollEmailKind::Timesheet)
-                && b.stage == EmailBatchNoteStage::ConfirmDispatch
+            b.stage == EmailBatchNoteStage::ConfirmDispatch
                 && b.approved_selection != b.selected_personal_assistant_ids
         }) {
             let mut batch = self.pending_email_batch.take().unwrap();
-            if let Err(e) = self.capture_timesheet_confirmation(&mut batch) {
+            if let Err(e) = self.capture_email_confirmation(&mut batch) {
                 self.status_message = format!("Confirmation refused: {e}");
                 batch.resend_acknowledged = false;
                 batch.stage = EmailBatchNoteStage::SelectRecipients;
@@ -818,15 +825,16 @@ impl DirectPaymentApp {
             return;
         }
         if let Some(batch) = self.pending_email_batch.as_ref().filter(|b| {
-            matches!(b.kind, PayrollEmailKind::Timesheet)
-                && b.stage == EmailBatchNoteStage::ConfirmDispatch
+            b.stage == EmailBatchNoteStage::ConfirmDispatch
         }) {
-            if let Err(e) = self.validate_timesheet_confirmation(batch) {
+            if let Err(e) = self.validate_email_confirmation(batch) {
                 self.status_message =
                     format!("Confirmation invalidated: {e}. Cancel and start a fresh selection.");
                 if let Some(b) = self.pending_email_batch.as_mut() {
                     b.resend_acknowledged = false;
                     b.approved.clear();
+                    b.approved_bundles.clear();
+                    b.approved_settings.clear();
                     b.approved_selection.clear();
                     b.stage = EmailBatchNoteStage::SelectRecipients;
                 }
@@ -862,13 +870,17 @@ impl DirectPaymentApp {
                     for choice in batch.choices.iter().filter(|c| batch.selected_personal_assistant_ids.contains(&c.id)) {
                         if matches!(batch.kind,PayrollEmailKind::Timesheet) {ui.label(format!("{} — {} — {}", if choice.intent.as_ref().is_some_and(|i|i.resend) {"RESEND"} else {"First send"},choice.name,choice.detail));}
                         else {ui.label(format!("{} — {}",choice.name,choice.detail));}
-                        if let Some(p)=batch.approved.get(&choice.id) {ui.label(format!("To Payroll: {}; CC employer: {}; BCC PA: {}",p.to,p.cc.as_deref().unwrap_or("none"),p.bcc.as_deref().unwrap_or("none")));}
+                        if let Some(a)=batch.approved_bundles.get(&choice.id) {
+                            for (filename, hash) in a.preview.attachment_filenames.iter().zip(&a.digests) { ui.label(format!("{filename}; SHA-256 {hash}")); }
+                        }
+                        if let Some(p)=batch.approved.get(&choice.id) {ui.label(format!("To: {}; CC: {}; BCC: {}",p.to,p.cc.as_deref().unwrap_or("none"),p.bcc.as_deref().unwrap_or("none")));}
                     }
                     if resends>0 {
                         ui.colored_label(ui.visuals().warn_fg_color,"Warning: these PDFs were previously emailed. Sending again may cause duplicate payroll processing.");
                         ui.checkbox(&mut acknowledged,"I intentionally authorise the listed resends of the retained PDFs.");
                     }
                     ui.label("Only documents for the selected PAs will be emailed. Documents and delivery eligibility are checked again before each send.");
+                    ui.label("SMTP acceptance does not establish recipient inbox receipt. Receiving an employer copy confirms only receipt of that copy.");
                     if matches!(batch.kind, PayrollEmailKind::Payslip) { ui.label("To each selected PA; BCC employer; no CC or payroll department copy."); }
                     if let Some(period) = &batch.payroll_period {
                         ui.label(format!(
@@ -916,7 +928,7 @@ impl DirectPaymentApp {
                 if matches!(batch.kind, PayrollEmailKind::Timesheet) {
                     match self.dispatch_timesheet_selection(&batch) {
                         Ok(report) => {
-                            self.status_message = report.summary();
+                            self.status_message = format!("{}. SMTP acceptance does not establish recipient inbox receipt.", report.summary());
                             self.production_report = Some(report);
                             self.clear_pending_email_batch();
                         }
@@ -933,7 +945,7 @@ impl DirectPaymentApp {
                 match result {
                     Ok(count) => {
                         self.status_message =
-                            format!("{} emailed successfully: {}.", email_type, count);
+                            format!("SMTP accepted {} {} email(s). Recipient inbox receipt is not established.", count, email_type);
                         self.clear_pending_email_batch();
                     }
                     Err(error) => {
@@ -946,10 +958,12 @@ impl DirectPaymentApp {
 
     fn draw_email_settings(&mut self, ui: &mut egui::Ui) {
         ui.heading("Email Settings");
-        ui.label("SMTP and test-recipient settings. Production email actions are unchanged.");
+        ui.label("SMTP, timesheet employer copy and test-recipient settings.");
         ui.separator();
 
         let email = &mut self.application.context.config.email;
+        ui.checkbox(&mut email.timesheet_employer_cc, "Send a CC copy of timesheet emails to the employer");
+        ui.label("An employer copy helps monitor sending. SMTP acceptance or receipt of a copy does not prove delivery to Payroll or the PA.");
         ui.horizontal(|ui| {
             ui.label("Email transport");
             crate::gui_controls::combo_box("email_transport")
@@ -2439,13 +2453,15 @@ impl DirectPaymentApp {
             return Err("Recipient selection is unavailable; start a new email batch.".into());
         }
         let schedule = self.validated_schedule_for_email_batch(batch)?;
-        self.email_payslips(schedule.as_ref(), &batch.selected_personal_assistant_ids)
+        self.validate_email_confirmation(batch)?;
+        self.email_payslips(schedule.as_ref(), &batch.selected_personal_assistant_ids, batch)
     }
 
     fn email_payslips(
         &self,
         schedule: Option<&PayrollSchedule>,
         selected_ids: &[i64],
+        batch: &PendingEmailBatch,
     ) -> Result<usize, Box<dyn std::error::Error>> {
         if selected_ids.is_empty() {
             return Err("Select at least one Personal Assistant.".into());
@@ -2453,20 +2469,6 @@ impl DirectPaymentApp {
         if selected_ids.iter().collect::<HashSet<_>>().len() != selected_ids.len() {
             return Err("Duplicate recipient selection.".into());
         }
-        let employers = self.application.employer_repository.get_all()?;
-
-        let employer = employers
-            .into_iter()
-            .next()
-            .ok_or("No employer has been configured.")?;
-
-        let employer_email = employer
-            .email
-            .as_deref()
-            .map(str::trim)
-            .filter(|email| !email.is_empty())
-            .ok_or("Employer has no email address.")?;
-
         let required_assistants = if schedule.is_some() {
             self.selected_period_assistants()?
         } else {
@@ -2484,30 +2486,16 @@ impl DirectPaymentApp {
         }
 
         let mut sent = 0usize;
+        let mut errors = Vec::new();
 
         for assistant in &assistants {
-            let personal_assistant_name = format!("{} {}", assistant.first_name, assistant.surname);
-
-            let bundle = self.unsent_payslip_documents(assistant, schedule)?;
-            if bundle.paths.is_empty() {
-                continue;
-            }
-            let preview = crate::email_service::preview_payslip_email(
-                employer_email,
-                assistant.email.as_deref(),
-                &personal_assistant_name,
-                &bundle,
-                schedule,
-                &self.application.context.config.payroll.payslip_email_body,
-                self.additional_notes_by_personal_assistant
-                    .get(&assistant.id)
-                    .map(String::as_str),
-                employer.email_signature.as_deref(),
-            )?;
-
-            let attempted_at = chrono::Local::now().to_rfc3339();
-            crate::payslip_delivery_service::send_payroll_bundle(
-                &self.application.payroll_timesheet_email_repository,
+            let approved = batch
+                .approved_bundles
+                .get(&assistant.id)
+                .ok_or("Missing final attachment approval")?;
+            let mut db = crate::payroll_evidence::open(&self.application)?;
+            let outcome = crate::payroll_delivery::dispatch(
+                &mut db,
                 assistant.id,
                 schedule.map(
                     |s| crate::payslip_delivery_service::PayslipDeliveryIdentity {
@@ -2516,12 +2504,30 @@ impl DirectPaymentApp {
                         cycle_number: s.cycle_number,
                     },
                 ),
-                &bundle,
-                &attempted_at,
-                || self.application.send_payslip_preview(preview),
-            )?;
-
-            sent += 1;
+                approved,
+                |_| {
+                    let current_schedule = self.validated_schedule_for_email_batch(batch)?;
+                    self.payslip_approval(assistant.id, current_schedule.as_ref())
+                },
+                |p, bytes, message_id| {
+                    let message =
+                        crate::email_service::prepare_bundle_message(p, bytes, message_id)
+                            .map_err(|e| {
+                                crate::email_service::ProductionSendError::NotSent(e.to_string())
+                            })?;
+                    crate::email_service::send_prepared_timesheet(
+                        &self.application.context.config.email,
+                        &message,
+                    )
+                },
+            );
+            match outcome {
+                Ok(()) => sent += 1,
+                Err(e) => errors.push(format!(
+                    "{} {}: {e}",
+                    assistant.first_name, assistant.surname
+                )),
+            }
         }
 
         if let Some(schedule) = schedule {
@@ -2544,9 +2550,15 @@ impl DirectPaymentApp {
                 )?;
             }
         }
+        if !errors.is_empty() {
+            return Err(format!(
+                "{sent} PA bundle(s) accepted; remaining failures: {}",
+                errors.join("; ")
+            )
+            .into());
+        }
         Ok(sent)
     }
-
     fn timesheet_preview(
         &self,
         schedule: &PayrollSchedule,
@@ -2590,10 +2602,119 @@ impl DirectPaymentApp {
         )
     }
 
-    fn capture_timesheet_confirmation(
+    fn email_settings_digest(&self) -> Result<String, Box<dyn std::error::Error>> {
+        let config = &self.application.context.config;
+        let path = self
+            .application
+            .context
+            .environment
+            .data_dir
+            .join("config.toml");
+        let disk = match std::fs::read(path) {
+            Ok(bytes) => crate::payroll_delivery::digest(&bytes),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => "absent".into(),
+            Err(e) => return Err(e.into()),
+        };
+        Ok(crate::payroll_delivery::digest(
+            format!("{}:{disk}", toml::to_string(config)?).as_bytes(),
+        ))
+    }
+
+    fn payslip_approval(
+        &self,
+        id: i64,
+        schedule: Option<&PayrollSchedule>,
+    ) -> Result<crate::payroll_delivery::Approval, Box<dyn std::error::Error>> {
+        let assistant =
+            crate::personal_assistant_repository::PersonalAssistantRepository::get_by_id_on(
+                &self
+                    .application
+                    .payroll_timesheet_email_repository
+                    .connection,
+                id,
+            )?;
+        if !self
+            .payslip_email_assistants()?
+            .iter()
+            .any(|pa| pa.id == id)
+        {
+            return Err("PA is no longer eligible".into());
+        }
+        let employer = self
+            .application
+            .employer_repository
+            .get_all()?
+            .into_iter()
+            .next()
+            .ok_or("Employer missing")?;
+        let bundle = self.unsent_payslip_documents(&assistant, schedule)?;
+        let preview = crate::email_service::preview_payslip_email(
+            employer.email.as_deref().ok_or("Employer email missing")?,
+            assistant.email.as_deref(),
+            &format!("{} {}", assistant.first_name, assistant.surname),
+            &bundle,
+            schedule,
+            &self.application.context.config.payroll.payslip_email_body,
+            self.additional_notes_by_personal_assistant
+                .get(&id)
+                .map(String::as_str),
+            employer.email_signature.as_deref(),
+        )?;
+        let approval = crate::payroll_delivery::Approval::capture(
+            bundle,
+            preview,
+            self.email_settings_digest()?,
+        )?;
+        // Bind bytes to registered hashes, including files changed during capture.
+        if approval
+            .bundle
+            .ordinary_attachment
+            .as_ref()
+            .is_some_and(|(_, hash)| approval.digests.first() != Some(hash))
+        {
+            return Err("Payslip bytes changed during approval".into());
+        }
+        let mut documents = approval.bundle.document_ids.iter();
+        for (index, (kind, _)) in approval.bundle.attachment_identity.iter().enumerate() {
+            if *kind != "payslip" {
+                let document = documents.next().ok_or("Missing document identity")?;
+                let hash: String = self
+                    .application
+                    .payroll_timesheet_email_repository
+                    .connection
+                    .query_row(
+                        "SELECT sha256 FROM imported_payroll_documents WHERE id=?1",
+                        [document],
+                        |r| r.get(0),
+                    )?;
+                if hash != approval.digests[index] {
+                    return Err("Registered attachment bytes changed during approval".into());
+                }
+            }
+        }
+        for (index, path) in approval.bundle.paths.iter().enumerate() {
+            if crate::payroll_document_repository::file_digest(path)? != approval.digests[index] {
+                return Err("Attachment changed during approval".into());
+            }
+        }
+        Ok(approval)
+    }
+
+    fn capture_email_confirmation(
         &self,
         batch: &mut PendingEmailBatch,
     ) -> Result<(), Box<dyn std::error::Error>> {
+        batch.approved_settings = self.email_settings_digest()?;
+        if matches!(batch.kind, PayrollEmailKind::Payslip) {
+            let schedule = self.validated_schedule_for_email_batch(batch)?;
+            for id in &batch.selected_personal_assistant_ids {
+                let approval = self.payslip_approval(*id, schedule.as_ref())?;
+                batch.approved.insert(*id, approval.preview.clone());
+                batch.approved_bundles.insert(*id, approval);
+            }
+            batch.approved_selection = batch.selected_personal_assistant_ids.clone();
+            return Ok(());
+        }
         let schedule = self
             .validated_schedule_for_email_batch(batch)?
             .ok_or("Timesheet period required")?;
@@ -2630,10 +2751,27 @@ impl DirectPaymentApp {
         Ok(())
     }
 
-    fn validate_timesheet_confirmation(
+    fn validate_email_confirmation(
         &self,
         batch: &PendingEmailBatch,
     ) -> Result<(), Box<dyn std::error::Error>> {
+        if batch.approved_selection != batch.selected_personal_assistant_ids {
+            return Err("Recipient selection changed".into());
+        }
+        if self.email_settings_digest()? != batch.approved_settings {
+            return Err("Email settings changed; approve a fresh selection".into());
+        }
+        if matches!(batch.kind, PayrollEmailKind::Payslip) {
+            let schedule = self.validated_schedule_for_email_batch(batch)?;
+            for id in &batch.selected_personal_assistant_ids {
+                batch
+                    .approved_bundles
+                    .get(id)
+                    .ok_or("No attachment approval")?
+                    .verify(&self.payslip_approval(*id, schedule.as_ref())?)?;
+            }
+            return Ok(());
+        }
         if batch.approved_selection != batch.selected_personal_assistant_ids {
             return Err("Recipient selection changed".into());
         }
@@ -2667,7 +2805,6 @@ impl DirectPaymentApp {
         }
         Ok(())
     }
-
     fn email_timesheet_intent(
         &self,
         schedule: &PayrollSchedule,
@@ -2703,6 +2840,7 @@ impl DirectPaymentApp {
             &message_id,
             &bytes,
             |locked| {
+                if self.email_settings_digest()? != batch.approved_settings { return Err("Email settings changed during claim".into()); }
                 let fresh=crate::personal_assistant_repository::PersonalAssistantRepository::get_by_id_on(locked,assistant.id)?;
                 let current_schedule = self
                     .validated_schedule_for_email_batch(batch)?
@@ -5837,11 +5975,12 @@ mod payroll_period_eligibility_tests {
                     app.send_test_payslip_email();
                     assert_eq!(app.status_message, "Test payslip email sent.");
                 } else {
-                    assert_eq!(
-                        app.email_payslips(has_schedule.then_some(&current), &[pa.id])
-                            .unwrap(),
-                        1
-                    );
+                    app.begin_email_batch(PayrollEmailKind::Payslip);
+                    let mut batch=app.pending_email_batch.take().unwrap();
+                    batch.selected_personal_assistant_ids=vec![pa.id];
+                    batch.stage=EmailBatchNoteStage::ConfirmDispatch;
+                    app.capture_email_confirmation(&mut batch).unwrap();
+                    assert_eq!(app.dispatch_payslip_selection(&batch).unwrap(),1);
                 }
                 let (recipients, message) = server.join().unwrap();
                 if test_send {

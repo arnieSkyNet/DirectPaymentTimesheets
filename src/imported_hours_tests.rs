@@ -61,5 +61,5 @@ fn stage7_schema39_verified_upgrade_keeps_recoverable_original_backup() {
     );
     db.execute_batch("DROP TRIGGER fail40").unwrap();
     crate::database_recovery::initialise(&path).unwrap();
-    assert_eq!(crate::database_recovery::version(&db).unwrap(), Some(40));
+    assert_eq!(crate::database_recovery::version(&db).unwrap(), Some(crate::database::CURRENT_SCHEMA_VERSION));
 }

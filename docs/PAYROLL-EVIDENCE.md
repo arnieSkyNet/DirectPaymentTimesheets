@@ -190,3 +190,22 @@ Sickness changes check the union of original/proposed ranges transactionally und
 Stage 4 review authorisation captures complete displayed shift evidence (including notes and imported rate/amount), affected cycle state and retained submission membership. Logger edits additionally bind the original record and complete proposed payload and require a reason for protected-cycle changes. Unauthorised protected edits and deletions are refused. Source approval preserves settled amounts and original submissions; it does not itself authorise financial carry-forward. Production first-send freshness includes possible-move groups as well as overlap groups. Explicit resends retain their original approved PDF bytes.
 
 Hours Keeper does not supply an entry ID in the supported eight-column export. Matching establishes exact repeats and possible corrections, never proves replacement from similarity. Same-path export revisions supply context for moved-date review. Independently recorded rows differing by exactly one day with matching start/finish clock times, breaks, duration and identical nonempty notes are also possible-date-change suggestions; imported/imported comparisons additionally require equal retained rate/amount. Co-present rows in one CSV stay separate, and separate internal clock-ins are not treated as revisions merely because they repeat a daily pattern. Other non-overlapping rows without an existing counterpart association remain separate because evidence cannot reliably establish a correction. Similar legitimate recurring shifts can require an explicit retain-all decision; no suggestion automatically overwrites or pays a replacement. No SSP, public-holiday or imported worked-duration interpretation changes are introduced.
+
+
+## Stage 8 PA bundle transport evidence
+
+Schema41 retains exact approved PA bundle intent/recipients, immutable attachment
+identities/bytes/SHA-256, Message-ID and append-only transport/review evidence.
+Final confirmation and the lock-protected dispatch claim reject changed settings,
+recipients, selected eligible documents or bytes. Generic SMTP errors and interrupted
+claims retain indeterminate reservations. Only reliable non-acceptance releases them
+automatically. Accepted transport followed by failed status finalisation remains
+protected and reviewable with its known acceptance evidence. Audited accepted or
+externally sent, confirmed-not-sent and still-uncertain reviews preserve original
+attempts; inconclusive reviews do not unblock sending. Unknown legacy dispatch facts
+remain unknown. Existing settlement, submission and correction evidence is preserved.
+
+Employer timesheet CC defaults enabled and may be disabled in Email Settings for
+first/corrected/resend emails without changing Payroll To or optional PA BCC. PA
+payroll documents retain To PA/BCC employer, with no CC or Payroll copy. Acceptance
+and receipt of an employer copy never prove delivery to another recipient's inbox.

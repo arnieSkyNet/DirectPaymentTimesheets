@@ -5,7 +5,7 @@ This document describes the implementation on `main`. Source code, migrations an
 ## Current release and platform
 
 - Development application version: `1.0.6`; published Linux/Windows: `1.0.4`; published macOS: `1.0.5`.
-- Database schema: version 40, upgraded through verified backups and isolated ordered migrations.
+- Database schema: version 41, upgraded through verified backups and isolated ordered migrations.
 - Desktop UI: Rust with `eframe`/`egui`.
 - Persistence: SQLite through `rusqlite` (bundled SQLite).
 - Documents and integration: `printpdf`, PDF text extraction, ZIP import and SMTP via `lettre`.
@@ -107,7 +107,7 @@ The PDF displays reconciled weekly Hours Worked totals using configured font rol
 
 Generation writes a temporary PDF, persists a candidate snapshot and SHA-256 digest, then publishes the final PDF. Required output parents are created only when writing. A generic PDF root remains flat; an already year-suffixed root such as `2026 to 2027` rolls over to a sibling year directory.
 
-Only a successful production timesheet send freezes the candidate as the immutable submitted baseline. Preview and test email do not. Production verifies the exact approved document identity, path, digest, bytes, routing and classification. Schema36 records each attempt before SMTP. Explicit non-acceptance restores candidate eligibility; ambiguous SMTP errors, interrupted attempts and failed finalisation remain protected until an audited review. Accepted resends refer to the existing submission and do not reapply corrections. Production payslip delivery likewise writes durable per-PA indeterminate state before SMTP, restores unsent only after a reported SMTP failure, and records definitive sent state after successful transport. A crash or failed final status write leaves the payslip visibly uncertain and blocks automatic resend; payslip/supplement recovery remains an explicit future workflow. Timesheet review is available in Dashboard delivery-attempt history.
+Only a successful production timesheet send freezes the candidate as the immutable submitted baseline. Preview and test email do not. Production verifies the exact approved document identity, path, digest, bytes, routing and classification. Schema36 records each attempt before SMTP. Explicit non-acceptance restores candidate eligibility; ambiguous SMTP errors, interrupted attempts and failed finalisation remain protected until an audited review. Accepted resends refer to the existing submission and do not reapply corrections. Production payslip delivery likewise writes durable per-PA indeterminate state before SMTP, restores unsent only after reliably established non-acceptance, and records definitive sent state after successful transport. A crash or failed final status write leaves the payslip visibly uncertain and blocks automatic resend; payslip/supplement recovery uses the audited Stage 8 review workflow. Timesheet review is available in Dashboard delivery-attempt history.
 
 Generation and production timesheet email use the same selected-period employment eligibility as preparation. Payslip/document email additionally includes PAs with unsent imported P60/P45, independent of employment overlap.
 
@@ -189,7 +189,7 @@ Stage 2 final-review corrections close the retained-view transfer gap: source/de
 
 ## Stage 4 shift change protection (1.0.6/schema38)
 
-Stage 4 introduced additive schema38; current development 1.0.6 now uses schema40. Semantic CSV headers support the verified Hours Keeper format and existing synthetic aliases regardless of column order. Content identity detects changed same-path exports. Shared review protects imported/internal counterparts and cross-midnight overlaps; original evidence, archival bytes and omitted rows remain retained. Review supports a payable-version choice, explicit separate shifts and audited deferral. New protected edits require prospective authorisation and the existing contextual financial correction workflow; pre-existing obligations are preserved. The established verified database/config backup and isolated upgrade installation remain mandatory; external business files need separate protection.
+Stage 4 introduced additive schema38; current development 1.0.6 now uses schema41. Semantic CSV headers support the verified Hours Keeper format and existing synthetic aliases regardless of column order. Content identity detects changed same-path exports. Shared review protects imported/internal counterparts and cross-midnight overlaps; original evidence, archival bytes and omitted rows remain retained. Review supports a payable-version choice, explicit separate shifts and audited deferral. New protected edits require prospective authorisation and the existing contextual financial correction workflow; pre-existing obligations are preserved. The established verified database/config backup and isolated upgrade installation remain mandatory; external business files need separate protection.
 
 
 ## Stage 5 startup reliability (1.0.6/schema38)
@@ -219,3 +219,17 @@ delivery blocks mutation. Source identity, PA assignment, rate/amount, existing
 submissions, settlement and PDF bytes remain retained. Internal shift history has
 bounded searchable pages; deletion rejects stale confirmation and retained protected
 cycles. Existing holiday preparation and deliberate subtraction are unchanged.
+
+
+## Stage 8 delivery uncertainty and timesheet employer CC (1.0.6/schema41)
+
+Implemented default-enabled timesheet employer CC in Email Settings, exact final
+recipient/attachment approval, byte-bound production bundle dispatch, conservative
+typed transport outcomes, durable immutable bundle attempts/attachments/results
+and audited accepted/not-sent/still-uncertain review. Dashboard delivery history
+includes legacy PA document and timesheet uncertainty without invented attempts.
+Timesheet history and payroll settlement/corrections remain preserved. The existing
+verified isolated migration/recovery path installs additive schema41; version stays
+1.0.6. Acceptance/external sending and receipt of an employer copy are explicitly
+separate from proof of recipient inbox receipt. See the Stage 8 sections in
+[architecture](ARCHITECTURE.md) and [schema](DATABASE-SCHEMA.md).

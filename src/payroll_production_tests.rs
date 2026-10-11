@@ -71,7 +71,7 @@ fn email_batch(app: &mut DirectPaymentApp, ids: &[i64]) -> PendingEmailBatch {
         .filter(|c| ids.contains(&c.id))
         .all(|c| c.available)
     {
-        app.capture_timesheet_confirmation(&mut batch).unwrap();
+        app.capture_email_confirmation(&mut batch).unwrap();
     } else {
         batch.approved_selection = ids.to_vec();
     }
@@ -273,7 +273,7 @@ fn one_of_five_then_remaining_batch_preserves_early_submission_notes_and_results
     assert_eq!(pending.selected_personal_assistant_ids, vec![2, 3, 4, 5]);
     pending.selected_personal_assistant_ids = vec![2, 3, 4, 5];
     pending.stage = EmailBatchNoteStage::ConfirmDispatch;
-    app.capture_timesheet_confirmation(&mut pending).unwrap();
+    app.capture_email_confirmation(&mut pending).unwrap();
     assert_eq!(
         app.dispatch_timesheet_selection(&pending)
             .unwrap()
@@ -774,7 +774,7 @@ fn submitted_regeneration_uses_corrected_contracted_hours_and_resend_keeps_pdf()
     let mut batch = email_batch(&mut app, &[1]);
     app.additional_notes_by_personal_assistant
         .insert(1, "Corrected timesheet attached".into());
-    app.capture_timesheet_confirmation(&mut batch).unwrap();
+    app.capture_email_confirmation(&mut batch).unwrap();
     batch.resend_acknowledged = true;
     assert_eq!(
         app.dispatch_timesheet_selection(&batch)
@@ -869,6 +869,7 @@ fn payslip_batch(app: &mut DirectPaymentApp, ids: &[i64]) -> PendingEmailBatch {
     assert_eq!(batch.stage, EmailBatchNoteStage::SelectRecipients);
     batch.selected_personal_assistant_ids = ids.to_vec();
     batch.confirm_selection();
+    app.capture_email_confirmation(&mut batch).unwrap();
     batch
 }
 
@@ -895,6 +896,7 @@ fn payslip_selection_one_several_all_preserves_notes_supplements_and_unselected_
         batch.selected_personal_assistant_ids = ids.clone();
         assert_eq!(smtp.count(), 0);
         batch.confirm_selection();
+        app.capture_email_confirmation(&mut batch).unwrap();
         assert_eq!(batch.stage, EmailBatchNoteStage::ConfirmDispatch);
         assert_eq!(app.dispatch_payslip_selection(&batch).unwrap(), ids.len());
         assert_eq!(smtp.count(), ids.len());
@@ -1048,8 +1050,9 @@ fn payslip_selection_revalidates_sent_indeterminate_changed_and_unavailable_reci
     assert_eq!(batch.stage, EmailBatchNoteStage::SelectRecipients);
     batch.selected_personal_assistant_ids = vec![1];
     batch.confirm_selection();
+    app.capture_email_confirmation(&mut batch).unwrap();
     assert_eq!(app.dispatch_payslip_selection(&batch).unwrap(), 1);
-    assert_eq!(app.dispatch_payslip_selection(&batch).unwrap(), 0);
+    assert!(app.dispatch_payslip_selection(&batch).is_err());
     db(&app).execute("INSERT INTO payroll_timesheet_email_status(personal_assistant_id,payroll_year,cycle_number,email_type,sent_at) VALUES (2,'2026/27',1,'payslip','indeterminate:test')", []).unwrap();
     let mut batch = payslip_batch(&mut app, &[3]);
     assert!(!batch.choices.iter().find(|c| c.id == 1).unwrap().available);
@@ -1066,7 +1069,7 @@ fn payslip_selection_revalidates_sent_indeterminate_changed_and_unavailable_reci
     assert!(app.dispatch_payslip_selection(&batch).is_err());
     assert_eq!(smtp.count(), 1);
     // A broken, unselected recipient cannot prevent another selected PA's send.
-    batch.selected_personal_assistant_ids = vec![4];
+    batch = payslip_batch(&mut app, &[4]);
     assert_eq!(app.dispatch_payslip_selection(&batch).unwrap(), 1);
     assert_eq!(smtp.count(), 2);
     assert!(smtp
@@ -1168,7 +1171,9 @@ fn payslip_invalid_address_never_sends_and_timesheet_routing_remains_unchanged()
             .unwrap();
         let choices = app.payslip_recipient_choices(Some(&schedule)).unwrap();
         assert!(!choices.iter().find(|c| c.id == 1).unwrap().available);
-        assert!(app.email_payslips(Some(&schedule), &[1]).is_err());
+        app.begin_email_batch(PayrollEmailKind::Payslip);
+        let batch=app.pending_email_batch.take().unwrap();
+        assert!(app.dispatch_payslip_selection(&batch).is_err());
         assert_eq!(smtp.count(), 0);
         assert!(app
             .application
@@ -1422,7 +1427,7 @@ fn stage1_stale_selection_routing_and_classification_refuse_without_sending() {
             [],
         )
         .unwrap();
-    assert!(app.validate_timesheet_confirmation(&batch).is_err());
+    assert!(app.validate_email_confirmation(&batch).is_err());
     assert!(matches!(
         app.dispatch_timesheet_selection(&batch).unwrap().entries[0].2,
         ProductionOutcome::Failed(_)
@@ -1435,7 +1440,7 @@ fn stage1_stale_selection_routing_and_classification_refuse_without_sending() {
             .completed(),
         1
     );
-    assert!(app.validate_timesheet_confirmation(&original).is_err());
+    assert!(app.validate_email_confirmation(&original).is_err());
     assert!(matches!(
         app.dispatch_timesheet_selection(&original).unwrap().entries[0].2,
         ProductionOutcome::Failed(_)
@@ -1457,7 +1462,7 @@ fn stage1_confirmation_reuses_verified_bytes_and_records_actual_message_id() {
     let original = prepared.formatted();
     std::fs::write(&intent.path, b"external mutation").unwrap();
     assert_eq!(prepared.formatted(), original);
-    assert!(app.validate_timesheet_confirmation(&batch).is_err());
+    assert!(app.validate_email_confirmation(&batch).is_err());
     assert_eq!(smtp.count(), 0);
     std::fs::write(&intent.path, &bytes).unwrap();
     assert_eq!(
@@ -1558,7 +1563,9 @@ fn stage1_ui_separates_first_sends_and_resends_and_resets_acknowledgement() {
     let rendered = labels.join("\n");
     assert!(rendered.contains("1 first sends; 1 resends"), "{rendered}");
     assert!(rendered.contains("I intentionally authorise"));
-    assert!(rendered.contains("To Payroll:"));
+    assert!(rendered.contains("To: payroll@example.test"), "{rendered}");
+    assert!(rendered.contains("CC: employer@example.test"), "{rendered}");
+    assert!(rendered.contains("BCC:"), "{rendered}");
     assert!(rendered.contains("Payroll period:"));
     assert_eq!(smtp.count(), 1);
     app.pending_email_batch
@@ -2090,4 +2097,283 @@ fn signature_decode_failure_preserves_registered_candidate_and_pdf() {
     ));
     assert_eq!(std::fs::read(path(&app, &schedule, 1)).unwrap(), before);
     assert_eq!(facts(&app, 1), evidence);
+}
+
+#[test]
+fn stage8_timesheet_cc_enabled_disabled_first_corrected_and_resend_exact_approval() {
+    for enabled in [true, false] {
+        let (_dir, mut app, _schedule) = fixture();
+        app.application.context.config.email.timesheet_employer_cc = enabled;
+        let mut sent_messages = Vec::new();
+        generate(&mut app, &[1]);
+        for phase in 0..3 {
+            if phase == 2 {
+                assert_eq!(generate(&mut app, &[1]).completed(), 1);
+            }
+            let batch = email_batch(&mut app, &[1]);
+            let preview = batch.approved.get(&1).unwrap();
+            assert_eq!(preview.to, "payroll@example.test");
+            assert_eq!(
+                preview.cc.as_deref(),
+                enabled.then_some("employer@example.test")
+            );
+            assert_eq!(preview.bcc.as_deref(), Some("pa1@example.test"));
+            assert_eq!(batch.choices[0].intent.as_ref().unwrap().resend, phase == 1);
+            sent_messages.push(stage8_accept_timesheet(&app, &batch));
+        }
+        assert_eq!(sent_messages.len(), 3);
+        for (message, envelope) in &sent_messages {
+            assert_eq!(message.contains("Cc: employer@example.test"), enabled);
+            assert!(message.contains("To: payroll@example.test"));
+            assert!(envelope.contains(&"payroll@example.test".to_string()));
+            assert!(envelope.contains(&"pa1@example.test".to_string()));
+            assert_eq!(
+                envelope.contains(&"employer@example.test".to_string()),
+                enabled
+            );
+            assert_eq!(envelope.len(), if enabled { 3 } else { 2 });
+        }
+        let attempts: Vec<String> = db(&app)
+            .prepare("SELECT recipients FROM timesheet_delivery_attempts ORDER BY id")
+            .unwrap()
+            .query_map([], |r| r.get(0))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        assert_eq!(attempts.len(), 3);
+        for recipients in attempts {
+            assert_eq!(recipients.contains("CC: employer@example.test"), enabled);
+        }
+    }
+}
+
+#[test]
+fn stage8_changed_cc_setting_invalidates_approved_first_send_and_resend() {
+    let (_dir, mut app, _schedule) = fixture();
+    generate(&mut app, &[1]);
+    let batch = email_batch(&mut app, &[1]);
+    app.application.context.config.email.timesheet_employer_cc = false;
+    assert!(app.validate_email_confirmation(&batch).is_err());
+    assert!(app.dispatch_timesheet_selection(&batch).is_err());
+    assert_eq!(
+        db(&app)
+            .query_row(
+                "SELECT count(*) FROM timesheet_delivery_attempts",
+                [],
+                |r| r.get::<_, i64>(0)
+            )
+            .unwrap(),
+        0
+    );
+    let batch = email_batch(&mut app, &[1]);
+    stage8_accept_timesheet(&app, &batch);
+    let resend = email_batch(&mut app, &[1]);
+    app.application.context.config.email.timesheet_employer_cc = true;
+    assert!(app.dispatch_timesheet_selection(&resend).is_err());
+    assert_eq!(
+        db(&app)
+            .query_row(
+                "SELECT count(*) FROM timesheet_delivery_attempts",
+                [],
+                |r| r.get::<_, i64>(0)
+            )
+            .unwrap(),
+        1
+    );
+}
+
+#[test]
+fn stage8_payslip_cc_setting_never_changes_pa_bcc_routing_and_exact_approval() {
+    for enabled in [true, false] {
+        let (_dir, mut app, _schedule) = payslip_selection_fixture();
+        app.application.context.config.email.timesheet_employer_cc = enabled;
+        let batch = payslip_batch(&mut app, &[1]);
+        let preview = batch.approved.get(&1).unwrap();
+        assert_eq!(preview.to, "pa1@example.test");
+        assert!(preview.cc.is_none());
+        assert_eq!(preview.bcc.as_deref(), Some("employer@example.test"));
+        assert_eq!(batch.approved_bundles[&1].digests.len(), 3);
+        let (message, envelope) = stage8_accept_payslip(&app, &batch);
+        assert!(!message.contains("Cc:"));
+        assert!(!message.contains("payroll@example.test"));
+        assert_eq!(
+            envelope,
+            vec![
+                "pa1@example.test".to_string(),
+                "employer@example.test".to_string()
+            ]
+        );
+    }
+}
+
+#[test]
+fn stage8_payslip_final_approval_rejects_changed_addresses_file_settings_and_documents() {
+    for mode in 0..5 {
+        let (dir, mut app, _schedule) = payslip_selection_fixture();
+        let batch = payslip_batch(&mut app, &[1]);
+        match mode {
+            0 => {
+                db(&app)
+                    .execute(
+                        "UPDATE personal_assistants SET email='other@example.test' WHERE id=1",
+                        [],
+                    )
+                    .unwrap();
+            }
+            1 => {
+                db(&app)
+                    .execute("UPDATE employers SET email='other@example.test'", [])
+                    .unwrap();
+            }
+            2 => {
+                std::fs::write(dir.path().join("p45-PA1.pdf"), b"%PDF-1.4 changed").unwrap();
+            }
+            3 => {
+                app.application.context.config.email.timesheet_employer_cc = false;
+            }
+            _ => {
+                db(&app).execute("UPDATE imported_payroll_documents SET history_state='external' WHERE personal_assistant_id=1 AND document_type='p60'",[]).unwrap();
+            }
+        }
+        assert!(app.dispatch_payslip_selection(&batch).is_err());
+        assert_eq!(
+            db(&app)
+                .query_row("SELECT count(*) FROM payroll_bundle_attempts", [], |r| r
+                    .get::<_, i64>(0))
+                .unwrap(),
+            0
+        );
+        assert_eq!(
+            db(&app)
+                .query_row("SELECT count(*) FROM payroll_bundle_attempts", [], |r| r
+                    .get::<_, i64>(0))
+                .unwrap(),
+            0
+        );
+    }
+}
+
+#[test]
+fn stage8_other_instance_saved_settings_change_invalidates_confirmation() {
+    let (_dir, mut app, _schedule) = fixture();
+    generate(&mut app, &[1]);
+    let batch = email_batch(&mut app, &[1]);
+    let path = app
+        .application
+        .context
+        .environment
+        .data_dir
+        .join("config.toml");
+    let mut config = crate::config::AppConfig::default();
+    config.email.timesheet_employer_cc = false;
+    config.save(&path).unwrap();
+    assert!(app.validate_email_confirmation(&batch).is_err());
+    assert!(app.dispatch_timesheet_selection(&batch).is_err());
+    assert_eq!(
+        db(&app)
+            .query_row("SELECT count(*) FROM payroll_bundle_attempts", [], |r| r
+                .get::<_, i64>(0))
+            .unwrap(),
+        0
+    );
+}
+
+// Inject typed transport results into the production ledger using the real approved
+// MIME/envelope. These deterministic tests need no sockets or external SMTP.
+fn stage8_accept_timesheet(
+    app: &DirectPaymentApp,
+    batch: &PendingEmailBatch,
+) -> (String, Vec<String>) {
+    app.validate_email_confirmation(batch).unwrap();
+    let intent = batch
+        .choices
+        .iter()
+        .find(|c| c.id == 1)
+        .unwrap()
+        .intent
+        .as_ref()
+        .unwrap();
+    let preview = batch.approved.get(&1).unwrap();
+    let db = db(app);
+    let bytes = crate::timesheet_delivery::bytes(&db, intent).unwrap();
+    let message_id = format!("<{}@test.local>", intent.intent_id);
+    let mut result = None;
+    crate::timesheet_delivery::execute(
+        &db,
+        intent,
+        &crate::payroll_delivery::recipients(preview),
+        &message_id,
+        &bytes,
+        |_| app.validate_email_confirmation(batch),
+        || {
+            let message =
+                crate::email_service::prepare_timesheet_message(preview, &bytes, &message_id)
+                    .unwrap();
+            result = Some((
+                String::from_utf8(message.formatted()).unwrap(),
+                message
+                    .envelope()
+                    .to()
+                    .iter()
+                    .map(ToString::to_string)
+                    .collect(),
+            ));
+            Ok(())
+        },
+    )
+    .unwrap();
+    result.unwrap()
+}
+fn stage8_accept_payslip(
+    app: &DirectPaymentApp,
+    batch: &PendingEmailBatch,
+) -> (String, Vec<String>) {
+    app.validate_email_confirmation(batch).unwrap();
+    let schedule = app.validated_schedule_for_email_batch(batch).unwrap();
+    let mut db = db(app);
+    let mut result = None;
+    crate::payroll_delivery::dispatch(
+        &mut db,
+        1,
+        schedule.as_ref().map(
+            |s| crate::payslip_delivery_service::PayslipDeliveryIdentity {
+                personal_assistant_id: 1,
+                payroll_year: &s.payroll_year,
+                cycle_number: s.cycle_number,
+            },
+        ),
+        &batch.approved_bundles[&1],
+        |_| app.payslip_approval(1, schedule.as_ref()),
+        |preview, bytes, message_id| {
+            let message =
+                crate::email_service::prepare_bundle_message(preview, bytes, message_id).unwrap();
+            result = Some((
+                String::from_utf8(message.formatted()).unwrap(),
+                message
+                    .envelope()
+                    .to()
+                    .iter()
+                    .map(ToString::to_string)
+                    .collect(),
+            ));
+            Ok(())
+        },
+    )
+    .unwrap();
+    result.unwrap()
+}
+
+#[test]
+fn stage8_timesheet_pa_bcc_stays_optional_with_employer_cc_enabled_or_disabled() {
+    for enabled in [true,false] {
+        let (_dir,mut app,_schedule)=fixture();
+        app.application.context.config.email.timesheet_employer_cc=enabled;
+        db(&app).execute("UPDATE personal_assistants SET email=NULL WHERE id=1",[]).unwrap();
+        assert_eq!(generate(&mut app,&[1]).completed(),1);
+        let batch=email_batch(&mut app,&[1]);
+        assert!(batch.approved[&1].bcc.is_none());
+        let (message,envelope)=stage8_accept_timesheet(&app,&batch);
+        assert!(message.contains("To: payroll@example.test"));
+        assert_eq!(envelope,if enabled {vec!["payroll@example.test".to_string(),"employer@example.test".to_string()]} else {vec!["payroll@example.test".to_string()]});
+    }
 }

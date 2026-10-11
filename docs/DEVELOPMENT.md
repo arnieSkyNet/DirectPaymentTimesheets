@@ -489,3 +489,16 @@ edits/reversion, stale concurrent mutations, retained-cycle deletion, exclusion
 history, duplicate review, settlement carry, delivery uncertainty, immutable PDFs,
 midnight/week/year boundaries, existing holiday subtraction and populated schema39
 WAL upgrade/rollback. All records and files use isolated temporary test roots.
+
+
+## Stage 8 delivery validation (1.0.6/schema41)
+
+Use temporary databases/files and injected typed transport outcomes for deterministic
+ledger tests. Routing tests build the real MIME and envelope from final approved
+bytes. Cover enabled/disabled default timesheet CC across first/corrected/resend
+classification, unchanged PA document routing, stale configuration/addresses/bytes,
+interrupted claims, explicit rejection, generic uncertainty, accepted transport with
+failed persistence, legacy review, append-only decisions, mixed bundles, unrelated
+PAs, OS-lock contention and verified schema40 upgrade. Existing loopback SMTP
+integration fixtures require permission to bind local sockets. Never use production
+payroll data or launch the GUI against it for these checks.

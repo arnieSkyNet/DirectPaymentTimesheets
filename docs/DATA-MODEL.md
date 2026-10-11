@@ -248,3 +248,16 @@ in a separately verified recovery snapshot; uncertainty cannot be cleared by res
 ## Sickness evidence and information correction (schema37)
 
 PA-owned inclusive sickness ranges have non-reused identities, audited date-only changes and optionally scoped payroll-cycle projections. Generated document evidence, dispatch attempts and submissions each retain immutable structured dates; a sickness-only correction associates its reason/authorisation and before/after dates with the original submission and existing reconciliation decision. Settled amounts/status remain unchanged. No historical snapshots or sickness dates are inferred from legacy hours or CSV notes. See [schema37](DATABASE-SCHEMA.md#schema-37-sickness-protection-and-historical-information-corrections).
+
+
+## Email bundle attempts and review
+
+Schema41 adds immutable PA bundle intent and attachment evidence: exact approved
+recipients, Message-ID, document identities, SHA-256 and retained bytes. Separate
+append-only transport results and review decisions preserve what was originally
+known. An indeterminate reservation blocks retry until an evidenced terminal review;
+a still-uncertain review keeps it blocked. Legacy markers retain unknown historical
+facts. Existing timesheet attempt/submission identities and settlement remain intact.
+Employer timesheet CC is a default-enabled configuration choice; PA document routing
+is independent. Neither transport acceptance nor receipt of a monitoring copy proves
+recipient inbox receipt.

@@ -1,3 +1,4 @@
+use rusqlite::OptionalExtension;
 use std::fmt;
 
 use crate::payroll_schedule_repository::PayrollScheduleRepository;
@@ -35,7 +36,7 @@ pub struct PayslipDeliveryIdentity<'a> {
     pub cycle_number: i64,
 }
 
-#[derive(Debug, Default)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct PayslipEmailBundle {
     pub paths: Vec<std::path::PathBuf>,
     pub ordinary_attachment: Option<(std::path::PathBuf, String)>,
@@ -78,6 +79,12 @@ pub fn select_payroll_documents(
         })
         .transpose()?
         .flatten();
+    let revision_marker = ordinary.as_ref().map(|(i,_)| repository.connection.query_row(
+        "SELECT sent_at FROM payslip_revisions WHERE personal_assistant_id=?1 AND payroll_year=?2 AND cycle_number=?3 AND is_current=1",
+        rusqlite::params![pa,i.payroll_year,i.cycle_number],|r|r.get::<_,Option<String>>(0)).optional()).transpose()?.flatten().flatten();
+    if revision_marker.as_deref().is_some_and(|m|m.starts_with("indeterminate:")) {
+        return Err("Payslip revision delivery is indeterminate; review its retained evidence before any retry".into());
+    }
     let ordinary =
         ordinary.map(|(i, p)| (i, registered.as_ref().map(|r| r.0.as_path()).unwrap_or(p)));
     let ordinary = match ordinary {
@@ -94,6 +101,7 @@ pub fn select_payroll_documents(
         match status.map(|s| s.delivery_state).unwrap_or(EmailDeliveryState::Unsent) {
             EmailDeliveryState::Sent { .. } => {},
             EmailDeliveryState::Indeterminate { attempted_at } => return Err(format!("Payslip delivery is indeterminate from {attempted_at}; automatic resend is refused.").into()),
+            EmailDeliveryState::Unsent if revision_marker.is_some() => {}, // Retained revision already has acceptance evidence.
             EmailDeliveryState::Unsent => {
                 crate::archive::validate_payslip_pdf(payslip_path)?;
                 let digest=crate::payroll_document_repository::file_digest(payslip_path)?;
@@ -196,7 +204,8 @@ pub fn send_payroll_bundle<F>(
 where
     F: FnOnce() -> Result<(), Box<dyn std::error::Error>>,
 {
-    // Share the maintenance lock without changing payslip/P45/P60 routing or outcomes.
+    // Share the maintenance lock through transport and finalisation.
+    // Only typed reliable non-acceptance may release a protected reservation.
     let _dispatch = crate::timesheet_delivery::production_lock(&repository.connection)
         .map_err(|e| PayslipDeliveryError::Refused(e.to_string()))?;
     let payslip = bundle.email_types.contains(&"payslip");
@@ -226,6 +235,9 @@ where
         return Err(PayslipDeliveryError::Refused("The payslip attachments could not be protected with a durable indeterminate delivery state before SMTP; nothing was sent.".into()));
     }
     if let Err(error) = send() {
+        if !matches!(error.downcast_ref::<crate::email_service::ProductionSendError>(), Some(crate::email_service::ProductionSendError::NotSent(_))) {
+            return Err(PayslipDeliveryError::Indeterminate(format!("SMTP acceptance is not established: {error}")));
+        }
         return match transition(Some(&marker), None) {
             Ok(true) => Err(PayslipDeliveryError::Transport(format!("Payslip SMTP failed before successful delivery was confirmed: {error}"))),
             result => Err(PayslipDeliveryError::Indeterminate(format!("SMTP reported an error ({error}), but the protected attachment states could not all be restored: {result:?}"))),
@@ -423,7 +435,7 @@ mod tests {
         assert_eq!(bundle.paths.len(), 2);
         assert!(matches!(
             send_payroll_bundle(&repository, 1, None, &bundle, "failed", || Err(
-                "SMTP refused".into()
+                Box::new(crate::email_service::ProductionSendError::NotSent("SMTP rejection".into()))
             )),
             Err(PayslipDeliveryError::Transport(_))
         ));
@@ -454,7 +466,7 @@ mod tests {
         };
         assert!(matches!(
             send_production_payslip_bundle(&repository, identity(), &bundle, "attempt", || Err(
-                "SMTP refused".into()
+                Box::new(crate::email_service::ProductionSendError::NotSent("SMTP rejection".into()))
             )),
             Err(PayslipDeliveryError::Transport(_))
         ));
@@ -584,17 +596,28 @@ mod tests {
     }
 
     #[test]
-    fn smtp_failure_restores_unsent_and_allows_retry() {
+    fn explicit_smtp_rejection_restores_unsent_and_allows_fresh_retry() {
         let (_directory, repository) = repository();
         let error =
             send_production_payslip(&repository, identity(), "2026-09-01T10:00:00Z", || {
-                Err("simulated SMTP refusal".into())
+                Err(Box::new(crate::email_service::ProductionSendError::NotSent("SMTP rejection".into())))
             })
             .unwrap_err();
         assert!(matches!(error, PayslipDeliveryError::Transport(_)));
         assert_eq!(state(&repository), EmailDeliveryState::Unsent);
         send_production_payslip(&repository, identity(), "2026-09-01T10:05:00Z", || Ok(()))
             .unwrap();
+    }
+
+    #[test]
+    fn generic_smtp_error_never_releases_payslip_reservation() {
+        let (_dir, repository)=repository();
+        let error=send_production_payslip(&repository,identity(),"attempt",||Err("generic SMTP error".into())).unwrap_err();
+        assert!(matches!(error,PayslipDeliveryError::Indeterminate(_)));
+        assert!(matches!(state(&repository),EmailDeliveryState::Indeterminate{..}));
+        let mut called=false;
+        assert!(send_production_payslip(&repository,identity(),"retry",||{called=true;Ok(())}).is_err());
+        assert!(!called);
     }
 
     #[test]

@@ -718,7 +718,7 @@ fn cleanup_with_verifier(
 /// Production lock must be held by the caller. Uncertain delivery blocks PA
 /// document mutation until the established audited reconciliation is completed.
 pub(crate) fn ensure_pa_not_uncertain(db: &Connection, pa: i64) -> Result<()> {
-    let blocked: bool = db.query_row("SELECT EXISTS(SELECT 1 FROM timesheet_delivery_attempts a JOIN payroll_timesheets p ON p.id=a.payroll_timesheet_id WHERE p.personal_assistant_id=?1 AND a.outcome='uncertain' AND a.resolved_at IS NULL UNION SELECT 1 FROM payroll_timesheet_email_status WHERE personal_assistant_id=?1 AND sent_at LIKE 'indeterminate:%' UNION SELECT 1 FROM imported_payroll_documents WHERE personal_assistant_id=?1 AND sent_at LIKE 'indeterminate:%')",[pa],|r|r.get(0))?;
+    let blocked: bool = db.query_row("SELECT EXISTS(SELECT 1 FROM timesheet_delivery_attempts a JOIN payroll_timesheets p ON p.id=a.payroll_timesheet_id WHERE p.personal_assistant_id=?1 AND a.outcome='uncertain' AND a.resolved_at IS NULL UNION SELECT 1 FROM payroll_timesheet_email_status WHERE personal_assistant_id=?1 AND sent_at LIKE 'indeterminate:%' UNION SELECT 1 FROM imported_payroll_documents WHERE personal_assistant_id=?1 AND sent_at LIKE 'indeterminate:%' UNION SELECT 1 FROM payslip_revisions WHERE personal_assistant_id=?1 AND sent_at LIKE 'indeterminate:%')",[pa],|r|r.get(0))?;
     if blocked {
         return Err("Delivery uncertain: resolve it through audited delivery/history review before filing or replacing this PA's documents. No document was changed.".into());
     }

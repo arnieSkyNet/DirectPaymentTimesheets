@@ -108,9 +108,9 @@ Payroll-year directory normalisation recognises a final `YYYY to YYYY` component
 
 ## Email architecture
 
-`email_service` composes previews and performs SMTP transport. Production timesheets retain To payroll department, CC employer and BCC PA when available. The dedicated payslip composer uses To PA, BCC employer, no CC and no payroll department recipient; previews and production share it. Ordinary and combined payslip subjects use `Payslip for Week <PAYE week>` from the captured schedule; standalone supplement subjects use `Payroll documents - {Personal Assistant Name}` with neutral body wording. MIME attachment names are canonical names derived from structured type/year/PA/schedule data, never stored revision/hash basenames. Test functions use only configured test addresses and add test markers; payslip test email uses the same canonical filename logic and goes to the configured PA test address.
+`email_service` composes previews and performs SMTP transport. Production timesheets retain To payroll department, optional default-enabled CC employer and BCC PA when available. The dedicated payslip composer uses To PA, BCC employer, no CC and no payroll department recipient; previews and production share it. Ordinary and combined payslip subjects use `Payslip for Week <PAYE week>` from the captured schedule; standalone supplement subjects use `Payroll documents - {Personal Assistant Name}` with neutral body wording. MIME attachment names are canonical names derived from structured type/year/PA/schedule data, never stored revision/hash basenames. Test functions use only configured test addresses and add test markers; payslip test email uses the same canonical filename logic and goes to the configured PA test address.
 
-The GUI's `PendingEmailBatch` captures its kind/stage, selected PA IDs, an optional selected schedule key, material schedule dates and operational-selection revision; it does not capture already resolved email addresses. The existing confirmation window is the production safety boundary. Final dispatch re-fetches and validates the captured schedule and rejects a changed global selection. It never substitutes today's schedule. Timesheet dispatch also preserves candidate digest/state verification; payslip/document dispatch uses the shared selector for an optional ordinary payslip plus reconciled Needs sending P60/P45; eligible standalone documents do not require an ordinary payslip. Before production payslip/document SMTP, selected ordinary-payslip status and document-ID states are durably marked indeterminate; SMTP failure restores unsent state, successful SMTP is followed by definitive sent state, and any crash or failed final write leaves restart-safe uncertainty that refuses automatic resend. Preview and test sends do not touch this state. PA payroll email also includes PAs with unsent imported P60/P45, regardless of employment eligibility. Their document IDs and delivery states are independent of the selected cycle. A batch without a selected schedule can send these documents alone.
+The GUI's `PendingEmailBatch` captures its kind/stage, selected PA IDs, an optional selected schedule key, material schedule dates and operational-selection revision; final confirmation also captures resolved recipient addresses, settings and immutable attachment approval. The existing confirmation window is the production safety boundary. Final dispatch re-fetches and validates the captured schedule and rejects a changed global selection. It never substitutes today's schedule. Timesheet dispatch also preserves candidate digest/state verification; payslip/document dispatch uses the shared selector for an optional ordinary payslip plus reconciled Needs sending P60/P45; eligible standalone documents do not require an ordinary payslip. Before production payslip/document SMTP, selected ordinary-payslip status and document-ID states are durably marked indeterminate; explicit SMTP rejection restores unsent state, successful SMTP is followed by definitive sent state, and any crash or failed final write leaves restart-safe uncertainty that refuses automatic resend. Preview and test sends do not touch this state. PA payroll email also includes PAs with unsent imported P60/P45, regardless of employment eligibility. Their document IDs and delivery states are independent of the selected cycle. A batch without a selected schedule can send these documents alone.
 
 ## Backup and restore architecture
 
@@ -149,7 +149,7 @@ PA matching is token/boundary based after case and separator normalisation, and 
 P60/P45 continue using `imported_payroll_documents` on the email repository's connection. Active supplements are stored directly in their own payroll-year directory, or the yearless base when no year is known; they never create PA-ID directories. Inactive supplements go directly in that directory's shared `Archived` folder. Filenames retain metadata from the P45/P60 heading, remove its unmatched closing bracket and supplied PA-name spans, and append the maintained full name once; numeric revision suffixes remain metadata. Their document IDs and delivery states remain cycle-independent. A P60's year, a prep sheet's year, the current date or Dashboard selection is never borrowed to date another document. Information files use their own explicit filename tax year when available, otherwise the configured information root. Prep sheets use the existing parser and update their own schedule year. P30, bank-transfer slips, memos and general files never enter PA email. Collisions never overwrite different bytes, and `[1]` remains filename data.
 
 
-Mixed bundles protect the ordinary payslip status and specific P60/P45 IDs in one SQLite transaction before SMTP. SMTP failure restores unsent states together; success marks them sent together. Failed final persistence leaves indeterminate states that block automatic resend. Already-sent ordinary payslips are excluded from later document emails. Schedule completion and payroll settlement continue to consult only ordinary payslip status. Standalone P60/P45 bundles bypass the configured subject template and use neutral subject/body wording independent of Dashboard dates; ordinary and combined bundles use `Payslip for Week <week>` from the captured schedule and the configured payslip body. Email Payroll Timesheets retains its configurable timesheet subject. For payroll attachments, MIME filenames are generated from structured document type/year and PA/schedule identity; internal revision/hash storage basenames are never used as recipient-visible names. P45 imports never update employment data.
+Mixed bundles protect the ordinary payslip status and specific P60/P45 IDs in one SQLite transaction before SMTP. Explicit SMTP rejection restores unsent states together; success marks them sent together. Failed final persistence leaves indeterminate states that block automatic resend. Already-sent ordinary payslips are excluded from later document emails. Schedule completion and payroll settlement continue to consult only ordinary payslip status. Standalone P60/P45 bundles bypass the configured subject template and use neutral subject/body wording independent of Dashboard dates; ordinary and combined bundles use `Payslip for Week <week>` from the captured schedule and the configured payslip body. Email Payroll Timesheets retains its configurable timesheet subject. For payroll attachments, MIME filenames are generated from structured document type/year and PA/schedule identity; internal revision/hash storage basenames are never used as recipient-visible names. P45 imports never update employment data.
 
 Information imports reuse identical content at the original or any existing numbered destination, including beyond suffix gaps; different bytes get a collision-safe filename. Reimporting that variant reuses it rather than creating another copy. `[1]` is ordinary filename content, not a collision suffix to strip.
 
@@ -194,8 +194,7 @@ attempt. No database transaction is held during SMTP. Crashes leave durable
 uncertainty; OS locks release automatically. Accepted first sends archive the
 claimed payload once. Resends append attempts against the existing submission.
 `email_service` builds production MIME from the same approved bytes and returns
-conservative accepted/non-accepted/uncertain evidence. Preview/test and payslip
-paths retain their existing semantics. Published older binaries lack a future
+conservative accepted/non-accepted/uncertain evidence. Preview/test paths retain their existing semantics; Stage 8 extends conservative transport handling to payslip/P45/P60 bundles. Published older binaries lack a future
 schema check, so schema36 write guards require a connection function that only
 compatible application connections register.
 
@@ -305,3 +304,43 @@ Deletion compares displayed expected values inside the writer transaction and
 checks retained submission cycles as well as current dates. Protected deletion
 remains refused. UI evidence caches refresh on same-connection changes and external
 SQLite data-version changes; mutation validation never trusts cached values.
+
+
+## Stage 8 email approval and reconciliation
+
+`payroll_delivery` adds an immutable PA bundle ledger alongside the existing
+`timesheet_delivery` history. `PendingEmailBatch` captures exact previews, settings
+fingerprints, attachment identities, SHA-256 hashes and bytes before final
+confirmation. Both the in-memory configuration and saved configuration file are
+fingerprinted. Confirmation shows actual To, CC and BCC recipients and PA bundle
+attachment hashes. Dispatch rejects changed selection, schedule, recipients,
+settings, eligible document set, history or bytes. The common OS lock plus immediate
+SQLite claim transaction repeats validation against current registry identity.
+MIME uses those verified bytes; SMTP never reopens attachment paths.
+
+The production SMTP adapter returns typed accepted, reliably not-sent or uncertain
+outcomes. Generic errors never establish non-acceptance. `payroll_delivery` records
+transport evidence separately from final status, so accepted transport followed by
+a failed database write remains protected and reviewable. Approved unrelated PA
+bundles can continue after an individual dispatch failure; accepted progress remains
+recorded. The old test/compatibility delivery API also keeps generic errors protected.
+
+Dashboard → Timesheet Email Status exposes timesheet and payslip/P45/P60 attempt
+history and legacy uncertainty. Review shows PA, document type/identity, SHA-256,
+known recipients, Message-ID, transport result, timestamps and previous decisions;
+it does not display retained PDF contents or the private email body. A reason,
+application reviewer identity (`local_employer`), timestamp and final confirmation
+are required. Acceptance/external sending, confirmed-not-sent and still-uncertain
+are distinct audited decisions. Inconclusive review retains the sending block.
+History is append-only; resolution does not send email or alter historical payroll.
+
+Settings → Email Settings has **Send a CC copy of timesheet emails to the employer**,
+enabled by default for old and new installations. Timesheets remain To Payroll and
+optionally BCC PA. Only employer CC can be disabled. Payslip/P45/P60 remain To PA,
+BCC employer with no Payroll or CC recipients. An employer copy permits monitoring;
+SMTP acceptance and receipt of that copy do not establish another recipient's inbox
+receipt. Stage 8 uses schema41 and keeps application version 1.0.6.
+
+Legacy orphan/retired payslip revision uncertainty is also reviewable. A review of a
+retired revision never rewrites a later cycle settlement. Known current-revision
+delivery evidence remains authoritative even if its cycle-status record is missing.

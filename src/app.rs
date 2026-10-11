@@ -403,7 +403,7 @@ impl Application {
         additional_note: Option<&str>,
         email_signature: Option<&str>,
     ) -> Result<crate::email_service::PayrollEmailPreview, Box<dyn std::error::Error>> {
-        Ok(crate::email_service::preview_payroll_email(
+        let mut preview = crate::email_service::preview_payroll_email(
             payroll_department_email,
             employer_email,
             personal_assistant_email,
@@ -420,9 +420,12 @@ impl Application {
             additional_note,
             email_signature,
             subject_template,
-        )?)
+        )?;
+        if !self.context.config.email.timesheet_employer_cc { preview.cc = None; }
+        Ok(preview)
     }
 
+    #[allow(dead_code)] // Preview/test adapter; production uses immutable byte-bound dispatch.
     pub fn send_payslip_preview(
         &self,
         preview: crate::email_service::PayrollEmailPreview,

@@ -252,6 +252,9 @@ impl Default for PayrollConfig {
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct EmailConfig {
+    #[serde(default = "default_timesheet_employer_cc")]
+    pub timesheet_employer_cc: bool,
+
     #[serde(default = "default_smtp_transport")]
     pub smtp_transport: String,
 
@@ -279,6 +282,8 @@ pub struct EmailConfig {
     pub timesheet_body: String,
 }
 
+fn default_timesheet_employer_cc() -> bool { true }
+
 fn default_smtp_host() -> String {
     "localhost".to_string()
 }
@@ -298,6 +303,7 @@ fn default_email_body() -> String {
 impl Default for EmailConfig {
     fn default() -> Self {
         Self {
+            timesheet_employer_cc: true,
             smtp_transport: default_smtp_transport(),
             smtp_host: default_smtp_host(),
             smtp_port: default_smtp_port(),
@@ -942,5 +948,31 @@ mod stage5_permission_tests {
             std::fs::read(&path).unwrap(),
             b"original protected configuration"
         );
+    }
+}
+
+#[cfg(test)]
+mod stage8_config_tests {
+    use super::*;
+    #[test]
+    fn employer_timesheet_cc_defaults_enabled_for_new_and_existing_installations() {
+        assert!(EmailConfig::default().timesheet_employer_cc);
+        assert!(
+            toml::from_str::<EmailConfig>("")
+                .unwrap()
+                .timesheet_employer_cc
+        );
+        for enabled in [true, false] {
+            let mut config = AppConfig::default();
+            config.email.timesheet_employer_cc = enabled;
+            let encoded = toml::to_string(&config).unwrap();
+            assert_eq!(
+                toml::from_str::<AppConfig>(&encoded)
+                    .unwrap()
+                    .email
+                    .timesheet_employer_cc,
+                enabled
+            );
+        }
     }
 }

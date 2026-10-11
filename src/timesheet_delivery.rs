@@ -303,12 +303,17 @@ pub fn review(db: &mut Connection, attempt: i64, decision: &str, reason: &str) -
     if reason.trim().is_empty() {
         return Err("Document review evidence and reason before resolving".into());
     }
-    if !["accepted", "confirmed_not_sent"].contains(&decision) {
+    if !["accepted", "confirmed_not_sent", "uncertain"].contains(&decision) {
         return Err("Invalid review decision".into());
     }
     let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
     let record:i64=tx.query_row("SELECT payroll_timesheet_id FROM timesheet_delivery_attempts WHERE id=?1 AND outcome='uncertain' AND resolved_at IS NULL",[attempt],|r|r.get(0))?;
     let at = now();
+    if decision == "uncertain" {
+        tx.execute("INSERT INTO timesheet_inconclusive_reviews(attempt_id,payroll_timesheet_id,reason,actor,reviewed_at,original_evidence) VALUES(?1,?2,?3,'local_employer',?4,'See retained uncertain attempt')",params![attempt,record,reason.trim(),at])?;
+        tx.commit()?;
+        return Ok(());
+    }
     finalise(&tx, attempt, decision == "accepted", &at)?;
     tx.execute("INSERT INTO timesheet_delivery_reviews(attempt_id,payroll_timesheet_id,decision,reason,actor,reviewed_at,original_evidence) VALUES (?1,?2,?3,?4,'local_employer',?5,'See retained uncertain delivery attempt')",params![attempt,record,decision,reason.trim(),at])?;
     tx.execute(
@@ -390,7 +395,7 @@ where
 /// Legacy uncertainty has no attempt to invent. Retain the old marker in review evidence.
 pub fn review_legacy(db: &mut Connection, record: i64, decision: &str, reason: &str) -> Result<()> {
     let _transport_guard = production_lock(db)?;
-    if reason.trim().is_empty() || !["accepted", "confirmed_not_sent"].contains(&decision) {
+    if reason.trim().is_empty() || !["accepted", "confirmed_not_sent", "uncertain"].contains(&decision) {
         return Err("Document a valid review decision and supporting evidence".into());
     }
     let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
@@ -407,6 +412,11 @@ pub fn review_legacy(db: &mut Connection, record: i64, decision: &str, reason: &
         return Err("No unresolved legacy timesheet evidence".into());
     }
     let at = now();
+    if decision == "uncertain" {
+        tx.execute("INSERT INTO timesheet_inconclusive_reviews(attempt_id,payroll_timesheet_id,reason,actor,reviewed_at,original_evidence) VALUES(NULL,?1,?2,'local_employer',?3,?4)",params![record,reason.trim(),at,format!("Legacy snapshot={snapshot:?}; original email statuses={statuses}")])?;
+        tx.commit()?;
+        return Ok(());
+    }
     if decision == "accepted" {
         let (state,document,digest,_)=snapshot.as_ref().ok_or("Cannot establish an immutable submission without its PDF snapshot; retain the block until evidence is recovered")?;
         if state != "submitted" {
@@ -466,6 +476,31 @@ mod tests {
         let intent = capture(&db, 1).unwrap();
         let pdf = bytes(&db, &intent).unwrap();
         (dir, db, intent, pdf)
+    }
+    #[test]
+    fn stage8_inconclusive_timesheet_reviews_are_append_only_and_keep_sending_block() {
+        let (_dir,mut db,intent,pdf)=fixture();
+        execute(&db,&intent,"To: Payroll; CC: employer","<still-uncertain@test.local>",&pdf,|_|Ok(()),||Err(crate::email_service::ProductionSendError::Uncertain("timeout".into()))).unwrap_err();
+        review(&mut db,1,"uncertain","Logs inconclusive").unwrap();
+        review(&mut db,1,"uncertain","Payroll investigation ongoing").unwrap();
+        assert!(blocked(&db,1).unwrap());assert!(capture(&db,1).is_err());
+        assert_eq!(count(&db,"timesheet_inconclusive_reviews"),2);
+        assert!(db.execute("DELETE FROM timesheet_inconclusive_reviews",[]).is_err());
+        review(&mut db,1,"confirmed_not_sent","Reliable external non-acceptance confirmation").unwrap();
+        assert!(!blocked(&db,1).unwrap());
+        assert_eq!(count(&db,"timesheet_delivery_attempts"),1);
+        assert_eq!(count(&db,"timesheet_inconclusive_reviews"),2);
+    }
+    #[test]
+    fn stage8_legacy_timesheet_inconclusive_review_keeps_original_marker() {
+        let (_dir,mut db,_intent,_pdf)=fixture();
+        db.execute("UPDATE payroll_timesheet_snapshot_states SET state='indeterminate',indeterminate_at='legacy' WHERE payroll_timesheet_id=1",[]).unwrap();
+        review_legacy(&mut db,1,"uncertain","No historical SMTP evidence available").unwrap();
+        assert!(capture(&db,1).is_err());
+        assert_eq!(count(&db,"timesheet_delivery_attempts"),0);
+        assert_eq!(db.query_row("SELECT indeterminate_at FROM payroll_timesheet_snapshot_states",[],|r|r.get::<_,String>(0)).unwrap(),"legacy");
+        review_legacy(&mut db,1,"confirmed_not_sent","External audit establishes no acceptance").unwrap();
+        assert!(capture(&db,1).is_ok());
     }
     fn count(db: &Connection, table: &str) -> i64 {
         db.query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |r| r.get(0))

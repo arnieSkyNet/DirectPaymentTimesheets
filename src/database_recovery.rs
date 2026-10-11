@@ -148,6 +148,11 @@ fn validate_current(db: &Connection) -> Result<()> {
         ("timesheet_documents", "id,pdf_bytes"),
         ("timesheet_delivery_attempts", "id,outcome,resolved_at"),
         ("timesheet_delivery_reviews", "id"),
+        ("payroll_bundle_attempts", "id,recipients,message_id,marker,settings_digest"),
+        ("payroll_bundle_attachments", "attempt_id,sha256,bytes"),
+        ("payroll_bundle_events", "attempt_id,outcome"),
+        ("payroll_delivery_reviews", "id,original_evidence,actor"),
+        ("timesheet_inconclusive_reviews", "id,original_evidence"),
         (
             "personal_assistant_sickness_periods",
             "id,start_date,end_date",
@@ -172,7 +177,7 @@ fn validate_current(db: &Connection) -> Result<()> {
     ] {
         db.prepare(&format!("SELECT {columns} FROM {} LIMIT 0", quote(table)))?;
         for operation in ["INSERT", "UPDATE", "DELETE"] {
-            let name = format!("dpt40_{table}_{operation}");
+            let name = format!("dpt41_{table}_{operation}");
             let exists: bool = db.query_row(
                 "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='trigger' AND name=?1)",
                 [name],
@@ -186,6 +191,12 @@ fn validate_current(db: &Connection) -> Result<()> {
     for name in ["imported_hours_inclusion_immutable","imported_hours_inclusion_retained","stage7_imported_correction_immutable","stage7_imported_correction_retained"] {
         let exists:bool=db.query_row("SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='trigger' AND name=?1)",[name],|r|r.get(0))?;
         if !exists {return Err("Required imported-hours audit retention protection is missing; preserve the database for verified recovery".into());}
+    }
+    for table in ["payroll_bundle_attempts", "payroll_bundle_attachments", "payroll_bundle_events", "payroll_delivery_reviews", "timesheet_inconclusive_reviews"] {
+        for operation in ["UPDATE", "DELETE"] {
+            let exists:bool=db.query_row("SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='trigger' AND name=?1)",[format!("stage8_{table}_{operation}")],|r|r.get(0))?;
+            if !exists { return Err("Required immutable delivery evidence protection is missing; preserve the database for verified recovery".into()); }
+        }
     }
     bounded_integrity(db, 100)?;
     Ok(())
@@ -353,6 +364,7 @@ pub(crate) fn unresolved(db: &Connection) -> Result<bool> {
             "imported_payroll_documents",
             "sent_at LIKE 'indeterminate:%'",
         ),
+        ("payslip_revisions", "sent_at LIKE 'indeterminate:%'"),
     ] {
         let exists: bool = db.query_row(
             "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE name=?1)",
@@ -1191,7 +1203,7 @@ mod stage5_integrity_tests {
         let path = dir.path().join("database.sqlite");
         initialise(&path).unwrap();
         let db = crate::database::open(&path).unwrap();
-        db.execute_batch("DROP TRIGGER dpt40_timesheet_delivery_attempts_UPDATE")
+        db.execute_batch("DROP TRIGGER dpt41_timesheet_delivery_attempts_UPDATE")
             .unwrap();
         let before = fingerprint(&db).unwrap();
         assert!(initialise(&path).is_err());

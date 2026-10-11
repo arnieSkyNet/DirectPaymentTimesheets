@@ -37,6 +37,7 @@ pub fn migrate(db: &Connection) -> rusqlite::Result<()> {
 }
 #[cfg(test)]
 pub(crate) fn remove_schema_40_fixture(db: &Connection) {
+    crate::payroll_delivery::remove_schema_41_fixture(db);
     let guards = db
         .prepare("SELECT name FROM sqlite_master WHERE type='trigger' AND (name LIKE 'dpt40_%' OR name LIKE 'stage7_%')")
         .unwrap()

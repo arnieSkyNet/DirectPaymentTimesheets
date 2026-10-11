@@ -221,7 +221,7 @@ The Dashboard groups the workflow into three rows:
 
 - Timesheet and payslip preview, test and production workflows.
 - Period-associated production batches bound to the exact operational payroll period captured at confirmation; standalone P60/P45 need no period.
-- Production timesheet routing from the employer to the payroll department, CC employer and BCC PA when available. Production payslips go individually to each selected PA, BCC the employer, with no CC or payroll-department recipient.
+- Production timesheet routing from the employer to the payroll department, optional default-enabled CC employer and BCC PA when available. Production payslips go individually to each selected PA, BCC the employer, with no CC or payroll-department recipient.
 - Test routing through configured test addresses; payslip test email targets the configured PA test address.
 - Import Payroll Documents classifies the source first. Ordinary payslips use an exact stored cycle, a plausible period chosen by the employer, or a PA archive fallback when no applicable cycle is stored. Unassociated archival payslips are not automatically emailed or used for settlement.
 - UK PAYE tax-week payslip filenames; P60/P45 use their own tax year and PA directory without a payroll cycle.
@@ -294,7 +294,7 @@ User-facing labels use Payroll Week, the four-week date range and pay date. Inte
 - Backup/restore has no scheduling, retention cleanup, compression or cloud integration.
 - Restore accepts only recognised DirectPaymentTimesheets backup directories, not arbitrary SQLite files.
 - Historical annual-leave numeric rule history and sickness reference-period/accrual calculations are not implemented. Guidance's current sickness warning reads legacy weekly sickness hours, not structured sickness dates.
-- Durable CSV content identity/row-to-import provenance, automatic promotion/emailing of archival ordinary payslips, and payslip/supplement indeterminate-email recovery remain future work. Timesheet uncertainty has an explicit audited review workflow.
+- Durable CSV content identity/row-to-import provenance, automatic promotion/emailing of archival ordinary payslips remain future work. Timesheet and payslip/supplement uncertainty have explicit audited review workflows.
 - Authentication, roles and web/mobile access are not implemented. `email_archive` has no actual email-archiving consumer.
 
 The existing user-triggered GitHub **Check for updates** reports newer versions and installation guidance; it does not download or install updates. Users must manually download and install the appropriate GitHub release asset.
@@ -404,3 +404,25 @@ pages and stale-safe deletion; protected shifts cannot be deleted.
 The schema40 upgrade uses the existing verified pre-migration recovery backup and
 isolated installation. Keep external business-file backups separately. No published
 release versions have changed.
+
+
+## Stage 8 resolve uncertain email deliveries (1.0.6/schema41)
+
+Settings → Email Settings includes **Send a CC copy of timesheet emails to the
+employer**, enabled by default. It applies to first sends, corrected timesheets and
+resends. Disabling it removes only employer CC: To Payroll and optional BCC PA stay
+unchanged. Payslip, P45 and P60 email stays To PA and BCC employer.
+
+Final approval shows actual recipients and PA bundle attachment hashes. A changed
+recipient, setting, document, delivery state or attachment invalidates approval.
+Production sends only the approved, reverified bytes and retains immutable attempt
+and attachment evidence. SMTP acceptance is not proof of inbox receipt; receiving
+an employer copy is not proof Payroll or the PA received theirs.
+
+Dashboard → Timesheet Email Status includes separate payslip/P45/P60 and timesheet
+attempt history. Review unresolved and legacy uncertainties there. Record evidence
+and a reason, then confirm acceptance/external sending, reliably confirmed not sent,
+or still uncertain. The application records reviewer identity and time. Still
+uncertain stays blocked; confirmed not sent allows a fresh approval, preserving the
+original attempt. No uncertain email is automatically retried. Legacy records do
+not acquire invented recipients, Message-IDs or attachment evidence.

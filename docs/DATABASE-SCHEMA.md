@@ -2,9 +2,9 @@
 
 ## Scope and versioning
 
-This is the implemented SQLite schema at version 40 (development application version `1.0.6`). It is derived from `create_schema` and migrations in `src/database.rs`; those migrations are authoritative.
+This is the implemented SQLite schema at version 41 (development application version `1.0.6`). It is derived from `create_schema` and migrations in `src/database.rs`; those migrations are authoritative.
 
-`schema_version` contains the current integer version. A new database begins at version 1 and receives each ordered migration through `CURRENT_SCHEMA_VERSION` 40. Existing databases receive a verified pre-upgrade database/configuration backup and an isolated migration chain before transactional installation. Migration 23 removes the short-lived revision-only tables introduced by migration 22 while retaining the operational legacy snapshot tables. Migration 24 adds an explicit contracted/variable hours basis to effective-dated Personal Assistant contracted-hours history while preserving existing records as contracted.
+`schema_version` contains the current integer version. A new database begins at version 1 and receives each ordered migration through `CURRENT_SCHEMA_VERSION` 41. Existing databases receive a verified pre-upgrade database/configuration backup and an isolated migration chain before transactional installation. Migration 23 removes the short-lived revision-only tables introduced by migration 22 while retaining the operational legacy snapshot tables. Migration 24 adds an explicit contracted/variable hours basis to effective-dated Personal Assistant contracted-hours history while preserving existing records as contracted.
 
 During unreleased schema-20 development, an earlier local database shape contained `direct_shifts` without soft-deletion columns or the audit table. Startup therefore performs an idempotent schema-20 compatibility check after normal migrations. When that exact incomplete shape is found, it transactionally rebuilds `direct_shifts` into the final constrained form while preserving IDs and row values, then creates the audit table/indexes. It does not fabricate historical audit events, and repeated startup does not duplicate existing audit rows.
 
@@ -416,7 +416,7 @@ Migration 31 creates the following table and index in one transaction and advanc
 
 Indexes: the primary-key row identity, SQLite's unique index on `stored_path`, and `idx_imported_payroll_documents_pa(personal_assistant_id, id)`. There is no schedule foreign key, cycle column or sentinel cycle. Reimporting the same path/content/PA/type/year retains the same ID and delivery state. A conflicting identity/content is refused; alternate-path copies with identical PA/type/content are conservatively refused rather than creating a new delivery identity, regardless of filename year. Distinct content can be registered separately and starts unknown. File digests are checked again when selecting email attachments.
 
-P60/P45 and an optional ordinary payslip transition atomically across their separate tables on one connection. Documents are definitively marked sent only after successful SMTP. Failed SMTP restores unsent state; failures persisting the final result leave durable indeterminate protection. P60/P45 states never count towards `payroll_schedules.payslips_sent` or evidence settlement. File publication precedes document registration; a registration failure is reported with stored-file paths, and reimport retries registration without overwriting the files.
+P60/P45 and an optional ordinary payslip transition atomically across their separate tables on one connection. Documents are definitively marked sent only after successful SMTP. Reliably established non-acceptance restores unsent state; failures persisting the final result leave durable indeterminate protection. P60/P45 states never count towards `payroll_schedules.payslips_sent` or evidence settlement. File publication precedes document registration; a registration failure is reported with stored-file paths, and reimport retries registration without overwriting the files.
 
 
 Ordinary payslips with no applicable stored cycle may be archived in the PA's year-specific or general Payslip area. They are filesystem evidence only: they are not inserted into `imported_payroll_documents` (which remains P60/P45-only), `payroll_timesheet_email_status`, or payroll settlement tables. Their archival counts and paths are reported by the importer. This fallback requires no additional migration.
@@ -578,7 +578,7 @@ configuration can contain credentials; backup directories are private on Unix.
 
 ## Schema 37: sickness protection and historical information corrections
 
-Stage 2 introduced schema37; current development 1.0.6 uses schema40. The existing verified pre-upgrade backup and isolated migration-chain installation apply to 36→37 and earlier supported databases. Migration37 transactionally rebuilds `personal_assistant_sickness_periods` with `INTEGER PRIMARY KEY AUTOINCREMENT`, preserving existing IDs, dates, PA references and the date index. It does not deduplicate existing records, backfill missing historic sickness dates, change legacy weekly hours or modify payroll settlement/submission records.
+Stage 2 introduced schema37; current development 1.0.6 uses schema41. The existing verified pre-upgrade backup and isolated migration-chain installation apply to 36→37 and earlier supported databases. Migration37 transactionally rebuilds `personal_assistant_sickness_periods` with `INTEGER PRIMARY KEY AUTOINCREMENT`, preserving existing IDs, dates, PA references and the date index. It does not deduplicate existing records, backfill missing historic sickness dates, change legacy weekly hours or modify payroll settlement/submission records.
 
 New tables:
 
@@ -681,3 +681,43 @@ The inclusion ledger’s `authorised` flag records the additional protected-cycl
 acknowledgement; editable-cycle actions still require a reason and explicit approval
 to save. Review signatures bind source versions, counterpart evidence, payroll state
 and financial reconciliation obligations.
+
+
+### Stage 8 conservative PA bundle delivery and review (1.0.6/schema41)
+
+Migration 40→41 is additive and does not access external documents. The existing
+verified database/config backup, committed-WAL snapshot, isolated migration,
+transactional installation and startup validation remain the upgrade boundary.
+No delivery markers, submitted PDFs, corrections, settlement or prior attempts are
+backfilled or rewritten. `dpt41_*` guards reject writers reporting schema below 41.
+The application version remains 1.0.6.
+
+| Table | Columns and purpose |
+|---|---|
+| `payroll_bundle_attempts` | `id`, `personal_assistant_id`, nullable `payroll_year`/`cycle_number`, unique `marker` and `message_id`, `intent` (approved From, To/CC/BCC, subject and body), `started_at`, exact `recipients`, `settings_digest`. Immutable dispatch claim. |
+| `payroll_bundle_attachments` | `(attempt_id, ordinal)` primary key; nullable supplement `document_id`, `document_type`, nullable `document_year`, `path`, recipient-visible `filename`, 64-character `sha256`, immutable `bytes` BLOB. Ordinary identity is bound to the attempt PA/year/cycle. |
+| `payroll_bundle_events` | `id`, `attempt_id`, `outcome` (`accepted`, `confirmed_not_sent`, `uncertain`), `detail`, `recorded_at`; unique transport result per attempt. A claim with no result is interrupted/uncertain. |
+| `payroll_delivery_reviews` | `id`, either `attempt_id` or `legacy_target`, `original_evidence`, `decision` (`accepted`, `confirmed_not_sent`, `uncertain`), nonblank `reason` and `actor`, `reviewed_at`. Append-only; at most one terminal decision per attempt. |
+| `timesheet_inconclusive_reviews` | `id`, nullable `attempt_id`, `payroll_timesheet_id`, nonblank `reason`, `actor`, `reviewed_at`, `original_evidence`. Adds still-uncertain reviews without changing the established timesheet attempt/review schema. |
+
+Every new table rejects UPDATE and DELETE. Startup requires these retention
+triggers and current schema guards. Attempts and attachment evidence are committed
+in the same immediate transaction as the ordinary/supplement indeterminate
+reservations. No SQLite transaction spans SMTP; the common cross-process OS lock
+spans validation, claim, transport, result recording and finalisation. Reconciliation
+and replacement cannot compete with active transport.
+
+Transport acceptance is recorded independently before final delivery-marker
+updates. If result recording or finalisation fails, reservations remain protected.
+Only explicit typed non-acceptance releases them automatically. Unknown errors,
+timeouts and interrupted claims stay blocked. Reviews retain the original outcome
+and evidence. Accepted transport evidence cannot be contradicted by a not-sent
+review. A confirmed-not-sent decision permits a new approval and a new attempt;
+still-uncertain reviews retain the block. Legacy review targets use existing
+status/document/revision IDs and preserve their original markers; unknown recipients,
+Message-ID and dispatched attachment bytes remain unknown.
+
+Employer timesheet CC is configuration, not a database column:
+`email.timesheet_employer_cc` defaults to true when absent. It applies only to
+production timesheet previews/dispatch, including corrected documents and resends.
+Changes invalidate pending approval; retained attempts never change their recipients.

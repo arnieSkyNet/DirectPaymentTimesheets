@@ -254,6 +254,7 @@ impl DirectPaymentApp {
         &self,
         batch: &PendingEmailBatch,
     ) -> Result<ProductionReport, Box<dyn std::error::Error>> {
+        if self.email_settings_digest()? != batch.approved_settings { return Err("Email settings changed; approve a fresh selection".into()); }
         let schedule = self
             .validated_schedule_for_email_batch(batch)?
             .ok_or("Timesheets require a period")?;
@@ -596,11 +597,13 @@ mod payroll_production_tests;
 
 impl DirectPaymentApp {
     fn draw_delivery_attempt_history(&mut self, ui: &mut egui::Ui) {
+        self.draw_bundle_delivery_history(ui);
         let result = (|| -> crate::payroll_evidence::Result<_> {
             let db = crate::payroll_evidence::open(&self.application)?;
             let history = crate::timesheet_delivery::history(&db)?;
-            let legacy=db.prepare("SELECT p.id,p.payroll_year||' payroll period '||p.cycle_number FROM payroll_timesheets p LEFT JOIN payroll_timesheet_snapshot_states s ON s.payroll_timesheet_id=p.id WHERE (s.state='indeterminate' OR EXISTS(SELECT 1 FROM payroll_timesheet_email_status e WHERE e.personal_assistant_id=p.personal_assistant_id AND e.payroll_year=p.payroll_year AND e.cycle_number=p.cycle_number AND e.email_type='timesheet' AND e.sent_at LIKE 'indeterminate:%')) AND NOT EXISTS(SELECT 1 FROM timesheet_delivery_attempts a WHERE a.payroll_timesheet_id=p.id AND a.outcome='uncertain' AND a.resolved_at IS NULL)")?.query_map([],|r|Ok((r.get::<_,i64>(0)?,r.get::<_,String>(1)?)))?.collect::<rusqlite::Result<Vec<_>>>()?;
-            let reviews=db.prepare("SELECT payroll_timesheet_id,decision,reason,actor,reviewed_at,original_evidence FROM timesheet_delivery_reviews WHERE attempt_id IS NULL ORDER BY id DESC")?.query_map([],|r|Ok(format!("Timesheet {}: {} — {} — {} at {}. Original: {}",r.get::<_,i64>(0)?,r.get::<_,String>(1)?,r.get::<_,String>(2)?,r.get::<_,String>(3)?,r.get::<_,String>(4)?,r.get::<_,String>(5)?)))?.collect::<rusqlite::Result<Vec<_>>>()?;
+            let legacy=db.prepare("SELECT p.id,COALESCE((SELECT first_name||' '||surname FROM personal_assistants WHERE id=p.personal_assistant_id),'PA '||p.personal_assistant_id)||' — '||p.payroll_year||' payroll period '||p.cycle_number||'; retained SHA-256 '||COALESCE(s.pdf_sha256,'unknown') FROM payroll_timesheets p LEFT JOIN payroll_timesheet_snapshot_states s ON s.payroll_timesheet_id=p.id WHERE (s.state='indeterminate' OR EXISTS(SELECT 1 FROM payroll_timesheet_email_status e WHERE e.personal_assistant_id=p.personal_assistant_id AND e.payroll_year=p.payroll_year AND e.cycle_number=p.cycle_number AND e.email_type='timesheet' AND e.sent_at LIKE 'indeterminate:%')) AND NOT EXISTS(SELECT 1 FROM timesheet_delivery_attempts a WHERE a.payroll_timesheet_id=p.id AND a.outcome='uncertain' AND a.resolved_at IS NULL)")?.query_map([],|r|Ok((r.get::<_,i64>(0)?,r.get::<_,String>(1)?)))?.collect::<rusqlite::Result<Vec<_>>>()?;
+            let mut reviews=db.prepare("SELECT payroll_timesheet_id,decision,reason,actor,reviewed_at,original_evidence FROM timesheet_delivery_reviews WHERE attempt_id IS NULL ORDER BY id DESC")?.query_map([],|r|Ok(format!("Timesheet {}: {} — {} — {} at {}. Original: {}",r.get::<_,i64>(0)?,r.get::<_,String>(1)?,r.get::<_,String>(2)?,r.get::<_,String>(3)?,r.get::<_,String>(4)?,r.get::<_,String>(5)?)))?.collect::<rusqlite::Result<Vec<_>>>()?;
+            reviews.extend(db.prepare("SELECT payroll_timesheet_id,reason,actor,reviewed_at,original_evidence FROM timesheet_inconclusive_reviews WHERE attempt_id IS NULL ORDER BY id DESC")?.query_map([],|r|Ok(format!("Legacy timesheet {}: still uncertain — {} — {} at {}. Original: {}",r.get::<_,i64>(0)?,r.get::<_,String>(1)?,r.get::<_,String>(2)?,r.get::<_,String>(3)?,r.get::<_,String>(4)?)))?.collect::<rusqlite::Result<Vec<_>>>()?);
             Ok((history, legacy, reviews))
         })();
         match result {
@@ -613,6 +616,12 @@ impl DirectPaymentApp {
                 for entry in history {
                     ui.collapsing(format!("Attempt {} — {} — {} — {}",entry.id,entry.period,entry.classification,entry.outcome),|ui|{
                         ui.label(format!("Document {}; submission {:?}; {}; Message-ID {}",entry.document,entry.submission,entry.recipients,entry.message_id));
+                        if let Ok(db)=crate::payroll_evidence::open(&self.application) {
+                            if let Ok(hash)=db.query_row("SELECT pdf_sha256 FROM timesheet_documents WHERE id=?1",[entry.document],|r|r.get::<_,String>(0)) { ui.label(format!("SHA-256 {hash}")); }
+                            if let Ok(mut stmt)=db.prepare("SELECT reason||' — '||actor||' at '||reviewed_at FROM timesheet_inconclusive_reviews WHERE attempt_id=?1 ORDER BY id") {
+                                if let Ok(rows)=stmt.query_map([entry.id],|r|r.get::<_,String>(0)) { for note in rows.flatten() {ui.label(format!("Still uncertain: {note}"));} }
+                            }
+                        }
                         ui.label(format!("Started {}; completed {}. {}",entry.started,entry.completed.as_deref().unwrap_or("not established"),entry.detail));
                         if let Some(resolution)=entry.resolution {ui.label(format!("Audited review: {resolution}"));}
                         else if entry.outcome=="uncertain" {self.draw_attempt_review_controls(ui,entry.id,false);}
@@ -641,7 +650,7 @@ impl DirectPaymentApp {
                 ui.label(format!("{} {id}: {decision}",if legacy {"Legacy timesheet"} else {"Delivery attempt"}));
                 ui.label(review_context.as_ref().map(String::as_str).unwrap_or("Review identity unavailable; cannot confirm"));
                 ui.label(&reason);
-                ui.label("Confirm only with evidence establishing acceptance or non-acceptance. Inconclusive evidence must remain blocked. This decision is permanently recorded and does not send email.");
+                ui.label("Accepted records SMTP acceptance or externally confirmed sending, not recipient receipt. Confirm only what the evidence establishes. Still uncertain records the review and retains the block. This decision is permanently recorded and does not send email.");
                 confirm=ui.add_enabled(review_context.is_ok(),egui::Button::new("Confirm documented decision")).clicked();
                 cancel=ui.button("Cancel review").clicked();
             });
@@ -671,6 +680,9 @@ impl DirectPaymentApp {
         ui.text_edit_multiline(&mut self.delivery_review_reason);
         let ready = !self.delivery_review_reason.trim().is_empty();
         ui.horizontal(|ui| {
+            if ui.add_enabled(ready, egui::Button::new("Review: still uncertain")).clicked() {
+                self.pending_delivery_review = Some((id,"uncertain".into(),self.delivery_review_reason.clone(),legacy));
+            }
             if ui
                 .add_enabled(ready, egui::Button::new("Review: acceptance established"))
                 .clicked()
@@ -697,5 +709,77 @@ impl DirectPaymentApp {
                 ));
             }
         });
+    }
+}
+
+impl DirectPaymentApp {
+    fn draw_bundle_delivery_history(&mut self, ui: &mut egui::Ui) {
+        let result = crate::payroll_evidence::open(&self.application)
+            .and_then(|db| crate::payroll_delivery::history(&db));
+        ui.collapsing("Payslip / P45 / P60 transport attempts and uncertainty review", |ui| {
+            ui.label("SMTP acceptance or externally confirmed sending does not prove recipient inbox receipt. Uncertain attempts remain blocked until an evidenced decision is confirmed.");
+            match result {
+                Err(e) => {ui.label(format!("Delivery evidence unavailable: {e}"));}
+                Ok(targets) => {
+                    for target in targets {
+                        ui.collapsing(&target.label, |ui| {
+                            ui.label(&target.evidence);
+                            if target.unresolved {
+                                ui.label("Record the evidence and reason for this review. Reviewer: local_employer (application identity).");
+                                ui.text_edit_multiline(&mut self.delivery_review_reason);
+                                let ready=!self.delivery_review_reason.trim().is_empty();
+                                for (label,decision) in [("Review: acceptance or external sending established","accepted"),("Review: reliably confirmed not sent","confirmed_not_sent"),("Review: still uncertain","uncertain")] {
+                                    if ui.add_enabled(ready,egui::Button::new(label)).clicked() {
+                                        self.pending_bundle_review=Some((target.key.clone(),decision.into(),self.delivery_review_reason.clone(),target.evidence.clone()));
+                                    }
+                                }
+                            }
+                        });
+                    }
+                    if let Ok(db)=crate::payroll_evidence::open(&self.application) {
+                        if let Ok(mut stmt)=db.prepare("SELECT legacy_target,decision,reason,actor,reviewed_at,original_evidence FROM payroll_delivery_reviews WHERE legacy_target IS NOT NULL ORDER BY id") {
+                            if let Ok(rows)=stmt.query_map([],|r|Ok(format!("{}: {} — {} — {} at {}. Original evidence: {}",r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,String>(2)?,r.get::<_,String>(3)?,r.get::<_,String>(4)?,r.get::<_,String>(5)?))) { for row in rows.flatten() { ui.label(row); } }
+                        }
+                    }
+                }
+            }
+        });
+        if let Some((key, decision, reason, evidence)) = self.pending_bundle_review.clone() {
+            let mut confirm = false;
+            let mut cancel = false;
+            egui::Window::new("Confirm audited PA document delivery review").collapsible(false).show(ui.ctx(),|ui| {
+                ui.label(format!("{key}: {decision}"));
+                ui.label(&evidence);
+                ui.label(format!("Reason/evidence: {reason}
+Reviewer: local_employer; timestamp recorded on confirmation."));
+                ui.label("Acceptance / externally confirmed sending does not establish inbox receipt. A not-sent decision enables only a fresh approval. Still uncertain retains the sending block. This review does not send email and cannot change historical PDFs or settlement.");
+                confirm=ui.button("Confirm documented decision").clicked();
+                cancel=ui.button("Cancel review").clicked();
+            });
+            if confirm {
+                let result = crate::payroll_evidence::open(&self.application).and_then(|mut db| {
+                    crate::payroll_delivery::review(
+                        &mut db,
+                        &key,
+                        &evidence,
+                        &decision,
+                        &reason,
+                        "local_employer",
+                    )
+                });
+                self.status_message = match result {
+                    Ok(()) => {
+                        "Audited review recorded. Start a fresh selection for any eligible send."
+                            .into()
+                    }
+                    Err(e) => format!("Review refused; protection retained: {e}"),
+                };
+                self.pending_bundle_review = None;
+                self.delivery_review_reason.clear();
+                self.clear_pending_email_batch();
+            } else if cancel {
+                self.pending_bundle_review = None;
+            }
+        }
     }
 }

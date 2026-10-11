@@ -2,7 +2,7 @@ use std::path::Path;
 
 use rusqlite::{Connection, Result};
 
-pub const CURRENT_SCHEMA_VERSION: i64 = 40;
+pub const CURRENT_SCHEMA_VERSION: i64 = 41;
 
 pub fn initialise_database(database_path: &Path) -> crate::database_recovery::Result<()> {
     crate::database_recovery::initialise(database_path)
@@ -291,6 +291,9 @@ fn apply_migrations(connection: &Connection, target: i64) -> Result<()> {
     }
     if current_version < 40 && target >= 40 {
         crate::imported_hours::migrate(connection)?;
+    }
+    if current_version < 41 && target >= 41 {
+        crate::payroll_delivery::migrate(connection)?;
     }
     Ok(())
 }

@@ -972,7 +972,7 @@ mod tests {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum ProductionSendError {
     NotSent(String),
     Uncertain(String),
@@ -1039,4 +1039,43 @@ pub fn send_prepared_timesheet(
             ProductionSendError::Uncertain(error.to_string())
         }
     })
+}
+
+impl std::fmt::Display for ProductionSendError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::NotSent(s) | Self::Uncertain(s) => f.write_str(s),
+        }
+    }
+}
+impl std::error::Error for ProductionSendError {}
+
+/// MIME is built only from bytes captured and verified at approval.
+pub fn prepare_bundle_message(
+    preview: &PayrollEmailPreview,
+    attachments: &[Vec<u8>],
+    message_id: &str,
+) -> Result<Message, Box<dyn Error>> {
+    if attachments.is_empty() || attachments.len() != preview.attachment_filenames.len() {
+        return Err("Attachment identity count changed".into());
+    }
+    let mut builder = Message::builder()
+        .from(preview.from.parse::<Mailbox>()?)
+        .to(preview.to.parse::<Mailbox>()?)
+        .subject(&preview.subject)
+        .message_id(Some(message_id.to_owned()));
+    if let Some(cc) = &preview.cc {
+        builder = builder.cc(cc.parse::<Mailbox>()?);
+    }
+    if let Some(bcc) = &preview.bcc {
+        builder = builder.bcc(bcc.parse::<Mailbox>()?);
+    }
+    let mut parts = MultiPart::mixed().singlepart(SinglePart::plain(preview.body.clone()));
+    for (bytes, filename) in attachments.iter().zip(&preview.attachment_filenames) {
+        parts = parts.singlepart(
+            Attachment::new(filename.clone())
+                .body(bytes.clone(), ContentType::parse("application/pdf")?),
+        );
+    }
+    Ok(builder.multipart(parts)?)
 }
