@@ -977,6 +977,7 @@ fn archive_existing(
                         }
                     };
                     let attempt = (|| -> Result<()> {
+                        let source = registered_source(db, &source, &bases)?;
                         let name = source
                             .file_name()
                             .and_then(|n| n.to_str())
@@ -1096,6 +1097,47 @@ fn archive_existing(
     }
     recovery::finish_scan(db, pa.id, messages)?;
     Ok(())
+}
+
+/// Keep the original registry spelling in the journal. Filesystem equality does
+/// not imply SQL string equality (notably Windows ordinary/verbatim paths).
+fn registered_source(db: &Connection, scanned: &Path, bases: &[PathBuf]) -> Result<PathBuf> {
+    checked_path(scanned)?;
+    let normal = normalised_path(scanned)?;
+    if !bases.iter().any(|base| normal.starts_with(base)) {
+        return Err("Scanned file outside managed roots".into());
+    }
+    let mut statement = db.prepare("SELECT stored_path,personal_assistant_id FROM imported_payroll_documents UNION SELECT stored_path,personal_assistant_id FROM payslip_revisions UNION SELECT s.pdf_path,p.personal_assistant_id FROM payroll_timesheet_snapshot_states s JOIN payroll_timesheets p ON p.id=s.payroll_timesheet_id UNION SELECT s.pdf_path,p.personal_assistant_id FROM payroll_submissions s JOIN payroll_timesheets p ON p.id=s.payroll_timesheet_id")?;
+    let registrations = statement
+        .query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    let mut matches = std::collections::BTreeSet::new();
+    for (path, owner) in registrations {
+        let candidate = PathBuf::from(&path);
+        if !candidate.try_exists()? {
+            continue;
+        }
+        // Never follow an unvalidated alias, including a symlink or traversal.
+        checked_path(&candidate)?;
+        let canonical = normalised_path(&candidate)?;
+        if bases.iter().any(|base| canonical.starts_with(base))
+            && same_file::is_same_file(scanned, &candidate)?
+        {
+            matches.insert((path, owner));
+        }
+    }
+    if matches.len() > 1 {
+        return Err(
+            "Ambiguous registered path aliases or conflicting ownership; originals retained".into(),
+        );
+    }
+    Ok(matches
+        .into_iter()
+        .next()
+        .map(|(path, _)| PathBuf::from(path))
+        .unwrap_or_else(|| scanned.to_path_buf()))
 }
 
 #[cfg(test)]

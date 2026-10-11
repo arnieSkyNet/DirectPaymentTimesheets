@@ -1,6 +1,60 @@
 use super::super::tests::{fixture, pa, pdf, register};
 use super::*;
 
+#[test]
+fn registered_alias_resolution_preserves_spelling_and_rejects_ambiguity_and_ownership_conflicts() {
+    let (_dir, app, movement, bases) = setup();
+    let scanned = movement.source.canonicalize().unwrap();
+    assert_eq!(
+        super::super::registered_source(db(&app), &scanned, &bases).unwrap(),
+        movement.source
+    );
+    let alias = register(&app, 4, "p60", "2026/27", "Alias.pdf");
+    fs::remove_file(&alias).unwrap();
+    fs::hard_link(&movement.source, &alias).unwrap();
+    assert!(super::super::registered_source(db(&app), &scanned, &bases)
+        .unwrap_err()
+        .to_string()
+        .contains("Ambiguous"));
+    db(&app)
+        .execute(
+            "UPDATE imported_payroll_documents SET personal_assistant_id=5 WHERE stored_path=?1",
+            [alias.to_str()],
+        )
+        .unwrap();
+    assert!(super::super::registered_source(db(&app), &scanned, &bases).is_err());
+}
+
+#[cfg(windows)]
+#[test]
+fn windows_ordinary_registration_is_relocated_from_verbatim_scan() {
+    let (_dir, app, movement, bases) = setup();
+    let canonical = movement.source.canonicalize().unwrap();
+    let ordinary = PathBuf::from(canonical.to_str().unwrap().strip_prefix(r"\\?\").unwrap());
+    db(&app)
+        .execute(
+            "UPDATE imported_payroll_documents SET stored_path=?1 WHERE stored_path=?2",
+            params![ordinary.to_str(), movement.source.to_str()],
+        )
+        .unwrap();
+    let resolved = super::super::registered_source(db(&app), &canonical, &bases).unwrap();
+    assert_eq!(resolved, ordinary);
+    let move_alias = Move {
+        source: resolved,
+        ..movement
+    };
+    move_file(db(&app), 4, &bases, &move_alias).unwrap();
+    assert!(!ordinary.exists());
+    let stored: String = db(&app)
+        .query_row(
+            "SELECT stored_path FROM imported_payroll_documents WHERE personal_assistant_id=4",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(Path::new(&stored), move_alias.destination);
+}
+
 fn setup() -> (tempfile::TempDir, Application, Move, Vec<PathBuf>) {
     let (dir, app) = fixture();
     fs::create_dir_all(&app.context.config.folders.pdf_output).unwrap();

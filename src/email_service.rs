@@ -987,6 +987,8 @@ fn dispatch_message(
     #[cfg(test)] trusted_tls: Option<TlsParameters>,
 ) -> Result<(), ProductionSendError> {
     use crate::config::SmtpSecurity;
+    #[cfg(test)]
+    let fixture_tls_diagnostics = trusted_tls.is_some();
     let (host, port, security, authenticate) = match config.smtp_transport.as_str() {
         "Local SMTP Server" => ("localhost", 25, SmtpSecurity::Plaintext, false),
         "SMTP Server" => (
@@ -1026,11 +1028,21 @@ fn dispatch_message(
         },
         None,
     )
-    .map_err(|e| ProductionSendError::NotSent(safe_smtp_diagnostic("connection", &e)))?;
+    .map_err(|e| {
+        #[cfg(test)]
+        if fixture_tls_diagnostics {
+            smtp_fixture_tls_error("connection", &e);
+        }
+        ProductionSendError::NotSent(safe_smtp_diagnostic("connection", &e))
+    })?;
     if security == SmtpSecurity::RequiredStarttls {
         connection
             .starttls(tls.as_ref().expect("TLS parameters"), &hello)
             .map_err(|e| {
+                #[cfg(test)]
+                if fixture_tls_diagnostics {
+                    smtp_fixture_tls_error("required STARTTLS", &e);
+                }
                 ProductionSendError::NotSent(safe_smtp_diagnostic("required STARTTLS", &e))
             })?;
     }
@@ -1059,6 +1071,26 @@ fn dispatch_message(
                 ProductionSendError::Uncertain(detail)
             }
         })
+}
+
+// Only synthetic TLS-injection tests enable this. Before AUTH/DATA there are
+// no credential or message bytes in the TLS error chain. Production retains
+// its existing redacted diagnostic path.
+#[cfg(test)]
+fn smtp_fixture_tls_error(phase: &str, error: &lettre::transport::smtp::Error) {
+    use std::error::Error;
+    eprintln!(
+        "SMTP synthetic fixture {phase}: {}",
+        safe_smtp_diagnostic(phase, error)
+    );
+    let mut source = error.source();
+    for _ in 0..8 {
+        let Some(detail) = source else { break };
+        if let Some(native) = detail.downcast_ref::<native_tls::Error>() {
+            eprintln!("SMTP synthetic native TLS cause: {native:?}");
+        }
+        source = detail.source();
+    }
 }
 
 /// Server text and chained errors are untrusted: retain only phase, class and

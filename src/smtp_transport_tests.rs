@@ -10,7 +10,9 @@ impl<T: Read + Write> Wire for T {}
 struct Fixture {
     port: u16,
     commands: Arc<Mutex<Vec<(bool, String)>>>,
-    worker: std::thread::JoinHandle<()>,
+    worker: Option<std::thread::JoinHandle<()>>,
+    events: Arc<Mutex<Vec<String>>>,
+    stop: Arc<std::sync::atomic::AtomicBool>,
 }
 impl Fixture {
     fn new(mode: SmtpSecurity, advertise_tls: bool, reject_auth: bool, lose_ack: bool) -> Self {
@@ -18,6 +20,11 @@ impl Fixture {
         let port = listener.local_addr().unwrap().port();
         let commands = Arc::new(Mutex::new(Vec::new()));
         let captured = commands.clone();
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let trace = events.clone();
+        let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let stopping = stop.clone();
+        listener.set_nonblocking(true).unwrap();
         let identity = native_tls::Identity::from_pkcs12(
             include_bytes!("../tests/fixtures/smtp/server.p12"),
             "synthetic-test-only",
@@ -25,23 +32,57 @@ impl Fixture {
         .unwrap();
         let acceptor = native_tls::TlsAcceptor::new(identity).unwrap();
         let worker = std::thread::spawn(move || {
-            let (socket, _) = listener.accept().unwrap();
+            let socket = loop {
+                if stopping.load(std::sync::atomic::Ordering::Relaxed) {
+                    return;
+                }
+                match listener.accept() {
+                    Ok((socket, _)) => break socket,
+                    Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                        std::thread::sleep(std::time::Duration::from_millis(10))
+                    }
+                    Err(e) => {
+                        trace.lock().unwrap().push(format!("accept: {e}"));
+                        return;
+                    }
+                }
+            };
+            // Accepted sockets must be blocking regardless of listener flag inheritance.
+            socket.set_nonblocking(false).unwrap();
             socket
-                .set_read_timeout(Some(std::time::Duration::from_secs(3)))
+                .set_read_timeout(Some(std::time::Duration::from_secs(15)))
                 .unwrap();
             socket
-                .set_write_timeout(Some(std::time::Duration::from_secs(3)))
+                .set_write_timeout(Some(std::time::Duration::from_secs(15)))
                 .unwrap();
             let mut encrypted = mode == SmtpSecurity::ImplicitTls;
             let mut wire: Box<dyn Wire> = if encrypted {
+                trace
+                    .lock()
+                    .unwrap()
+                    .push("implicit TLS server handshake".into());
                 match acceptor.accept(socket) {
-                    Ok(stream) => Box::new(stream),
-                    Err(_) => return,
+                    Ok(stream) => {
+                        trace
+                            .lock()
+                            .unwrap()
+                            .push("TLS server handshake complete".into());
+                        Box::new(stream)
+                    }
+                    Err(e) => {
+                        trace.lock().unwrap().push(handshake_detail(e));
+                        return;
+                    }
                 }
             } else {
                 Box::new(socket)
             };
-            if wire.write_all(b"220 synthetic SMTP\r\n").is_err() {
+            trace.lock().unwrap().push("greeting".into());
+            if let Err(e) = wire
+                .write_all(b"220 synthetic SMTP\r\n")
+                .and_then(|_| wire.flush())
+            {
+                trace.lock().unwrap().push(format!("greeting write: {e}"));
                 return;
             }
             let mut in_data = false;
@@ -49,8 +90,16 @@ impl Fixture {
                 let mut line = Vec::new();
                 loop {
                     let mut byte = [0];
-                    if !matches!(wire.read(&mut byte), Ok(1)) {
-                        return;
+                    match wire.read(&mut byte) {
+                        Ok(1) => {}
+                        Ok(_) => {
+                            trace.lock().unwrap().push("peer EOF".into());
+                            return;
+                        }
+                        Err(e) => {
+                            trace.lock().unwrap().push(format!("read: {e}"));
+                            return;
+                        }
                     }
                     line.push(byte[0]);
                     if byte[0] == b'\n' {
@@ -58,7 +107,12 @@ impl Fixture {
                     }
                 }
                 let line = String::from_utf8(line).unwrap();
-                captured.lock().unwrap().push((encrypted, line.clone()));
+                if !in_data || line == ".\r\n" {
+                    captured
+                        .lock()
+                        .unwrap()
+                        .push((encrypted, command_phase(&line).into()));
+                }
                 if in_data && line != ".\r\n" {
                     continue;
                 }
@@ -69,11 +123,31 @@ impl Fixture {
                         b"250-synthetic\r\n250 AUTH PLAIN LOGIN\r\n"
                     }
                 } else if line.starts_with("STARTTLS") {
-                    wire.write_all(b"220 upgrade\r\n").unwrap();
+                    trace
+                        .lock()
+                        .unwrap()
+                        .push("STARTTLS server handshake".into());
+                    if let Err(e) = wire
+                        .write_all(b"220 upgrade\r\n")
+                        .and_then(|_| wire.flush())
+                    {
+                        trace
+                            .lock()
+                            .unwrap()
+                            .push(format!("STARTTLS response: {e}"));
+                        return;
+                    }
                     wire = match acceptor.accept(wire) {
                         Ok(stream) => Box::new(stream),
-                        Err(_) => return,
+                        Err(e) => {
+                            trace.lock().unwrap().push(handshake_detail(e));
+                            return;
+                        }
                     };
+                    trace
+                        .lock()
+                        .unwrap()
+                        .push("TLS server handshake complete".into());
                     encrypted = true;
                     continue;
                 } else if line.starts_with("AUTH") {
@@ -87,6 +161,10 @@ impl Fixture {
                     b"354 content\r\n"
                 } else if line == ".\r\n" {
                     if lose_ack {
+                        trace
+                            .lock()
+                            .unwrap()
+                            .push("DATA received; acknowledgement deliberately withheld".into());
                         return;
                     }
                     in_data = false;
@@ -94,7 +172,12 @@ impl Fixture {
                 } else {
                     b"250 ok\r\n"
                 };
-                if wire.write_all(response).is_err() {
+                trace.lock().unwrap().push(format!(
+                    "response status {}",
+                    std::str::from_utf8(&response[..3]).unwrap()
+                ));
+                if let Err(e) = wire.write_all(response).and_then(|_| wire.flush()) {
+                    trace.lock().unwrap().push(format!("response write: {e}"));
                     return;
                 }
             }
@@ -102,14 +185,60 @@ impl Fixture {
         Self {
             port,
             commands,
-            worker,
+            worker: Some(worker),
+            events,
+            stop,
         }
     }
-    fn finish(self) -> Vec<(bool, String)> {
-        self.worker.join().unwrap();
+    fn join(&mut self) {
+        self.stop.store(true, std::sync::atomic::Ordering::Relaxed);
+        if let Some(worker) = self.worker.take() {
+            let outcome = if worker.join().is_ok() {
+                "worker completed"
+            } else {
+                "worker panicked"
+            };
+            self.events.lock().unwrap().push(outcome.into());
+        }
+    }
+    fn finish(mut self) -> Vec<(bool, String)> {
+        self.join();
+        assert!(
+            !self
+                .events
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|event| event == "worker panicked"),
+            "SMTP fixture worker panicked"
+        );
         self.commands.lock().unwrap().clone()
     }
 }
+impl Drop for Fixture {
+    fn drop(&mut self) {
+        self.join();
+        eprintln!(
+            "SMTP fixture: events={:?}; command phases={:?}",
+            self.events.lock().unwrap(),
+            self.commands.lock().unwrap()
+        );
+    }
+}
+// Never retain AUTH payloads, addresses, headers or DATA contents.
+fn command_phase(line: &str) -> &'static str {
+    for phase in ["EHLO", "STARTTLS", "AUTH", "MAIL", "RCPT", "DATA", "QUIT"] {
+        if line.starts_with(phase) {
+            return phase;
+        }
+    }
+    if line == ".\r\n" {
+        "DATA terminator"
+    } else {
+        "other command [redacted]"
+    }
+}
+
 fn config(port: u16, mode: SmtpSecurity) -> EmailConfig {
     let mut config = EmailConfig::default();
     config.smtp_transport = "SMTP Server".into();
@@ -140,25 +269,30 @@ fn trusted(domain: &str) -> TlsParameters {
 }
 
 #[test]
-fn trusted_starttls_and_implicit_tls_encrypt_authentication_and_message() {
-    for mode in [SmtpSecurity::RequiredStarttls, SmtpSecurity::ImplicitTls] {
-        let fixture = Fixture::new(mode, true, false, false);
-        dispatch_message(
-            &config(fixture.port, mode),
-            &message(),
-            Some(trusted("localhost")),
-        )
-        .unwrap();
-        let commands = fixture.finish();
-        assert!(commands
-            .iter()
-            .any(|(encrypted, line)| *encrypted && line.starts_with("AUTH")));
-        assert!(commands
-            .iter()
-            .any(|(encrypted, line)| *encrypted && line.starts_with("MAIL")));
-        assert!(!commands.iter().any(|(encrypted, line)| !encrypted
-            && (line.starts_with("AUTH") || line.starts_with("MAIL") || line.starts_with("DATA"))));
-    }
+fn trusted_starttls_encrypts_authentication_and_message() {
+    trusted_transport(SmtpSecurity::RequiredStarttls);
+}
+#[test]
+fn trusted_implicit_tls_encrypts_authentication_and_message() {
+    trusted_transport(SmtpSecurity::ImplicitTls);
+}
+fn trusted_transport(mode: SmtpSecurity) {
+    let fixture = Fixture::new(mode, true, false, false);
+    dispatch_message(
+        &config(fixture.port, mode),
+        &message(),
+        Some(trusted("localhost")),
+    )
+    .unwrap();
+    let commands = fixture.finish();
+    assert!(commands
+        .iter()
+        .any(|(encrypted, line)| *encrypted && line.starts_with("AUTH")));
+    assert!(commands
+        .iter()
+        .any(|(encrypted, line)| *encrypted && line.starts_with("MAIL")));
+    assert!(!commands.iter().any(|(encrypted, line)| !encrypted
+        && (line.starts_with("AUTH") || line.starts_with("MAIL") || line.starts_with("DATA"))));
 }
 #[test]
 fn untrusted_and_wrong_hostname_fail_without_plaintext_fallback() {
@@ -219,7 +353,10 @@ fn secure_lost_acceptance_acknowledgement_remains_uncertain() {
         ),
         Err(ProductionSendError::Uncertain(_))
     ));
-    fixture.finish();
+    let commands = fixture.finish();
+    assert!(commands
+        .iter()
+        .any(|(encrypted, phase)| *encrypted && phase == "DATA terminator"));
 }
 #[test]
 fn legacy_plaintext_and_explicit_plaintext_remain_compatible() {
@@ -286,4 +423,35 @@ fn first_remote_setup_defaults_secure_without_changing_legacy_remote_or_explicit
     config.smtp_security = Some(SmtpSecurity::Plaintext);
     config.select_transport("SMTP Server".into());
     assert_eq!(config.smtp_security, Some(SmtpSecurity::Plaintext));
+}
+
+#[test]
+fn fixture_transcript_redacts_credentials_addresses_and_message_contents() {
+    for line in [
+        "AUTH PLAIN U0VDUkVU",
+        "MAIL FROM:<private@example.test>",
+        "RCPT TO:<private@example.test>",
+        "Secret message body",
+    ] {
+        let phase = command_phase(line);
+        assert!(
+            !phase.contains("U0VDUkVU") && !phase.contains("private") && !phase.contains("Secret")
+        );
+    }
+}
+#[test]
+fn fixture_worker_joins_without_a_client() {
+    let fixture = Fixture::new(SmtpSecurity::Plaintext, false, false, false);
+    assert!(fixture.finish().is_empty());
+}
+
+fn handshake_detail<S>(error: native_tls::HandshakeError<S>) -> String {
+    match error {
+        native_tls::HandshakeError::Failure(error) => {
+            format!("TLS server handshake failure: {error:?}")
+        }
+        native_tls::HandshakeError::WouldBlock(_) => {
+            "TLS server handshake interrupted (WouldBlock)".into()
+        }
+    }
 }

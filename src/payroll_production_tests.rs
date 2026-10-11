@@ -6,8 +6,7 @@ use std::sync::{
 };
 
 fn fixture() -> (tempfile::TempDir, DirectPaymentApp, PayrollSchedule) {
-    let (dir, mut app) = crate::payroll_timesheet_screen::tests::test_application();
-    app.context.config.folders.pdf_output = dir.path().join("pdfs");
+    let (dir, app) = crate::payroll_timesheet_screen::tests::test_application();
     let db = crate::payroll_evidence::open(&app).unwrap();
     db.execute_batch("INSERT INTO employers(id,name,email) VALUES (1,'Test Employer','employer@example.test');
         INSERT INTO payroll_provider(id,name,payroll_department_email) VALUES (1,'Payroll','payroll@example.test');
@@ -1829,6 +1828,11 @@ fn stage2_full_pa_archive_reactivation_preserves_correction_snapshots_and_delive
     use crate::sickness_service as sick;
     use crate::timesheet_delivery as delivery;
     let (_dir, mut app, _schedule) = fixture();
+    assert_eq!(
+        app.application.context.config.folders.pdf_output,
+        _dir.path().canonicalize().unwrap().join("pdfs")
+    );
+    std::fs::create_dir_all(&app.application.context.config.folders.payslip_folder).unwrap();
     let conn = db(&app);
     conn.execute(
         "UPDATE personal_assistants SET employment_status='Active' WHERE id=1",
@@ -1887,6 +1891,7 @@ fn stage2_full_pa_archive_reactivation_preserves_correction_snapshots_and_delive
     submit();
     let captured = delivery::capture(&conn, 1).unwrap();
     let bytes = delivery::bytes(&conn, &captured).unwrap();
+    let attempts_before: Vec<(i64, String, String)> = conn.prepare("SELECT id,pdf_path,outcome FROM timesheet_delivery_attempts WHERE payroll_timesheet_id=1 ORDER BY id").unwrap().query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?))).unwrap().collect::<rusqlite::Result<_>>().unwrap();
     let before_documents=conn.prepare("SELECT id,pdf_sha256,pdf_bytes FROM timesheet_documents WHERE payroll_timesheet_id=1 ORDER BY id").unwrap().query_map([],|r|Ok((r.get::<_,i64>(0)?,r.get::<_,String>(1)?,r.get::<_,Vec<u8>>(2)?))).unwrap().collect::<rusqlite::Result<Vec<_>>>().unwrap();
     let snapshots=conn.prepare("SELECT document_id,evidence,correction_id FROM sickness_document_evidence WHERE payroll_timesheet_id=1 ORDER BY document_id").unwrap().query_map([],|r|Ok((r.get::<_,i64>(0)?,r.get::<_,String>(1)?,r.get::<_,Option<i64>>(2)?))).unwrap().collect::<rusqlite::Result<Vec<_>>>().unwrap();
     let mut pa = app
@@ -1900,14 +1905,43 @@ fn stage2_full_pa_archive_reactivation_preserves_correction_snapshots_and_delive
     pa.employment_status = Some("Inactive".into());
     let messages = crate::payroll_archive_service::apply(&app.application, &pa, true).unwrap();
     assert!(
-        !messages.iter().any(|m| m.contains("failed")),
+        !messages
+            .iter()
+            .any(|m| m.contains("failed") || m.contains("pending") || m.contains("refused")),
         "{messages:?}"
     );
     let archived = delivery::capture(&conn, 1).unwrap();
     assert_eq!(archived.document, captured.document);
-    assert!(archived.path.contains("Archived"));
+    let expected = app
+        .application
+        .context
+        .config
+        .folders
+        .pdf_output
+        .canonicalize()
+        .unwrap()
+        .join("2026 to 2027")
+        .join("Archived")
+        .join(std::path::Path::new(&captured.path).file_name().unwrap());
+    assert_eq!(std::path::Path::new(&archived.path), expected);
+    assert_eq!(std::fs::read(&expected).unwrap(), bytes);
+    assert_eq!(
+        crate::payroll_document_repository::file_digest(&expected).unwrap(),
+        captured.digest
+    );
     assert_eq!(delivery::bytes(&conn, &archived).unwrap(), bytes);
     assert!(!std::path::Path::new(&captured.path).exists());
+    assert_eq!(
+        conn.query_row::<i64, _, _>(
+            "SELECT count(*) FROM payroll_submissions WHERE payroll_timesheet_id=1 AND pdf_path=?1",
+            [captured.path.as_str()],
+            |r| r.get(0)
+        )
+        .unwrap(),
+        0
+    );
+    let attempts_after: Vec<(i64, String, String)> = conn.prepare("SELECT id,pdf_path,outcome FROM timesheet_delivery_attempts WHERE payroll_timesheet_id=1 ORDER BY id").unwrap().query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?))).unwrap().collect::<rusqlite::Result<_>>().unwrap();
+    assert_eq!(attempts_before, attempts_after);
     pa.employment_status = Some("Active".into());
     crate::payroll_archive_service::apply(&app.application, &pa, true).unwrap();
     let reactivated = delivery::capture(&conn, 1).unwrap();
