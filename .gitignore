@@ -47,3 +47,7 @@ config.toml
 
 # Local pre-change source backup; never distribute as a release artifact.
 src.before-email-timesheets/
+
+# Exact synthetic loopback SMTP identities; never production certificates.
+!/tests/fixtures/smtp/ca.pem
+!/tests/fixtures/smtp/server.p12

@@ -177,22 +177,47 @@ work. Resolution never silently reapplies corrections or reopens settled payroll
 
 ### SMTP configuration and security
 
-In **Settings → Email Settings**, **Local SMTP Server** uses `localhost:25`.
-**SMTP Server** uses the configured host and port, with username/password
-authentication when a username is supplied. Defaults are local SMTP and port 25.
-Set the dedicated test addresses for test email; test recipients do not replace
-production routing. Review the final production To/CC/BCC display before sending.
+In **Settings → Email Settings**, **Local SMTP Server** uses unencrypted
+`localhost:25` without credentials; its relay must secure onward delivery.
+**SMTP Server** uses independently configurable host, port and security:
 
-The inspected production implementation (`email_service::send_prepared_timesheet`,
-also used for PA bundles) uses `SmtpTransport::builder_dangerous` and **does not
-enable TLS/STARTTLS**. Selecting a remote host, supplying credentials or choosing
-port 465/587 does not enable encryption. There is no TLS mode in the current
-settings UI. An independently configured relay may secure its onward connection;
-that does not establish encryption for the application's connection to the relay.
-Document and assess that transport before production use; a TLS-required server
-may reject this client. Configuration and backups can contain SMTP credentials;
-protect them along with retained recipients, email intent and attachment bytes.
-No inbox-receipt checking is implemented.
+- **Required STARTTLS** (normally port 587) requires a successful TLS upgrade
+  before credentials or email are transmitted.
+- **Implicit TLS** (normally port 465) establishes TLS before SMTP begins.
+- **Plaintext SMTP** permits intentional unencrypted relays and shows a warning:
+  credentials, addresses and payroll contents can be intercepted.
+
+New configurations select required STARTTLS for remote SMTP. Existing remote
+configurations without `smtp_security` retain legacy plaintext behavior until
+explicitly reviewed. A legacy local configuration defaults to STARTTLS on first
+remote setup. Changing a port alone never enables encryption. Port suggestions
+do not overwrite your entered port. Serialized security values are
+`required_starttls`, `implicit_tls` and `plaintext`; unknown values are rejected.
+TLS uses native platform certificate trust and hostname validation, with no
+certificate bypass or fallback to plaintext. Private relays need certificates
+trusted by the platform. Username/password authentication is attempted when a
+remote username is supplied. OAuth account setup is not implemented.
+
+Production and preview/test email share the same transport path. Failures before
+message submission on that connection are definitely not sent; ambiguous
+submission failures remain uncertain and block automatic retry. SMTP acceptance
+never establishes inbox receipt. Server diagnostics retain only safe phase,
+error class and numeric status, omitting server text. Security changes invalidate
+existing send approvals; uncertain attempts retain their original evidence.
+
+Passwords remain plaintext in `config.toml` and configuration backup copies;
+masking the Settings field does not encrypt storage. Configuration Debug output
+redacts credentials. Unix configuration publication and restore staging use
+owner-only permissions; backup directories use mode 0700. Windows files inherit
+parent-directory ACLs rather than application-enforced private ACLs: administrators
+must verify those permissions. Database backups retain sensitive recipients,
+email intent and immutable attachment bytes. Protect backups and external payroll
+folders, and review permissions before sharing or exporting them.
+
+Set dedicated test addresses for test email; test recipients do not replace
+production routing. Review final production To/CC/BCC recipients before sending.
+This functionality is unreleased development work, not a capability claim for
+published packages. Platform trust-store and hardware acceptance remain required.
 
 ## Payroll document files
 

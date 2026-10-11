@@ -237,3 +237,14 @@ verified isolated migration/recovery path installs additive schema41; version st
 1.0.6. Acceptance/external sending and receipt of an employer copy are explicitly
 separate from proof of recipient inbox receipt. See the Stage 8 sections in
 [architecture](ARCHITECTURE.md) and [schema](DATABASE-SCHEMA.md).
+
+### SMTP security development status
+
+Development 1.0.6 now exposes required STARTTLS, implicit TLS and explicit plaintext
+SMTP through shared production/test transport; published downloads are unchanged.
+Existing missing security settings remain legacy plaintext, and new remote
+configurations default to required STARTTLS. Certificate/hostname validation is
+mandatory with no downgrade. Phase-aware setup failures are not sent; ambiguous
+submission remains protected. Credentials and retained backup evidence are still
+unencrypted at rest. Platform hardware/trust-store and Windows ACL acceptance
+remain release requirements. See [SMTP security](DOMAIN.md#smtp-configuration-and-security).

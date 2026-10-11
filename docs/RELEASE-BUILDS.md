@@ -155,7 +155,9 @@ actual distributed bundle without launching it.
 Intel macOS 11.4 and Apple Silicon macOS 12.0 acceptance testing remains pending.
 The macOS 15 runner alone cannot establish backwards compatibility. Test a rebuilt
 Intel artifact on an Intel Mac running exactly macOS 11.4, including first launch,
-rendering, file dialogs, accessibility, database/backup and PDF operations. Review the actual SMTP transport configuration/security; the current production adapter does not enable TLS/STARTTLS.
+rendering, file dialogs, accessibility, database/backup and PDF operations.
+Validate required STARTTLS and implicit TLS against platform trust stores, and
+explicitly review any plaintext relay configuration.
 Browser-downloaded unsigned/
 unnotarised builds may need System Settings > Privacy & Security > Open Anyway
 after the first attempted launch; do not disable Gatekeeper globally. Test that
@@ -315,9 +317,13 @@ new assets are actually published.
   rejection, accepted transport with failed finalisation, interrupted claims,
   partial success and concurrent-instance locks. Preserve original PDFs, attempts,
   supplements, historical settlement and correction applications.
-- Review SMTP transport security and deployment relay requirements explicitly.
-  The current production adapter does not enable TLS/STARTTLS; do not claim
-  encrypted application SMTP from TLS dependencies or successful email alone.
+- Validate required STARTTLS and implicit TLS on each platform, including trusted,
+  untrusted and wrong-host certificates, unavailable STARTTLS, authentication
+  failure and no plaintext fallback. Verify legacy plaintext warnings, credential
+  and diagnostic redaction, Unix restored-config permissions and Windows parent
+  ACLs. Confirm ambiguous submission and lost acknowledgements retain their blocks.
+  Review relay onward security and actual platform certificate stores; dependency
+  features or successful email alone do not establish secure deployment.
 - Record actual hardware acceptance for each claimed platform: ARM32 window and
   graphics behaviour, ARM64 Linux/Windows, Windows upgrade/uninstall, and both Mac
   architectures including Intel 11.4/ARM64 12.0 and browser-download first launch.

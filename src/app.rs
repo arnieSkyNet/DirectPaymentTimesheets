@@ -431,18 +431,8 @@ impl Application {
         preview: crate::email_service::PayrollEmailPreview,
     ) -> Result<(), Box<dyn std::error::Error>> {
         let config = &self.context.config.email;
-        let (host, port, username, password) = if config.smtp_transport == "SMTP Server" {
-            (
-                config.smtp_host.as_str(),
-                config.smtp_port,
-                config.smtp_username.as_str(),
-                config.smtp_password.as_str(),
-            )
-        } else {
-            ("localhost", 25, "", "")
-        };
         let path = std::path::PathBuf::from(&preview.attachment_path);
-        crate::email_service::send_preview(host, port, username, password, preview, &path)
+        crate::email_service::send_preview(config, preview, &path)
     }
 
     #[allow(dead_code)] // Shared composition adapter retained for callers outside production timesheets.
@@ -495,23 +485,8 @@ impl Application {
         additional_attachments: &[std::path::PathBuf],
     ) -> Result<(), Box<dyn std::error::Error>> {
         let email_config = &self.context.config.email;
-        let (smtp_host, smtp_port, smtp_username, smtp_password) =
-            if email_config.smtp_transport == "SMTP Server" {
-                (
-                    email_config.smtp_host.as_str(),
-                    email_config.smtp_port,
-                    email_config.smtp_username.as_str(),
-                    email_config.smtp_password.as_str(),
-                )
-            } else {
-                ("localhost", 25, "", "")
-            };
-
         crate::email_service::send_payroll_email_with_attachments(
-            smtp_host,
-            smtp_port,
-            smtp_username,
-            smtp_password,
+            email_config,
             payroll_department_email,
             employer_email,
             personal_assistant_email,
@@ -548,23 +523,8 @@ impl Application {
         email_signature: Option<&str>,
     ) -> Result<(), Box<dyn std::error::Error>> {
         let email_config = &self.context.config.email;
-        let (smtp_host, smtp_port, smtp_username, smtp_password) =
-            if email_config.smtp_transport == "SMTP Server" {
-                (
-                    email_config.smtp_host.as_str(),
-                    email_config.smtp_port,
-                    email_config.smtp_username.as_str(),
-                    email_config.smtp_password.as_str(),
-                )
-            } else {
-                ("localhost", 25, "", "")
-            };
-
         crate::email_service::send_test_payroll_email(
-            smtp_host,
-            smtp_port,
-            smtp_username,
-            smtp_password,
+            email_config,
             sender_email,
             payroll_test_email,
             pa_test_email,
@@ -597,23 +557,8 @@ impl Application {
         email_signature: Option<&str>,
     ) -> Result<(), Box<dyn std::error::Error>> {
         let email_config = &self.context.config.email;
-        let (smtp_host, smtp_port, smtp_username, smtp_password) =
-            if email_config.smtp_transport == "SMTP Server" {
-                (
-                    email_config.smtp_host.as_str(),
-                    email_config.smtp_port,
-                    email_config.smtp_username.as_str(),
-                    email_config.smtp_password.as_str(),
-                )
-            } else {
-                ("localhost", 25, "", "")
-            };
-
         crate::email_service::send_test_payslip_email(
-            smtp_host,
-            smtp_port,
-            smtp_username,
-            smtp_password,
+            email_config,
             sender_email,
             pa_test_email,
             personal_assistant_name,

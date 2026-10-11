@@ -148,8 +148,13 @@ Production batches capture the optional selected schedule and selection revision
 Generic SMTP errors never prove non-acceptance. Keep durable attempts protected
 until reliable rejection or an explicit audited review; never equate acceptance
 with inbox receipt. See [delivery review](DOMAIN.md#reviewing-uncertain-delivery)
-and [SMTP configuration/security](DOMAIN.md#smtp-configuration-and-security): the
-current production adapter does not enable TLS/STARTTLS.
+and [SMTP configuration/security](DOMAIN.md#smtp-configuration-and-security).
+Shared transport supports required STARTTLS, implicit TLS and explicit plaintext.
+Setup failures on the actual dispatch connection precede submission and are not
+sent; submission ambiguity remains protected. Keep server diagnostics redacted.
+Loopback security fixtures use a synthetic CA trusted only by the test parameters;
+never install that CA in production. Run `cargo test --offline smtp_transport_tests`
+and the complete offline suite; no real SMTP service is required.
 
 ## Backup/restore development
 

@@ -722,10 +722,7 @@ mod tests {
         .unwrap();
         let missing_attachment = directory.path().join("missing.pdf");
         assert!(send_test_payroll_email(
-            "localhost",
-            1,
-            "",
-            "",
+            &crate::config::EmailConfig::default(),
             "employer@example.com",
             "test@example.com",
             None,

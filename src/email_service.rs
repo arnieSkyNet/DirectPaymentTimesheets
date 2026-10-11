@@ -1,7 +1,7 @@
 use lettre::message::{header::ContentType, Attachment, Mailbox, Message, MultiPart, SinglePart};
-use lettre::transport::smtp::authentication::Credentials;
-use lettre::transport::smtp::SmtpTransport;
-use lettre::Transport;
+use lettre::transport::smtp::authentication::{Credentials, Mechanism};
+use lettre::transport::smtp::client::{SmtpConnection, TlsParameters};
+use lettre::transport::smtp::extension::ClientId;
 use std::error::Error;
 use std::fs;
 use std::path::Path;
@@ -335,10 +335,7 @@ fn compose_payroll_email(
 
 #[allow(dead_code)] // Retain the existing single-attachment API.
 pub fn send_payroll_email(
-    smtp_host: &str,
-    smtp_port: u16,
-    smtp_username: &str,
-    smtp_password: &str,
+    config: &crate::config::EmailConfig,
     payroll_department_email: &str,
     employer_email: &str,
     personal_assistant_email: Option<&str>,
@@ -353,10 +350,7 @@ pub fn send_payroll_email(
     subject_template: &str,
 ) -> Result<(), Box<dyn Error>> {
     send_payroll_email_with_attachments(
-        smtp_host,
-        smtp_port,
-        smtp_username,
-        smtp_password,
+        config,
         payroll_department_email,
         employer_email,
         personal_assistant_email,
@@ -374,10 +368,7 @@ pub fn send_payroll_email(
 }
 
 pub fn send_payroll_email_with_attachments(
-    smtp_host: &str,
-    smtp_port: u16,
-    smtp_username: &str,
-    smtp_password: &str,
+    config: &crate::config::EmailConfig,
     payroll_department_email: &str,
     employer_email: &str,
     personal_assistant_email: Option<&str>,
@@ -408,22 +399,12 @@ pub fn send_payroll_email_with_attachments(
     )?;
 
     preview.additional_attachment_paths = additional_attachments.to_vec();
-    send_preview(
-        smtp_host,
-        smtp_port,
-        smtp_username,
-        smtp_password,
-        preview,
-        attachment_path,
-    )
+    send_preview(config, preview, attachment_path)
 }
 
 #[allow(clippy::too_many_arguments)]
 pub fn send_test_payroll_email(
-    smtp_host: &str,
-    smtp_port: u16,
-    smtp_username: &str,
-    smtp_password: &str,
+    config: &crate::config::EmailConfig,
     sender_email: &str,
     payroll_test_email: &str,
     pa_test_email: Option<&str>,
@@ -452,22 +433,12 @@ pub fn send_test_payroll_email(
         subject_template,
     )?;
 
-    send_preview(
-        smtp_host,
-        smtp_port,
-        smtp_username,
-        smtp_password,
-        preview,
-        attachment_path,
-    )
+    send_preview(config, preview, attachment_path)
 }
 
 #[allow(clippy::too_many_arguments)]
 pub fn send_test_payslip_email(
-    smtp_host: &str,
-    smtp_port: u16,
-    smtp_username: &str,
-    smtp_password: &str,
+    config: &crate::config::EmailConfig,
     sender_email: &str,
     pa_test_email: &str,
     personal_assistant_name: &str,
@@ -500,37 +471,17 @@ pub fn send_test_payslip_email(
 
     preview.additional_attachment_paths = additional_attachments.to_vec();
     preview.attachment_filenames = attachment_filenames.to_vec();
-    send_preview(
-        smtp_host,
-        smtp_port,
-        smtp_username,
-        smtp_password,
-        preview,
-        attachment_path,
-    )
+    send_preview(config, preview, attachment_path)
 }
 
 pub(crate) fn send_preview(
-    smtp_host: &str,
-    smtp_port: u16,
-    smtp_username: &str,
-    smtp_password: &str,
+    config: &crate::config::EmailConfig,
     preview: PayrollEmailPreview,
     attachment_path: &Path,
 ) -> Result<(), Box<dyn Error>> {
     let email = build_message(&preview, attachment_path)?;
 
-    let mut builder = SmtpTransport::builder_dangerous(smtp_host.trim()).port(smtp_port);
-    if !smtp_username.trim().is_empty() {
-        builder = builder.credentials(Credentials::new(
-            smtp_username.trim().to_string(),
-            smtp_password.to_string(),
-        ));
-    }
-    let mailer = builder.build();
-
-    mailer.send(&email)?;
-
+    send_prepared_timesheet(config, &email)?;
     Ok(())
 }
 
@@ -1017,28 +968,117 @@ pub fn send_prepared_timesheet(
     config: &crate::config::EmailConfig,
     message: &Message,
 ) -> Result<(), ProductionSendError> {
-    let server = config.smtp_transport == "SMTP Server";
-    let mut builder = SmtpTransport::builder_dangerous(if server {
-        config.smtp_host.trim()
-    } else {
-        "localhost"
-    })
-    .port(if server { config.smtp_port } else { 25 });
-    if server && !config.smtp_username.trim().is_empty() {
-        builder = builder.credentials(Credentials::new(
-            config.smtp_username.trim().into(),
-            config.smtp_password.clone(),
-        ));
+    #[cfg(test)]
+    {
+        dispatch_message(config, message, None)
     }
-    builder.build().send(message).map(|_| ()).map_err(|error| {
-        // An explicit SMTP negative response proves this transaction was rejected.
-        // I/O, timeout, TLS and generic errors cannot establish non-acceptance.
-        if error.status().is_some() && (error.is_transient() || error.is_permanent()) {
-            ProductionSendError::NotSent(error.to_string())
-        } else {
-            ProductionSendError::Uncertain(error.to_string())
+    #[cfg(not(test))]
+    {
+        dispatch_message(config, message)
+    }
+}
+
+/// One actual connection for setup, authentication and dispatch. Setup errors
+/// prove non-acceptance because MAIL/DATA have not yet been issued. Once send
+/// begins, only an explicit SMTP rejection establishes non-acceptance.
+fn dispatch_message(
+    config: &crate::config::EmailConfig,
+    message: &Message,
+    #[cfg(test)] trusted_tls: Option<TlsParameters>,
+) -> Result<(), ProductionSendError> {
+    use crate::config::SmtpSecurity;
+    let (host, port, security, authenticate) = match config.smtp_transport.as_str() {
+        "Local SMTP Server" => ("localhost", 25, SmtpSecurity::Plaintext, false),
+        "SMTP Server" => (
+            config.smtp_host.trim(),
+            config.smtp_port,
+            config.smtp_security.unwrap_or(SmtpSecurity::Plaintext),
+            true,
+        ),
+        _ => {
+            return Err(ProductionSendError::NotSent(
+                "SMTP configuration: unsupported transport".into(),
+            ))
         }
-    })
+    };
+    let tls = match security {
+        SmtpSecurity::Plaintext => None,
+        _ => {
+            let parameters = TlsParameters::new(host.into()).map_err(|_| {
+                ProductionSendError::NotSent("SMTP TLS configuration failed".into())
+            })?;
+            // Synthetic CA injection exists only in test builds. Production
+            // always uses native trust and the configured host for validation.
+            #[cfg(test)]
+            let parameters = trusted_tls.unwrap_or(parameters);
+            Some(parameters)
+        }
+    };
+    let hello = ClientId::default();
+    let mut connection = SmtpConnection::connect(
+        (host, port),
+        Some(std::time::Duration::from_secs(60)),
+        &hello,
+        if security == SmtpSecurity::ImplicitTls {
+            tls.as_ref()
+        } else {
+            None
+        },
+        None,
+    )
+    .map_err(|e| ProductionSendError::NotSent(safe_smtp_diagnostic("connection", &e)))?;
+    if security == SmtpSecurity::RequiredStarttls {
+        connection
+            .starttls(tls.as_ref().expect("TLS parameters"), &hello)
+            .map_err(|e| {
+                ProductionSendError::NotSent(safe_smtp_diagnostic("required STARTTLS", &e))
+            })?;
+    }
+    if authenticate && !config.smtp_username.trim().is_empty() {
+        connection
+            .auth(
+                &[Mechanism::Plain, Mechanism::Login],
+                &Credentials::new(
+                    config.smtp_username.trim().into(),
+                    config.smtp_password.clone(),
+                ),
+            )
+            .map_err(|e| {
+                ProductionSendError::NotSent(safe_smtp_diagnostic("authentication", &e))
+            })?;
+    }
+    // Success is the final DATA acceptance, not a later QUIT or inbox receipt.
+    connection
+        .send(message.envelope(), &message.formatted())
+        .map(|_| ())
+        .map_err(|e| {
+            let detail = safe_smtp_diagnostic("message submission", &e);
+            if e.status().is_some() && (e.is_transient() || e.is_permanent()) {
+                ProductionSendError::NotSent(detail)
+            } else {
+                ProductionSendError::Uncertain(detail)
+            }
+        })
+}
+
+/// Server text and chained errors are untrusted: retain only phase, class and
+/// numeric SMTP status. Never persist echoed credentials or message contents.
+fn safe_smtp_diagnostic(phase: &str, error: &lettre::transport::smtp::Error) -> String {
+    let class = if error.is_tls() {
+        "TLS verification/negotiation failure"
+    } else if error.is_timeout() {
+        "timeout"
+    } else if error.is_transient() {
+        "temporary rejection"
+    } else if error.is_permanent() {
+        "permanent rejection"
+    } else {
+        "connection/protocol failure"
+    };
+    match error.status() {
+        Some(status) => format!("SMTP {phase}: {class} (status {status}); server details redacted"),
+        None => format!("SMTP {phase}: {class}; server details redacted"),
+    }
 }
 
 impl std::fmt::Display for ProductionSendError {
@@ -1079,3 +1119,7 @@ pub fn prepare_bundle_message(
     }
     Ok(builder.multipart(parts)?)
 }
+
+#[cfg(test)]
+#[path = "smtp_transport_tests.rs"]
+mod smtp_transport_tests;

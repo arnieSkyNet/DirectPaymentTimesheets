@@ -764,16 +764,19 @@ fn stage_config(source: &Path, destination: &Path) -> Result<PathBuf, BackupErro
             source.display()
         ))
     })?;
-    let mut file = OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(&staged)
-        .map_err(|error| {
-            BackupError(format!(
-                "Could not create staged configuration {}: {error}",
-                staged.display()
-            ))
-        })?;
+    let mut options = OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let mut file = options.open(&staged).map_err(|error| {
+        BackupError(format!(
+            "Could not create staged configuration {}: {error}",
+            staged.display()
+        ))
+    })?;
     use std::io::Write;
     file.write_all(&contents).map_err(|error| {
         BackupError(format!(
@@ -862,6 +865,22 @@ mod tests {
             "2026-08-31T14:25:30+01:00",
         )
         .unwrap()
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn restored_configuration_is_private_even_when_source_is_world_readable() {
+        use std::os::unix::fs::PermissionsExt;
+        let directory = TempDir::new().unwrap();
+        let source = directory.path().join("backup-config.toml");
+        fs::write(&source, "smtp_password = 'synthetic-secret'").unwrap();
+        fs::set_permissions(&source, fs::Permissions::from_mode(0o644)).unwrap();
+        let staged = stage_config(&source, &directory.path().join("config.toml")).unwrap();
+        assert_eq!(
+            fs::metadata(&staged).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+        assert_eq!(fs::read(&staged).unwrap(), fs::read(&source).unwrap());
     }
 
     #[test]

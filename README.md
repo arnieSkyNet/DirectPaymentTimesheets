@@ -426,3 +426,14 @@ original attempt. No uncertain email is automatically retried. Legacy records do
 not acquire invented recipients, Message-IDs or attachment evidence.
 
 See [delivery review](docs/DOMAIN.md#reviewing-uncertain-delivery) for the review sequence and [SMTP settings](docs/DOMAIN.md#smtp-configuration-and-security) for transport/security limitations.
+
+### SMTP security on development main
+
+Unreleased 1.0.6 supports required STARTTLS (normally 587), implicit TLS (normally
+465), and explicitly selected plaintext SMTP. New remote configurations default
+to required STARTTLS; existing configurations retain plaintext until reviewed.
+TLS validates certificates and hostnames and never falls back to plaintext.
+Local relays remain compatible. Passwords are stored in plaintext configuration
+and backups. See [SMTP configuration and security](docs/DOMAIN.md#smtp-configuration-and-security)
+for warnings, platform trust requirements and delivery safeguards. Published
+release downloads above are unchanged and do not establish these capabilities.

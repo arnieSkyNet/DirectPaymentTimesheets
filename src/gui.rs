@@ -964,37 +964,63 @@ impl DirectPaymentApp {
         let email = &mut self.application.context.config.email;
         ui.checkbox(&mut email.timesheet_employer_cc, "Send a CC copy of timesheet emails to the employer");
         ui.label("An employer copy helps monitor sending. SMTP acceptance or receipt of a copy does not prove delivery to Payroll or the PA.");
+        let mut transport = email.smtp_transport.clone();
         ui.horizontal(|ui| {
             ui.label("Email transport");
             crate::gui_controls::combo_box("email_transport")
-                .selected_text(&email.smtp_transport)
+                .selected_text(&transport)
                 .show_ui(ui, |ui| {
                     crate::gui_controls::combo_value(
                         ui,
-                        &mut email.smtp_transport,
+                        &mut transport,
                         "Local SMTP Server".to_string(),
                         "Local SMTP Server",
                     );
                     crate::gui_controls::combo_value(
                         ui,
-                        &mut email.smtp_transport,
+                        &mut transport,
                         "SMTP Server".to_string(),
                         "SMTP Server",
                     );
                 });
         });
 
+        email.select_transport(transport);
+
         if email.smtp_transport == "SMTP Server" {
+            crate::gui_controls::combo_box("smtp_security")
+                .selected_text(
+                    email
+                        .smtp_security
+                        .map(|mode| mode.label())
+                        .unwrap_or("Legacy plaintext SMTP (unencrypted)"),
+                )
+                .show_ui(ui, |ui| {
+                    for mode in [
+                        crate::config::SmtpSecurity::RequiredStarttls,
+                        crate::config::SmtpSecurity::ImplicitTls,
+                        crate::config::SmtpSecurity::Plaintext,
+                    ] {
+                        ui.selectable_value(&mut email.smtp_security, Some(mode), mode.label());
+                    }
+                });
+            ui.label("Port suggestions: required STARTTLS 587; implicit TLS 465; plaintext relay 25. Changing security does not change your port.");
+            if email.smtp_security.is_none()
+                || email.smtp_security == Some(crate::config::SmtpSecurity::Plaintext)
+            {
+                ui.colored_label(egui::Color32::YELLOW, "Warning: unencrypted SMTP exposes credentials, addresses and payroll attachments. Use only an intentionally configured trusted relay.");
+            }
             ui.label("SMTP Host");
             ui.text_edit_singleline(&mut email.smtp_host);
             ui.label("SMTP Port");
             ui.add(egui::DragValue::new(&mut email.smtp_port).range(1..=65535));
             ui.label("SMTP Username");
             ui.text_edit_singleline(&mut email.smtp_username);
+            ui.label("Passwords remain plaintext in config.toml and backups; protect these files.");
             ui.label("SMTP Password");
             ui.add(egui::TextEdit::singleline(&mut email.smtp_password).password(true));
         } else {
-            ui.label("Uses localhost:25 with no configurable credentials.");
+            ui.label("Uses unencrypted localhost:25 with no credentials. The local relay must secure onward delivery.");
         }
         ui.label("Payroll test email address");
         ui.text_edit_singleline(&mut email.payroll_test_email_address);
@@ -5660,6 +5686,19 @@ mod preparation_navigation_tests {
     use crate::payroll_timesheet_screen::{tests::dirty_preparation_fixture, UnsavedChoice};
 
     #[test]
+    fn smtp_security_change_invalidates_send_approval_fingerprint() {
+        let (_directory, application, _screen) = dirty_preparation_fixture();
+        let mut app = DirectPaymentApp::new(application);
+        let approved = app.email_settings_digest().unwrap();
+        app.application.context.config.email.smtp_security =
+            Some(crate::config::SmtpSecurity::Plaintext);
+        assert_ne!(approved, app.email_settings_digest().unwrap());
+        app.application.context.config.email.smtp_security =
+            Some(crate::config::SmtpSecurity::ImplicitTls);
+        assert_ne!(approved, app.email_settings_digest().unwrap());
+    }
+
+    #[test]
     fn every_screen_destination_and_window_close_obey_save_discard_cancel() {
         for destination in [
             ActiveScreen::Dashboard,
@@ -5857,6 +5896,8 @@ mod payroll_period_eligibility_tests {
             }
             let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
             application.context.config.email.smtp_transport = "SMTP Server".into();
+            application.context.config.email.smtp_security =
+                Some(crate::config::SmtpSecurity::Plaintext);
             application.context.config.email.smtp_host = "127.0.0.1".into();
             application.context.config.email.smtp_port = listener.local_addr().unwrap().port();
             application.context.config.email.smtp_username.clear();

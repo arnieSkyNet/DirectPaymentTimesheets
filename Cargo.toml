@@ -34,4 +34,5 @@ tempfile = "3"
 same-file = "1"
 
 [dev-dependencies]
+native-tls = "0.2"
 lopdf = { version = "0.35", default-features = false }

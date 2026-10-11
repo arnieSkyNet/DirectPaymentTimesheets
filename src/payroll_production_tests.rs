@@ -127,6 +127,8 @@ impl Smtp {
         use std::io::{BufRead, BufReader, Write};
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         app.application.context.config.email.smtp_transport = "SMTP Server".into();
+        app.application.context.config.email.smtp_security =
+            Some(crate::config::SmtpSecurity::Plaintext);
         app.application.context.config.email.smtp_host = "127.0.0.1".into();
         app.application.context.config.email.smtp_port = listener.local_addr().unwrap().port();
         app.application.context.config.email.smtp_username.clear();

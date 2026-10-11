@@ -349,3 +349,17 @@ receipt. Stage 8 uses schema41 and keeps application version 1.0.6.
 Legacy orphan/retired payslip revision uncertainty is also reviewable. A review of a
 retired revision never rewrites a later cycle settlement. Known current-revision
 delivery evidence remains authoritative even if its cycle-status record is missing.
+
+### Secure SMTP dispatch
+
+Production, preview and test adapters share `email_service::dispatch_message`.
+It establishes one lettre native-TLS SMTP connection, performs required TLS and
+remote authentication, then submits the immutable message on that connection.
+Connection/TLS/authentication failures precede submission and are definitely not
+sent. After submission starts, only explicit SMTP rejection proves non-acceptance;
+other errors remain uncertain. Final DATA acceptance is recorded without depending
+on QUIT or claiming inbox receipt. Server-provided diagnostic text is never retained.
+Optional `EmailConfig.smtp_security` preserves missing legacy fields as plaintext;
+new configurations use required STARTTLS for remote mode. Local mode remains
+localhost:25 without credentials. No schema change is required (schema 41).
+See [security settings and storage limitations](DOMAIN.md#smtp-configuration-and-security).

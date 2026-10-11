@@ -250,13 +250,35 @@ impl Default for PayrollConfig {
     }
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SmtpSecurity {
+    RequiredStarttls,
+    ImplicitTls,
+    Plaintext,
+}
+
+impl SmtpSecurity {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::RequiredStarttls => "Required STARTTLS (usually port 587)",
+            Self::ImplicitTls => "Implicit TLS (usually port 465)",
+            Self::Plaintext => "Plaintext SMTP (unencrypted)",
+        }
+    }
+}
+
+#[derive(Serialize, Deserialize)]
 pub struct EmailConfig {
     #[serde(default = "default_timesheet_employer_cc")]
     pub timesheet_employer_cc: bool,
 
     #[serde(default = "default_smtp_transport")]
     pub smtp_transport: String,
+
+    // Missing means legacy plaintext. Never infer encryption from a port.
+    #[serde(default)]
+    pub smtp_security: Option<SmtpSecurity>,
 
     #[serde(default = "default_smtp_host")]
     pub smtp_host: String,
@@ -282,7 +304,34 @@ pub struct EmailConfig {
     pub timesheet_body: String,
 }
 
-fn default_timesheet_employer_cc() -> bool { true }
+impl EmailConfig {
+    pub fn select_transport(&mut self, transport: String) {
+        // A legacy local configuration has never approved remote plaintext.
+        // Default its first remote setup to TLS; leave existing remote settings
+        // and explicit security selections unchanged.
+        if self.smtp_transport != "SMTP Server"
+            && transport == "SMTP Server"
+            && self.smtp_security.is_none()
+        {
+            self.smtp_security = Some(SmtpSecurity::RequiredStarttls);
+        }
+        self.smtp_transport = transport;
+    }
+}
+
+impl std::fmt::Debug for EmailConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("EmailConfig")
+            .field("smtp_transport", &self.smtp_transport)
+            .field("smtp_security", &self.smtp_security)
+            .field("credentials", &"[REDACTED]")
+            .finish_non_exhaustive()
+    }
+}
+
+fn default_timesheet_employer_cc() -> bool {
+    true
+}
 
 fn default_smtp_host() -> String {
     "localhost".to_string()
@@ -305,6 +354,7 @@ impl Default for EmailConfig {
         Self {
             timesheet_employer_cc: true,
             smtp_transport: default_smtp_transport(),
+            smtp_security: Some(SmtpSecurity::RequiredStarttls),
             smtp_host: default_smtp_host(),
             smtp_port: default_smtp_port(),
             smtp_username: String::new(),
