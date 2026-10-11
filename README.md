@@ -2,13 +2,13 @@
 
 DirectPaymentTimesheets is a local desktop application for administering UK Direct Payment Personal Assistant timesheets and the four-week payroll-provider workflow. It imports externally recorded work, prepares payroll timesheets, generates the provider PDF, sends timesheets and payslips, imports payroll documents, and preserves the evidence represented by submitted payroll.
 
-The **1.0.6 development** application uses SQLite schema **41**. It is a single-user local desktop application for the documented Direct Payment payroll workflow, not a general-purpose payroll product.
+The **1.0.6 release** application uses SQLite schema **41**. It is a single-user local desktop application for the documented Direct Payment payroll workflow, not a general-purpose payroll product.
 
 ## Download
 
-**Development version: 1.0.6 · Published: Linux/Windows 1.0.4; macOS 1.0.5**
+**Published release: 1.0.6 · Linux, Windows and macOS**
 
-Development 1.0.6 on `main` is unreleased and intended for all platforms. The downloads below are published Linux/Windows v1.0.4 and macOS v1.0.5; they do not include the Stage 1–8 development changes described here.
+The downloads below are published v1.0.6 packages for all supported platforms. They include the Stage 1–8 safeguards, secure SMTP settings and regional public-holiday support described here.
 Timesheet email selects only unsent current PDF versions by default. Sent versions
 remain visible for an explicitly acknowledged resend. Each production attempt is
 recorded; uncertain acceptance blocks retry until documented review.
@@ -43,7 +43,7 @@ Choose your computer and installed operating system below. On Linux, choose eith
 [![Download Apple Silicon DMG](https://img.shields.io/badge/Download%20Apple%20Silicon%20DMG-v1.0.6-blue?logo=apple&logoColor=white)](https://github.com/arnieSkyNet/DirectPaymentTimesheets/releases/download/v1.0.6/DirectPaymentTimesheets-1.0.6-macos-arm64.dmg)<br>
 [![Download Intel DMG](https://img.shields.io/badge/Download%20Intel%20DMG-v1.0.6-blue?logo=apple&logoColor=white)](https://github.com/arnieSkyNet/DirectPaymentTimesheets/releases/download/v1.0.6/DirectPaymentTimesheets-1.0.6-macos-x86_64.dmg)<br>
 
-[Installation instructions](#install-build-and-run) · [v1.0.6 release notes](https://github.com/arnieSkyNet/DirectPaymentTimesheets/releases/tag/v1.0.6) · [All releases](https://github.com/arnieSkyNet/DirectPaymentTimesheets/releases/)
+[Installation instructions](#install-build-and-run) · [v1.0.6 release notes](https://github.com/arnieSkyNet/DirectPaymentTimesheets/releases/tag/v1.0.6) · [SHA256SUMS](https://github.com/arnieSkyNet/DirectPaymentTimesheets/releases/download/v1.0.6/SHA256SUMS) · [All releases](https://github.com/arnieSkyNet/DirectPaymentTimesheets/releases/)
 
 ### Choosing a Linux or Raspberry Pi architecture
 
@@ -63,7 +63,7 @@ Before upgrading an existing installation, make an application backup and retain
 
 ### Linux
 
-The packages use a **Debian 12 / Bookworm baseline** (glibc 2.36), for compatible desktop Linux systems of the matching architecture. Older distributions are not supported merely by choosing AppImage. Compatible Ubuntu/Mint and Raspberry Pi OS installations need the corresponding system libraries and a working graphical desktop; this is not a headless application. See the release notes for completed platform testing.
+The packages use a **Debian 12 / Bookworm baseline** (glibc 2.36), for compatible desktop Linux systems of the matching architecture. Older distributions are not supported merely by choosing AppImage. Compatible Ubuntu/Mint and Raspberry Pi OS installations need the corresponding system libraries and a working graphical desktop; this is not a headless application. See [release-build documentation](docs/RELEASE-BUILDS.md) for platform baselines and validation requirements.
 
 #### Debian / Ubuntu / Raspberry Pi OS `.deb`
 
@@ -71,11 +71,11 @@ Download the matching `.deb`. Open Terminal in the folder containing the downloa
 
 ```bash
 # Intel/AMD 64-bit PC:
-sudo apt-get install ./direct-payment-timesheets_1.0.4_amd64.deb
+sudo apt-get install ./direct-payment-timesheets_1.0.6_amd64.deb
 # ARM32 / 32-bit Raspberry Pi OS:
-sudo apt-get install ./direct-payment-timesheets_1.0.4_armhf.deb
+sudo apt-get install ./direct-payment-timesheets_1.0.6_armhf.deb
 # ARM64 / 64-bit Raspberry Pi OS:
-sudo apt-get install ./direct-payment-timesheets_1.0.4_arm64.deb
+sudo apt-get install ./direct-payment-timesheets_1.0.6_arm64.deb
 ```
 
 Run **only the command matching your download**. `apt-get` installs the declared dependencies. Then open **Direct Payments Timesheets** from the desktop application menu, or run `direct-payment-timesheets` in Terminal.
@@ -86,14 +86,14 @@ Download the matching AppImage and keep it somewhere convenient in your home fol
 
 ```bash
 # Intel/AMD 64-bit PC:
-chmod +x DirectPaymentTimesheets-1.0.4-linux-x86_64.AppImage
-./DirectPaymentTimesheets-1.0.4-linux-x86_64.AppImage
+chmod +x DirectPaymentTimesheets-1.0.6-linux-x86_64.AppImage
+./DirectPaymentTimesheets-1.0.6-linux-x86_64.AppImage
 # ARM32:
-chmod +x DirectPaymentTimesheets-1.0.4-linux-armhf.AppImage
-./DirectPaymentTimesheets-1.0.4-linux-armhf.AppImage
+chmod +x DirectPaymentTimesheets-1.0.6-linux-armhf.AppImage
+./DirectPaymentTimesheets-1.0.6-linux-armhf.AppImage
 # ARM64:
-chmod +x DirectPaymentTimesheets-1.0.4-linux-aarch64.AppImage
-./DirectPaymentTimesheets-1.0.4-linux-aarch64.AppImage
+chmod +x DirectPaymentTimesheets-1.0.6-linux-aarch64.AppImage
+./DirectPaymentTimesheets-1.0.6-linux-aarch64.AppImage
 ```
 
 No administrator installation is required. AppImage still relies on compatible host graphics/desktop services. If it reports a missing FUSE facility, follow your distribution's AppImage/FUSE guidance; do not run the application with `sudo`. Packaged ARM Linux builds default to software Mesa rendering automatically; no manual launcher edit is needed.
@@ -106,7 +106,7 @@ Choose by **Settings > System > About > System type**: Intel/AMD 64-bit uses the
 package does not establish completion of real-hardware acceptance testing; see
 [Windows validation](docs/RELEASE-BUILDS.md#windows).
 
-1. Download `DirectPaymentTimesheets-1.0.4-windows-x86_64-setup.exe` for Intel/AMD or `DirectPaymentTimesheets-1.0.4-windows-arm64-setup.exe` for ARM64 from the official release above.
+1. Download `DirectPaymentTimesheets-1.0.6-windows-x86_64-setup.exe` for Intel/AMD or `DirectPaymentTimesheets-1.0.6-windows-arm64-setup.exe` for ARM64 from the official release above.
 2. Open the downloaded file. The installer is unsigned. If SmartScreen displays **Windows protected your PC**, use **More info**, check that the filename matches your official download, then choose **Run anyway** only if you trust that download.
 3. Follow the installer prompts. Installation is per-user and does not require administrator access.
 4. Launch **Direct Payments Timesheets** from the Start menu.
@@ -115,17 +115,17 @@ Both Windows architectures use the same per-user application folder and uninstal
 
 ### macOS
 
-The Mac-only v1.0.5 release requires **macOS 11.4 Big Sur or later for Intel (x86_64)** and **macOS 12.0 Monterey or later for Apple Silicon (arm64)**. Minimum-OS hardware acceptance testing remains pending on both architectures, including an Intel Mac running exactly macOS 11.4. These are independently distributed builds, not Mac App Store applications.
+The v1.0.6 macOS packages require **macOS 11.4 Big Sur or later for Intel (x86_64)** and **macOS 12.0 Monterey or later for Apple Silicon (arm64)**. Minimum-OS hardware acceptance testing remains pending on both architectures, including an Intel Mac running exactly macOS 11.4. These are independently distributed builds, not Mac App Store applications.
 
 #### Choose the correct DMG
 
 1. Click the **Apple menu → About This Mac**.
-2. If it lists **Chip: Apple M1, M2, M3, M4** or another Apple M-series chip, choose `DirectPaymentTimesheets-1.0.5-macos-arm64.dmg`.
-3. If it lists an **Intel processor**, choose `DirectPaymentTimesheets-1.0.5-macos-x86_64.dmg`.
+2. If it lists **Chip: Apple M1, M2, M3, M4** or another Apple M-series chip, choose `DirectPaymentTimesheets-1.0.6-macos-arm64.dmg`.
+3. If it lists an **Intel processor**, choose `DirectPaymentTimesheets-1.0.6-macos-x86_64.dmg`.
 
 #### Copy the application into Applications
 
-1. Download the matching DMG from the project's official v1.0.5 release page.
+1. Download the matching DMG from the project's official v1.0.6 release page.
 2. Open **Finder → Downloads**, then double-click the downloaded `.dmg`. This opens a temporary disk containing the application and an **Applications** shortcut.
 3. Drag **Direct Payments Timesheets.app** onto the **Applications** shortcut. Finder may hide the `.app` extension. The spaces in the application name are intentional.
 4. Wait for copying to finish. If replacing an older copy, quit the old application first and confirm replacement only for the intended application.
@@ -173,7 +173,7 @@ Use disposable data for development as described under [Runtime data and configu
 
 ## Implemented functionality
 
-This section describes unreleased development **1.0.6 on main (schema41)**, not the capabilities of the published packages linked above. Historical schema numbers below identify when features were introduced.
+This section describes published **1.0.6 (schema41)** packages linked above. Historical schema numbers below identify when features were introduced.
 
 ### Records and settings
 
@@ -245,7 +245,7 @@ The Dashboard groups the workflow into three rows:
 `cargo run` uses normal configured data and automatically upgrades it. For a rehearsal,
 set `DIRECTPAYMENTTIMESHEETS_HOME` to an isolated copy **and** redirect its configured
 external folders; the root override alone does not isolate those paths. Do not use
-published 1.0.4/1.0.5 executables on upgraded data: their restore can replace newer
+older 1.0.4/1.0.5 executables on upgraded data: their restore can replace newer
 schemas. Consult [recovery details](docs/DATABASE-SCHEMA.md#verified-startup-upgrades-and-legacy-restore)
 before the first launch or any rollback.
 
@@ -332,7 +332,7 @@ Corrected payroll PDFs are handled through Personal Assistant Maintenance → **
 
 Stage 2 introduced schema37 in development 1.0.6 (current schema41) to protect sickness dates across payroll cycles. Changes require a reason and reviewed scope; protected cycles require authorised sickness-only corrections, and uncertain delivery remains blocked. Corrected historical PDFs preserve settled work and original evidence, display revised dates in the ordinary weekly table and explain the change in the notes area. Payroll assesses financial implications; the application does not calculate SSP or classify CSV notes as sickness. Upgrades retain verified database/config recovery; external business files need separate protection. See [Stage 2 workflow](docs/DEVELOPMENT.md#stage-2-sickness-protection-106schema37).
 
-### Signature images and drawing (development 1.0.6)
+### Signature images and drawing (1.0.6)
 
 Employer and PA Maintenance accept PNG and JPEG content (including JPG, JFIF,
 Exif and progressive/grayscale JPEGs), validated independently of the filename.
@@ -401,8 +401,8 @@ cannot be reassigned here. Internal shift history supports searchable twelve-row
 pages and stale-safe deletion; protected shifts cannot be deleted.
 
 The schema40 upgrade uses the existing verified pre-migration recovery backup and
-isolated installation. Keep external business-file backups separately. No published
-release versions have changed.
+isolated installation. Keep external business-file backups separately. These
+protections are included in published v1.0.6 packages.
 
 
 ## Stage 8 resolve uncertain email deliveries (1.0.6/schema41)
@@ -428,13 +428,14 @@ not acquire invented recipients, Message-IDs or attachment evidence.
 
 See [delivery review](docs/DOMAIN.md#reviewing-uncertain-delivery) for the review sequence and [SMTP settings](docs/DOMAIN.md#smtp-configuration-and-security) for transport/security limitations.
 
-### SMTP security on development main
+### SMTP security in v1.0.6
 
-Unreleased 1.0.6 supports required STARTTLS (normally 587), implicit TLS (normally
+Published v1.0.6 supports required STARTTLS (normally 587), implicit TLS (normally
 465), and explicitly selected plaintext SMTP. New remote configurations default
 to required STARTTLS; existing configurations retain plaintext until reviewed.
 TLS validates certificates and hostnames and never falls back to plaintext.
 Local relays remain compatible. Passwords are stored in plaintext configuration
 and backups. See [SMTP configuration and security](docs/DOMAIN.md#smtp-configuration-and-security)
-for warnings, platform trust requirements and delivery safeguards. Published
-release downloads above are unchanged and do not establish these capabilities.
+for warnings, platform trust requirements and delivery safeguards. All v1.0.6
+packages above include these transport modes; provider compatibility and platform
+trust requirements still need to be checked for each deployment.
