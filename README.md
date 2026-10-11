@@ -17,33 +17,33 @@ Choose your computer and installed operating system below. On Linux, choose eith
 
 **Windows 10 and later — Intel/AMD 64-bit (x86-64)**
 
-[![Download Windows installer](https://img.shields.io/badge/Download%20Windows%20installer-v1.0.4-blue?logo=windows11&logoColor=white)](https://github.com/arnieSkyNet/DirectPaymentTimesheets/releases/download/v1.0.4/DirectPaymentTimesheets-1.0.4-windows-x86_64-setup.exe)<br>
+[![Download Windows installer](https://img.shields.io/badge/Download%20Windows%20installer-v1.0.6-blue?logo=windows11&logoColor=white)](https://github.com/arnieSkyNet/DirectPaymentTimesheets/releases/download/v1.0.6/DirectPaymentTimesheets-1.0.6-windows-x86_64-setup.exe)<br>
 
 **Windows 10 and 11 — ARM64 (native application)**
 
-[![Download Windows ARM64 installer](https://img.shields.io/badge/Download%20Windows%20ARM64%20installer-v1.0.4-blue?logo=windows11&logoColor=white)](https://github.com/arnieSkyNet/DirectPaymentTimesheets/releases/download/v1.0.4/DirectPaymentTimesheets-1.0.4-windows-arm64-setup.exe)<br>
+[![Download Windows ARM64 installer](https://img.shields.io/badge/Download%20Windows%20ARM64%20installer-v1.0.6-blue?logo=windows11&logoColor=white)](https://github.com/arnieSkyNet/DirectPaymentTimesheets/releases/download/v1.0.6/DirectPaymentTimesheets-1.0.6-windows-arm64-setup.exe)<br>
 
 **Linux — Intel/AMD 64-bit (x86-64 / amd64)**
 
-[![Download Linux .deb](https://img.shields.io/badge/Download%20Linux%20.deb-v1.0.4-blue?logo=debian&logoColor=white)](https://github.com/arnieSkyNet/DirectPaymentTimesheets/releases/download/v1.0.4/direct-payment-timesheets_1.0.4_amd64.deb)<br>
-[![Download Linux AppImage](https://img.shields.io/badge/Download%20Linux%20AppImage-v1.0.4-green?logo=linux&logoColor=white)](https://github.com/arnieSkyNet/DirectPaymentTimesheets/releases/download/v1.0.4/DirectPaymentTimesheets-1.0.4-linux-x86_64.AppImage)<br>
+[![Download Linux .deb](https://img.shields.io/badge/Download%20Linux%20.deb-v1.0.6-blue?logo=debian&logoColor=white)](https://github.com/arnieSkyNet/DirectPaymentTimesheets/releases/download/v1.0.6/direct-payment-timesheets_1.0.6_amd64.deb)<br>
+[![Download Linux AppImage](https://img.shields.io/badge/Download%20Linux%20AppImage-v1.0.6-green?logo=linux&logoColor=white)](https://github.com/arnieSkyNet/DirectPaymentTimesheets/releases/download/v1.0.6/DirectPaymentTimesheets-1.0.6-linux-x86_64.AppImage)<br>
 
 **Raspberry Pi / Linux — ARM32 (armhf, ARMv7)**
 
-[![Download ARM32 .deb](https://img.shields.io/badge/Download%20ARM32%20.deb-v1.0.4-blue?logo=debian&logoColor=white)](https://github.com/arnieSkyNet/DirectPaymentTimesheets/releases/download/v1.0.4/direct-payment-timesheets_1.0.4_armhf.deb)<br>
-[![Download ARM32 AppImage](https://img.shields.io/badge/Download%20ARM32%20AppImage-v1.0.4-green?logo=linux&logoColor=white)](https://github.com/arnieSkyNet/DirectPaymentTimesheets/releases/download/v1.0.4/DirectPaymentTimesheets-1.0.4-linux-armhf.AppImage)<br>
+[![Download ARM32 .deb](https://img.shields.io/badge/Download%20ARM32%20.deb-v1.0.6-blue?logo=debian&logoColor=white)](https://github.com/arnieSkyNet/DirectPaymentTimesheets/releases/download/v1.0.6/direct-payment-timesheets_1.0.6_armhf.deb)<br>
+[![Download ARM32 AppImage](https://img.shields.io/badge/Download%20ARM32%20AppImage-v1.0.6-green?logo=linux&logoColor=white)](https://github.com/arnieSkyNet/DirectPaymentTimesheets/releases/download/v1.0.6/DirectPaymentTimesheets-1.0.6-linux-armhf.AppImage)<br>
 
 **Raspberry Pi / Linux — ARM64 (arm64 / aarch64)**
 
-[![Download ARM64 .deb](https://img.shields.io/badge/Download%20ARM64%20.deb-v1.0.4-blue?logo=debian&logoColor=white)](https://github.com/arnieSkyNet/DirectPaymentTimesheets/releases/download/v1.0.4/direct-payment-timesheets_1.0.4_arm64.deb)<br>
-[![Download ARM64 AppImage](https://img.shields.io/badge/Download%20ARM64%20AppImage-v1.0.4-green?logo=linux&logoColor=white)](https://github.com/arnieSkyNet/DirectPaymentTimesheets/releases/download/v1.0.4/DirectPaymentTimesheets-1.0.4-linux-aarch64.AppImage)<br>
+[![Download ARM64 .deb](https://img.shields.io/badge/Download%20ARM64%20.deb-v1.0.6-blue?logo=debian&logoColor=white)](https://github.com/arnieSkyNet/DirectPaymentTimesheets/releases/download/v1.0.6/direct-payment-timesheets_1.0.6_arm64.deb)<br>
+[![Download ARM64 AppImage](https://img.shields.io/badge/Download%20ARM64%20AppImage-v1.0.6-green?logo=linux&logoColor=white)](https://github.com/arnieSkyNet/DirectPaymentTimesheets/releases/download/v1.0.6/DirectPaymentTimesheets-1.0.6-linux-aarch64.AppImage)<br>
 
 **macOS — Apple Silicon or Intel**
 
-[![Download Apple Silicon DMG](https://img.shields.io/badge/Download%20Apple%20Silicon%20DMG-v1.0.5-blue?logo=apple&logoColor=white)](https://github.com/arnieSkyNet/DirectPaymentTimesheets/releases/download/v1.0.5/DirectPaymentTimesheets-1.0.5-macos-arm64.dmg)<br>
-[![Download Intel DMG](https://img.shields.io/badge/Download%20Intel%20DMG-v1.0.5-blue?logo=apple&logoColor=white)](https://github.com/arnieSkyNet/DirectPaymentTimesheets/releases/download/v1.0.5/DirectPaymentTimesheets-1.0.5-macos-x86_64.dmg)<br>
+[![Download Apple Silicon DMG](https://img.shields.io/badge/Download%20Apple%20Silicon%20DMG-v1.0.6-blue?logo=apple&logoColor=white)](https://github.com/arnieSkyNet/DirectPaymentTimesheets/releases/download/v1.0.6/DirectPaymentTimesheets-1.0.6-macos-arm64.dmg)<br>
+[![Download Intel DMG](https://img.shields.io/badge/Download%20Intel%20DMG-v1.0.6-blue?logo=apple&logoColor=white)](https://github.com/arnieSkyNet/DirectPaymentTimesheets/releases/download/v1.0.6/DirectPaymentTimesheets-1.0.6-macos-x86_64.dmg)<br>
 
-[Installation instructions](#install-build-and-run) · [v1.0.4 release notes](https://github.com/arnieSkyNet/DirectPaymentTimesheets/releases/tag/v1.0.4) · [All releases](https://github.com/arnieSkyNet/DirectPaymentTimesheets/releases/)
+[Installation instructions](#install-build-and-run) · [v1.0.6 release notes](https://github.com/arnieSkyNet/DirectPaymentTimesheets/releases/tag/v1.0.6) · [All releases](https://github.com/arnieSkyNet/DirectPaymentTimesheets/releases/)
 
 ### Choosing a Linux or Raspberry Pi architecture
 
