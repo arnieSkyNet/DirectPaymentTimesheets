@@ -38,6 +38,13 @@ extern "system" {
         size: u32,
         needed: *mut u32,
     ) -> i32;
+    #[cfg(test)]
+    fn GetSecurityDescriptorDacl(
+        descriptor: *const c_void,
+        present: *mut i32,
+        acl: *mut *mut c_void,
+        defaulted: *mut i32,
+    ) -> i32;
     fn GetSecurityDescriptorControl(
         descriptor: *const c_void,
         control: *mut u16,
@@ -100,6 +107,24 @@ extern "system" {
 }
 #[link(name = "kernel32")]
 extern "system" {
+    fn GetFinalPathNameByHandleW(handle: Handle, buffer: *mut u16, size: u32, flags: u32) -> u32;
+    fn GetVolumeInformationByHandleW(
+        handle: Handle,
+        name: *mut u16,
+        name_size: u32,
+        serial: *mut u32,
+        maximum: *mut u32,
+        flags: *mut u32,
+        filesystem: *mut u16,
+        filesystem_size: u32,
+    ) -> i32;
+    fn GetFileInformationByHandleEx(
+        handle: Handle,
+        class: u32,
+        buffer: *mut c_void,
+        size: u32,
+    ) -> i32;
+    fn GetDriveTypeW(root: *const u16) -> u32;
     fn MoveFileExW(source: *const u16, destination: *const u16, flags: u32) -> i32;
     fn CreateDirectoryW(path: *const u16, attributes: *const SecurityAttributes) -> i32;
     fn CreateFileW(
@@ -325,6 +350,31 @@ fn diagnostic(operation: &str, error: io::Error) -> io::Error {
         ),
     )
 }
+#[derive(Debug)]
+struct DiagnosticError {
+    operation: &'static str,
+    code: Option<i32>,
+    kind: io::ErrorKind,
+}
+impl std::fmt::Display for DiagnosticError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "{}: code={:?}; class={:?}",
+            self.operation, self.code, self.kind
+        )
+    }
+}
+impl std::error::Error for DiagnosticError {}
+fn dacl_diagnostic(operation: &'static str, error: io::Error) -> io::Error {
+    let payload = DiagnosticError {
+        operation,
+        code: error.raw_os_error(),
+        kind: error.kind(),
+    };
+    eprintln!("{payload}");
+    io::Error::new(error.kind(), payload)
+}
 fn binary_sid(text: &str) -> io::Result<LocalMemory> {
     let text: Vec<u16> = text.encode_utf16().chain(Some(0)).collect();
     let mut sid = std::ptr::null_mut();
@@ -408,7 +458,7 @@ fn owner_sid_category(
 }
 
 fn probe_root_service_owner(owner: *const c_void) -> RootProbe {
-    // Local, fully qualified service SID; never resolve the owner to a printable name.
+    // Qualified service SID; resolution may consult domains. Never print identities.
     let qualified: Vec<u16> = format!("NT SERVICE\\{ROOT_SERVICE_CANDIDATE}")
         .encode_utf16()
         .chain(Some(0))
@@ -509,6 +559,293 @@ fn probe_root_service_owner(owner: *const c_void) -> RootProbe {
         "service_sid_disabled_or_unknown"
     };
     report
+}
+
+// Explicit opt-in; no account resolution or SCM calls in ordinary refusals.
+fn root_diagnostics_enabled() -> bool {
+    std::env::var_os("DPT_WINDOWS_ROOT_DIAGNOSTICS").is_some_and(|v| v == "1")
+}
+#[repr(C)]
+#[derive(Default, PartialEq, Eq)]
+struct RootIdentity {
+    volume: u64,
+    id: [u8; 16],
+}
+fn root_identity(file: &File) -> io::Result<RootIdentity> {
+    let mut identity = RootIdentity::default();
+    if unsafe {
+        GetFileInformationByHandleEx(
+            file.as_raw_handle().cast(),
+            18,
+            (&mut identity as *mut RootIdentity).cast(),
+            std::mem::size_of::<RootIdentity>() as u32,
+        )
+    } == 0
+    {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(identity)
+}
+#[derive(Debug, Default, Clone, Copy)]
+struct RootFacts {
+    network_namespace: bool,
+    query_code: Option<i32>,
+    reparse: bool,
+    guid_root: bool,
+    local_fixed: bool,
+    ntfs: bool,
+    persistent_acls: bool,
+    identity_matches: bool,
+}
+fn root_class(facts: RootFacts) -> &'static str {
+    if facts.reparse {
+        "reparse_point"
+    } else if facts.network_namespace {
+        "network_namespace"
+    } else if !facts.guid_root {
+        "ambiguous_or_network_namespace"
+    } else if !facts.local_fixed {
+        "unsupported_or_network_volume"
+    } else if !facts.ntfs || !facts.persistent_acls {
+        "unsupported_filesystem"
+    } else if !facts.identity_matches {
+        "root_identity_mismatch"
+    } else {
+        "verified_local_ntfs_root"
+    }
+}
+// Only accept the complete GUID root form; no descendant, UNC or device namespace.
+fn guid_root(value: &[u16]) -> bool {
+    let Ok(text) = String::from_utf16(value) else {
+        return false;
+    };
+    let bytes = text.as_bytes();
+    bytes.len() == 49
+        && text.starts_with("\\\\?\\Volume{")
+        && text.ends_with("}\\")
+        && bytes[11..47].iter().enumerate().all(|(i, b)| {
+            if matches!(i, 8 | 13 | 18 | 23) {
+                *b == b'-'
+            } else {
+                b.is_ascii_hexdigit()
+            }
+        })
+}
+#[derive(Debug)]
+struct QueryError {
+    operation: &'static str,
+    code: Option<i32>,
+    primary: Option<i32>,
+    fallback: &'static str,
+}
+impl QueryError {
+    fn new(operation: &'static str, error: io::Error) -> Self {
+        Self {
+            operation,
+            code: error.raw_os_error(),
+            primary: None,
+            fallback: "not_attempted",
+        }
+    }
+}
+trait RootQueries {
+    type Held;
+    fn reparse(&self, held: Option<&Self::Held>) -> io::Result<bool>;
+    fn final_name(&self, opened: bool) -> io::Result<Vec<u16>>;
+    fn fixed(&self, root: &[u16]) -> bool;
+    fn volume(&self) -> io::Result<(bool, bool)>;
+    fn open(&self, root: &[u16]) -> io::Result<Self::Held>;
+    fn identity(&self, held: Option<&Self::Held>) -> io::Result<RootIdentity>;
+}
+struct NativeRootQueries<'a>(&'a File);
+impl RootQueries for NativeRootQueries<'_> {
+    type Held = File;
+    fn reparse(&self, held: Option<&File>) -> io::Result<bool> {
+        use std::os::windows::fs::MetadataExt;
+        Ok(held.unwrap_or(self.0).metadata()?.file_attributes() & 0x400 != 0)
+    }
+    fn final_name(&self, opened: bool) -> io::Result<Vec<u16>> {
+        // Memory is bounded; these synchronous queries still have no latency bound.
+        let mut buffer = vec![0u16; if opened { 1024 } else { 64 }];
+        let count = unsafe {
+            GetFinalPathNameByHandleW(
+                self.0.as_raw_handle().cast(),
+                buffer.as_mut_ptr(),
+                buffer.len() as u32,
+                if opened { 8 } else { 1 },
+            )
+        };
+        if count == 0 {
+            return Err(io::Error::last_os_error());
+        }
+        if count as usize >= buffer.len() {
+            return Err(io::Error::from_raw_os_error(122)); // ERROR_INSUFFICIENT_BUFFER; derived from API size result.
+        }
+        buffer.truncate(count as usize);
+        Ok(buffer)
+    }
+    fn fixed(&self, root: &[u16]) -> bool {
+        let terminated: Vec<u16> = root.iter().copied().chain(Some(0)).collect();
+        unsafe { GetDriveTypeW(terminated.as_ptr()) == 3 }
+    }
+    fn volume(&self) -> io::Result<(bool, bool)> {
+        let mut filesystem = [0u16; 32];
+        let mut flags = 0;
+        if unsafe {
+            GetVolumeInformationByHandleW(
+                self.0.as_raw_handle().cast(),
+                std::ptr::null_mut(),
+                0,
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                &mut flags,
+                filesystem.as_mut_ptr(),
+                32,
+            )
+        } == 0
+        {
+            return Err(io::Error::last_os_error());
+        }
+        Ok((lookup_field_matches(&filesystem, "NTFS"), flags & 8 != 0))
+    }
+    fn open(&self, root: &[u16]) -> io::Result<File> {
+        let terminated: Vec<u16> = root.iter().copied().chain(Some(0)).collect();
+        let handle = unsafe {
+            CreateFileW(
+                terminated.as_ptr(),
+                0x20080,
+                3,
+                std::ptr::null(),
+                3,
+                0x02200000,
+                std::ptr::null_mut(),
+            )
+        };
+        if handle as isize == -1 {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(unsafe { File::from_raw_handle(handle) })
+    }
+    fn identity(&self, held: Option<&File>) -> io::Result<RootIdentity> {
+        root_identity(held.unwrap_or(self.0))
+    }
+}
+fn query_root_with<Q: RootQueries>(query: &Q) -> Result<RootFacts, QueryError> {
+    let mut facts = RootFacts {
+        reparse: query
+            .reparse(None)
+            .map_err(|e| QueryError::new("original_metadata", e))?,
+        ..RootFacts::default()
+    };
+    if facts.reparse {
+        return Ok(facts);
+    }
+    let root = match query.final_name(false) {
+        Ok(root) => root,
+        Err(primary) => {
+            let primary_code = primary.raw_os_error();
+            if primary_code == Some(122) {
+                // Oversized GUID-root result cannot be a complete root. Preserve the
+                // original ambiguous classification rather than probing a descendant.
+                facts.query_code = primary_code;
+                return Ok(facts);
+            }
+            match query.final_name(true) {
+                Ok(opened) => {
+                    facts.network_namespace =
+                        opened.starts_with(&"\\\\?\\UNC\\".encode_utf16().collect::<Vec<_>>());
+                    if facts.network_namespace {
+                        facts.query_code = primary_code;
+                        return Ok(facts);
+                    }
+                    return Err(QueryError {
+                        operation: "guid_final_path",
+                        code: primary_code,
+                        primary: primary_code,
+                        fallback: "non_unc_namespace",
+                    });
+                }
+                Err(error) => {
+                    return Err(QueryError {
+                        operation: "opened_unc_final_path",
+                        code: error.raw_os_error(),
+                        primary: primary_code,
+                        fallback: "query_failed",
+                    })
+                }
+            }
+        }
+    };
+    facts.guid_root = guid_root(&root);
+    if !facts.guid_root {
+        return Ok(facts);
+    }
+    facts.local_fixed = query.fixed(&root);
+    if !facts.local_fixed {
+        return Ok(facts);
+    }
+    (facts.ntfs, facts.persistent_acls) = query
+        .volume()
+        .map_err(|e| QueryError::new("volume_information", e))?;
+    if !facts.ntfs || !facts.persistent_acls {
+        return Ok(facts);
+    }
+    let independent = query
+        .open(&root)
+        .map_err(|e| QueryError::new("independent_root_open", e))?;
+    facts.reparse = query
+        .reparse(Some(&independent))
+        .map_err(|e| QueryError::new("independent_metadata", e))?;
+    if facts.reparse {
+        return Ok(facts);
+    }
+    let original = query
+        .identity(None)
+        .map_err(|e| QueryError::new("original_file_id", e))?;
+    let other = query
+        .identity(Some(&independent))
+        .map_err(|e| QueryError::new("independent_file_id", e))?;
+    let rechecked = query
+        .identity(None)
+        .map_err(|e| QueryError::new("original_file_id_recheck", e))?;
+    facts.identity_matches = original == other && original == rechecked;
+    Ok(facts)
+}
+fn query_root(file: &File) -> Result<RootFacts, QueryError> {
+    query_root_with(&NativeRootQueries(file))
+}
+fn render_root_query(result: Result<RootFacts, QueryError>) -> String {
+    match result {
+        Ok(facts) => format!("windows.root_namespace: depth=0; role=volume_root; class={}; identity_matches={}; persistent_acls={}; primary_guid_code={:?}; fallback={}",
+            root_class(facts), facts.identity_matches, facts.persistent_acls, facts.query_code,
+            if facts.network_namespace { "unc_namespace" } else { "not_attempted" }),
+        Err(error) => format!("windows.root_namespace: depth=0; role=volume_root; class=indeterminate; operation={}; code={:?}; primary_guid_code={:?}; fallback={}",
+            error.operation, error.code, error.primary, error.fallback),
+    }
+}
+fn diagnose_namespace_root(
+    file: &File,
+    acl: *const c_void,
+    current: &LocalMemory,
+    system: &LocalMemory,
+    administrators: &LocalMemory,
+) {
+    eprintln!("{}", render_root_query(query_root(file)));
+    // Evaluate the SAME DACL policy independently of owner refusal. This is not AccessCheck.
+    match assess_dacl(acl, current, system, administrators, true, false) {
+        Ok(reason) => eprintln!(
+            "windows.root_dacl: depth=0; role=volume_root; class={}; owner_authorized=false",
+            reason.unwrap_or("policy_pass")
+        ),
+        Err(error) => {
+            let payload = error
+                .get_ref()
+                .and_then(|e| e.downcast_ref::<DiagnosticError>());
+            eprintln!("windows.root_dacl: depth=0; role=volume_root; class=indeterminate; operation={}; code={:?}",
+                payload.map_or("dacl_query", |e| e.operation),
+                payload.map_or(error.raw_os_error(), |e| e.code));
+        }
+    }
 }
 
 fn ancestor_error(operation: &str, error: io::Error, context: Option<(usize, &str)>) -> io::Error {
@@ -630,11 +967,31 @@ fn assess_access(
                 && (unsafe { EqualSid(owner, system.0) } != 0
                     || unsafe { EqualSid(owner, administrators.0) } != 0)))
     {
-        if root_probe_required(owner_valid, owner_category, context) {
+        if root_probe_required(owner_valid, owner_category, context) && root_diagnostics_enabled() {
+            diagnose_namespace_root(file, acl, &current, &system, &administrators);
             eprintln!("{}", probe_root_service_owner(owner).render());
         }
         return Ok(Some("owner_mismatch"));
     }
+    assess_dacl(
+        acl,
+        &current,
+        &system,
+        &administrators,
+        ancestor,
+        require_inheritance,
+    )
+}
+
+// Shared policy evaluator: diagnostics never bypass or alter admission.
+fn assess_dacl(
+    acl: *const c_void,
+    current: &LocalMemory,
+    system: &LocalMemory,
+    administrators: &LocalMemory,
+    ancestor: bool,
+    require_inheritance: bool,
+) -> io::Result<Option<&'static str>> {
     if acl.is_null() || unsafe { IsValidAcl(acl) } == 0 {
         return Ok(Some("null_or_invalid_dacl"));
     }
@@ -658,7 +1015,7 @@ fn assess_access(
         )
     } == 0
     {
-        return Err(diagnostic(
+        return Err(dacl_diagnostic(
             "windows.get_acl_information",
             io::Error::last_os_error(),
         ));
@@ -669,7 +1026,10 @@ fn assess_access(
     for index in 0..info.count {
         let mut ace = std::ptr::null_mut();
         if unsafe { GetAce(acl, index, &mut ace) } == 0 {
-            return Err(diagnostic("windows.get_ace", io::Error::last_os_error()));
+            return Err(dacl_diagnostic(
+                "windows.get_ace",
+                io::Error::last_os_error(),
+            ));
         }
         // Only basic ALLOW/DENY ACEs have this layout. Unknown forms fail closed.
         let bytes = ace.cast::<u8>();
@@ -692,7 +1052,7 @@ fn assess_access(
         let matches = |sid: &LocalMemory| unsafe { EqualSid(trustee.cast(), sid.0) != 0 };
         let inherit_only = unsafe { *bytes.add(1) } & 0x08 != 0;
         let access = unsafe { std::ptr::read_unaligned(bytes.add(4).cast::<u32>()) };
-        if matches(&current)
+        if matches(current)
             && unsafe { *bytes.add(1) } & 0x01 != 0
             && (access & 0x001f01ff == 0x001f01ff || access & 0x10000000 != 0)
         {
@@ -705,9 +1065,9 @@ fn assess_access(
         if ancestor && (inherit_only || access & SUBSTITUTION_ACCESS == 0) {
             continue;
         }
-        if !matches(&current)
-            && !matches(&system)
-            && !matches(&administrators)
+        if !matches(current)
+            && !matches(system)
+            && !matches(administrators)
             && !matches(&owner_rights)
             && !(inherit_only && matches(&creator_owner))
         {
@@ -890,6 +1250,388 @@ pub fn preserve_access(temporary: &Path, destination: &Path) -> io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    struct SyntheticHeld(std::rc::Rc<std::cell::Cell<usize>>);
+    impl Drop for SyntheticHeld {
+        fn drop(&mut self) {
+            self.0.set(self.0.get() + 1);
+        }
+    }
+    struct SyntheticQueries {
+        fail: &'static str,
+        guid_failure: bool,
+        oversized: bool,
+        unc: bool,
+        mismatch: bool,
+        substitute: bool,
+        originals: std::cell::Cell<usize>,
+        opened: std::cell::Cell<usize>,
+        closed: std::rc::Rc<std::cell::Cell<usize>>,
+    }
+    impl SyntheticQueries {
+        fn new(fail: &'static str) -> Self {
+            Self {
+                fail,
+                guid_failure: false,
+                oversized: false,
+                unc: false,
+                mismatch: false,
+                substitute: false,
+                originals: std::cell::Cell::new(0),
+                opened: std::cell::Cell::new(0),
+                closed: std::rc::Rc::new(std::cell::Cell::new(0)),
+            }
+        }
+        fn stage(&self, stage: &'static str) -> io::Result<()> {
+            if self.fail == stage {
+                Err(io::Error::from_raw_os_error(5))
+            } else {
+                Ok(())
+            }
+        }
+    }
+    impl RootQueries for SyntheticQueries {
+        type Held = SyntheticHeld;
+        fn reparse(&self, held: Option<&SyntheticHeld>) -> io::Result<bool> {
+            self.stage(if held.is_some() {
+                "independent_metadata"
+            } else {
+                "original_metadata"
+            })?;
+            Ok(held.is_some() && self.substitute)
+        }
+        fn final_name(&self, opened: bool) -> io::Result<Vec<u16>> {
+            if !opened && self.oversized {
+                return Err(io::Error::from_raw_os_error(122));
+            }
+            if !opened && self.guid_failure {
+                return Err(io::Error::from_raw_os_error(3));
+            }
+            self.stage(if opened {
+                "opened_unc_final_path"
+            } else {
+                "guid_final_path"
+            })?;
+            Ok(if opened && self.unc {
+                "\\\\?\\UNC\\synthetic\\share\\"
+            } else {
+                "\\\\?\\Volume{01234567-89ab-cdef-0123-456789abcdef}\\"
+            }
+            .encode_utf16()
+            .collect())
+        }
+        fn fixed(&self, _: &[u16]) -> bool {
+            true
+        }
+        fn volume(&self) -> io::Result<(bool, bool)> {
+            self.stage("volume_information")?;
+            Ok((true, true))
+        }
+        fn open(&self, _: &[u16]) -> io::Result<SyntheticHeld> {
+            self.stage("independent_root_open")?;
+            self.opened.set(self.opened.get() + 1);
+            Ok(SyntheticHeld(self.closed.clone()))
+        }
+        fn identity(&self, held: Option<&SyntheticHeld>) -> io::Result<RootIdentity> {
+            let stage = if held.is_some() {
+                "independent_file_id"
+            } else {
+                let count = self.originals.get();
+                self.originals.set(count + 1);
+                if count == 0 {
+                    "original_file_id"
+                } else {
+                    "original_file_id_recheck"
+                }
+            };
+            self.stage(stage)?;
+            Ok(RootIdentity {
+                volume: 1,
+                id: [if held.is_some() && self.mismatch {
+                    2
+                } else {
+                    1
+                }; 16],
+            })
+        }
+    }
+    #[test]
+    fn phase1_windows_root_query_stages_and_raii_cleanup() {
+        let positive = SyntheticQueries::new("");
+        assert_eq!(
+            root_class(query_root_with(&positive).unwrap()),
+            "verified_local_ntfs_root"
+        );
+        assert_eq!((positive.opened.get(), positive.closed.get()), (1, 1));
+        for stage in [
+            "original_metadata",
+            "guid_final_path",
+            "volume_information",
+            "independent_root_open",
+            "independent_metadata",
+            "original_file_id",
+            "independent_file_id",
+            "original_file_id_recheck",
+        ] {
+            let query = SyntheticQueries::new(stage);
+            let error = query_root_with(&query).unwrap_err();
+            assert_eq!(error.operation, stage);
+            assert_eq!(error.code, Some(5));
+            assert_eq!(query.opened.get(), query.closed.get());
+            if matches!(
+                stage,
+                "independent_metadata"
+                    | "original_file_id"
+                    | "independent_file_id"
+                    | "original_file_id_recheck"
+            ) {
+                assert_eq!(query.closed.get(), 1);
+            } else {
+                assert_eq!(query.closed.get(), 0);
+            }
+        }
+        let mut mismatch = SyntheticQueries::new("");
+        mismatch.mismatch = true;
+        assert_eq!(
+            root_class(query_root_with(&mismatch).unwrap()),
+            "root_identity_mismatch"
+        );
+        assert_eq!(mismatch.closed.get(), 1);
+        let mut substitute = SyntheticQueries::new("");
+        substitute.substitute = true;
+        assert_eq!(
+            root_class(query_root_with(&substitute).unwrap()),
+            "reparse_point"
+        );
+        assert_eq!(substitute.closed.get(), 1);
+    }
+    #[test]
+    fn phase1_windows_root_query_retains_primary_and_fallback_outcomes() {
+        let mut failed = SyntheticQueries::new("opened_unc_final_path");
+        failed.guid_failure = true;
+        let error = query_root_with(&failed).unwrap_err();
+        assert_eq!(error.primary, Some(3));
+        assert_eq!(error.code, Some(5));
+        assert_eq!(error.fallback, "query_failed");
+        assert_eq!(error.operation, "opened_unc_final_path");
+        let rendered = render_root_query(Err(error));
+        assert!(rendered.contains("depth=0; role=volume_root"));
+        assert!(rendered.contains("primary_guid_code=Some(3)"));
+        let mut non_unc = SyntheticQueries::new("");
+        non_unc.guid_failure = true;
+        let error = query_root_with(&non_unc).unwrap_err();
+        assert_eq!(error.primary, Some(3));
+        assert_eq!(error.fallback, "non_unc_namespace");
+        let mut unc = SyntheticQueries::new("");
+        unc.guid_failure = true;
+        unc.unc = true;
+        let facts = query_root_with(&unc).unwrap();
+        assert_eq!(root_class(facts), "network_namespace");
+        assert_eq!(facts.query_code, Some(3));
+        assert_eq!(unc.opened.get(), 0);
+        let mut oversized = SyntheticQueries::new("");
+        oversized.oversized = true;
+        let facts = query_root_with(&oversized).unwrap();
+        assert_eq!(root_class(facts), "ambiguous_or_network_namespace");
+        assert_eq!(facts.query_code, Some(122));
+        assert_eq!(oversized.opened.get(), 0);
+    }
+    #[test]
+    fn phase1_windows_dacl_wrapped_errors_preserve_raw_code_and_operation() {
+        for operation in ["windows.get_acl_information", "windows.get_ace"] {
+            let error = dacl_diagnostic(operation, io::Error::from_raw_os_error(5));
+            let payload = error
+                .get_ref()
+                .unwrap()
+                .downcast_ref::<DiagnosticError>()
+                .unwrap();
+            assert_eq!(payload.operation, operation);
+            assert_eq!(payload.code, Some(5));
+            assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
+            assert_eq!(
+                error.to_string(),
+                format!("{operation}: code=Some(5); class=PermissionDenied")
+            );
+        }
+    }
+    #[test]
+    fn phase1_windows_root_namespace_injected_classification() {
+        let positive = RootFacts {
+            guid_root: true,
+            local_fixed: true,
+            ntfs: true,
+            persistent_acls: true,
+            identity_matches: true,
+            reparse: false,
+            ..RootFacts::default()
+        };
+        assert_eq!(root_class(positive), "verified_local_ntfs_root");
+        for (facts, expected) in [
+            (
+                RootFacts {
+                    network_namespace: true,
+                    ..positive
+                },
+                "network_namespace",
+            ),
+            (
+                RootFacts {
+                    reparse: true,
+                    ..positive
+                },
+                "reparse_point",
+            ),
+            (
+                RootFacts {
+                    guid_root: false,
+                    ..positive
+                },
+                "ambiguous_or_network_namespace",
+            ),
+            (
+                RootFacts {
+                    local_fixed: false,
+                    ..positive
+                },
+                "unsupported_or_network_volume",
+            ),
+            (
+                RootFacts {
+                    ntfs: false,
+                    ..positive
+                },
+                "unsupported_filesystem",
+            ),
+            (
+                RootFacts {
+                    persistent_acls: false,
+                    ..positive
+                },
+                "unsupported_filesystem",
+            ),
+            (
+                RootFacts {
+                    identity_matches: false,
+                    ..positive
+                },
+                "root_identity_mismatch",
+            ),
+        ] {
+            assert_eq!(root_class(facts), expected);
+        }
+        let root = "\\\\?\\Volume{01234567-89ab-cdef-0123-456789abcdef}\\";
+        assert!(guid_root(&root.encode_utf16().collect::<Vec<_>>()));
+        for value in [
+            "\\\\server\\share\\",
+            "\\\\?\\UNC\\server\\share\\",
+            "C:\\",
+            "\\\\?\\GLOBALROOT\\",
+            &format!("{root}child"),
+            "\\\\?\\Volume{zzzzzzzz-89ab-cdef-0123-456789abcdef}\\",
+        ] {
+            assert!(!guid_root(&value.encode_utf16().collect::<Vec<_>>()));
+        }
+        assert!(!guid_root(&[0xd800]));
+    }
+    #[test]
+    fn phase1_windows_root_failed_queries_never_render_sensitive_error_text() {
+        for code in [5, 6, 3, 50, 87] {
+            let rendered = render_root_query(Err(QueryError::new(
+                "original_metadata",
+                io::Error::from_raw_os_error(code),
+            )));
+            assert!(rendered.contains("class=indeterminate"));
+            assert!(rendered.contains(&format!("code=Some({code})")));
+            assert!(!rendered.contains("verified_local_ntfs_root"));
+        }
+        let rendered = render_root_query(Err(QueryError::new(
+            "original_metadata",
+            io::Error::other("sensitive synthetic path and identity"),
+        )));
+        assert!(!rendered.contains("sensitive"));
+        assert!(rendered.contains("code=None"));
+    }
+    #[test]
+    fn phase1_windows_root_dacl_synthetic_policy_does_not_authorize_owner() {
+        // Inject a candidate/foreign owner and DACL; never alter a machine root.
+        let current = binary_sid("S-1-1-0").unwrap();
+        let system = binary_sid("S-1-5-18").unwrap();
+        let administrators = binary_sid("S-1-5-32-544").unwrap();
+        for (text, expected) in [
+            ("O:LS D:P(A;;FA;;;WD)", None),
+            ("O:LS D:P(A;;FA;;;LS)", Some("untrusted_allow_ace")),
+            ("O:LS D:P(A;;WD;;;LS)", Some("untrusted_allow_ace")),
+            ("O:LS D:P(A;;FA;;;OW)", None),
+        ] {
+            let text: Vec<u16> = text
+                .replace(' ', "")
+                .encode_utf16()
+                .chain(Some(0))
+                .collect();
+            let mut raw = std::ptr::null_mut();
+            assert_ne!(
+                unsafe {
+                    ConvertStringSecurityDescriptorToSecurityDescriptorW(
+                        text.as_ptr(),
+                        1,
+                        &mut raw,
+                        std::ptr::null_mut(),
+                    )
+                },
+                0
+            );
+            let descriptor = LocalMemory(raw);
+            let mut present = 0;
+            let mut defaulted = 0;
+            let mut acl = std::ptr::null_mut();
+            assert_ne!(
+                unsafe {
+                    GetSecurityDescriptorDacl(descriptor.0, &mut present, &mut acl, &mut defaulted)
+                },
+                0
+            );
+            assert_ne!(present, 0);
+            assert_eq!(
+                assess_dacl(acl, &current, &system, &administrators, true, false).unwrap(),
+                expected
+            );
+            // Owner is still foreign even when its DACL passes the conservative policy.
+            let foreign = binary_sid("S-1-5-19").unwrap();
+            assert_eq!(
+                owner_sid_category(foreign.0, current.0, system.0, administrators.0),
+                (true, "other")
+            );
+        }
+        assert_eq!(
+            assess_dacl(
+                std::ptr::null(),
+                &current,
+                &system,
+                &administrators,
+                true,
+                false
+            )
+            .unwrap(),
+            Some("null_or_invalid_dacl")
+        );
+    }
+    #[test]
+    fn phase1_windows_root_query_fixture_preserves_identity_and_policy() {
+        let root = crate::private_storage::tempdir().unwrap();
+        let file = inspection_handle(root.path()).unwrap();
+        let before = root_identity(&file).unwrap();
+        let policy = TestSecurityPolicy::capture(root.path()).unwrap();
+        let facts = query_root(&file).unwrap(); // An ordinary private directory is NOT a volume root.
+        assert_eq!(root_class(facts), "ambiguous_or_network_namespace");
+        assert!(before == root_identity(&file).unwrap());
+        assert!(policy.matches(root.path()).unwrap());
+        // Invalid handles produce a structured native query failure; never a proof.
+        let mut buffer = [0u16; 64];
+        assert_eq!(
+            unsafe { GetFinalPathNameByHandleW(std::ptr::null_mut(), buffer.as_mut_ptr(), 64, 1) },
+            0
+        );
+        assert!(io::Error::last_os_error().raw_os_error().is_some());
+    }
     #[test]
     fn phase1_windows_root_probe_gate_and_native_owner_categories() {
         let current = binary_sid("S-1-1-0").unwrap(); // Synthetic current stand-in.

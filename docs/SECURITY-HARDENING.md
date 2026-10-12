@@ -413,3 +413,75 @@ SID configuration observations are non-atomic and confer no executable trust,
 running-token identity or admission authority. The service SID, service process
 account and running token are distinct concepts; verified_candidate_service_sid
 is not authorization to admit the owner. Existing owner_mismatch refusal remains.
+
+
+## Opt-in namespace-root and DACL diagnostics (candidate, not native acceptance)
+
+The next candidate keeps all owner refusals and trustee restrictions intact.
+`DPT_WINDOWS_ROOT_DIAGNOSTICS=1` explicitly enables diagnostics only for a valid,
+rejected `other` owner at depth zero with the syntactic `volume_root` role. Without
+that exact opt-in, neither new root queries nor the existing account-resolution /
+SCM probe runs. No workflow or pin has been changed to enable it.
+
+The read-only root query requires an exact handle-derived volume GUID root,
+DRIVE_FIXED, NTFS with FILE_PERSISTENT_ACLS, no observed reparse attribute, and
+matching FILE_ID_INFO (64-bit volume serial plus 128-bit file ID) from an
+independently opened GUID root and a repeat query of the original handle.
+GUID strings and identities stay in memory and are never logged. Unsupported,
+remote, malformed, descendant and ambiguous namespaces cannot produce a verified
+classification. After a GUID-query failure, an opened handle-derived DOS UNC name reports
+network_namespace with the original numeric query error. If that observation is
+unavailable, the failure remains indeterminate; no particular network type is inferred. The query is conservative and is not a general filesystem
+compatibility or adversarial-driver attestation. Classification never authorizes
+admission, including when it reports verified_local_ntfs_root.
+
+All root/DACL records carry fixed depth=0 and role=volume_root context. Root
+errors retain fixed metadata, final-path, volume-information, independent-open
+and file-ID operation labels. Fallback errors preserve both primary and fallback
+codes; a successful fallback records whether UNC was observed. Insufficient
+final-path buffers use derived ERROR_INSUFFICIENT_BUFFER (122), rather than a
+stale GetLastError; an oversized GUID-root result remains ambiguous and does not
+open an independent root. GetDriveType supplies a drive classification, not a documented
+GetLastError failure; non-fixed results remain unsupported.
+
+Root DACL diagnostics use the same extracted policy evaluator as admission,
+independently of the unchanged owner refusal. policy_pass means only that the
+existing conservative ACE scan passed; it is not effective AccessCheck, does not
+attest owner rights, and does not authorize an otherwise foreign owner. OW and
+inherit-only handling, unsupported-ACE refusal and destructive-access masks are
+unchanged. No TrustedInstaller owner or trustee exception is added.
+
+Seven new Windows-only tests cover injected positive/negative root facts, strict
+GUID/UNC/device/descendant parsing, failed-query classification and private
+rendering, in-memory foreign-owner safe/unsafe/OW DACLs, and unchanged private
+fixture identity/policy after queries. Injectable query stages additionally exercise
+successful independent-root comparison, identity mismatch, reparse substitution,
+each fallible stage, and RAII drop counts after open and subsequent failures.
+Primary GUID errors and UNC fallback failure/non-UNC/success outcomes are asserted
+separately. Structured DACL error tests retain GetAclInformation/GetAce operation
+and original numeric code without changing admission error text or kind.
+The foreign-owner fixture is a synthetic
+stand-in, not a TrustedInstaller authorization test. Reparse and identity mismatch
+facts are injected; no machine volume root is mutated. Invalid-handle failure is
+queried read-only. Real local-root success, UNC behaviour, standard-user access,
+API ABI/error paths, actual OS handle closure and concurrent substitution still
+require native execution. Synthetic drop counts verify Rust orchestration, not
+CloseHandle success or driver behaviour. Existing junction/substitution regressions remain.
+
+Normal production refusals no longer synchronously repeat unbounded account
+resolution. Explicit opt-in still permits repeated lookup/SCM work while directory
+handles are held; memory bounds do not bound latency. Volume/file APIs may also
+block. Independent root File handles use RAII; native cleanup and failure paths
+are unverified. Identity, filesystem and service observations are non-atomic.
+SQLite guard lifetime, pathname publication/cleanup and MoveFileExW open-target
+error 5 remain unresolved; production sign-off is not implied.
+
+Available Linux validation: cargo check --locked --offline --bins --tests passed;
+Phase 1 tests 18/18 and private_storage tests 15/15 passed. Windows-only code/tests
+are excluded from these Linux results; only the Linux Rust target is installed.
+Targeted rustfmt and git diff --check passed. Native verification must explicitly
+opt in through a separately reviewed change; this candidate does not dispatch it.
+
+API references: [final path by handle](https://learn.microsoft.com/en-us/windows/win32/api/fileapi/nf-fileapi-getfinalpathnamebyhandlew),
+[volume information by handle](https://learn.microsoft.com/en-us/windows/win32/api/fileapi/nf-fileapi-getvolumeinformationbyhandlew),
+[file information by handle](https://learn.microsoft.com/en-us/windows/win32/api/winbase/nf-winbase-getfileinformationbyhandleex).
