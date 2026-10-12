@@ -1,0 +1,84 @@
+name: Phase 1 native security verification
+run-name: Phase 1 security · ${{ github.ref_name }} · ${{ inputs.expected_sha }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      expected_sha:
+        description: Enter approved source SHA 6329b6d543ff4d6428de83242d9a8202648b4017; dispatch from main
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: phase1-security-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  native:
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [windows-2022, macos-15, macos-15-intel]
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 90
+    env:
+      EXPECTED_SHA: '6329b6d543ff4d6428de83242d9a8202648b4017'
+      GIT_TERMINAL_PROMPT: '0'
+      CARGO_INCREMENTAL: '0'
+      CARGO_BUILD_JOBS: '2'
+      CARGO_PROFILE_TEST_DEBUG: '0'
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Require main dispatch and the fixed approved source
+        env:
+          SELECTED_REF: ${{ github.ref }}
+          REQUESTED_SHA: ${{ inputs.expected_sha }}
+        run: |
+          set -euo pipefail
+          test "$SELECTED_REF" = refs/heads/main
+          [[ "$REQUESTED_SHA" =~ ^[0-9a-f]{40}$ ]]
+          test "$REQUESTED_SHA" = '6329b6d543ff4d6428de83242d9a8202648b4017'
+          remote_line="$(git -c credential.helper= ls-remote --exit-code --heads \
+            https://github.com/arnieSkyNet/DirectPaymentTimesheets.git \
+            refs/heads/security/v1.0.7-phase1)"
+          test "$remote_line" = $'6329b6d543ff4d6428de83242d9a8202648b4017\trefs/heads/security/v1.0.7-phase1'
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          repository: arnieSkyNet/DirectPaymentTimesheets
+          # Fetch only the immutable approved source, not main or a branch tip.
+          ref: '6329b6d543ff4d6428de83242d9a8202648b4017'
+          fetch-depth: 1
+          fetch-tags: false
+          persist-credentials: false
+      - name: Verify checkout HEAD and recheck the remote source tip
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = '6329b6d543ff4d6428de83242d9a8202648b4017'
+          test -z "$(git status --porcelain=v1 --untracked-files=all)"
+          remote_line="$(git -c credential.helper= ls-remote --exit-code --heads \
+            https://github.com/arnieSkyNet/DirectPaymentTimesheets.git \
+            refs/heads/security/v1.0.7-phase1)"
+          test "$remote_line" = $'6329b6d543ff4d6428de83242d9a8202648b4017\trefs/heads/security/v1.0.7-phase1'
+      - name: Install the project's pinned native Rust toolchain
+        run: rustup toolchain install 1.98.1 --profile minimal
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: '3.12'
+      - name: Compile and run isolated synthetic security tests
+        env:
+          RUSTUP_TOOLCHAIN: '1.98.1'
+        run: |
+          python -B -m unittest discover -s scripts -p test_phase1_security_checks.py -v
+          python -B scripts/phase1_security_checks.py
+      - name: Explain the verification boundary
+        if: always()
+        run: |
+          echo 'Native verification is not remediation or release approval.' >> "$GITHUB_STEP_SUMMARY"
+          echo 'Inspect compilation, every test group, and known failing assertions in docs/NATIVE-SECURITY-VERIFICATION.md.' >> "$GITHUB_STEP_SUMMARY"
+# No push/PR/tag/release/workflow_call trigger, publisher, packaging, cache,
+# secrets, deployment environment, artifact upload or production application run.
