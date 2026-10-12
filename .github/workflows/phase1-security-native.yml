@@ -5,7 +5,7 @@ on:
   workflow_dispatch:
     inputs:
       expected_sha:
-        description: Full reviewed commit SHA on security/v1.0.7-phase1
+        description: Enter approved source SHA 6329b6d543ff4d6428de83242d9a8202648b4017; dispatch from main
         required: true
         type: string
 
@@ -25,7 +25,8 @@ jobs:
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 90
     env:
-      EXPECTED_SHA: ${{ inputs.expected_sha }}
+      EXPECTED_SHA: '6329b6d543ff4d6428de83242d9a8202648b4017'
+      GIT_TERMINAL_PROMPT: '0'
       CARGO_INCREMENTAL: '0'
       CARGO_BUILD_JOBS: '2'
       CARGO_PROFILE_TEST_DEBUG: '0'
@@ -33,20 +34,36 @@ jobs:
       run:
         shell: bash
     steps:
-      - name: Require the reviewed testing branch and exact revision
+      - name: Require main dispatch and the fixed approved source
         env:
           SELECTED_REF: ${{ github.ref }}
-          SELECTED_SHA: ${{ github.sha }}
+          REQUESTED_SHA: ${{ inputs.expected_sha }}
         run: |
-          test "$SELECTED_REF" = refs/heads/security/v1.0.7-phase1
-          [[ "$EXPECTED_SHA" =~ ^[0-9a-f]{40}$ ]]
-          test "$EXPECTED_SHA" = "$SELECTED_SHA"
+          set -euo pipefail
+          test "$SELECTED_REF" = refs/heads/main
+          [[ "$REQUESTED_SHA" =~ ^[0-9a-f]{40}$ ]]
+          test "$REQUESTED_SHA" = '6329b6d543ff4d6428de83242d9a8202648b4017'
+          remote_line="$(git -c credential.helper= ls-remote --exit-code --heads \
+            https://github.com/arnieSkyNet/DirectPaymentTimesheets.git \
+            refs/heads/security/v1.0.7-phase1)"
+          test "$remote_line" = $'6329b6d543ff4d6428de83242d9a8202648b4017\trefs/heads/security/v1.0.7-phase1'
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
-          # workflow_dispatch's selected-ref event SHA, already matched above
-          # to the reviewed input. Never check out main or a moving branch name.
-          ref: ${{ github.sha }}
+          repository: arnieSkyNet/DirectPaymentTimesheets
+          # Fetch only the immutable approved source, not main or a branch tip.
+          ref: '6329b6d543ff4d6428de83242d9a8202648b4017'
+          fetch-depth: 1
+          fetch-tags: false
           persist-credentials: false
+      - name: Verify checkout HEAD and recheck the remote source tip
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = '6329b6d543ff4d6428de83242d9a8202648b4017'
+          test -z "$(git status --porcelain=v1 --untracked-files=all)"
+          remote_line="$(git -c credential.helper= ls-remote --exit-code --heads \
+            https://github.com/arnieSkyNet/DirectPaymentTimesheets.git \
+            refs/heads/security/v1.0.7-phase1)"
+          test "$remote_line" = $'6329b6d543ff4d6428de83242d9a8202648b4017\trefs/heads/security/v1.0.7-phase1'
       - name: Install the project's pinned native Rust toolchain
         run: rustup toolchain install 1.98.1 --profile minimal
       - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
