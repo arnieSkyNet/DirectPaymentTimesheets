@@ -1,8 +1,8 @@
 # Development 1.0.7 Phase 1 native verification
 
 The current Windows corrections are uncommitted on `security/v1.0.7-phase1`
-at HEAD `026b53f56a341c84d498262bc744fac3223ce0b6`. Native run 38290913085
-tested that approved committed source; it did not test this follow-up. No tag,
+at HEAD `c11221b03e6277dd9bbf3193410a34ea41d83ebd`. Native run 38302554351
+tested that approved committed source; it did not test these diagnostic changes. No tag,
 package or release is prepared. Existing Phase 1 code, GitHub README edits,
 published links and stashes are retained. This is a verification candidate,
 not a declaration that the open security findings have been fixed.
@@ -83,61 +83,29 @@ natively. See [SECURITY-HARDENING.md](SECURITY-HARDENING.md) for exact results.
 
 ## Review and commit only the complete correction set (separate approval)
 
-The explicit staging allowlist is exactly these 10 reviewed modified paths
-relative to HEAD `026b53f56a341c84d498262bc744fac3223ce0b6`:
+The current diagnostic-only candidate modifies exactly these four paths relative
+to HEAD `c11221b03e6277dd9bbf3193410a34ea41d83ebd`:
 
 ```text
 docs/NATIVE-SECURITY-VERIFICATION.md
 docs/SECURITY-HARDENING.md
-src/archive.rs
-src/backup_service.rs
-src/config.rs
-src/payroll_snapshot_service.rs
-src/private_storage.rs
 src/private_storage_windows.rs
 src/private_storage_windows_tests.rs
-src/signature.rs
 ```
 
-Reconcile this list with the actual diff before staging; require a clean index
-and no untracked files. Do not use `git add .`, stage a partial correction, or
-include README, workflows, dependencies, release files or production data.
-The commands below prepare the index only; they do not authorize a commit or push.
-
-```bash
-test "$(git branch --show-current)" = security/v1.0.7-phase1
-test "$(git rev-parse HEAD)" = 026b53f56a341c84d498262bc744fac3223ce0b6
-git status --short
-git diff --stat
-git diff --check
-git diff
-git add -- docs/NATIVE-SECURITY-VERIFICATION.md \
-  docs/SECURITY-HARDENING.md \
-  src/archive.rs \
-  src/backup_service.rs \
-  src/config.rs \
-  src/payroll_snapshot_service.rs \
-  src/private_storage.rs \
-  src/private_storage_windows.rs \
-  src/private_storage_windows_tests.rs \
-  src/signature.rs
-git diff --cached --name-status
-git diff --cached --check
-git diff --cached
-```
-
-Require exactly those 10 staged paths and inspect the complete staged diff.
-Preserve both safety stashes and all unrelated changes. Any subsequent commit
-or push needs separate authorization and must target only the security testing
-branch. No application changes may enter main through workflow registration.
-This is an isolated native-verification candidate, not production security sign-off.
+Reconcile this inventory with the complete diff before any separately authorized
+staging or commit. No staging, commit or push is authorized by this preparation.
+Do not stage historical correction inventories, use `git add .`, or include
+README, workflows, dependencies, release files or production data. Preserve
+both safety stashes. This candidate does not change admission/publication policy
+and is not production security sign-off.
 
 ## Registered workflow and future source-pin approval
 
 The workflow is already registered on main. Do not repeat initial registration
 or copy the older workflow from the security branch over the registered main
 workflow: its dispatch guards differ. The currently approved source SHA is
-`026b53f56a341c84d498262bc744fac3223ce0b6`; it excludes this uncommitted follow-up.
+`c11221b03e6277dd9bbf3193410a34ea41d83ebd`; it excludes this diagnostic candidate.
 Recheck the live registered workflow before any future pin update or dispatch.
 
 After separately reviewing, committing and pushing the complete correction set:
@@ -154,7 +122,7 @@ After separately reviewing, committing and pushing the complete correction set:
 3. Review and separately approve that PR before merge. Do not merge the security
    implementation into main. No pin update or default-branch action occurs here.
 4. Before any separately authorized dispatch, verify that the workflow is present
-   on main at or after source-pin merge a912b01a15c5d721b1f39841c07aac8526b205ac,
+   on main at or after source-pin merge e13bce829c5032912c1d7252177a91191aa831bc,
    and that the remote security branch tip equals the approved hardcoded SHA.
    Missing/moved branches, mismatched inputs, incorrect workflow refs and a
    mismatched checkout HEAD must fail closed.
@@ -223,7 +191,7 @@ workflow nor its approved SHA. The native helper/API changes require a new
 reviewed commit before updating that approval; Linux checks cannot substitute for
 Windows/NTFS or Apple-SDK compilation and execution.
 
-## Current Windows follow-up at 026b53f (uncommitted)
+## Historical Windows follow-up at 026b53f (committed as c11221b)
 
 Run 38290913085 passed both macOS architectures and native compilation on all
 platforms, but Windows failed two replacement operations (error 5), unsafe
@@ -236,7 +204,7 @@ The passing macOS run likewise predates these common Rust wrapper changes;
 no native acceptance of the current follow-up is established. Windows rename
 semantics, default profile ACLs, standard-user access and new guard policy must
 be reviewed natively before claiming resolution or approving production use.
-Use the explicit 10-file allowlist above for this follow-up. Do not change the
+The historical ten-file correction is now committed. Do not change the
 registered main workflow/source pin as part of this correction set.
 
 The independent review retains production sign-off blockers: ancestor handles
@@ -250,3 +218,51 @@ limits must not be presented as resolved merely by committing or obtaining a
 green runner result. Separate approval of the resulting immutable source SHA,
 a separate main workflow pin update and separately authorized main-only dispatch
 are required before testing this candidate natively.
+
+
+## Diagnostic candidate after run 38302554351
+
+Windows compiled but reported 66 owner_mismatch/unsafe_ancestor runtime failures
+and one MoveFileExW error 5 at write_atomic publication. Both macOS architectures
+passed Phase 1 19, backup 7, database recovery 29, filing recovery 31 and Python 5.
+Windows Phase 1 was 17 passed/5 failed, backup 0/6, database recovery 3/26,
+filing 0/30; Python 5 passed. No exact ancestor or rename denial cause was logged.
+
+The new Windows-only diagnostics report component depth, volume_root /
+existing_ancestor / immediate_parent role, SID validity and current / system /
+administrators / other / invalid category. No service-owner identity is inferred
+or newly trusted. No paths, actual SIDs, account names or ACLs are rendered.
+The owner allowlist, destructive-access mask, inheritance checks, held identity
+handles, rename flags and fail-closed behaviour remain unchanged.
+
+Negative ancestry fixtures now require positive admission first and the precise
+refusal reason; an earlier system-owner failure can no longer count as a pass.
+A separate positive control reserves a private database. The eight-case native
+publication matrix covers absent normal/read-only stages and existing normal /
+read-only destinations with closed, read-sharing-7 and blocking-sharing-3 handles.
+Its normal open-sharing-7 success expectation is a regression contract to test,
+not a claim that MoveFileExW supports that case. API outcome/refusal-class
+mismatches are counted for the final assertion; setup, invariant and cleanup
+failures terminate immediately and may prevent remaining cases from running. Raw errors come from the same MoveFileExW call used in production. Tests
+compare bytes, available handle identities, attributes and opaque security-policy
+snapshots; snapshots are never printed. Closed-destination cases deliberately
+avoid retaining an original handle so the control is actually closed. Only
+synthetic cleanup resets read-only, after assertions.
+
+For separately authorized local native diagnostics, run the matrix with
+`cargo test --locked phase1_windows_atomic_publication_handle_attribute_matrix -- --nocapture`.
+Successful-test output is otherwise captured by Rust. This is not a workflow
+change or dispatch authorization. Native Windows compilation/execution is still
+required; Linux cannot exercise this module. Standard-user Windows 10 controls
+would materially help isolate open-target semantics and profile ancestry but do
+not establish Server 2022 acceptance. Existing SQLite lifetime, shared-parent
+publication/cleanup races, recovery and production sign-off blockers remain.
+
+Ancestor API errors carry their own operation, code, classification, depth and
+role even when logs interleave. RootDir labelled volume_root is the namespace
+root; UNC paths denote a share root rather than necessarily a physical volume.
+Matrix expected refusals require a structured OS code in the documented access /
+sharing / locking / missing-privilege categories (5, 32, 33, 1314). Missing paths,
+invalid parameters, unrelated codes and unstructured errors cannot satisfy a
+negative case. A native-only classifier test covers these distinctions; the
+accepted category alone still does not prove a refusal's underlying cause.

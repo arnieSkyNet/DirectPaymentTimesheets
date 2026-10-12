@@ -308,8 +308,26 @@ fn binary_sid(text: &str) -> io::Result<LocalMemory> {
     }
     Ok(LocalMemory(sid))
 }
+fn ancestor_error(operation: &str, error: io::Error, context: Option<(usize, &str)>) -> io::Error {
+    if let Some((depth, role)) = context {
+        let message = format!(
+            "{operation}: code={:?}; class={:?}; depth={depth}; role={role}",
+            error.raw_os_error(),
+            error.kind()
+        );
+        eprintln!("{message}");
+        io::Error::new(error.kind(), message)
+    } else {
+        diagnostic(operation, error)
+    }
+}
+
 fn inspection_handle(path: &Path) -> io::Result<File> {
-    let path = wide(path)?;
+    inspection_handle_at(path, None)
+}
+fn inspection_handle_at(path: &Path, context: Option<(usize, &str)>) -> io::Result<File> {
+    let path =
+        wide(path).map_err(|error| ancestor_error("windows.security_path", error, context))?;
     // READ_CONTROL | FILE_READ_ATTRIBUTES, OPEN_EXISTING, do not follow the
     // final reparse point, support directories, and deny delete sharing while held.
     let handle = unsafe {
@@ -324,9 +342,10 @@ fn inspection_handle(path: &Path) -> io::Result<File> {
         )
     };
     if handle as isize == -1 {
-        return Err(diagnostic(
+        return Err(ancestor_error(
             "windows.open_security_handle",
             io::Error::last_os_error(),
+            context,
         ));
     }
     Ok(unsafe { File::from_raw_handle(handle) })
@@ -344,9 +363,31 @@ fn is_private_file(file: &File) -> io::Result<bool> {
     inspect_access(file, false, false)
 }
 fn inspect_access(file: &File, ancestor: bool, require_inheritance: bool) -> io::Result<bool> {
+    match assess_access(file, ancestor, require_inheritance, None)? {
+        Some(reason) => Ok(refused(reason)),
+        None => Ok(true),
+    }
+}
+
+// Only static role/category labels and component counts may enter diagnostics.
+fn assess_access(
+    file: &File,
+    ancestor: bool,
+    require_inheritance: bool,
+    context: Option<(usize, &str)>,
+) -> io::Result<Option<&'static str>> {
     use std::os::windows::fs::MetadataExt;
-    if file.metadata()?.file_attributes() & 0x400 != 0 {
-        return Ok(refused("reparse_point"));
+    if let Some((depth, role)) = context {
+        eprintln!("windows.ancestor.assessment: depth={depth}; role={role}; ancestor_mode={ancestor}; require_inheritance={require_inheritance}");
+    }
+    if file
+        .metadata()
+        .map_err(|error| ancestor_error("windows.ancestor.metadata", error, context))?
+        .file_attributes()
+        & 0x400
+        != 0
+    {
+        return Ok(Some("reparse_point"));
     }
     let mut owner = std::ptr::null_mut();
     let mut acl = std::ptr::null_mut();
@@ -364,15 +405,31 @@ fn inspect_access(file: &File, ancestor: bool, require_inheritance: bool) -> io:
         )
     };
     if status != 0 {
-        return Err(diagnostic(
+        return Err(ancestor_error(
             "windows.get_security_info",
             io::Error::from_raw_os_error(status as i32),
+            context,
         ));
     }
     let _descriptor = LocalMemory(descriptor);
     let current = binary_sid(&user_sid()?)?;
     let system = binary_sid("S-1-5-18")?;
     let administrators = binary_sid("S-1-5-32-544")?;
+    let owner_valid = !owner.is_null() && unsafe { IsValidSid(owner) } != 0;
+    let owner_category = if !owner_valid {
+        "invalid"
+    } else if unsafe { EqualSid(owner, current.0) } != 0 {
+        "current"
+    } else if unsafe { EqualSid(owner, system.0) } != 0 {
+        "system"
+    } else if unsafe { EqualSid(owner, administrators.0) } != 0 {
+        "administrators"
+    } else {
+        "other"
+    };
+    if let Some((depth, role)) = context {
+        eprintln!("windows.ancestor.owner: depth={depth}; role={role}; sid_valid={owner_valid}; owner_category={owner_category}");
+    }
     if owner.is_null()
         || unsafe { IsValidSid(owner) } == 0
         || (unsafe { EqualSid(owner, current.0) } == 0
@@ -380,10 +437,10 @@ fn inspect_access(file: &File, ancestor: bool, require_inheritance: bool) -> io:
                 && (unsafe { EqualSid(owner, system.0) } != 0
                     || unsafe { EqualSid(owner, administrators.0) } != 0)))
     {
-        return Ok(refused("owner_mismatch"));
+        return Ok(Some("owner_mismatch"));
     }
     if acl.is_null() || unsafe { IsValidAcl(acl) } == 0 {
-        return Ok(refused("null_or_invalid_dacl"));
+        return Ok(Some("null_or_invalid_dacl"));
     }
     #[repr(C)]
     struct AclSizeInformation {
@@ -425,16 +482,16 @@ fn inspect_access(file: &File, ancestor: bool, require_inheritance: bool) -> io:
             continue;
         }
         if kind != 0 {
-            return Ok(refused("unsupported_ace"));
+            return Ok(Some("unsupported_ace"));
         }
         let size = unsafe { std::ptr::read_unaligned(bytes.add(2).cast::<u16>()) } as usize;
         if size < 16 {
-            return Ok(refused("invalid_ace_size"));
+            return Ok(Some("invalid_ace_size"));
         }
         let trustee = unsafe { bytes.add(8) };
         let sid_size = 8 + 4 * unsafe { *trustee.add(1) } as usize;
         if sid_size > size - 8 || unsafe { IsValidSid(trustee.cast()) } == 0 {
-            return Ok(refused("invalid_ace_sid"));
+            return Ok(Some("invalid_ace_sid"));
         }
         let matches = |sid: &LocalMemory| unsafe { EqualSid(trustee.cast(), sid.0) != 0 };
         let inherit_only = unsafe { *bytes.add(1) } & 0x08 != 0;
@@ -458,13 +515,13 @@ fn inspect_access(file: &File, ancestor: bool, require_inheritance: bool) -> io:
             && !matches(&owner_rights)
             && !(inherit_only && matches(&creator_owner))
         {
-            return Ok(refused("untrusted_allow_ace"));
+            return Ok(Some("untrusted_allow_ace"));
         }
     }
     if require_inheritance && !inheritable_current_full_access {
-        return Ok(refused("missing_inheritable_current_access"));
+        return Ok(Some("missing_inheritable_current_access"));
     }
-    Ok(true)
+    Ok(None)
 }
 /// Hold no-delete-sharing handles while checking the whole existing chain.
 /// No ACL repair, privilege enablement or pathname fallback is permitted.
@@ -481,11 +538,30 @@ pub fn database_ancestor_guard(path: &Path) -> io::Result<Vec<File>> {
         if matches!(component, std::path::Component::Prefix(_)) {
             continue;
         }
-        let file = inspection_handle(&prefix)?;
-        if !file.metadata()?.is_dir() || !inspect_access(&file, true, false)? {
-            return Err(io::Error::other(
-                "windows.database_ancestor_guard: code=none; class=unsafe_ancestor",
-            ));
+        let depth = held.len();
+        let role = if matches!(component, std::path::Component::RootDir) {
+            "volume_root"
+        } else if prefix == absolute {
+            "immediate_parent"
+        } else {
+            "existing_ancestor"
+        };
+        eprintln!("windows.ancestor.open: depth={depth}; role={role}; access=0x20080; share=3");
+        let context = Some((depth, role));
+        let file = inspection_handle_at(&prefix, context)?;
+        let reason = if !file
+            .metadata()
+            .map_err(|error| ancestor_error("windows.ancestor.metadata", error, context))?
+            .is_dir()
+        {
+            Some("not_directory")
+        } else {
+            assess_access(&file, true, false, Some((depth, role)))?
+        };
+        if let Some(reason) = reason {
+            let message = format!("windows.database_ancestor_guard: code=none; class=unsafe_ancestor; reason={reason}; depth={depth}; role={role}");
+            eprintln!("{message}");
+            return Err(io::Error::other(message));
         }
         held.push((prefix.clone(), file));
     }
@@ -494,14 +570,32 @@ pub fn database_ancestor_guard(path: &Path) -> io::Result<Vec<File>> {
             "windows.database_ancestor_guard: code=none; class=missing_parent",
         ));
     };
-    if !inspect_access(parent, false, true)? {
-        return Err(io::Error::other(
-            "windows.database_ancestor_guard: code=none; class=unsafe_sidecar_inheritance",
-        ));
+    if let Some(reason) = assess_access(
+        parent,
+        false,
+        true,
+        Some((held.len() - 1, "immediate_parent")),
+    )? {
+        let message = format!("windows.database_ancestor_guard: code=none; class=unsafe_sidecar_inheritance; reason={reason}; depth={}; role=immediate_parent", held.len() - 1);
+        eprintln!("{message}");
+        return Err(io::Error::other(message));
     }
-    for (name, file) in &held {
-        let original = same_file::Handle::from_file(file.try_clone()?)?;
-        let current = same_file::Handle::from_file(inspection_handle(name)?)?;
+    for (depth, (name, file)) in held.iter().enumerate() {
+        let role = if depth == 0 {
+            "volume_root"
+        } else if name == &absolute {
+            "immediate_parent"
+        } else {
+            "existing_ancestor"
+        };
+        let context = Some((depth, role));
+        let original = same_file::Handle::from_file(
+            file.try_clone()
+                .map_err(|error| ancestor_error("windows.ancestor.clone", error, context))?,
+        )
+        .map_err(|error| ancestor_error("windows.ancestor.original_identity", error, context))?;
+        let current = same_file::Handle::from_file(inspection_handle_at(name, context)?)
+            .map_err(|error| ancestor_error("windows.ancestor.recheck_identity", error, context))?;
         if original != current {
             return Err(io::Error::other(
                 "windows.database_ancestor_guard: code=none; class=path_substitution",
@@ -517,6 +611,32 @@ pub fn database_ancestor_guard(path: &Path) -> io::Result<Vec<File>> {
 pub fn publish(source: &Path, destination: &Path, overwrite: bool) -> io::Result<()> {
     let source = wide(source)?;
     let destination = wide(destination)?;
+    move_file(&source, &destination, overwrite)
+        .map_err(|error| diagnostic("windows.MoveFileExW", error))
+}
+
+// Test probes use the identical operation but retain the structured OS code.
+#[cfg(test)]
+pub fn publication_probe(source: &Path, destination: &Path, overwrite: bool) -> io::Result<()> {
+    let source = wide(source)?;
+    let destination = wide(destination)?;
+    move_file(&source, &destination, overwrite)
+}
+
+// Opaque snapshots let tests compare policy without rendering identities/ACLs.
+#[cfg(test)]
+pub struct TestSecurityPolicy(String);
+#[cfg(test)]
+impl TestSecurityPolicy {
+    pub fn capture(path: &Path) -> io::Result<Self> {
+        Ok(Self(sddl(&security(path)?, 7)?))
+    }
+    pub fn matches(&self, path: &Path) -> io::Result<bool> {
+        Ok(self.0 == sddl(&security(path)?, 7)?)
+    }
+}
+
+fn move_file(source: &[u16], destination: &[u16], overwrite: bool) -> io::Result<()> {
     const MOVEFILE_REPLACE_EXISTING: u32 = 1;
     let flags = if overwrite {
         MOVEFILE_REPLACE_EXISTING
@@ -524,10 +644,7 @@ pub fn publish(source: &Path, destination: &Path, overwrite: bool) -> io::Result
         0
     };
     if unsafe { MoveFileExW(source.as_ptr(), destination.as_ptr(), flags) } == 0 {
-        return Err(diagnostic(
-            "windows.MoveFileExW",
-            io::Error::last_os_error(),
-        ));
+        return Err(io::Error::last_os_error());
     }
     Ok(())
 }

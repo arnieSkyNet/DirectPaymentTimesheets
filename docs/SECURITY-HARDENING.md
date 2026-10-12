@@ -312,3 +312,49 @@ checks passed. No full-suite rerun was needed; the baseline 893-pass result is
 not claimed for this follow-up. Native-only tests and implementation are not
 compiled or exercised by these Linux checks. The final changes are unstaged;
 no commit, push, pin update or dispatch has occurred.
+
+
+## Diagnostic-only candidate after run 38302554351 at c11221b
+
+This uncommitted follow-up adds Windows ancestor depth/role, SID-validity and
+fixed owner-category diagnostics without changing owner trust, ACL admission,
+identity checks or publication semantics. The rejected ancestor is still unknown:
+66 failures report owner_mismatch/unsafe_ancestor. One unexpected replacement
+reports MoveFileExW error 5; open-target identity lifetime is a hypothesis, not
+an experimentally established cause. Rust default file sharing includes delete;
+staging explicitly uses sharing 7. New tests retain production identity handles.
+
+Positive ancestor controls now precede both negative fixtures; precise reason
+assertions prevent unrelated failures from satisfying broad-ancestor or missing-
+inheritance tests. The synthetic eight-case publication matrix uses the exact
+production rename primitive with structured raw OS codes, checks bytes, available
+identities, attributes and opaque owner/group/DACL snapshots, and records only
+controlled masks and classifications. No live ACL contents or identities are
+printed. The matrix may intentionally remain red for normal open-target
+replacement. API success/refusal expectation mismatches and unexpected refusal
+classes are counted and reported by the final contract assertion. Setup failures,
+security/byte/identity/attribute invariant violations and cleanup failures terminate
+the matrix immediately; later cases are not guaranteed to run after those failures.
+No policy relaxation, permission repair, cross-volume copy, retry, workflow pin
+change or native execution occurs. See NATIVE-SECURITY-VERIFICATION.md for the
+current four-file inventory and separate immutable source approval procedure.
+All prior production sign-off limitations remain open.
+
+Linux validation of this diagnostic candidate: cargo check --locked --offline
+--bins --tests passed; Phase 1 18/18 and private-storage 15/15 passed. Targeted
+rustfmt checks and git diff --check passed. No full-suite rerun, native Windows
+compilation/test execution or new macOS execution is claimed. All four changes
+remain unstaged. Existing native results refer only to approved c11221b.
+
+Review corrections: expected publication refusals require structured Win32 codes
+5 (access), 32 (sharing), 33 (locking) or 1314 (missing privilege). These are
+plausible denial classes, not proof of the intended reason; missing-path,
+invalid-parameter, other codes and errors without an OS code are mismatches.
+A native classifier regression covers accepted and rejected codes. Code meanings
+are documented by [Microsoft codes 0–499](https://learn.microsoft.com/en-us/windows/win32/debug/system-error-codes--0-499-)
+and [1300–1699](https://learn.microsoft.com/en-us/windows/win32/debug/system-error-codes--1300-1699-).
+Ancestor handle-open, metadata and GetSecurityInfo failures now return and log
+operation/code/class/depth/role together, including identity recheck opens.
+The volume_root diagnostic describes the RootDir namespace component: on UNC
+paths it is a share namespace root, not necessarily a physical volume root.
+No admission or rename policy is changed by these corrections.
