@@ -10,8 +10,8 @@ fn powershell(path: &Path, script: &str) -> String {
         .unwrap();
     assert!(
         output.status.success(),
-        "Synthetic NTFS fixture command failed: {}",
-        String::from_utf8_lossy(&output.stderr)
+        "synthetic_fixture.powershell: code={:?}; class=command_failure",
+        output.status.code()
     );
     String::from_utf8(output.stdout).unwrap().trim().into()
 }
@@ -209,4 +209,29 @@ fn phase1_windows_refused_read_only_replacement_retains_original() {
     );
     assert!(readonly);
     assert_eq!(retained, b"synthetic original");
+}
+
+#[test]
+fn phase1_windows_owner_rights_does_not_replace_actual_owner_validation() {
+    let root = tempdir().unwrap();
+    require_ntfs(root.path());
+    let child = root.path().join("synthetic-other-owner");
+    create_private_dir(&child).unwrap();
+    powershell(
+        &child,
+        r#"
+        $ErrorActionPreference='Stop'
+        $acl = Get-Acl -LiteralPath $env:DPT_SYNTHETIC_PATH
+        $administrators = [System.Security.Principal.SecurityIdentifier]::new('S-1-5-32-544')
+        $ownerRights = [System.Security.Principal.SecurityIdentifier]::new('S-1-3-4')
+        $acl.SetOwner($administrators)
+        foreach ($sid in @($administrators, $ownerRights)) {
+            $acl.AddAccessRule([System.Security.AccessControl.FileSystemAccessRule]::new(
+                $sid, 'FullControl', 'ContainerInherit,ObjectInherit', 'None', 'Allow'))
+        }
+        Set-Acl -LiteralPath $env:DPT_SYNTHETIC_PATH -AclObject $acl
+    "#,
+    );
+    assert!(!platform::is_private(&child).unwrap());
+    assert!(child.exists());
 }

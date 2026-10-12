@@ -443,8 +443,8 @@ mod tests {
     use crate::payroll_snapshot_service::{publish_candidate, CandidatePublication};
     use crate::payroll_worked_item_repository::PayrollWorkedItemRepository;
 
-    fn fixture() -> (tempfile::TempDir, Connection) {
-        let dir = tempfile::tempdir().unwrap();
+    fn fixture() -> (crate::private_storage::PrivateTempDir, Connection) {
+        let dir = crate::private_storage::tempdir().unwrap();
         let db = crate::database::open(dir.path().join("database.sqlite")).unwrap();
         crate::database::create_schema(&db).unwrap();
         std::fs::write(
@@ -1095,7 +1095,7 @@ mod stage5_tests {
     use super::*;
     #[test]
     fn current_schema_validation_preserves_bytes_and_rejects_missing_critical_schema() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = crate::private_storage::tempdir().unwrap();
         let path = dir.path().join("database.sqlite");
         initialise(&path).unwrap();
         let db = crate::database::open(&path).unwrap();
@@ -1109,7 +1109,7 @@ mod stage5_tests {
     }
     #[test]
     fn current_schema_rejects_missing_critical_columns_without_repairing() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = crate::private_storage::tempdir().unwrap();
         let path = dir.path().join("database.sqlite");
         initialise(&path).unwrap();
         let db = crate::database::open(&path).unwrap();
@@ -1137,7 +1137,7 @@ mod stage5_tests {
     }
     #[test]
     fn interrupted_fresh_staging_is_ignored_and_unknown_partial_live_data_is_not_reset() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = crate::private_storage::tempdir().unwrap();
         let path = dir.path().join("database.sqlite");
         std::fs::write(
             dir.path().join("abandoned-fresh.sqlite"),
@@ -1158,7 +1158,7 @@ mod stage5_tests {
     }
     #[test]
     fn corrupt_database_is_fatal_and_not_replaced() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = crate::private_storage::tempdir().unwrap();
         let path = dir.path().join("database.sqlite");
         let bytes = b"not a sqlite database";
         std::fs::write(&path, bytes).unwrap();
@@ -1167,7 +1167,7 @@ mod stage5_tests {
     }
     #[test]
     fn post_migration_configuration_failure_reports_applied_upgrade_and_recovery_copy() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = crate::private_storage::tempdir().unwrap();
         let path = dir.path().join("database.sqlite");
         let db = crate::database::open(&path).unwrap();
         crate::database::create_legacy_schema(&db, 37).unwrap();
@@ -1203,7 +1203,7 @@ mod stage5_integrity_tests {
     use super::*;
     #[test]
     fn stage5_missing_schema_write_guard_is_fatal_without_repair() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = crate::private_storage::tempdir().unwrap();
         let path = dir.path().join("database.sqlite");
         initialise(&path).unwrap();
         let db = crate::database::open(&path).unwrap();
@@ -1215,7 +1215,7 @@ mod stage5_integrity_tests {
     }
     #[test]
     fn stage5_corrupt_data_page_with_current_schema_is_fatal_and_preserved() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = crate::private_storage::tempdir().unwrap();
         let path = dir.path().join("database.sqlite");
         initialise(&path).unwrap();
         let db = crate::database::open(&path).unwrap();

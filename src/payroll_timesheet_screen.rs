@@ -2172,11 +2172,11 @@ pub(crate) mod tests {
     use crate::config::AppConfig;
     use crate::context::AppContext;
     use crate::environment::AppEnvironment;
+    use crate::private_storage::PrivateTempDir as TempDir;
     use rusqlite::{params, Connection};
-    use tempfile::TempDir;
 
     pub(crate) fn test_application() -> (TempDir, Application) {
-        let directory = TempDir::new().unwrap();
+        let directory = crate::private_storage::tempdir().unwrap();
         // macOS temporary paths may start with /var -> /private/var. Resolve
         // this newly created fixture root before constructing managed paths;
         // production validation must still reject symlink ancestors.

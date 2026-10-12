@@ -516,7 +516,7 @@ mod tests {
     use super::*;
 
     fn setup() -> (
-        tempfile::TempDir,
+        crate::private_storage::PrivateTempDir,
         Application,
         PayrollTimesheet,
         Vec<PayrollTimesheetWeek>,

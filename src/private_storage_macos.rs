@@ -10,9 +10,10 @@ use std::os::{
 use std::path::Path;
 #[link(name = "System")]
 extern "C" {
-    fn acl_get_fd(fd: i32) -> *mut c_void;
+    fn dpt_read_acl(fd: i32, acl: *mut *mut c_void) -> i32;
+    fn dpt_acl_has_allow(acl: *mut c_void) -> i32;
+    fn acl_init(count: i32) -> *mut c_void;
     fn acl_set_fd(fd: i32, acl: *mut c_void) -> i32;
-    fn acl_to_text(acl: *mut c_void, length: *mut isize) -> *mut c_char;
     fn acl_free(memory: *mut c_void) -> i32;
 }
 struct Acl(*mut c_void);
@@ -23,13 +24,23 @@ impl Drop for Acl {
         }
     }
 }
-fn get(file: &File) -> io::Result<Acl> {
-    let acl = unsafe { acl_get_fd(file.as_raw_fd()) };
-    if acl.is_null() {
-        Err(io::Error::last_os_error())
-    } else {
-        Ok(Acl(acl))
+// Successful handle inspection distinguishes an absent ACL from an I/O failure.
+fn get(file: &File) -> io::Result<Option<Acl>> {
+    let mut acl = std::ptr::null_mut();
+    if unsafe { dpt_read_acl(file.as_raw_fd(), &mut acl) } != 0 {
+        return Err(diagnostic("macos.read_acl", io::Error::last_os_error()));
     }
+    Ok(if acl.is_null() { None } else { Some(Acl(acl)) })
+}
+fn diagnostic(operation: &str, error: io::Error) -> io::Error {
+    io::Error::new(
+        error.kind(),
+        format!(
+            "{operation}: code={:?}; class={:?}",
+            error.raw_os_error(),
+            error.kind()
+        ),
+    )
 }
 extern "C" {
     fn dpt_private_open(path: *const c_char) -> i32;
@@ -43,7 +54,7 @@ pub fn create_file(path: &Path) -> io::Result<File> {
     let path = path_string(path)?;
     let descriptor = unsafe { dpt_private_open(path.as_ptr()) };
     if descriptor < 0 {
-        return Err(io::Error::last_os_error());
+        return Err(diagnostic("macos.create_file", io::Error::last_os_error()));
     }
     let file = unsafe { File::from_raw_fd(descriptor) };
     verify_private(&file)?;
@@ -52,7 +63,7 @@ pub fn create_file(path: &Path) -> io::Result<File> {
 pub fn create_dir(path: &Path) -> io::Result<()> {
     let encoded = path_string(path)?;
     if unsafe { dpt_private_mkdir(encoded.as_ptr()) } != 0 {
-        return Err(io::Error::last_os_error());
+        return Err(diagnostic("macos.create_dir", io::Error::last_os_error()));
     }
     use std::os::unix::fs::OpenOptionsExt;
     let directory = std::fs::OpenOptions::new()
@@ -64,34 +75,72 @@ pub fn create_dir(path: &Path) -> io::Result<()> {
 fn verify_private(file: &File) -> io::Result<()> {
     use std::os::unix::fs::{MetadataExt, PermissionsExt};
     let metadata = file.metadata()?;
-    if metadata.uid() != unsafe { libc::geteuid() }
-        || metadata.permissions().mode() & 0o077 != 0
-        || has_allow_entries(file)?
-    {
-        return Err(io::Error::other(
-            "Filesystem did not enforce private creation attributes",
-        ));
+    let classification = if metadata.uid() != unsafe { libc::geteuid() } {
+        Some("owner_mismatch")
+    } else if metadata.permissions().mode() & 0o077 != 0 {
+        Some("broad_mode")
+    } else if has_allow_entries(file)? {
+        Some("allow_ace")
+    } else {
+        None
+    };
+    if let Some(classification) = classification {
+        return Err(io::Error::other(format!(
+            "macos.verify_private: code=none; class={classification}"
+        )));
     }
     Ok(())
 }
 pub fn preserve(new: &File, existing: &File) -> io::Result<()> {
-    let acl = get(existing)?;
+    let acl = match get(existing)? {
+        Some(acl) => acl,
+        None => {
+            let pointer = unsafe { acl_init(0) };
+            if pointer.is_null() {
+                return Err(diagnostic("macos.empty_acl", io::Error::last_os_error()));
+            }
+            Acl(pointer)
+        }
+    };
     if unsafe { acl_set_fd(new.as_raw_fd(), acl.0) } != 0 {
-        return Err(io::Error::last_os_error());
+        return Err(diagnostic("macos.preserve_acl", io::Error::last_os_error()));
     }
     Ok(())
 }
 pub fn has_allow_entries(file: &File) -> io::Result<bool> {
-    let acl = get(file)?;
-    let text = unsafe { acl_to_text(acl.0, std::ptr::null_mut()) };
-    if text.is_null() {
-        return Err(io::Error::last_os_error());
+    let Some(acl) = get(file)? else {
+        return Ok(false);
+    };
+    match unsafe { dpt_acl_has_allow(acl.0) } {
+        0 => Ok(false),
+        1 => Ok(true),
+        _ => Err(diagnostic(
+            "macos.inspect_acl_entries",
+            io::Error::last_os_error(),
+        )),
     }
-    let allocation = Acl(text.cast());
-    let value = unsafe { std::ffi::CStr::from_ptr(text) }.to_string_lossy();
-    let has_allow = value
-        .split(|character: char| character == ':' || character.is_whitespace())
-        .any(|token| token == "allow");
-    drop(allocation);
-    Ok(has_allow)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn phase1_macos_bad_handle_is_not_treated_as_absent_acl() {
+        let mut acl = std::ptr::null_mut();
+        assert_eq!(unsafe { dpt_read_acl(-1, &mut acl) }, -1);
+        assert_eq!(io::Error::last_os_error().raw_os_error(), Some(libc::EBADF));
+        assert!(acl.is_null());
+    }
+    #[test]
+    fn phase1_macos_absent_acl_is_not_a_missing_object() {
+        let root = crate::private_storage::tempdir().unwrap();
+        let path = root.path().join("synthetic-no-acl");
+        std::fs::write(&path, b"synthetic").unwrap();
+        let file = File::open(&path).unwrap();
+        assert!(!has_allow_entries(&file).unwrap());
+        assert!(verify_private(&File::open(root.path()).unwrap()).is_ok());
+        let replacement = create_file(&root.path().join("replacement")).unwrap();
+        preserve(&replacement, &file).unwrap();
+        assert!(!has_allow_entries(&replacement).unwrap());
+    }
 }

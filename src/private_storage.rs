@@ -43,11 +43,8 @@ pub fn check_path(path: &Path) -> io::Result<()> {
                     }
                 }
                 #[cfg(target_os = "macos")]
-                if matches!(prefix.to_str(), Some("/var" | "/tmp")) {
-                    let expected = Path::new("/private").join(prefix.strip_prefix("/").unwrap());
-                    if fs::read_link(&prefix).ok().as_deref() == Some(expected.as_path()) {
-                        continue;
-                    }
+                if m.file_type().is_symlink() && verified_system_alias(&prefix, &m)? {
+                    continue;
                 }
                 if m.file_type().is_symlink() {
                     return Err(io::Error::other("Symlink in managed storage path"));
@@ -58,6 +55,50 @@ pub fn check_path(path: &Path) -> io::Result<()> {
         }
     }
     Ok(())
+}
+
+// Only the two root-level Apple aliases are eligible. No arbitrary canonicalization.
+#[cfg(any(target_os = "macos", test))]
+fn system_alias_target(alias: &Path, target: &Path) -> bool {
+    if !matches!(alias.to_str(), Some("/var" | "/tmp")) {
+        return false;
+    }
+    let resolved = if target.is_absolute() {
+        target.to_path_buf()
+    } else {
+        Path::new("/").join(target)
+    };
+    resolved == Path::new("/private").join(alias.strip_prefix("/").unwrap())
+        && !target
+            .components()
+            .any(|part| matches!(part, std::path::Component::ParentDir))
+}
+#[cfg(target_os = "macos")]
+fn verified_system_alias(alias: &Path, link: &fs::Metadata) -> io::Result<bool> {
+    use std::os::unix::fs::MetadataExt;
+    if link.uid() != 0 || !system_alias_target(alias, &fs::read_link(alias)?) {
+        return Ok(false);
+    }
+    let private = fs::symlink_metadata("/private")?;
+    if !private.is_dir() || private.uid() != 0 || private.mode() & 0o022 != 0 {
+        return Ok(false);
+    }
+    // Mode bits alone cannot establish that the protected alias target's
+    // parent is safe on macOS: an extended ACL could grant directory writes.
+    use std::os::unix::fs::OpenOptionsExt;
+    let private_handle = fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_DIRECTORY)
+        .open("/private")?;
+    if macos_acl::has_allow_entries(&private_handle)? {
+        return Ok(false);
+    }
+    let expected = Path::new("/private").join(alias.strip_prefix("/").unwrap());
+    let target = fs::symlink_metadata(expected)?;
+    Ok(target.is_dir()
+        && target.uid() == 0
+        && (target.mode() & 0o022 == 0
+            || (alias == Path::new("/tmp") && target.mode() & 0o1000 != 0)))
 }
 
 fn create_dir(path: &Path, private: bool) -> io::Result<()> {
@@ -862,5 +903,45 @@ mod macos_acl_tests {
         write_atomic(&existing, b"replacement synthetic").unwrap();
         assert!(macos_acl::has_allow_entries(&open_read(&existing).unwrap()).unwrap());
         assert!(macos_acl::has_allow_entries(&File::open(&shared).unwrap()).unwrap());
+    }
+}
+
+#[cfg(test)]
+mod system_alias_tests {
+    use super::*;
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn phase1_macos_verified_system_aliases_are_accepted() {
+        // Inspect OS aliases only; do not create, modify or remove system paths.
+        for alias in ["/var", "/tmp"] {
+            let path = Path::new(alias);
+            let metadata = fs::symlink_metadata(path).unwrap();
+            assert!(metadata.file_type().is_symlink());
+            assert!(verified_system_alias(path, &metadata).unwrap());
+            check_path(path).unwrap();
+        }
+    }
+    #[test]
+    fn phase1_system_alias_requires_exact_absolute_or_relative_target() {
+        for name in ["var", "tmp"] {
+            let alias = PathBuf::from(format!("/{name}"));
+            assert!(system_alias_target(
+                &alias,
+                Path::new(&format!("/private/{name}"))
+            ));
+            assert!(system_alias_target(
+                &alias,
+                Path::new(&format!("private/{name}"))
+            ));
+            assert!(!system_alias_target(
+                &alias,
+                Path::new(&format!("private/../private/{name}"))
+            ));
+            assert!(!system_alias_target(&alias, Path::new("/attacker")));
+        }
+        assert!(!system_alias_target(
+            Path::new("/other"),
+            Path::new("/private/other")
+        ));
     }
 }

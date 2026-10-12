@@ -1,11 +1,11 @@
 use super::*;
 use crate::import_service::{ImportService, ImportSummary};
-fn csv(dir: &tempfile::TempDir, name: &str, rows: &[&str]) {
+fn csv(dir: &crate::private_storage::PrivateTempDir, name: &str, rows: &[&str]) {
     std::fs::create_dir_all(dir.path().join("import")).unwrap();
     std::fs::create_dir_all(dir.path().join("archive")).unwrap();
     std::fs::write(dir.path().join("import").join(name),format!("period\nClient Name,Start Time,End Time,Break Time,Worked Hours,Rate/h,Amount,Note\n{}\n",rows.join("\n"))).unwrap();
 }
-fn imported(dir: &tempfile::TempDir, app: &Application) -> ImportSummary {
+fn imported(dir: &crate::private_storage::PrivateTempDir, app: &Application) -> ImportSummary {
     ImportService::new(
         &app.repository,
         dir.path().join("import"),

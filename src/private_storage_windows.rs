@@ -3,7 +3,10 @@
 use std::ffi::c_void;
 use std::fs::File;
 use std::io;
-use std::os::windows::{ffi::OsStrExt, io::FromRawHandle};
+use std::os::windows::{
+    ffi::OsStrExt,
+    io::{AsRawHandle, FromRawHandle},
+};
 use std::path::Path;
 
 type Handle = *mut c_void;
@@ -49,6 +52,22 @@ extern "system" {
         size: u32,
         needed: *mut u32,
     ) -> i32;
+    fn ConvertStringSidToSidW(text: *const u16, sid: *mut *mut c_void) -> i32;
+    fn EqualSid(first: *const c_void, second: *const c_void) -> i32;
+    fn IsValidSid(sid: *const c_void) -> i32;
+    fn IsValidAcl(acl: *const c_void) -> i32;
+    fn GetAclInformation(acl: *const c_void, info: *mut c_void, size: u32, class: u32) -> i32;
+    fn GetAce(acl: *const c_void, index: u32, ace: *mut *mut c_void) -> i32;
+    fn GetSecurityInfo(
+        handle: Handle,
+        object: u32,
+        information: u32,
+        owner: *mut *mut c_void,
+        group: *mut *mut c_void,
+        dacl: *mut *mut c_void,
+        sacl: *mut *mut c_void,
+        descriptor: *mut *mut c_void,
+    ) -> u32;
     fn ConvertSidToStringSidW(sid: *const c_void, text: *mut *mut u16) -> i32;
 }
 #[link(name = "kernel32")]
@@ -144,7 +163,7 @@ fn user_sid() -> io::Result<String> {
 fn descriptor(directory: bool) -> io::Result<LocalMemory> {
     let sid = user_sid()?;
     let flags = if directory { "OICI" } else { "" };
-    let text: Vec<u16> = format!("D:P(A;{flags};FA;;;{sid})(A;{flags};FA;;;SY)")
+    let text: Vec<u16> = format!("O:{sid}D:P(A;{flags};FA;;;{sid})(A;{flags};FA;;;SY)")
         .encode_utf16()
         .chain(Some(0))
         .collect();
@@ -173,10 +192,10 @@ pub fn create_dir(path: &Path) -> io::Result<()> {
     let path_wide = wide(path)?;
     let descriptor = descriptor(true)?;
     if unsafe { CreateDirectoryW(path_wide.as_ptr(), &attributes(&descriptor)) } == 0 {
-        return Err(io::Error::last_os_error());
+        return Err(diagnostic("windows.create_dir", io::Error::last_os_error()));
     }
     if !is_private(path)? {
-        let _ = std::fs::remove_dir(path);
+        // Retain failed creation: deleting by a substituted path is unsafe.
         return Err(io::Error::other(
             "Filesystem did not enforce a private directory ACL",
         ));
@@ -198,12 +217,15 @@ pub fn create_file(path: &Path) -> io::Result<File> {
         )
     };
     if handle as isize == -1 {
-        return Err(io::Error::last_os_error());
+        return Err(diagnostic(
+            "windows.create_file",
+            io::Error::last_os_error(),
+        ));
     }
     let file = unsafe { File::from_raw_handle(handle) };
-    if !is_private(path)? {
+    if !is_private_file(&file)? {
         drop(file);
-        let _ = std::fs::remove_file(path);
+        // Retain failed creation: deleting by a substituted path is unsafe.
         return Err(io::Error::other(
             "Filesystem did not enforce a private file ACL",
         ));
@@ -253,29 +275,157 @@ fn sddl(descriptor: &[usize], information: u32) -> io::Result<String> {
     drop(allocation);
     Ok(value)
 }
-pub fn is_private(path: &Path) -> io::Result<bool> {
-    let text = sddl(&security(path)?, 4)?;
-    let sid = user_sid()?;
-    if !text.starts_with("D:") || text.contains("NO_ACCESS_CONTROL") {
-        return Ok(false);
+fn diagnostic(operation: &str, error: io::Error) -> io::Error {
+    io::Error::new(
+        error.kind(),
+        format!(
+            "{operation}: code={:?}; class={:?}",
+            error.raw_os_error(),
+            error.kind()
+        ),
+    )
+}
+fn binary_sid(text: &str) -> io::Result<LocalMemory> {
+    let text: Vec<u16> = text.encode_utf16().chain(Some(0)).collect();
+    let mut sid = std::ptr::null_mut();
+    if unsafe { ConvertStringSidToSidW(text.as_ptr(), &mut sid) } == 0 {
+        return Err(diagnostic(
+            "windows.convert_sid",
+            io::Error::last_os_error(),
+        ));
     }
-    for ace in text.split('(').skip(1) {
-        let fields: Vec<_> = ace.trim_end_matches(')').split(';').collect();
-        if fields.len() != 6 {
-            return Ok(false);
+    Ok(LocalMemory(sid))
+}
+fn inspection_handle(path: &Path) -> io::Result<File> {
+    let path = wide(path)?;
+    // READ_CONTROL | FILE_READ_ATTRIBUTES, OPEN_EXISTING, do not follow the
+    // final reparse point, support directories, and deny delete sharing while held.
+    let handle = unsafe {
+        CreateFileW(
+            path.as_ptr(),
+            0x20080,
+            3,
+            std::ptr::null(),
+            3,
+            0x02200000,
+            std::ptr::null_mut(),
+        )
+    };
+    if handle as isize == -1 {
+        return Err(diagnostic(
+            "windows.open_security_handle",
+            io::Error::last_os_error(),
+        ));
+    }
+    Ok(unsafe { File::from_raw_handle(handle) })
+}
+pub fn is_private(path: &Path) -> io::Result<bool> {
+    crate::private_storage::check_path(path)?;
+    is_private_file(&inspection_handle(path)?)
+}
+fn refused(classification: &str) -> bool {
+    // Never print paths, identities or ACL contents.
+    eprintln!("windows.inspect_private: code=none; class={classification}");
+    false
+}
+fn is_private_file(file: &File) -> io::Result<bool> {
+    use std::os::windows::fs::MetadataExt;
+    if file.metadata()?.file_attributes() & 0x400 != 0 {
+        return Ok(refused("reparse_point"));
+    }
+    let mut owner = std::ptr::null_mut();
+    let mut acl = std::ptr::null_mut();
+    let mut descriptor = std::ptr::null_mut();
+    let status = unsafe {
+        GetSecurityInfo(
+            file.as_raw_handle().cast(),
+            1,
+            5,
+            &mut owner,
+            std::ptr::null_mut(),
+            &mut acl,
+            std::ptr::null_mut(),
+            &mut descriptor,
+        )
+    };
+    if status != 0 {
+        return Err(diagnostic(
+            "windows.get_security_info",
+            io::Error::from_raw_os_error(status as i32),
+        ));
+    }
+    let _descriptor = LocalMemory(descriptor);
+    let current = binary_sid(&user_sid()?)?;
+    if owner.is_null()
+        || unsafe { IsValidSid(owner) } == 0
+        || unsafe { EqualSid(owner, current.0) } == 0
+    {
+        return Ok(refused("owner_mismatch"));
+    }
+    if acl.is_null() || unsafe { IsValidAcl(acl) } == 0 {
+        return Ok(refused("null_or_invalid_dacl"));
+    }
+    #[repr(C)]
+    struct AclSizeInformation {
+        count: u32,
+        used: u32,
+        free: u32,
+    }
+    let mut info = AclSizeInformation {
+        count: 0,
+        used: 0,
+        free: 0,
+    };
+    if unsafe {
+        GetAclInformation(
+            acl,
+            (&mut info as *mut AclSizeInformation).cast(),
+            std::mem::size_of::<AclSizeInformation>() as u32,
+            2,
+        )
+    } == 0
+    {
+        return Err(diagnostic(
+            "windows.get_acl_information",
+            io::Error::last_os_error(),
+        ));
+    }
+    let system = binary_sid("S-1-5-18")?;
+    let administrators = binary_sid("S-1-5-32-544")?;
+    let owner_rights = binary_sid("S-1-3-4")?;
+    let creator_owner = binary_sid("S-1-3-0")?;
+    for index in 0..info.count {
+        let mut ace = std::ptr::null_mut();
+        if unsafe { GetAce(acl, index, &mut ace) } == 0 {
+            return Err(diagnostic("windows.get_ace", io::Error::last_os_error()));
         }
-        if fields[0] == "D" {
+        // Only basic ALLOW/DENY ACEs have this layout. Unknown forms fail closed.
+        let bytes = ace.cast::<u8>();
+        let kind = unsafe { *bytes };
+        if kind == 1 {
             continue;
         }
-        if fields[0] != "A" {
-            return Ok(false);
+        if kind != 0 {
+            return Ok(refused("unsupported_ace"));
         }
-        let trustee = fields[5];
-        if trustee != sid
-            && !matches!(trustee, "SY" | "BA" | "OW")
-            && !(trustee == "CO" && fields[1].contains("IO"))
+        let size = unsafe { std::ptr::read_unaligned(bytes.add(2).cast::<u16>()) } as usize;
+        if size < 16 {
+            return Ok(refused("invalid_ace_size"));
+        }
+        let trustee = unsafe { bytes.add(8) };
+        let sid_size = 8 + 4 * unsafe { *trustee.add(1) } as usize;
+        if sid_size > size - 8 || unsafe { IsValidSid(trustee.cast()) } == 0 {
+            return Ok(refused("invalid_ace_sid"));
+        }
+        let matches = |sid: &LocalMemory| unsafe { EqualSid(trustee.cast(), sid.0) != 0 };
+        let inherit_only = unsafe { *bytes.add(1) } & 0x08 != 0;
+        if !matches(&current)
+            && !matches(&system)
+            && !matches(&administrators)
+            && !matches(&owner_rights)
+            && !(inherit_only && matches(&creator_owner))
         {
-            return Ok(false);
+            return Ok(refused("untrusted_allow_ace"));
         }
     }
     Ok(true)
@@ -369,7 +519,10 @@ mod tests {
         create_file(&destination).unwrap();
         let before = sddl(&security(&destination).unwrap(), 7).unwrap();
         crate::private_storage::write_atomic(&destination, b"replacement").unwrap();
-        assert_eq!(before, sddl(&security(&destination).unwrap(), 7).unwrap());
+        assert!(
+            before == sddl(&security(&destination).unwrap(), 7).unwrap(),
+            "windows.preserve_access: code=none; class=security_descriptor_changed"
+        );
         assert!(is_private(&destination).unwrap());
     }
 }

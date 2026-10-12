@@ -1,7 +1,7 @@
 use super::*;
 use crate::imported_hours::{self, Change};
 use crate::repository::TimesheetCorrectionProposal;
-fn import(app: &Application, dir: &tempfile::TempDir, rows: &str) {
+fn import(app: &Application, dir: &crate::private_storage::PrivateTempDir, rows: &str) {
     std::fs::create_dir_all(dir.path().join("import")).unwrap();
     std::fs::create_dir_all(dir.path().join("archive")).unwrap();
     std::fs::write(

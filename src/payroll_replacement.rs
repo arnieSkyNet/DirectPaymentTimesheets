@@ -410,7 +410,7 @@ impl ReplacementUi {
 mod tests {
     use super::*;
     use crate::payslip_delivery_service::{select_payroll_documents, PayslipDeliveryIdentity};
-    fn fixture() -> (tempfile::TempDir, Application) {
+    fn fixture() -> (crate::private_storage::PrivateTempDir, Application) {
         let (dir, mut app) = crate::payroll_timesheet_screen::tests::test_application();
         let root = temp_root(&dir);
         app.context.config.folders.payslip_folder = root.join("payslips");
@@ -419,7 +419,7 @@ mod tests {
         app.payroll_timesheet_email_repository.connection.execute_batch("INSERT INTO personal_assistants(id,first_name,surname,employment_status) VALUES(1,'Synthetic Middle','Example','Active'); INSERT INTO payroll_schedules(id,payroll_year,cycle_number,first_week_commencing,latest_posting_date,pay_date,created_at) VALUES(1,'2026/27',7,'07/09/2026','28/09/2026','02/10/2026','fixture');").unwrap();
         (dir, app)
     }
-    fn temp_root(dir: &tempfile::TempDir) -> PathBuf {
+    fn temp_root(dir: &crate::private_storage::PrivateTempDir) -> PathBuf {
         dir.path().canonicalize().unwrap()
     }
     fn pdf(path: &std::path::Path, bytes: &[u8]) {

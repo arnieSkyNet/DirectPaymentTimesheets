@@ -5,7 +5,11 @@ use std::sync::{
     Arc, Mutex,
 };
 
-fn fixture() -> (tempfile::TempDir, DirectPaymentApp, PayrollSchedule) {
+fn fixture() -> (
+    crate::private_storage::PrivateTempDir,
+    DirectPaymentApp,
+    PayrollSchedule,
+) {
     let (dir, app) = crate::payroll_timesheet_screen::tests::test_application();
     let db = crate::payroll_evidence::open(&app).unwrap();
     db.execute_batch("INSERT INTO employers(id,name,email) VALUES (1,'Test Employer','employer@example.test');
@@ -832,7 +836,11 @@ fn submitted_regeneration_uses_corrected_contracted_hours_and_resend_keeps_pdf()
         .contains("Submitted / sent"));
 }
 
-fn payslip_selection_fixture() -> (tempfile::TempDir, DirectPaymentApp, PayrollSchedule) {
+fn payslip_selection_fixture() -> (
+    crate::private_storage::PrivateTempDir,
+    DirectPaymentApp,
+    PayrollSchedule,
+) {
     let (dir, mut app, schedule) = fixture();
     app.application.context.config.folders.payslip_folder = dir.path().join("payslips");
     for id in 1..=5 {

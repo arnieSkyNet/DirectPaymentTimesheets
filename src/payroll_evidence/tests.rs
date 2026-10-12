@@ -98,7 +98,7 @@ fn resolution_is_one_winner_retains_candidates_and_invalidates_material_edits() 
     rows.push(e("direct", 3, "09:30", "10:30"));
     assert_eq!(preflight(&db, &rows).unwrap().unresolved.len(), 1);
 }
-fn setup() -> (tempfile::TempDir, Application) {
+fn setup() -> (crate::private_storage::PrivateTempDir, Application) {
     let (dir, app) = crate::payroll_timesheet_screen::tests::test_application();
     let db = open(&app).unwrap();
     db.execute_batch("INSERT INTO personal_assistants(id,first_name,surname,employment_status) VALUES (1,'Example','PA','Active'),(2,'Other','PA','Active');

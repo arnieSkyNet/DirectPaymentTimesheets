@@ -112,9 +112,9 @@ native helper compilation require macOS and were not exercised on Linux.
 
 The randomized tempfile names are not a cryptographic guarantee; exclusive
 creation is the collision protection. The review's security findings remain
-open: Windows assessment does not validate the actual owner SID or ancestor
-access; path-based checks/publication do not prevent writable-ancestor
-substitution; macOS ACL text parsing misses comma-suffixed allow entries; and
+open at the reviewed commit: Windows assessment did not validate the actual owner
+SID or ancestor access; path-based checks/publication do not prevent writable-ancestor
+substitution; macOS ACL text parsing missed comma-suffixed allow entries; and
 Windows tempfile `keep`/`persist` resets staging attributes after read-only
 permissions were copied. The earlier descriptions of assessment and replacement
 policy must be read with these limitations. No permission repair is performed.
@@ -162,3 +162,85 @@ unmodified HEAD had 41 difference sections; 38 remain after formatting the
 changed code. New storage modules and edited sections are formatted.
 `git diff --check` passed. Windows/macOS native compilation and ACL acceptance
 remain outstanding; Linux success does not establish their native behavior.
+
+## Remediation after native run 38264276658 (uncommitted)
+
+The run dispatched main 33c3664 and checked out approved source 6329b6d on
+Windows 2022, macOS 15 ARM64 and macOS 15 Intel. Guards/setup, cargo check and
+native test compilation passed. Each platform failed temporary fixture setup;
+this was not a Rust compilation or runner-label failure. The first Windows
+error was `Filesystem did not enforce a private directory ACL`; both macOS
+jobs first reported ENOENT. No native security acceptance is established.
+
+Windows assessment now obtains owner/DACL from an opened no-follow handle with
+GetSecurityInfo, compares valid binary SIDs using EqualSid, and requires the
+actual owner to match the current process token user. Creation requests that
+owner explicitly, rather than relying on an elevated token's default owner.
+Unknown ACE types, null/invalid DACLs, foreign owners and untrusted allow ACEs
+fail closed. Existing SYSTEM/Administrators and owner-rights policy is retained;
+OW does not substitute for actual owner validation. Failed creation is retained
+rather than removed through a potentially substituted pathname. SDDL remains
+in creation and the existing access-preservation path, not privacy assessment.
+The original rejection may involve SID aliases or ownership; the old run does
+not expose sufficient evidence to attribute it to either conclusively.
+
+macOS ACL inspection now uses fstatx_np plus filesec_query_property through the
+SDK C helper. Only a successful handle inspection with an explicitly absent
+ACL property is treated as absent; inspection errors are not suppressed.
+Apple's filesec_get_property returns ENOENT for absent properties, explaining
+why the old ACL reader could misclassify absence as a missing file. Native
+entry/tag inspection replaces ACL text parsing, including inherited allow ACEs.
+Only /var and /tmp aliases with exact /private targets (absolute or relative),
+root ownership and a protected /private parent are eligible. Other symlinks and
+parent traversal remain refused. These checks are snapshots, not a solution to
+concurrent ancestor substitution. Actual creation/ACL acceptance still requires
+native execution; operation/code/class diagnostics are provided without paths,
+identities, document bytes or complete ACLs.
+
+Synthetic backup/database/filing fixtures and consumers of the shared application
+fixture now retain PrivateTempDir roots, preserving Linux anchored cleanup and
+non-Linux fail-closed retention. Negative broad-parent, junction, inherited-ACL,
+read-only, restore-lifetime and substituted-directory tests remain active.
+New tests cover exact alias targets, absent ACL inspection, invalid native handles
+and rejecting an actual foreign owner even with OW permissions. The Windows
+foreign-owner fixture needs permission to assign the Administrators owner; a
+setup failure must be reported, not skipped or interpreted as a security pass.
+
+Still open: Windows ancestor access and concurrent path substitution, Windows
+read-only tempfile publication (locked tempfile 3.27.0 explicitly resets attributes
+to FILE_ATTRIBUTE_NORMAL in keep/persist), native replacement/preservation,
+SQLite sidecar acceptance, macOS SDK compilation/ACL behaviour and native recovery.
+No workflow pin was changed, no native run repeated and no existing permissions
+were repaired. A new reviewed source commit and separately approved workflow
+pin update are required before another native verification run.
+
+Validation of this uncommitted follow-up on Linux:
+
+- `cargo check --locked --offline --bins --tests`: passed.
+- `cargo test --locked --offline phase1 -- --test-threads=1`: 16 passed,
+  including all substituted-directory/symlink/ancestor cleanup regressions.
+- Backup group: 7 passed; database recovery: 29 passed; filing recovery: 31 passed.
+- Runner unit tests: 5 passed (`python3 -B -m unittest discover -s scripts -p test_phase1_security_checks.py`).
+- Full `cargo test --locked --offline`: initial sandbox run had 858 passing and
+  35 failing tests; isolated SMTP fixtures reproduced EPERM at loopback bind
+  (`src/smtp_transport_tests.rs:19`, `src/payroll_production_tests.rs:131`).
+  Approved execution outside the sandbox passed all 893 tests, with no real
+  recipients or production data. The run took 220.75 seconds.
+- Targeted rustfmt checks and `git diff --check`: passed. Comparing rustfmt
+  output for every changed Rust file against HEAD found no introduced formatting
+  deviations; existing deviations in unrelated sections were retained.
+- `cargo clippy --locked --offline --bins --tests`: exit 101, blocked by the
+  unchanged `src/config.rs:993` `Permissions::from_mode(0)` expression and
+  default-denied `clippy::non_octal_unix_permissions`; 99 warnings were also
+  emitted. The same offending expression exists at the starting commit. It was
+  not changed as part of this remediation. Native-only code was not linted.
+
+Only Linux target libraries are installed. Windows Rust/NTFS execution and
+macOS SDK C compilation/execution were not performed. The API work was checked
+against [Microsoft GetSecurityInfo](https://learn.microsoft.com/en-us/windows/win32/api/aclapi/nf-aclapi-getsecurityinfo),
+[EqualSid](https://learn.microsoft.com/en-us/windows/win32/api/securitybaseapi/nf-securitybaseapi-equalsid),
+and Apple's [filesec property implementation](https://github.com/apple-oss-distributions/Libc/blob/main/gen/filesec.c)
+and [ACL entry implementation](https://github.com/apple-oss-distributions/Libc/blob/main/posix1e/acl_entry.c).
+Source inspection and Linux parsing are not substitutes for native validation.
+Windows test diagnostics also avoid printing command stderr or complete SDDL
+on assertion failures; fixture failures expose only operation/code/class.

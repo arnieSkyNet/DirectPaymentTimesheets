@@ -778,7 +778,6 @@ fn stage_config(source: &Path, destination: &Path) -> Result<PathBuf, BackupErro
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tempfile::TempDir;
 
     fn restore_test(
         backup: &Path,
@@ -853,7 +852,7 @@ mod tests {
     #[test]
     fn restored_configuration_is_private_even_when_source_is_world_readable() {
         use std::os::unix::fs::PermissionsExt;
-        let directory = TempDir::new().unwrap();
+        let directory = crate::private_storage::tempdir().unwrap();
         let source = directory.path().join("backup-config.toml");
         fs::write(&source, "smtp_password = 'synthetic-secret'").unwrap();
         fs::set_permissions(&source, fs::Permissions::from_mode(0o644)).unwrap();
@@ -867,7 +866,7 @@ mod tests {
 
     #[test]
     fn creates_openable_database_backup_with_expected_data_and_copies_config() {
-        let temp_dir = TempDir::new().unwrap();
+        let temp_dir = crate::private_storage::tempdir().unwrap();
         let database_path = temp_dir.path().join("source.sqlite");
         let config_path = temp_dir.path().join("source.toml");
         let backups_dir = temp_dir.path().join("backups");
@@ -905,7 +904,7 @@ mod tests {
 
     #[test]
     fn succeeds_without_a_config_file_and_omits_it_from_the_manifest() {
-        let temp_dir = TempDir::new().unwrap();
+        let temp_dir = crate::private_storage::tempdir().unwrap();
         let database_path = temp_dir.path().join("source.sqlite");
         let missing_config_path = temp_dir.path().join("missing.toml");
         let backups_dir = temp_dir.path().join("backups");
@@ -929,7 +928,7 @@ mod tests {
 
     #[test]
     fn validates_and_restores_application_database_config_and_creates_safety_backup() {
-        let temp_dir = TempDir::new().unwrap();
+        let temp_dir = crate::private_storage::tempdir().unwrap();
         let live_database = temp_dir.path().join("database.sqlite");
         let selected_database = temp_dir.path().join("selected.sqlite");
         let live_config = temp_dir.path().join("config.toml");
@@ -973,7 +972,7 @@ mod tests {
 
     #[test]
     fn rejects_corrupt_backup_without_altering_live_data_or_creating_safety_backup() {
-        let temp_dir = TempDir::new().unwrap();
+        let temp_dir = crate::private_storage::tempdir().unwrap();
         let live_database = temp_dir.path().join("database.sqlite");
         let live_config = temp_dir.path().join("config.toml");
         let backups_dir = temp_dir.path().join("backups");
@@ -999,7 +998,7 @@ mod tests {
 
     #[test]
     fn rejects_sqlite_database_that_is_not_direct_payment_timesheets() {
-        let temp_dir = TempDir::new().unwrap();
+        let temp_dir = crate::private_storage::tempdir().unwrap();
         let live_database = temp_dir.path().join("database.sqlite");
         let unrelated_database = temp_dir.path().join("unrelated.sqlite");
         let live_config = temp_dir.path().join("config.toml");
@@ -1031,7 +1030,7 @@ mod tests {
 
     #[test]
     fn restores_database_but_preserves_current_config_when_backup_has_none() {
-        let temp_dir = TempDir::new().unwrap();
+        let temp_dir = crate::private_storage::tempdir().unwrap();
         let live_database = temp_dir.path().join("database.sqlite");
         let selected_database = temp_dir.path().join("selected.sqlite");
         let live_config = temp_dir.path().join("config.toml");

@@ -55,7 +55,12 @@ fn windows_ordinary_registration_is_relocated_from_verbatim_scan() {
     assert_eq!(Path::new(&stored), move_alias.destination);
 }
 
-fn setup() -> (tempfile::TempDir, Application, Move, Vec<PathBuf>) {
+fn setup() -> (
+    crate::private_storage::PrivateTempDir,
+    Application,
+    Move,
+    Vec<PathBuf>,
+) {
     let (dir, app) = fixture();
     fs::create_dir_all(&app.context.config.folders.pdf_output).unwrap();
     let source = register(
@@ -342,7 +347,7 @@ fn uncertainty_blocks_filing_until_audited_reconciliation() {
 }
 #[test]
 fn migration_preserves_populated_38_journal_and_refuses_old_writers() {
-    let directory = tempfile::tempdir().unwrap();
+    let directory = crate::private_storage::tempdir().unwrap();
     let path = directory.path().join("db.sqlite");
     let db = crate::database::open(&path).unwrap();
     crate::database::create_legacy_schema(&db, 38).unwrap();
@@ -563,7 +568,7 @@ fn older_backup_restore_reports_path_mismatch_without_orphan_adoption() {
 }
 #[test]
 fn verified_wal_upgrade_failure_keeps_populated_38_and_recovery_copy() {
-    let dir = tempfile::tempdir().unwrap();
+    let dir = crate::private_storage::tempdir().unwrap();
     let path = dir.path().join("database.sqlite");
     let db = crate::database::open(&path).unwrap();
     crate::database::create_legacy_schema(&db, 38).unwrap();
