@@ -838,3 +838,35 @@ fn recreated_unregistered_source_cannot_reuse_completed_intent_or_claim_success(
         .unwrap()
         .contains("1 pending PA"));
 }
+
+#[cfg(unix)]
+#[test]
+fn phase1_recoverable_filing_copy_is_private_and_original_is_preserved_until_commit() {
+    use std::os::unix::fs::PermissionsExt;
+    let (_dir, app, movement, bases) = setup();
+    fs::set_permissions(&movement.source, fs::Permissions::from_mode(0o640)).unwrap();
+    let original_permissions = fs::metadata(&movement.source).unwrap().permissions();
+    let original = fs::read(&movement.source).unwrap();
+    let id = prepare(db(&app), 4, &movement).unwrap();
+    interrupt(Some("staged"));
+    assert!(recover(db(&app), id, &bases).is_err());
+    interrupt(None);
+    let stage: String = db(&app)
+        .query_row(
+            "SELECT staging_path FROM payroll_filing_intents WHERE id=?1",
+            [id],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        fs::metadata(&stage).unwrap().permissions().mode() & 0o777,
+        0o600
+    );
+    assert_eq!(fs::read(&movement.source).unwrap(), original);
+    recover(db(&app), id, &bases).unwrap();
+    assert_eq!(fs::read(&movement.destination).unwrap(), original);
+    assert_eq!(
+        fs::metadata(&movement.destination).unwrap().permissions(),
+        original_permissions
+    );
+}

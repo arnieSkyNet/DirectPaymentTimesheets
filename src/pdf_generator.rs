@@ -140,7 +140,7 @@ impl PdfGenerator {
         pdf_config: &crate::config::PdfConfig,
         payroll_config: &crate::config::PayrollConfig,
     ) -> Result<PathBuf, Box<dyn std::error::Error>> {
-        fs::create_dir_all(output_dir)?;
+        crate::private_storage::ensure_output_dir(output_dir)?;
 
         let output_path = Self::output_path(output_dir, data)?;
 
@@ -163,7 +163,7 @@ impl PdfGenerator {
             }
         }
         if let Some(parent) = output_path.parent() {
-            fs::create_dir_all(parent).map_err(|error| {
+            crate::private_storage::ensure_output_dir(parent).map_err(|error| {
                 format!(
                     "Could not create payroll PDF output directory {}: {error}",
                     parent.display()
@@ -476,7 +476,7 @@ impl PdfGenerator {
 
         let bytes = document.save(&PdfSaveOptions::default(), &mut warnings);
 
-        fs::write(&output_path, bytes)?;
+        crate::private_storage::write_atomic(output_path, &bytes)?;
 
         Ok(())
     }

@@ -259,7 +259,7 @@ pub fn initialise(path: &Path) -> Result<()> {
                 .parent()
                 .filter(|p| !p.as_os_str().is_empty())
                 .unwrap_or(Path::new("."));
-            let pending = tempfile::tempdir_in(parent)?;
+            let pending = crate::private_storage::tempdir_in(parent)?;
             let staged = crate::database::open(pending.path().join("fresh.sqlite"))?;
             crate::database::create_schema(&staged)?;
             integrity(&staged)?;
@@ -273,9 +273,9 @@ pub fn initialise(path: &Path) -> Result<()> {
     let recovery = BackupService::create_verified(path, &parent.join("config.toml"), &parent.join("backups"))
         .map_err(|e| format!("Upgrade refused before changing the database: {e}. Free backup storage/check permissions and retry; never delete the original database."))?;
     let upgrade = (|| -> Result<()> {
-        let staged = tempfile::tempdir_in(parent)?;
+        let staged = crate::private_storage::tempdir_in(parent)?;
         let staged_path = staged.path().join("upgrade.sqlite");
-        std::fs::copy(recovery.join("database.sqlite"), &staged_path)?;
+        crate::private_storage::copy_new(&recovery.join("database.sqlite"), &staged_path)?;
         let migrated = crate::database::open(&staged_path)?;
         crate::database::create_schema(&migrated)?;
         integrity(&migrated)?;
@@ -418,13 +418,17 @@ pub(crate) fn losses(live: &Connection, staged: &Connection) -> Result<Vec<(Stri
     Ok(lost)
 }
 
-pub(crate) fn staged_backup(backup: &Path) -> Result<(tempfile::TempDir, Connection)> {
-    let dir = tempfile::tempdir()?;
+pub(crate) fn staged_backup(
+    backup: &Path,
+) -> Result<(crate::private_storage::PrivateTempDir, Connection)> {
+    let dir = crate::private_storage::tempdir()?;
+    // Reserve the database privately before SQLite creates its snapshot.
     let path = dir.path().join("restore.sqlite");
     let source = Connection::open_with_flags(
         backup.join("database.sqlite"),
-        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NOFOLLOW,
     )?;
+    crate::private_storage::prepare_database(&path)?;
     source.backup(rusqlite::DatabaseName::Main, &path, None)?;
     let db = crate::database::open(path)?;
     crate::database::create_schema(&db)?;

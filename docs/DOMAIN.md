@@ -214,9 +214,11 @@ existing send approvals; uncertain attempts retain their original evidence.
 Passwords remain plaintext in `config.toml` and configuration backup copies;
 masking the Settings field does not encrypt storage. Configuration Debug output
 redacts credentials. Unix configuration publication and restore staging use
-owner-only permissions; backup directories use mode 0700. Windows files inherit
-parent-directory ACLs rather than application-enforced private ACLs: administrators
-must verify those permissions. Database backups retain sensitive recipients,
+owner-only permissions; backup directories use mode 0700. Development 1.0.7
+adds creation-time private Windows ACLs for new managed files/directories and a
+read-only assessment for existing installations. Existing permissions and shared
+business directories are not silently repaired; replacements preserve their
+existing access policy. See [Phase 1 storage hardening](SECURITY-HARDENING.md). Database backups retain sensitive recipients,
 email intent and immutable attachment bytes. Protect backups and external payroll
 folders, and review permissions before sharing or exporting them.
 

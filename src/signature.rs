@@ -289,9 +289,9 @@ fn save_drawn_checked(
     let (table, column, id) = owner.location();
     let stem = filename_stem(&owner.full_name(&tx)?);
     let directory = root.join("signatures");
-    std::fs::create_dir_all(&directory)?;
+    crate::private_storage::ensure_private_dir(&directory)?;
     let directory = std::fs::canonicalize(directory)?;
-    let mut temporary = tempfile::NamedTempFile::new_in(&directory)?;
+    let mut temporary = crate::private_storage::tempfile_in(&directory)?;
     use std::io::Write;
     temporary.write_all(bytes)?;
     temporary.as_file().sync_all()?;

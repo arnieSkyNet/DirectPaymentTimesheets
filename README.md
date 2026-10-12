@@ -439,3 +439,13 @@ and backups. See [SMTP configuration and security](docs/DOMAIN.md#smtp-configura
 for warnings, platform trust requirements and delivery safeguards. All v1.0.6
 packages above include these transport modes; provider compatibility and platform
 trust requirements still need to be checked for each deployment.
+
+
+## Development 1.0.7: storage privacy
+
+Unreleased development 1.0.7 adds private creation for payroll storage and recovery
+staging, plus **Settings → Application Settings → Assess Storage Permissions**.
+The assessment changes no existing permissions. Shared business directories and
+existing replacement access policies are preserved. SMTP behavior and published
+v1.0.6 packages/download links are unchanged. See
+[security hardening](docs/SECURITY-HARDENING.md) for limits and separate repair review.

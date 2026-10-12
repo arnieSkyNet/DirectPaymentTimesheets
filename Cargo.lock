@@ -1231,7 +1231,7 @@ dependencies = [
 
 [[package]]
 name = "direct_payment_timesheets"
-version = "1.0.6"
+version = "1.0.7"
 dependencies = [
  "chrono",
  "csv",
@@ -1240,6 +1240,7 @@ dependencies = [
  "egui",
  "image",
  "lettre",
+ "libc",
  "lopdf 0.35.0",
  "native-tls",
  "pdf-extract",

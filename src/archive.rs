@@ -27,7 +27,7 @@ pub fn archive_csv_bytes(
 
     let archive_path = archive_dir.join(year).join(month);
 
-    fs::create_dir_all(&archive_path)?;
+    crate::private_storage::ensure_private_dir(&archive_path)?;
 
     let filename = source
         .file_name()
@@ -38,11 +38,7 @@ pub fn archive_csv_bytes(
     for sequence in 0..1000 {
         let archive_filename = format!("{timestamp}_{sequence:03}_{filename}");
         let destination = archive_path.join(archive_filename);
-        let mut file = match fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&destination)
-        {
+        let mut file = match crate::private_storage::create_new(&destination) {
             Ok(file) => file,
             Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
             Err(error) => return Err(error.into()),
@@ -259,6 +255,7 @@ fn open_source_archive(
     path: &Path,
     remember_source: bool,
 ) -> Result<(SourceArchive, Option<SourceZip>), Box<dyn Error>> {
+    crate::private_storage::check_path(path)?;
     let size = fs::metadata(path)?.len();
     if path
         .extension()
@@ -268,7 +265,7 @@ fn open_source_archive(
             return Err("Payroll Return ZIP is too large".into());
         }
         let declared = standard_zip_entry_count(path)?;
-        let mut file = fs::File::open(path)?;
+        let mut file = crate::private_storage::open_read(path)?;
         let source = if remember_source {
             Some(SourceZip::capture(path, &mut file)?)
         } else {
@@ -1146,7 +1143,7 @@ fn stage_entry(
         .destination
         .parent()
         .ok_or("Payroll Return destination has no parent directory.")?;
-    fs::create_dir_all(parent)?;
+    crate::private_storage::ensure_output_dir(parent)?;
     let mut entry = archive.by_index(plan.archive_index)?;
     let (temporary_path, mut output) = create_temporary_file(parent)?;
     let result = (|| -> Result<(), Box<dyn Error>> {
@@ -1192,27 +1189,13 @@ fn stage_entry(
 }
 
 fn create_temporary_file(directory: &Path) -> Result<(PathBuf, fs::File), Box<dyn Error>> {
-    for sequence in 0..1000u32 {
-        let name = format!(
-            ".direct-payment-payroll-return-{}-{}-{sequence:03}.tmp",
-            std::process::id(),
-            Local::now().timestamp_nanos_opt().unwrap_or_default()
-        );
-        let path = directory.join(name);
-        match fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&path)
-        {
-            Ok(file) => return Ok((path, file)),
-            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
-            Err(error) => return Err(error.into()),
-        }
-    }
-    Err("Could not allocate a temporary Payroll Return file.".into())
+    let temporary = crate::private_storage::tempfile_in(directory)?;
+    let (file, path) = temporary.keep()?;
+    Ok((path, file))
 }
 
 pub fn validate_payslip_pdf(path: &Path) -> Result<(), Box<dyn Error>> {
+    crate::private_storage::check_path(path)?;
     let metadata = fs::symlink_metadata(path)?;
     if !metadata.file_type().is_file() || metadata.len() == 0 {
         return Err(format!(
@@ -2374,5 +2357,36 @@ mod tests {
         assert!(validate_payslip_pdf(&invalid).is_err());
         assert!(validate_payslip_pdf(&root).is_err());
         fs::remove_dir_all(root).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod phase1_private_import_tests {
+    #[test]
+    fn phase1_import_staging_is_exclusive_private_and_publishes_identical_bytes() {
+        let root = crate::private_storage::tempdir().unwrap();
+        let (path, mut file) = super::create_temporary_file(root.path()).unwrap();
+        use std::io::Write;
+        file.write_all(b"%PDF-1.4 synthetic import").unwrap();
+        file.sync_all().unwrap();
+        let destination = root.path().join("imported.pdf");
+        super::publish_no_clobber(&path, &destination).unwrap();
+        assert_eq!(
+            std::fs::read(&destination).unwrap(),
+            b"%PDF-1.4 synthetic import"
+        );
+        assert!(super::publish_no_clobber(&path, &destination).is_err());
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(
+                std::fs::metadata(&destination)
+                    .unwrap()
+                    .permissions()
+                    .mode()
+                    & 0o777,
+                0o600
+            );
+        }
     }
 }

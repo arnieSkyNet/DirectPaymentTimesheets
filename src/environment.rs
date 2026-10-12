@@ -1,4 +1,3 @@
-use std::fs;
 use std::path::{Path, PathBuf};
 
 use crate::error::AppError;
@@ -48,7 +47,7 @@ impl AppEnvironment {
             &templates_dir,
             &cache_dir,
         ] {
-            fs::create_dir_all(directory).map_err(|e| {
+            crate::private_storage::ensure_private_dir(directory).map_err(|e| {
                 crate::startup::StartupError::io(crate::startup::Stage::Environment, directory, &e)
             })?;
         }

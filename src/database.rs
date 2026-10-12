@@ -20,7 +20,14 @@ pub fn register_connection(connection: &Connection) -> Result<()> {
 }
 
 pub fn open(path: impl AsRef<Path>) -> Result<Connection> {
-    let connection = Connection::open(path)?;
+    crate::private_storage::prepare_database(path.as_ref())
+        .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
+    let connection = Connection::open_with_flags(
+        path,
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_WRITE
+            | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX
+            | rusqlite::OpenFlags::SQLITE_OPEN_NOFOLLOW,
+    )?;
     register_connection(&connection)?;
     Ok(connection)
 }

@@ -31,7 +31,7 @@ pub struct RestorePlan {
     pub schema_version: i64,
     pub replaced_rows: Vec<(String, usize)>,
     live_path: PathBuf,
-    staged_directory: std::sync::Arc<tempfile::TempDir>,
+    staged_directory: std::sync::Arc<crate::private_storage::PrivateTempDir>,
     staged_database: String,
     live_database: String,
     backup_database: String,
@@ -174,7 +174,7 @@ impl BackupService {
         directory_name: &str,
         created_at: &str,
     ) -> Result<PathBuf, BackupError> {
-        fs::create_dir_all(backups_dir).map_err(|error| {
+        crate::private_storage::ensure_private_dir(backups_dir).map_err(|error| {
             BackupError(format!(
                 "Could not create backups directory {}: {error}",
                 backups_dir.display()
@@ -182,19 +182,13 @@ impl BackupService {
         })?;
 
         let backup_dir = backups_dir.join(directory_name);
-        fs::create_dir(&backup_dir).map_err(|error| {
+        crate::private_storage::create_private_dir(&backup_dir).map_err(|error| {
             BackupError(format!(
                 "Could not create backup directory {}: {error}",
                 backup_dir.display()
             ))
         })?;
 
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            fs::set_permissions(&backup_dir, fs::Permissions::from_mode(0o700))
-                .map_err(|e| BackupError(e.to_string()))?;
-        }
         let result = Self::populate_backup(database_path, config_path, &backup_dir, created_at);
         if let Err(error) = result {
             if let Err(cleanup_error) = fs::remove_dir_all(&backup_dir) {
@@ -374,9 +368,9 @@ impl BackupService {
                 return Err("Selected backup changed during preparation".into());
             }
             if let Some(expected) = &config_fingerprint {
-                fs::copy(
-                    backup_dir.join(CONFIG_BACKUP_NAME),
-                    temporary.path().join(CONFIG_BACKUP_NAME),
+                crate::private_storage::copy_new(
+                    &backup_dir.join(CONFIG_BACKUP_NAME),
+                    &temporary.path().join(CONFIG_BACKUP_NAME),
                 )?;
                 if crate::database_recovery::file_fingerprint(
                     &temporary.path().join(CONFIG_BACKUP_NAME),
@@ -523,6 +517,8 @@ impl BackupService {
         let expected = crate::database_recovery::fingerprint(&read_snapshot)
             .map_err(|e| BackupError(e.to_string()))?;
         let database_backup_path = backup_dir.join(DATABASE_BACKUP_NAME);
+        crate::private_storage::prepare_database(&database_backup_path)
+            .map_err(|e| BackupError(e.to_string()))?;
         source
             .backup(DatabaseName::Main, &database_backup_path, None)
             .map_err(|error| {
@@ -547,13 +543,15 @@ impl BackupService {
         let mut backed_up_files = vec![DATABASE_BACKUP_NAME];
         if config_path.exists() {
             let config_backup_path = backup_dir.join(CONFIG_BACKUP_NAME);
-            fs::copy(config_path, &config_backup_path).map_err(|error| {
-                BackupError(format!(
-                    "Could not copy configuration file {} to {}: {error}",
-                    config_path.display(),
-                    config_backup_path.display()
-                ))
-            })?;
+            crate::private_storage::copy_new(config_path, &config_backup_path).map_err(
+                |error| {
+                    BackupError(format!(
+                        "Could not copy configuration file {} to {}: {error}",
+                        config_path.display(),
+                        config_backup_path.display()
+                    ))
+                },
+            )?;
             if fs::read(config_path).map_err(|e| BackupError(e.to_string()))?
                 != fs::read(&config_backup_path).map_err(|e| BackupError(e.to_string()))?
             {
@@ -575,7 +573,7 @@ impl BackupService {
             "{BACKUP_IDENTITY}\n\nCreated: {created_at}\n\nBacked-up files:\n{file_list}\n\nVerified consistent SQLite snapshot (including committed WAL data): {expected}\nThis is DATABASE AND CONFIGURATION recovery, not a complete application-data backup.\nExternal PDFs, payslips, signatures, imported/archive files and fonts are NOT copied or restored.\nBefore an upgrade/rollback, close every application instance and separately protect the full application root and these business files/folders. Do not copy a live SQLite file without its WAL; prefer this verified snapshot.\nUse 1.0.6 Restore Backup to validate and migrate legacy data on an isolated copy. A rollback needs fresh explicit approval; unresolved email uncertainty blocks it. Keep old binaries away from upgraded data: their restore tools can overwrite newer schemas.\nRecovery inventory (paths only; no external files copied):\n{inventory}\n"
         );
         let readme_path = backup_dir.join(README_NAME);
-        fs::write(&readme_path, readme).map_err(|error| {
+        crate::private_storage::write_new(&readme_path, readme.as_bytes()).map_err(|error| {
             BackupError(format!(
                 "Could not write backup manifest {}: {error}",
                 readme_path.display()
@@ -742,7 +740,12 @@ fn reject_symlink(path: &Path, description: &str) -> Result<(), BackupError> {
 }
 
 fn open_read_only(path: &Path) -> Result<Connection, BackupError> {
-    Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY).map_err(|error| {
+    crate::private_storage::check_path(path).map_err(|e| BackupError(e.to_string()))?;
+    Connection::open_with_flags(
+        path,
+        OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NOFOLLOW,
+    )
+    .map_err(|error| {
         BackupError(format!(
             "Could not open backup database {} read-only: {error}",
             path.display()
@@ -757,39 +760,18 @@ fn stage_config(source: &Path, destination: &Path) -> Result<PathBuf, BackupErro
             destination.display()
         ))
     })?;
-    let staged = parent.join(format!(".config.toml.restore-{}", std::process::id()));
-    let contents = fs::read(source).map_err(|error| {
-        BackupError(format!(
-            "Could not read backup configuration {}: {error}",
-            source.display()
-        ))
-    })?;
-    let mut options = OpenOptions::new();
-    options.write(true).create_new(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        options.mode(0o600);
-    }
-    let mut file = options.open(&staged).map_err(|error| {
-        BackupError(format!(
-            "Could not create staged configuration {}: {error}",
-            staged.display()
-        ))
-    })?;
-    use std::io::Write;
-    file.write_all(&contents).map_err(|error| {
-        BackupError(format!(
-            "Could not write staged configuration {}: {error}",
-            staged.display()
-        ))
-    })?;
-    file.sync_all().map_err(|error| {
-        BackupError(format!(
-            "Could not flush staged configuration {}: {error}",
-            staged.display()
-        ))
-    })?;
+    let mut input =
+        crate::private_storage::open_read(source).map_err(|e| BackupError(e.to_string()))?;
+    let mut pending =
+        crate::private_storage::tempfile_in(parent).map_err(|e| BackupError(e.to_string()))?;
+    std::io::copy(&mut input, &mut pending).map_err(|e| BackupError(e.to_string()))?;
+    pending
+        .as_file()
+        .sync_all()
+        .map_err(|e| BackupError(e.to_string()))?;
+    crate::private_storage::preserve_access(pending.path(), destination)
+        .map_err(|e| BackupError(e.to_string()))?;
+    let (_, staged) = pending.keep().map_err(|e| BackupError(e.to_string()))?;
     Ok(staged)
 }
 
@@ -1072,5 +1054,52 @@ mod tests {
         assert_eq!(read_marker(&live_database), "selected backup data");
         assert_eq!(fs::read_to_string(&live_config).unwrap(), "current config");
         assert!(result.safety_backup.join(CONFIG_BACKUP_NAME).is_file());
+    }
+}
+
+#[cfg(test)]
+mod phase1_tests {
+    use super::*;
+    #[test]
+    fn phase1_restore_preview_is_private_for_its_entire_approval_lifetime() {
+        let root = crate::private_storage::tempdir().unwrap();
+        let path = root.path().join("database.sqlite");
+        let db = crate::database::open(&path).unwrap();
+        crate::database::create_schema(&db).unwrap();
+        let config = root.path().join("config.toml");
+        crate::private_storage::write_new(&config, b"theme = 'dark'\n").unwrap();
+        let backups = root.path().join("backups");
+        let backup = BackupService::create_verified(&path, &config, &backups).unwrap();
+        let plan = BackupService::preview_restore(&backup, &path, &config, &backups).unwrap();
+        let stage = plan.staged_directory.path().to_path_buf();
+        let cleanup_enabled = plan.staged_directory.cleanup_enabled();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            for (path, mode) in [
+                (stage.clone(), 0o700),
+                (stage.join("restore.sqlite"), 0o600),
+                (stage.join("config.toml"), 0o600),
+                (backup.join("database.sqlite"), 0o600),
+            ] {
+                assert_eq!(
+                    fs::metadata(path).unwrap().permissions().mode() & 0o777,
+                    mode
+                );
+            }
+        }
+        let retained = plan.clone();
+        drop(plan);
+        assert!(stage.join("restore.sqlite").exists());
+        drop(retained);
+        if cleanup_enabled {
+            assert!(!stage.exists());
+        } else {
+            assert!(
+                stage.join("restore.sqlite").exists(),
+                "Unverified cleanup must retain private staging"
+            );
+        }
+        assert!(path.exists() && backup.join("database.sqlite").exists());
     }
 }

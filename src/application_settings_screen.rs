@@ -27,6 +27,8 @@ pub struct ApplicationSettingsScreen {
 
     status_message: String,
     file_status: Option<(String, Vec<std::path::PathBuf>)>,
+    storage_assessment: Vec<String>,
+    storage_assessment_pending: Option<std::sync::mpsc::Receiver<Vec<String>>>,
     backups: Vec<BackupInfo>,
     selected_backup: Option<std::path::PathBuf>,
     confirm_restore: bool,
@@ -60,6 +62,8 @@ impl ApplicationSettingsScreen {
 
             status_message: "Application settings not loaded.".to_string(),
             file_status: None,
+            storage_assessment: Vec::new(),
+            storage_assessment_pending: None,
             backups: Vec::new(),
             selected_backup: None,
             confirm_restore: false,
@@ -391,6 +395,80 @@ impl ApplicationSettingsScreen {
             }
         });
 
+        ui.separator();
+
+        ui.heading("Storage privacy");
+        ui.label("Assess existing file permissions without reading document contents or changing access. Shared business folders may intentionally allow other people. Any repair requires a separate review; this application does not repair existing permissions automatically.");
+        if let Some(receiver) = &self.storage_assessment_pending {
+            ui.ctx()
+                .request_repaint_after(std::time::Duration::from_millis(200));
+            match receiver.try_recv() {
+                Ok(messages) => {
+                    self.storage_assessment = messages;
+                    self.storage_assessment_pending = None;
+                }
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    self.storage_assessment =
+                        vec!["Assessment stopped; retry when storage is available.".into()];
+                    self.storage_assessment_pending = None;
+                }
+                Err(std::sync::mpsc::TryRecvError::Empty) => {
+                    ui.label("Assessing storage in the background…");
+                }
+            }
+        }
+        if ui
+            .add_enabled(
+                self.storage_assessment_pending.is_none(),
+                egui::Button::new("Assess Storage Permissions"),
+            )
+            .clicked()
+        {
+            let config = &application.context.config;
+            let roots = vec![
+                (application.context.environment.data_dir.clone(), false),
+                (crate::paths::expand_path(&config.folders.csv_import), true),
+                (crate::paths::expand_path(&config.folders.pdf_output), true),
+                (
+                    crate::paths::expand_path(&config.folders.email_archive),
+                    true,
+                ),
+                (
+                    crate::paths::expand_path(&config.folders.payslip_folder),
+                    true,
+                ),
+                (
+                    crate::paths::expand_path(&config.folders.payroll_information_folder),
+                    true,
+                ),
+            ];
+            let (sender, receiver) = std::sync::mpsc::channel();
+            match std::thread::Builder::new()
+                .name("storage-permissions-assessment".into())
+                .spawn(move || {
+                    let messages = roots
+                        .into_iter()
+                        .flat_map(|(root, shared)| crate::private_storage::assess(&root, shared))
+                        .collect();
+                    let _ = sender.send(messages);
+                }) {
+                Ok(_) => self.storage_assessment_pending = Some(receiver),
+                Err(_) => {
+                    self.storage_assessment =
+                        vec!["Could not start assessment; no changes made.".into()]
+                }
+            }
+        }
+        if !self.storage_assessment.is_empty() {
+            egui::ScrollArea::vertical()
+                .id_salt("storage_assessment")
+                .max_height(180.0)
+                .show(ui, |ui| {
+                    for message in &self.storage_assessment {
+                        ui.label(message);
+                    }
+                });
+        }
         ui.separator();
 
         ui.heading("Backup");

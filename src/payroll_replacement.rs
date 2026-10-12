@@ -208,7 +208,7 @@ pub fn replace(app: &Application, reviewed: &Review) -> Result<PathBuf> {
         year_dir
     };
     crate::payroll_archive_service::checked_path(&directory)?;
-    fs::create_dir_all(&directory)?;
+    crate::private_storage::ensure_output_dir(&directory)?;
     // Hash-derived immutable destination is safe to reuse after a pre-commit crash.
     let name = naming::sanitise_filename(&format!(
         "{} {}",
@@ -264,7 +264,7 @@ pub fn replace(app: &Application, reviewed: &Review) -> Result<PathBuf> {
         if destination.exists() {
             crate::payroll_archive_service::verified(&destination, &reviewed.digest)?;
         } else {
-            let mut temporary = tempfile::NamedTempFile::new_in(&directory)?;
+            let mut temporary = crate::private_storage::tempfile_in(&directory)?;
             std::io::copy(&mut fs::File::open(&reviewed.incoming)?, &mut temporary)?;
             temporary.as_file().sync_all()?;
             crate::payroll_archive_service::verified(temporary.path(), &reviewed.digest)?;

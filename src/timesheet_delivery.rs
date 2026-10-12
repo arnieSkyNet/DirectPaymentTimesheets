@@ -1129,18 +1129,12 @@ pub(crate) fn production_lock_path(database: &std::path::Path) -> Result<std::fs
 }
 
 fn lock_file(path: &std::path::Path) -> Result<std::fs::File> {
-    let file = std::fs::OpenOptions::new()
-        .create(true)
-        .truncate(false)
-        .read(true)
-        .write(true)
-        .open(path)
-        .map_err(|e| {
-            format!(
-                "Cannot open the dispatch lock ({:?}); check directory and lock-file permissions.",
-                e.kind()
-            )
-        })?;
+    let file = crate::private_storage::open_or_create_lock(path).map_err(|e| {
+        format!(
+            "Cannot open the dispatch lock ({:?}); check directory and lock-file permissions.",
+            e.kind()
+        )
+    })?;
     file.try_lock().map_err(lock_error)?;
     Ok(file)
 }

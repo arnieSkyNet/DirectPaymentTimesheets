@@ -89,7 +89,7 @@ where
         .parent()
         .filter(|parent| !parent.as_os_str().is_empty())
     {
-        fs::create_dir_all(parent).map_err(|error| {
+        crate::private_storage::ensure_output_dir(parent).map_err(|error| {
             SnapshotSafetyError::Operation(format!(
                 "Could not create payroll PDF output directory {}: {error}",
                 parent.display()
@@ -97,7 +97,19 @@ where
         })?;
     }
 
-    let temporary_path = temporary_pdf_path(publication.final_pdf_path);
+    let replacing = publication
+        .final_pdf_path
+        .try_exists()
+        .map_err(|e| SnapshotSafetyError::Operation(e.to_string()))?;
+    crate::private_storage::check_path(publication.final_pdf_path)
+        .map_err(|e| SnapshotSafetyError::Operation(e.to_string()))?;
+    let parent = publication
+        .final_pdf_path
+        .parent()
+        .unwrap_or(Path::new("."));
+    let temporary = crate::private_storage::tempfile_in(parent)
+        .map_err(|e| SnapshotSafetyError::Operation(e.to_string()))?;
+    let temporary_path = temporary.path().to_path_buf();
     if let Err(error) = write_pdf(&temporary_path) {
         let _ = fs::remove_file(&temporary_path);
         return Err(SnapshotSafetyError::Operation(format!(
@@ -112,6 +124,9 @@ where
         }
     };
 
+    // Access-policy refusal must happen before changing the candidate ledger.
+    crate::private_storage::preserve_access(&temporary_path, publication.final_pdf_path)
+        .map_err(|e| SnapshotSafetyError::Operation(e.to_string()))?;
     let final_path = publication.final_pdf_path.to_string_lossy().to_string();
     if let Err(error) = repository.replace_candidate(
         publication.payroll_timesheet_id,
@@ -135,7 +150,18 @@ where
         &bytes,
     )
     .map_err(|e| SnapshotSafetyError::Operation(e.to_string()))?;
-    if let Err(error) = fs::rename(&temporary_path, publication.final_pdf_path) {
+    let publication_result =
+        crate::private_storage::preserve_access(&temporary_path, publication.final_pdf_path)
+            .and_then(|_| {
+                if replacing {
+                    temporary.persist(publication.final_pdf_path)
+                } else {
+                    temporary.persist_noclobber(publication.final_pdf_path)
+                }
+                .map(|_| ())
+                .map_err(|e| e.error)
+            });
+    if let Err(error) = publication_result {
         let current_document: Option<i64> = repository.connection.query_row(
             "SELECT document_id FROM payroll_timesheet_snapshot_states WHERE payroll_timesheet_id=?1",
             [publication.payroll_timesheet_id], |r|r.get(0),
@@ -304,14 +330,6 @@ pub fn sha256_file(path: &Path) -> Result<String, SnapshotSafetyError> {
         ))
     })?;
     Ok(format!("{:x}", Sha256::digest(bytes)))
-}
-
-fn temporary_pdf_path(final_path: &Path) -> PathBuf {
-    let file_name = final_path.file_name().unwrap_or_default().to_string_lossy();
-    final_path.with_file_name(format!(
-        ".{file_name}.{}.tmp",
-        chrono::Utc::now().timestamp_nanos_opt().unwrap_or_default()
-    ))
 }
 
 fn operation_error(error: rusqlite::Error) -> SnapshotSafetyError {

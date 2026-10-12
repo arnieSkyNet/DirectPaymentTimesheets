@@ -2,13 +2,13 @@
 
 This document describes the implementation on `main`. Source code, migrations and tests are the authority if this summary becomes stale.
 
-The functionality below describes unreleased development 1.0.6/schema41. Published
+The functionality below describes unreleased development 1.0.7/schema41. Published
 Linux/Windows v1.0.4 and macOS v1.0.5 do not include the Stage 1–8 changes. Historical
 stage headings retain their introduction schema numbers.
 
 ## Current release and platform
 
-- Development application version: `1.0.6`; published Linux/Windows: `1.0.4`; published macOS: `1.0.5`.
+- Development application version: `1.0.7`; published Linux/Windows: `1.0.4`; published macOS: `1.0.5`.
 - Database schema: version 41, upgraded through verified backups and isolated ordered migrations.
 - Desktop UI: Rust with `eframe`/`egui`.
 - Persistence: SQLite through `rusqlite` (bundled SQLite).
@@ -195,7 +195,7 @@ Stage 2 final-review corrections close the retained-view transfer gap: source/de
 
 ## Stage 4 shift change protection (1.0.6/schema38)
 
-Stage 4 introduced additive schema38; current development 1.0.6 now uses schema41. Semantic CSV headers support the verified Hours Keeper format and existing synthetic aliases regardless of column order. Content identity detects changed same-path exports. Shared review protects imported/internal counterparts and cross-midnight overlaps; original evidence, archival bytes and omitted rows remain retained. Review supports a payable-version choice, explicit separate shifts and audited deferral. New protected edits require prospective authorisation and the existing contextual financial correction workflow; pre-existing obligations are preserved. The established verified database/config backup and isolated upgrade installation remain mandatory; external business files need separate protection.
+Stage 4 introduced additive schema38; current development 1.0.7 now uses schema41. Semantic CSV headers support the verified Hours Keeper format and existing synthetic aliases regardless of column order. Content identity detects changed same-path exports. Shared review protects imported/internal counterparts and cross-midnight overlaps; original evidence, archival bytes and omitted rows remain retained. Review supports a payable-version choice, explicit separate shifts and audited deferral. New protected edits require prospective authorisation and the existing contextual financial correction workflow; pre-existing obligations are preserved. The established verified database/config backup and isolated upgrade installation remain mandatory; external business files need separate protection.
 
 
 ## Stage 5 startup reliability (1.0.6/schema38)
@@ -242,7 +242,7 @@ separate from proof of recipient inbox receipt. See the Stage 8 sections in
 
 ### SMTP security development status
 
-Development 1.0.6 now exposes required STARTTLS, implicit TLS and explicit plaintext
+Development 1.0.7 retains required STARTTLS, implicit TLS and explicit plaintext
 SMTP through shared production/test transport; published downloads are unchanged.
 Existing missing security settings remain legacy plaintext, and new remote
 configurations default to required STARTTLS. Certificate/hostname validation is
@@ -252,3 +252,34 @@ unencrypted at rest. Platform hardware/trust-store and Windows ACL acceptance
 remain release requirements. See [SMTP security](DOMAIN.md#smtp-configuration-and-security).
 
 Annual-leave guidance now flags relevant structured sickness alongside legacy sickness hours for additional variable-hours review; it never adds sickness accrual figures or changes payroll evidence.
+
+
+## Phase 1 storage privacy (development 1.0.7/schema41)
+
+New application-managed directories use 0700 and files use 0600 on Unix. Windows
+creation supplies a protected DACL granting the current token user and SYSTEM;
+SQLite writable opens require a suitably private parent ACL because its sidecars
+inherit that directory's ACL. No existing file/directory permissions or ownership
+are repaired automatically. Application Settings offers a bounded, background,
+metadata-only **Assess Storage Permissions** report, distinguishing business
+folders that may intentionally be shared. Repair must be reviewed separately.
+
+Restore preview retains an explicitly private randomized directory throughout
+approval-plan ownership. Linux cleans the original directory only in a verified
+namespace using retained handles; unsafe parents and Windows/macOS retain
+private staging rather than delete by an unverified pathname. SQLite snapshots, migration copies, backup
+configuration, CSV archives, import staging, drawn signatures and filing copies
+are privately created. PDF/configuration publication uses randomized exclusive
+staging; deliberate replacements preserve existing access policy and refuse
+ownership changes. Completed filing moves retain the original document access policy after private
+staging. Shared business directories are not chmod'd or given private
+replacement ACLs. New business files are private by default; sharing requires a
+separate, deliberate access decision. No schema, email policy or document bytes
+are changed by this work. Published v1.0.6 downloads are unchanged.
+
+See [storage hardening and remaining limitations](SECURITY-HARDENING.md).
+
+Native Phase 1 verification is prepared on `security/v1.0.7-phase1` with a
+dedicated manual test workflow. Known-failing security assertions are evidence
+of open findings, not remediation. No native run, commit, push, package or release
+has been performed. See [verification and dispatch prerequisites](NATIVE-SECURITY-VERIFICATION.md).

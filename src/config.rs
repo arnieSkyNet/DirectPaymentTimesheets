@@ -487,10 +487,11 @@ fn publish_config(path: &Path, bytes: &[u8], replace: bool) -> std::io::Result<(
         .parent()
         .filter(|p| !p.as_os_str().is_empty())
         .unwrap_or(Path::new("."));
-    let mut pending = tempfile::NamedTempFile::new_in(parent)?;
+    let mut pending = crate::private_storage::tempfile_in(parent)?;
     pending.write_all(bytes)?;
     pending.as_file().sync_all()?;
     if replace {
+        crate::private_storage::preserve_access(pending.path(), path)?;
         pending.persist(path).map_err(|e| e.error)?;
     } else {
         pending.persist_noclobber(path).map_err(|e| e.error)?;

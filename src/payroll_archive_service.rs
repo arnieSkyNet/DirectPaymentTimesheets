@@ -851,14 +851,15 @@ fn file_moves(
         for m in moves {
             verify(&m.source, &m.digest)?;
             checked_path(&m.destination)?;
-            fs::create_dir_all(m.destination.parent().unwrap())?;
+            crate::private_storage::ensure_output_dir(m.destination.parent().unwrap())?;
             if !m.destination.exists() {
                 // Stage privately, sync and verify, then publish with no-clobber semantics.
                 let mut temporary =
-                    tempfile::NamedTempFile::new_in(m.destination.parent().unwrap())?;
+                    crate::private_storage::tempfile_in(m.destination.parent().unwrap())?;
                 std::io::copy(&mut fs::File::open(&m.source)?, &mut temporary)?;
                 temporary.as_file().sync_all()?;
                 verify(temporary.path(), &m.digest)?;
+                crate::private_storage::preserve_access(temporary.path(), &m.source)?;
                 fs::hard_link(temporary.path(), &m.destination)?;
                 published.push(m.destination.clone());
             }

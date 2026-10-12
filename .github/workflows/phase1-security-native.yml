@@ -1,0 +1,67 @@
+name: Phase 1 native security verification
+run-name: Phase 1 security · ${{ github.ref_name }} · ${{ inputs.expected_sha }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      expected_sha:
+        description: Full reviewed commit SHA on security/v1.0.7-phase1
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: phase1-security-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  native:
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [windows-2022, macos-15, macos-15-intel]
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 90
+    env:
+      EXPECTED_SHA: ${{ inputs.expected_sha }}
+      CARGO_INCREMENTAL: '0'
+      CARGO_BUILD_JOBS: '2'
+      CARGO_PROFILE_TEST_DEBUG: '0'
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Require the reviewed testing branch and exact revision
+        env:
+          SELECTED_REF: ${{ github.ref }}
+          SELECTED_SHA: ${{ github.sha }}
+        run: |
+          test "$SELECTED_REF" = refs/heads/security/v1.0.7-phase1
+          [[ "$EXPECTED_SHA" =~ ^[0-9a-f]{40}$ ]]
+          test "$EXPECTED_SHA" = "$SELECTED_SHA"
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          # workflow_dispatch's selected-ref event SHA, already matched above
+          # to the reviewed input. Never check out main or a moving branch name.
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Install the project's pinned native Rust toolchain
+        run: rustup toolchain install 1.98.1 --profile minimal
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: '3.12'
+      - name: Compile and run isolated synthetic security tests
+        env:
+          RUSTUP_TOOLCHAIN: '1.98.1'
+        run: |
+          python -B -m unittest discover -s scripts -p test_phase1_security_checks.py -v
+          python -B scripts/phase1_security_checks.py
+      - name: Explain the verification boundary
+        if: always()
+        run: |
+          echo 'Native verification is not remediation or release approval.' >> "$GITHUB_STEP_SUMMARY"
+          echo 'Inspect compilation, every test group, and known failing assertions in docs/NATIVE-SECURITY-VERIFICATION.md.' >> "$GITHUB_STEP_SUMMARY"
+# No push/PR/tag/release/workflow_call trigger, publisher, packaging, cache,
+# secrets, deployment environment, artifact upload or production application run.

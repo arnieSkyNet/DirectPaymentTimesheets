@@ -1,6 +1,6 @@
 [package]
 name = "direct_payment_timesheets"
-version = "1.0.6"
+version = "1.0.7"
 edition = "2021"
 license = "GPL-3.0-or-later"
 repository = "https://github.com/ArnieSkyNet/DirectPaymentTimesheets"
@@ -33,6 +33,9 @@ semver = "1"
 
 tempfile = "3"
 same-file = "1"
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
 
 [dev-dependencies]
 native-tls = "0.2"
