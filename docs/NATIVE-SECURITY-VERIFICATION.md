@@ -1,8 +1,8 @@
 # Development 1.0.7 Phase 1 native verification
 
 The current Windows corrections are uncommitted on `security/v1.0.7-phase1`
-at HEAD `c11221b03e6277dd9bbf3193410a34ea41d83ebd`. Native run 38302554351
-tested that approved committed source; it did not test these diagnostic changes. No tag,
+at HEAD `b4e15654f18cb8ca9b20ef1c6017205303edca0e`. Native run 38312225467
+tested that approved committed source; it did not test this root-owner probe. No tag,
 package or release is prepared. Existing Phase 1 code, GitHub README edits,
 published links and stashes are retained. This is a verification candidate,
 not a declaration that the open security findings have been fixed.
@@ -83,14 +83,13 @@ natively. See [SECURITY-HARDENING.md](SECURITY-HARDENING.md) for exact results.
 
 ## Review and commit only the complete correction set (separate approval)
 
-The current diagnostic-only candidate modifies exactly these four paths relative
-to HEAD `c11221b03e6277dd9bbf3193410a34ea41d83ebd`:
+The current classification-only candidate modifies exactly these three paths relative
+to HEAD `b4e15654f18cb8ca9b20ef1c6017205303edca0e`:
 
 ```text
 docs/NATIVE-SECURITY-VERIFICATION.md
 docs/SECURITY-HARDENING.md
 src/private_storage_windows.rs
-src/private_storage_windows_tests.rs
 ```
 
 Reconcile this inventory with the complete diff before any separately authorized
@@ -105,7 +104,7 @@ and is not production security sign-off.
 The workflow is already registered on main. Do not repeat initial registration
 or copy the older workflow from the security branch over the registered main
 workflow: its dispatch guards differ. The currently approved source SHA is
-`c11221b03e6277dd9bbf3193410a34ea41d83ebd`; it excludes this diagnostic candidate.
+`b4e15654f18cb8ca9b20ef1c6017205303edca0e`; it excludes this root-owner probe.
 Recheck the live registered workflow before any future pin update or dispatch.
 
 After separately reviewing, committing and pushing the complete correction set:
@@ -122,7 +121,7 @@ After separately reviewing, committing and pushing the complete correction set:
 3. Review and separately approve that PR before merge. Do not merge the security
    implementation into main. No pin update or default-branch action occurs here.
 4. Before any separately authorized dispatch, verify that the workflow is present
-   on main at or after source-pin merge e13bce829c5032912c1d7252177a91191aa831bc,
+   on main at or after source-pin merge f8acbab0a120dfcf70e8f4bd3c047415cb89f347,
    and that the remote security branch tip equals the approved hardcoded SHA.
    Missing/moved branches, mismatched inputs, incorrect workflow refs and a
    mismatched checkout HEAD must fail closed.
@@ -266,3 +265,63 @@ sharing / locking / missing-privilege categories (5, 32, 33, 1314). Missing path
 invalid parameters, unrelated codes and unstructured errors cannot satisfy a
 negative case. A native-only classifier test covers these distinctions; the
 accepted category alone still does not prove a refusal's underlying cause.
+
+
+## Classification-only root-owner probe after run 38312225467
+
+The committed baseline reported 69 depth-zero volume_root refusals with a valid
+owner SID classified other. This does not identify the owner or justify trusting
+it. The new probe executes only in that valid-owner rejection branch, retaining
+the original owner_mismatch result. It selects exactly one fixed hypothesis:
+the locally qualified TrustedInstaller service SID. There is no configurable,
+enumerated or arbitrary service-principal admission mechanism.
+
+The probe validates the resolved SID, compares it with EqualSid, verifies forward
+and reverse lookup identity/domain against fixed qualified service literals, opens
+only the exact service key through the local SCM, and queries SERVICE_SID_INFO.
+Only documented enabled configurations (unrestricted/restricted) count as
+configuration verification. Disabled/unknown configurations, missing candidates,
+lookup failures and SCM access failures are indeterminate. This identifies a
+configured per-service SID, not a service process logon account or running token;
+it establishes no trust, executable integrity, root safety or authorization.
+
+Output contains only fixed classification/operation labels, depth/role, resolution
+and verification booleans, an optional match boolean and raw error codes. No SID,
+lookup name/domain, service key, path or ACL is printed. The fixed candidate name
+is used internally but not included in diagnostic output. Bounded aligned SID
+storage and bounded UTF-16 lookup buffers refuse oversized results; SCM handles
+use CloseServiceHandle and request CONNECT / QUERY_CONFIG only. No service is
+created, started, reconfigured, impersonated or assigned privileges.
+
+Three new Windows-only synthetic tests cover native known SID-category comparisons,
+the exact gate, unresolved/unverified fact combinations, false matches, invalid
+lookup text and diagnostic redaction. They do not depend on the runner root owner
+or service availability. They do not prove native lookup/SCM API acceptance; a
+separately approved native run is still necessary. Tests inject verification facts
+for unavailable-candidate paths rather than changing real service configuration.
+Native evidence must confirm candidate resolution, independent SCM verification,
+standard-user access/refusal, raw errors and unchanged owner rejection. A positive
+classification is evidence for future review, never an automatic allowlist change.
+The existing ancestor, SQLite lifetime, publication/cleanup and recovery limitations
+remain open, including MoveFileExW open-target refusal. No native run is dispatched.
+
+
+### Root-owner probe availability and evidence limits
+
+LookupAccountNameW and LookupAccountSidW begin resolution locally with the current
+NULL system parameter, but even qualified lookup may consult trusted domains.
+They are not guaranteed local-only and have no guaranteed bounded latency.
+Repeated rejected-root inspections may synchronously repeat those lookups and
+read-only SCM operations while ancestor directory handles remain held. This
+probe is diagnostic-only; bounded or opt-in execution and its availability risks
+must be assessed before production integration. Qualification and bounded memory
+buffers do not bound lookup execution time.
+
+The synthetic tests do not establish actual API failure handling, raw-error
+capture or SCM handle cleanup through the real probe. Native compilation and
+runtime evidence remain necessary for those paths. Forward/reverse identity
+mapping and service-SID configuration are separate, non-atomic observations.
+They establish neither executable trust nor a running token's identity. A
+configured service SID remains distinct from the process account and running
+token. verified_candidate_service_sid is a diagnostic classification, never
+authorization to admit the owner; owner_mismatch remains the admission result.

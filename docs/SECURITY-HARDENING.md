@@ -358,3 +358,58 @@ operation/code/class/depth/role together, including identity recheck opens.
 The volume_root diagnostic describes the RootDir namespace component: on UNC
 paths it is a share namespace root, not necessarily a physical volume root.
 No admission or rename policy is changed by these corrections.
+
+
+## Classification-only root-owner probe at b4e1565 (uncommitted)
+
+Run 38312225467 established valid other ownership at depth-zero namespace root,
+not any particular service principal. This candidate probes only that already
+rejected case and still returns owner_mismatch. One fixed TrustedInstaller
+service-SID hypothesis uses a qualified lookup starting locally, then is validated
+and compared using native
+SID equality; forward/reverse identity checks and read-only local SCM service-SID
+configuration verification are required for a verified classification. No arbitrary
+service name, SID prefix or root ownership confers trust. Unknown/disabled SID
+configurations and missing/denied APIs remain indeterminate. Classification of a
+configured service SID does not identify its process account or running token.
+
+Diagnostics print fixed labels/booleans/error codes only, not identities, service
+names, domains, paths or ACL contents. Probe buffers are bounded and aligned;
+SCM handles use their own close function. The probe never mutates a service,
+owner, DACL, filesystem object or token. Existing admission allowlists, destructive
+ACL checks, inheritance rules, handle protections and publication flags remain.
+
+The three new Windows-only synthetic tests validate native SID comparisons and
+probe gating, unresolved/unverified/false-match classifications and safe rendering.
+They mock resolution/verification facts and do not establish LookupAccountNameW,
+LookupAccountSidW or SCM runtime results. Independent native compilation, missing
+candidate/access-denied testing and standard-user verification remain necessary.
+Read-only service configuration may change concurrently; this is diagnostic data,
+not an atomic security attestation. Bounded lookup failure requires review, not
+an insecure fallback. No permission exception or rename remediation is implemented.
+
+API contracts: [LookupAccountNameW](https://learn.microsoft.com/en-us/windows/win32/api/winbase/nf-winbase-lookupaccountnamew),
+[service SID configuration](https://learn.microsoft.com/en-us/windows/win32/api/winsvc/ns-winsvc-service_sid_info),
+and [QueryServiceConfig2W](https://learn.microsoft.com/en-us/windows/win32/api/winsvc/nf-winsvc-queryserviceconfig2w).
+
+Local Linux validation: cargo check --locked --offline --bins --tests passed;
+Phase 1 18/18 and private-storage 15/15 passed. Targeted rustfmt, documentation
+inventory/policy checks and git diff --check passed. No native Windows build or
+execution is claimed. All three files remain unstaged; no commit, push, pin
+update, workflow dispatch or stash modification occurred.
+
+
+Final review clarification: LookupAccountNameW and LookupAccountSidW with NULL
+system parameters are not guaranteed local-only. Even qualified lookup may
+consult trusted domains and has no guaranteed bounded latency. Repeated rejected
+root assessments may synchronously repeat lookup and read-only SCM work while
+directory handles are held. Bounded buffers bound memory, not execution time.
+This diagnostic-only probe requires bounded or opt-in execution and availability
+assessment before production integration; no such execution bound is implemented.
+
+Synthetic classification tests do not verify actual API failure handling,
+raw-error capture or SCM cleanup through the probe. Identity lookup and service-
+SID configuration observations are non-atomic and confer no executable trust,
+running-token identity or admission authority. The service SID, service process
+account and running token are distinct concepts; verified_candidate_service_sid
+is not authorization to admit the owner. Existing owner_mismatch refusal remains.

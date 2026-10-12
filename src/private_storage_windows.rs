@@ -68,6 +68,34 @@ extern "system" {
         sacl: *mut *mut c_void,
         descriptor: *mut *mut c_void,
     ) -> u32;
+    fn LookupAccountNameW(
+        system: *const u16,
+        name: *const u16,
+        sid: *mut c_void,
+        sid_size: *mut u32,
+        domain: *mut u16,
+        domain_size: *mut u32,
+        sid_use: *mut u32,
+    ) -> i32;
+    fn LookupAccountSidW(
+        system: *const u16,
+        sid: *const c_void,
+        name: *mut u16,
+        name_size: *mut u32,
+        domain: *mut u16,
+        domain_size: *mut u32,
+        sid_use: *mut u32,
+    ) -> i32;
+    fn OpenSCManagerW(machine: *const u16, database: *const u16, access: u32) -> Handle;
+    fn OpenServiceW(manager: Handle, name: *const u16, access: u32) -> Handle;
+    fn QueryServiceConfig2W(
+        service: Handle,
+        level: u32,
+        buffer: *mut u8,
+        size: u32,
+        needed: *mut u32,
+    ) -> i32;
+    fn CloseServiceHandle(handle: Handle) -> i32;
     fn ConvertSidToStringSidW(sid: *const c_void, text: *mut *mut u16) -> i32;
 }
 #[link(name = "kernel32")]
@@ -308,6 +336,181 @@ fn binary_sid(text: &str) -> io::Result<LocalMemory> {
     }
     Ok(LocalMemory(sid))
 }
+// Classification only: this fixed candidate is never an admission allowlist.
+const ROOT_SERVICE_CANDIDATE: &str = "TrustedInstaller";
+struct ServiceHandle(Handle);
+impl Drop for ServiceHandle {
+    fn drop(&mut self) {
+        unsafe {
+            CloseServiceHandle(self.0);
+        }
+    }
+}
+#[derive(Default)]
+struct RootProbe {
+    resolved: bool,
+    identity_verified: bool,
+    configuration_verified: bool,
+    owner_matches: Option<bool>,
+    operation: &'static str,
+    code: Option<i32>,
+}
+impl RootProbe {
+    fn category(&self) -> &'static str {
+        if !self.resolved || !self.identity_verified || !self.configuration_verified {
+            "indeterminate"
+        } else if self.owner_matches == Some(true) {
+            "verified_candidate_service_sid"
+        } else if self.owner_matches == Some(false) {
+            "other"
+        } else {
+            "indeterminate"
+        }
+    }
+    fn render(&self) -> String {
+        format!("windows.root_owner_probe: depth=0; role=volume_root; class={}; resolved={}; identity_verified={}; configuration_verified={}; owner_matches={:?}; operation={}; code={:?}",
+            self.category(), self.resolved, self.identity_verified, self.configuration_verified, self.owner_matches, self.operation, self.code)
+    }
+    fn failed(mut self, operation: &'static str) -> Self {
+        self.operation = operation;
+        self.code = io::Error::last_os_error().raw_os_error();
+        self
+    }
+}
+fn lookup_field_matches(field: &[u16], expected: &str) -> bool {
+    let Some(end) = field.iter().position(|c| *c == 0) else {
+        return false;
+    };
+    String::from_utf16(&field[..end]).is_ok_and(|value| value.eq_ignore_ascii_case(expected))
+}
+fn root_probe_required(valid: bool, category: &str, context: Option<(usize, &str)>) -> bool {
+    valid && category == "other" && context == Some((0, "volume_root"))
+}
+fn owner_sid_category(
+    owner: *const c_void,
+    current: *const c_void,
+    system: *const c_void,
+    administrators: *const c_void,
+) -> (bool, &'static str) {
+    let valid = !owner.is_null() && unsafe { IsValidSid(owner) } != 0;
+    let category = if !valid {
+        "invalid"
+    } else if unsafe { EqualSid(owner, current) } != 0 {
+        "current"
+    } else if unsafe { EqualSid(owner, system) } != 0 {
+        "system"
+    } else if unsafe { EqualSid(owner, administrators) } != 0 {
+        "administrators"
+    } else {
+        "other"
+    };
+    (valid, category)
+}
+
+fn probe_root_service_owner(owner: *const c_void) -> RootProbe {
+    // Local, fully qualified service SID; never resolve the owner to a printable name.
+    let qualified: Vec<u16> = format!("NT SERVICE\\{ROOT_SERVICE_CANDIDATE}")
+        .encode_utf16()
+        .chain(Some(0))
+        .collect();
+    let mut sid = [0usize; 68usize.div_ceil(std::mem::size_of::<usize>())]; // Aligned storage, at least SECURITY_MAX_SID_SIZE (68).
+    let mut sid_size = 68u32;
+    let mut domain = [0u16; 257];
+    let mut domain_size = domain.len() as u32;
+    let mut sid_use = 0u32;
+    let mut report = RootProbe::default();
+    if unsafe {
+        LookupAccountNameW(
+            std::ptr::null(),
+            qualified.as_ptr(),
+            sid.as_mut_ptr().cast(),
+            &mut sid_size,
+            domain.as_mut_ptr(),
+            &mut domain_size,
+            &mut sid_use,
+        )
+    } == 0
+    {
+        return report.failed("lookup_candidate");
+    }
+    // Check the returned SID fits before native validation dereferences it.
+    let bytes = unsafe { std::slice::from_raw_parts(sid.as_ptr().cast::<u8>(), 68) };
+    if !(8..=68).contains(&sid_size)
+        || 8 + 4 * bytes[1] as usize > sid_size as usize
+        || unsafe { IsValidSid(sid.as_ptr().cast()) } == 0
+    {
+        report.operation = "validate_candidate_sid";
+        return report;
+    }
+    report.resolved = true;
+    report.owner_matches = Some(unsafe { EqualSid(owner, sid.as_ptr().cast()) } != 0);
+    let mut name = [0u16; 257];
+    let mut name_size = name.len() as u32;
+    let mut reverse_domain = [0u16; 257];
+    let mut reverse_domain_size = reverse_domain.len() as u32;
+    let mut reverse_use = 0u32;
+    if unsafe {
+        LookupAccountSidW(
+            std::ptr::null(),
+            sid.as_ptr().cast(),
+            name.as_mut_ptr(),
+            &mut name_size,
+            reverse_domain.as_mut_ptr(),
+            &mut reverse_domain_size,
+            &mut reverse_use,
+        )
+    } == 0
+    {
+        return report.failed("verify_candidate_identity");
+    }
+    report.identity_verified = lookup_field_matches(&domain, "NT SERVICE")
+        && lookup_field_matches(&reverse_domain, "NT SERVICE")
+        && lookup_field_matches(&name, ROOT_SERVICE_CANDIDATE)
+        && sid_use == reverse_use;
+    if !report.identity_verified {
+        report.operation = "candidate_identity_mismatch";
+        return report;
+    }
+    // SC_MANAGER_CONNECT and SERVICE_QUERY_CONFIG only. No start/change rights.
+    let manager = unsafe { OpenSCManagerW(std::ptr::null(), std::ptr::null(), 1) };
+    if manager.is_null() {
+        return report.failed("open_local_scm");
+    }
+    let manager = ServiceHandle(manager);
+    let service_name: Vec<u16> = ROOT_SERVICE_CANDIDATE
+        .encode_utf16()
+        .chain(Some(0))
+        .collect();
+    let service = unsafe { OpenServiceW(manager.0, service_name.as_ptr(), 1) };
+    if service.is_null() {
+        return report.failed("open_exact_service");
+    }
+    let service = ServiceHandle(service);
+    // SERVICE_CONFIG_SERVICE_SID_INFO is a DWORD SERVICE_SID_INFO structure.
+    let mut sid_type = 0u32;
+    let mut needed = 0u32;
+    if unsafe {
+        QueryServiceConfig2W(
+            service.0,
+            5,
+            (&mut sid_type as *mut u32).cast(),
+            4,
+            &mut needed,
+        )
+    } == 0
+    {
+        return report.failed("query_service_sid_configuration");
+    }
+    // Only documented enabled service-SID configurations count as verification.
+    report.configuration_verified = matches!(sid_type, 1 | 3);
+    report.operation = if report.configuration_verified {
+        "classification_complete"
+    } else {
+        "service_sid_disabled_or_unknown"
+    };
+    report
+}
+
 fn ancestor_error(operation: &str, error: io::Error, context: Option<(usize, &str)>) -> io::Error {
     if let Some((depth, role)) = context {
         let message = format!(
@@ -415,18 +618,8 @@ fn assess_access(
     let current = binary_sid(&user_sid()?)?;
     let system = binary_sid("S-1-5-18")?;
     let administrators = binary_sid("S-1-5-32-544")?;
-    let owner_valid = !owner.is_null() && unsafe { IsValidSid(owner) } != 0;
-    let owner_category = if !owner_valid {
-        "invalid"
-    } else if unsafe { EqualSid(owner, current.0) } != 0 {
-        "current"
-    } else if unsafe { EqualSid(owner, system.0) } != 0 {
-        "system"
-    } else if unsafe { EqualSid(owner, administrators.0) } != 0 {
-        "administrators"
-    } else {
-        "other"
-    };
+    let (owner_valid, owner_category) =
+        owner_sid_category(owner, current.0, system.0, administrators.0);
     if let Some((depth, role)) = context {
         eprintln!("windows.ancestor.owner: depth={depth}; role={role}; sid_valid={owner_valid}; owner_category={owner_category}");
     }
@@ -437,6 +630,9 @@ fn assess_access(
                 && (unsafe { EqualSid(owner, system.0) } != 0
                     || unsafe { EqualSid(owner, administrators.0) } != 0)))
     {
+        if root_probe_required(owner_valid, owner_category, context) {
+            eprintln!("{}", probe_root_service_owner(owner).render());
+        }
         return Ok(Some("owner_mismatch"));
     }
     if acl.is_null() || unsafe { IsValidAcl(acl) } == 0 {
@@ -694,6 +890,99 @@ pub fn preserve_access(temporary: &Path, destination: &Path) -> io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn phase1_windows_root_probe_gate_and_native_owner_categories() {
+        let current = binary_sid("S-1-1-0").unwrap(); // Synthetic current stand-in.
+        let system = binary_sid("S-1-5-18").unwrap();
+        let administrators = binary_sid("S-1-5-32-544").unwrap();
+        let other = binary_sid("S-1-5-19").unwrap();
+        for (owner, expected) in [
+            (current.0, "current"),
+            (system.0, "system"),
+            (administrators.0, "administrators"),
+            (other.0, "other"),
+        ] {
+            let (valid, category) =
+                owner_sid_category(owner, current.0, system.0, administrators.0);
+            assert!(valid);
+            assert_eq!(category, expected);
+            assert_eq!(
+                root_probe_required(valid, category, Some((0, "volume_root"))),
+                expected == "other"
+            );
+        }
+        assert_eq!(
+            owner_sid_category(std::ptr::null(), current.0, system.0, administrators.0),
+            (false, "invalid")
+        );
+        assert!(!root_probe_required(
+            false,
+            "other",
+            Some((0, "volume_root"))
+        ));
+        assert!(!root_probe_required(
+            true,
+            "other",
+            Some((1, "existing_ancestor"))
+        ));
+        assert!(!root_probe_required(
+            true,
+            "other",
+            Some((0, "immediate_parent"))
+        ));
+        assert!(!root_probe_required(true, "other", None));
+    }
+    #[test]
+    fn phase1_windows_root_probe_unresolved_unverified_and_false_match() {
+        let mut report = RootProbe::default();
+        assert_eq!(report.category(), "indeterminate");
+        report.resolved = true;
+        report.owner_matches = Some(true);
+        assert_eq!(report.category(), "indeterminate");
+        report.identity_verified = true;
+        assert_eq!(report.category(), "indeterminate");
+        report.configuration_verified = true;
+        assert_eq!(report.category(), "verified_candidate_service_sid");
+        let system = binary_sid("S-1-5-18").unwrap();
+        let other = binary_sid("S-1-5-19").unwrap();
+        report.owner_matches = Some(unsafe { EqualSid(system.0, other.0) } != 0);
+        assert_eq!(report.category(), "other");
+        report.configuration_verified = false;
+        assert_eq!(report.category(), "indeterminate");
+        assert!(lookup_field_matches(
+            &"nt service\0".encode_utf16().collect::<Vec<_>>(),
+            "NT SERVICE"
+        ));
+        assert!(!lookup_field_matches(
+            &"synthetic wrong domain\0"
+                .encode_utf16()
+                .collect::<Vec<_>>(),
+            "NT SERVICE"
+        ));
+        assert!(!lookup_field_matches(&[0xd800, 0], ROOT_SERVICE_CANDIDATE));
+    }
+    #[test]
+    fn phase1_windows_root_probe_diagnostic_privacy() {
+        let report = RootProbe {
+            operation: "lookup_candidate",
+            code: Some(1332),
+            ..RootProbe::default()
+        };
+        let rendered = report.render();
+        assert!(rendered.contains("class=indeterminate"));
+        assert!(rendered.contains("code=Some(1332)"));
+        for forbidden in [
+            ROOT_SERVICE_CANDIDATE,
+            "NT SERVICE",
+            "S-1-",
+            "domain=",
+            "path=",
+            "username=",
+            "acl=",
+        ] {
+            assert!(!rendered.contains(forbidden));
+        }
+    }
     #[test]
     fn phase1_windows_sqlite_sidecars_are_private_and_broad_parent_is_refused() {
         let root = crate::private_storage::tempdir().unwrap();
