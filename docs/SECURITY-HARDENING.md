@@ -244,3 +244,71 @@ and [ACL entry implementation](https://github.com/apple-oss-distributions/Libc/b
 Source inspection and Linux parsing are not substitutes for native validation.
 Windows test diagnostics also avoid printing command stderr or complete SDDL
 on assertion failures; fixture failures expose only operation/code/class.
+
+## Follow-up to native run 38290913085 (uncommitted at 026b53f)
+
+Both macOS 15 architectures compiled and passed all focused groups at source
+026b53f (Phase 1 17, backup 7, database recovery 29, filing 31; Python 5).
+Windows compiled, passed Python 5 and backup 6/database recovery 29/filing 30,
+and failed five Phase 1 tests: two write_atomic calls returned error 5, unsafe
+ancestor admission was not refused, and tempfile keep/persist cleared read-only.
+The old logs do not identify the internal operation that returned access denied.
+Do not assert that it was rename, ACL application, sharing or fixture setup.
+
+The current follow-up labels original open/identity, stage creation/write/sync,
+access preservation, identity recheck and publication. Win32 security descriptor
+reads, DACL application and MoveFileExW emit operation/code/class only. Error
+contents, identities, paths and full ACLs are not rendered by the new operation
+wrapper. A native Windows run is required to identify the exact error-5 operation;
+no identity handle was released and no sharing/security guard was weakened to
+work around it. MoveFileExW replacement of an open destination needs explicit
+native evidence before selecting a different rename API or lifetime policy.
+
+Private Windows keep avoids TempPath.keep's SetFileAttributesW(NORMAL) by
+retaining the existing file and disabling only tempfile cleanup. It refuses a
+TEMPORARY-marked file rather than silently carrying that attribute. Publication
+uses the same MoveFileExW flags as tempfile (0 or REPLACE_EXISTING), without the
+attribute reset, cross-volume copy fallback or readonly repair. Failure returns
+the pending file through PersistError. Native read-only keep/publication tests
+now exercise these application wrappers, not the known-broken dependency path.
+Config, signature, snapshot PDF, imported-document and backup staging callers
+use the policy wrappers. Unix still delegates to the same tempfile methods.
+A Windows rename refusal is reported, not retried with cleared attributes;
+this is a proposed policy correction, not native proof of successful publication.
+
+Database admission now captures and retains ancestor directory handles without
+delete sharing, rejects reparse points/unknown ACE forms/untrusted owners and
+broad destructive or attribute/ACL-changing access, and rechecks identities.
+SYSTEM and Administrators remain trusted for ancestors; the immediate parent
+must retain current-user ownership and an inheritable current-user FullControl
+allow ACE. Non-inheriting private parent DACLs are refused before reserving
+SQLite. Existing permissions/ownership are never repaired. Broad readonly
+ancestor access and additive subdirectory creation remain allowed; that policy,
+the explicit access mask and owner set require native review on standard-user
+and administrator profiles. TrustedInstaller-owned/custom/remote ancestors may
+be conservatively refused. No fallback bypasses a failed inspection.
+
+Limits: handles are held through prepare_database only, not the full rusqlite
+connection lifetime or each later sidecar operation. This is not handle-relative
+SQLite I/O. ACL changes by trusted/privileged processes, the path-based publication
+identity-check/rename interval, shared output parents, and named tempfile failure
+cleanup remain open. same-file identity relies on its existing Windows file-ID
+implementation; ReFS/remote filesystem semantics are not verified. This guard
+is not universal path-substitution sign-off and no production acceptance is claimed.
+New synthetic tests cover missing inheritable parent access, held-ancestor rename
+refusal, blocking destination handles, wrapper no-clobber/policy preservation,
+and diagnostic redaction. Existing unsafe-parent, read-only, restore lifetime,
+rollback and substituted-directory regressions remain active. No workflow SHA
+pin, main, stashes or production files have been changed. No native run is
+permitted by this local remediation task; a separately reviewed source commit
+and approved verification pin/run are necessary to obtain that evidence.
+
+Local validation of this follow-up (Linux only): cargo check --locked --offline
+--bins --tests passed; Phase 1 18/18, private-storage tests 15/15 (including two
+new publication/redaction tests), backup 7/7, database recovery 29/29, filing
+recovery 31/31, snapshot service 14/14, signatures 17/17 and configuration 15/15
+passed. Python runner unit tests passed 5/5. Targeted rustfmt and diff whitespace
+checks passed. No full-suite rerun was needed; the baseline 893-pass result is
+not claimed for this follow-up. Native-only tests and implementation are not
+compiled or exercised by these Linux checks. The final changes are unstaged;
+no commit, push, pin update or dispatch has occurred.

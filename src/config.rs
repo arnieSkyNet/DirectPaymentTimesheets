@@ -492,9 +492,9 @@ fn publish_config(path: &Path, bytes: &[u8], replace: bool) -> std::io::Result<(
     pending.as_file().sync_all()?;
     if replace {
         crate::private_storage::preserve_access(pending.path(), path)?;
-        pending.persist(path).map_err(|e| e.error)?;
+        crate::private_storage::publish_tempfile(pending, path, true).map_err(|e| e.error)?;
     } else {
-        pending.persist_noclobber(path).map_err(|e| e.error)?;
+        crate::private_storage::publish_tempfile(pending, path, false).map_err(|e| e.error)?;
     }
     #[cfg(unix)]
     fs::File::open(parent)?.sync_all()?;

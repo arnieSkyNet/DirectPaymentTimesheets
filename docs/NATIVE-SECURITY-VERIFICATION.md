@@ -1,12 +1,11 @@
 # Development 1.0.7 Phase 1 native verification
 
-The current corrections are uncommitted on `security/v1.0.7-phase1` at HEAD
-`6329b6d543ff4d6428de83242d9a8202648b4017`. The workflow was registered on main
-and run 38264276658 tested that approved source. These corrections have not been
-committed, pushed or dispatched; no tag, package or release is prepared.
-Existing Phase 1 code,
-GitHub README edits, published links and stashes are retained. This is a testing
-branch, not a declaration that the open security findings have been fixed.
+The current Windows corrections are uncommitted on `security/v1.0.7-phase1`
+at HEAD `026b53f56a341c84d498262bc744fac3223ce0b6`. Native run 38290913085
+tested that approved committed source; it did not test this follow-up. No tag,
+package or release is prepared. Existing Phase 1 code, GitHub README edits,
+published links and stashes are retained. This is a verification candidate,
+not a declaration that the open security findings have been fixed.
 
 ## Workflow and isolation
 
@@ -35,7 +34,10 @@ Linux/macOS/Windows package jobs are manual or reusable. None has push, PR, tag,
 release or workflow-run triggers. A push to this testing branch does not trigger
 them. Recheck that inventory if the remote changes before pushing.
 
-## Coverage and honest result interpretation
+## Historical initial coverage and honest result interpretation
+
+This table records the earlier preparation; current follow-up status and limits
+are recorded below and in SECURITY-HARDENING.md.
 
 | Area | Verification | Limits / expected failure |
 | --- | --- | --- |
@@ -65,7 +67,7 @@ green CI. A failure may be a real gap, fixture setup problem, compilation issue,
 or runner assumption; inspect the assertion and OS error. Even a completely
 green run would not close the coverage gaps above or approve a release.
 
-## Local checks on this revision
+## Previously captured baseline checks
 
 The captured Linux results for the complete correction tree are: cargo check
 including tests passed; Phase 1 16/16, backup 7/7, database recovery 29/29, filing
@@ -81,58 +83,62 @@ natively. See [SECURITY-HARDENING.md](SECURITY-HARDENING.md) for exact results.
 
 ## Review and commit only the complete correction set (separate approval)
 
-The explicit allowlist below is exactly the 20 modified files relative to HEAD
-`6329b6d543ff4d6428de83242d9a8202648b4017`, including all fixture consumers of
-PrivateTempDir. Do not stage a partial fixture migration, use `git add .`, or
-include unchanged README, workflow, dependency or release files. Reconcile this
-list again if the working tree changes. These are proposed commands only; no
-staging, commit or push is authorized by this documentation update.
+The explicit staging allowlist is exactly these 10 reviewed modified paths
+relative to HEAD `026b53f56a341c84d498262bc744fac3223ce0b6`:
+
+```text
+docs/NATIVE-SECURITY-VERIFICATION.md
+docs/SECURITY-HARDENING.md
+src/archive.rs
+src/backup_service.rs
+src/config.rs
+src/payroll_snapshot_service.rs
+src/private_storage.rs
+src/private_storage_windows.rs
+src/private_storage_windows_tests.rs
+src/signature.rs
+```
+
+Reconcile this list with the actual diff before staging; require a clean index
+and no untracked files. Do not use `git add .`, stage a partial correction, or
+include README, workflows, dependencies, release files or production data.
+The commands below prepare the index only; they do not authorize a commit or push.
 
 ```bash
 test "$(git branch --show-current)" = security/v1.0.7-phase1
-test "$(git rev-parse HEAD)" = 6329b6d543ff4d6428de83242d9a8202648b4017
+test "$(git rev-parse HEAD)" = 026b53f56a341c84d498262bc744fac3223ce0b6
 git status --short
 git diff --stat
 git diff --check
 git diff
 git add -- docs/NATIVE-SECURITY-VERIFICATION.md \
   docs/SECURITY-HARDENING.md \
+  src/archive.rs \
   src/backup_service.rs \
-  src/database_recovery.rs \
-  src/payroll_archive_tests.rs \
-  src/payroll_document_import_tests.rs \
-  src/payroll_evidence/stage4_tests.rs \
-  src/payroll_evidence/stage7_tests.rs \
-  src/payroll_evidence/tests.rs \
-  src/payroll_filing_tests.rs \
-  src/payroll_production_tests.rs \
-  src/payroll_replacement.rs \
-  src/payroll_sickness_editor.rs \
-  src/payroll_timesheet_screen.rs \
-  src/personal_assistant_status_tests.rs \
+  src/config.rs \
+  src/payroll_snapshot_service.rs \
   src/private_storage.rs \
-  src/private_storage_macos.c \
-  src/private_storage_macos.rs \
   src/private_storage_windows.rs \
-  src/private_storage_windows_tests.rs
+  src/private_storage_windows_tests.rs \
+  src/signature.rs
 git diff --cached --name-status
 git diff --cached --check
 git diff --cached
 ```
 
-Require the staged inventory to contain exactly those 20 paths and review the
-complete staged diff before separately approving a commit. No application
-changes may enter main as part of workflow registration. Preserve both safety
-stashes and all unrelated changes. Any future commit/push must target only the
-security testing branch and requires separate authorization. This is an isolated
-verification candidate, not production security sign-off.
+Require exactly those 10 staged paths and inspect the complete staged diff.
+Preserve both safety stashes and all unrelated changes. Any subsequent commit
+or push needs separate authorization and must target only the security testing
+branch. No application changes may enter main through workflow registration.
+This is an isolated native-verification candidate, not production security sign-off.
 
 ## Registered workflow and future source-pin approval
 
 The workflow is already registered on main. Do not repeat initial registration
 or copy the older workflow from the security branch over the registered main
 workflow: its dispatch guards differ. The currently approved source SHA is
-`6329b6d543ff4d6428de83242d9a8202648b4017`; it excludes the uncommitted corrections.
+`026b53f56a341c84d498262bc744fac3223ce0b6`; it excludes this uncommitted follow-up.
+Recheck the live registered workflow before any future pin update or dispatch.
 
 After separately reviewing, committing and pushing the complete correction set:
 
@@ -148,7 +154,7 @@ After separately reviewing, committing and pushing the complete correction set:
 3. Review and separately approve that PR before merge. Do not merge the security
    implementation into main. No pin update or default-branch action occurs here.
 4. Before any separately authorized dispatch, verify that the workflow is present
-   on main at or after registration merge 33c366439265b31fcb32c95739efb3e0580c3763,
+   on main at or after source-pin merge a912b01a15c5d721b1f39841c07aac8526b205ac,
    and that the remote security branch tip equals the approved hardcoded SHA.
    Missing/moved branches, mismatched inputs, incorrect workflow refs and a
    mismatched checkout HEAD must fail closed.
@@ -198,8 +204,9 @@ SQLite sidecar, read-only publication or ordinary-user coverage gaps.
 
 ## Follow-up to failed run 38264276658
 
-Read the uncommitted remediation record in [SECURITY-HARDENING.md](SECURITY-HARDENING.md).
-The old approved SHA remains pinned; it does not include the following changes.
+This historical remediation was committed as 026b53f and tested by run
+38290913085. See [SECURITY-HARDENING.md](SECURITY-HARDENING.md). The account below
+describes the earlier failed run and is not current native acceptance.
 All three jobs compiled successfully but failed fixture creation/assessment.
 Linux validation of the follow-up is not native acceptance. Owner validation
 and ACL entry inspection have been changed; ancestor and read-only regressions
@@ -215,3 +222,31 @@ test source branch/SHA is selected. This follow-up changes neither the registere
 workflow nor its approved SHA. The native helper/API changes require a new
 reviewed commit before updating that approval; Linux checks cannot substitute for
 Windows/NTFS or Apple-SDK compilation and execution.
+
+## Current Windows follow-up at 026b53f (uncommitted)
+
+Run 38290913085 passed both macOS architectures and native compilation on all
+platforms, but Windows failed two replacement operations (error 5), unsafe
+ancestor admission and read-only keep/persist assertions. The new local code
+adds redacted operation diagnostics, a conservative database ancestor/inheritance
+guard and private keep/publication wrappers. See SECURITY-HARDENING.md for API
+assumptions, retained failure guarantees and remaining path/publication races.
+The previous 893-test result is for the committed baseline, not this follow-up.
+The passing macOS run likewise predates these common Rust wrapper changes;
+no native acceptance of the current follow-up is established. Windows rename
+semantics, default profile ACLs, standard-user access and new guard policy must
+be reviewed natively before claiming resolution or approving production use.
+Use the explicit 10-file allowlist above for this follow-up. Do not change the
+registered main workflow/source pin as part of this correction set.
+
+The independent review retains production sign-off blockers: ancestor handles
+expire before SQLite opens and do not cover later journal/WAL/SHM operations;
+publication and failure cleanup remain pathname-based in shared writable parents.
+The conservative owner/ACE/inheritance policy can reject legitimate storage.
+Replacement of open/read-only destinations and restrictive copied DACLs still
+require native evidence. Negative tests that accept any error can mask an earlier
+refusal, and nested diagnostic wrappers lose structured OS error codes. These
+limits must not be presented as resolved merely by committing or obtaining a
+green runner result. Separate approval of the resulting immutable source SHA,
+a separate main workflow pin update and separately authorized main-only dispatch
+are required before testing this candidate natively.

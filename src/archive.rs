@@ -1190,7 +1190,7 @@ fn stage_entry(
 
 fn create_temporary_file(directory: &Path) -> Result<(PathBuf, fs::File), Box<dyn Error>> {
     let temporary = crate::private_storage::tempfile_in(directory)?;
-    let (file, path) = temporary.keep()?;
+    let (file, path) = crate::private_storage::keep_tempfile(temporary)?;
     Ok((path, file))
 }
 

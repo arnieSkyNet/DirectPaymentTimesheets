@@ -72,6 +72,7 @@ extern "system" {
 }
 #[link(name = "kernel32")]
 extern "system" {
+    fn MoveFileExW(source: *const u16, destination: *const u16, flags: u32) -> i32;
     fn CreateDirectoryW(path: *const u16, attributes: *const SecurityAttributes) -> i32;
     fn CreateFileW(
         path: *const u16,
@@ -239,7 +240,10 @@ fn security(path: &Path) -> io::Result<Vec<usize>> {
         GetFileSecurityW(path.as_ptr(), 7, std::ptr::null_mut(), 0, &mut needed);
     }
     if needed == 0 {
-        return Err(io::Error::last_os_error());
+        return Err(diagnostic(
+            "windows.GetFileSecurityW.size",
+            io::Error::last_os_error(),
+        ));
     }
     let mut buffer = vec![0usize; (needed as usize).div_ceil(std::mem::size_of::<usize>())];
     if unsafe {
@@ -252,7 +256,10 @@ fn security(path: &Path) -> io::Result<Vec<usize>> {
         )
     } == 0
     {
-        return Err(io::Error::last_os_error());
+        return Err(diagnostic(
+            "windows.GetFileSecurityW.read",
+            io::Error::last_os_error(),
+        ));
     }
     Ok(buffer)
 }
@@ -276,6 +283,11 @@ fn sddl(descriptor: &[usize], information: u32) -> io::Result<String> {
     Ok(value)
 }
 fn diagnostic(operation: &str, error: io::Error) -> io::Error {
+    eprintln!(
+        "{operation}: code={:?}; class={:?}",
+        error.raw_os_error(),
+        error.kind()
+    );
     io::Error::new(
         error.kind(),
         format!(
@@ -329,6 +341,9 @@ fn refused(classification: &str) -> bool {
     false
 }
 fn is_private_file(file: &File) -> io::Result<bool> {
+    inspect_access(file, false, false)
+}
+fn inspect_access(file: &File, ancestor: bool, require_inheritance: bool) -> io::Result<bool> {
     use std::os::windows::fs::MetadataExt;
     if file.metadata()?.file_attributes() & 0x400 != 0 {
         return Ok(refused("reparse_point"));
@@ -356,9 +371,14 @@ fn is_private_file(file: &File) -> io::Result<bool> {
     }
     let _descriptor = LocalMemory(descriptor);
     let current = binary_sid(&user_sid()?)?;
+    let system = binary_sid("S-1-5-18")?;
+    let administrators = binary_sid("S-1-5-32-544")?;
     if owner.is_null()
         || unsafe { IsValidSid(owner) } == 0
-        || unsafe { EqualSid(owner, current.0) } == 0
+        || (unsafe { EqualSid(owner, current.0) } == 0
+            && !(ancestor
+                && (unsafe { EqualSid(owner, system.0) } != 0
+                    || unsafe { EqualSid(owner, administrators.0) } != 0)))
     {
         return Ok(refused("owner_mismatch"));
     }
@@ -390,10 +410,9 @@ fn is_private_file(file: &File) -> io::Result<bool> {
             io::Error::last_os_error(),
         ));
     }
-    let system = binary_sid("S-1-5-18")?;
-    let administrators = binary_sid("S-1-5-32-544")?;
     let owner_rights = binary_sid("S-1-3-4")?;
     let creator_owner = binary_sid("S-1-3-0")?;
+    let mut inheritable_current_full_access = false;
     for index in 0..info.count {
         let mut ace = std::ptr::null_mut();
         if unsafe { GetAce(acl, index, &mut ace) } == 0 {
@@ -419,6 +438,20 @@ fn is_private_file(file: &File) -> io::Result<bool> {
         }
         let matches = |sid: &LocalMemory| unsafe { EqualSid(trustee.cast(), sid.0) != 0 };
         let inherit_only = unsafe { *bytes.add(1) } & 0x08 != 0;
+        let access = unsafe { std::ptr::read_unaligned(bytes.add(4).cast::<u32>()) };
+        if matches(&current)
+            && unsafe { *bytes.add(1) } & 0x01 != 0
+            && (access & 0x001f01ff == 0x001f01ff || access & 0x10000000 != 0)
+        {
+            inheritable_current_full_access = true;
+        }
+        // For existing ancestor directories, allow read/traverse and child
+        // creation, but refuse broad delete, reparse/attribute or ACL changes.
+        // Inherit-only ACEs do not grant access to this ancestor itself.
+        const SUBSTITUTION_ACCESS: u32 = 0x10000000 | 0x40000000 | 0x000d0000 | 0x00000152;
+        if ancestor && (inherit_only || access & SUBSTITUTION_ACCESS == 0) {
+            continue;
+        }
         if !matches(&current)
             && !matches(&system)
             && !matches(&administrators)
@@ -428,8 +461,77 @@ fn is_private_file(file: &File) -> io::Result<bool> {
             return Ok(refused("untrusted_allow_ace"));
         }
     }
+    if require_inheritance && !inheritable_current_full_access {
+        return Ok(refused("missing_inheritable_current_access"));
+    }
     Ok(true)
 }
+/// Hold no-delete-sharing handles while checking the whole existing chain.
+/// No ACL repair, privilege enablement or pathname fallback is permitted.
+pub fn database_ancestor_guard(path: &Path) -> io::Result<Vec<File>> {
+    let parent = path
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .unwrap_or(Path::new("."));
+    let absolute = std::path::absolute(parent)?;
+    let mut prefix = std::path::PathBuf::new();
+    let mut held = Vec::new();
+    for component in absolute.components() {
+        prefix.push(component);
+        if matches!(component, std::path::Component::Prefix(_)) {
+            continue;
+        }
+        let file = inspection_handle(&prefix)?;
+        if !file.metadata()?.is_dir() || !inspect_access(&file, true, false)? {
+            return Err(io::Error::other(
+                "windows.database_ancestor_guard: code=none; class=unsafe_ancestor",
+            ));
+        }
+        held.push((prefix.clone(), file));
+    }
+    let Some((_, parent)) = held.last() else {
+        return Err(io::Error::other(
+            "windows.database_ancestor_guard: code=none; class=missing_parent",
+        ));
+    };
+    if !inspect_access(parent, false, true)? {
+        return Err(io::Error::other(
+            "windows.database_ancestor_guard: code=none; class=unsafe_sidecar_inheritance",
+        ));
+    }
+    for (name, file) in &held {
+        let original = same_file::Handle::from_file(file.try_clone()?)?;
+        let current = same_file::Handle::from_file(inspection_handle(name)?)?;
+        if original != current {
+            return Err(io::Error::other(
+                "windows.database_ancestor_guard: code=none; class=path_substitution",
+            ));
+        }
+    }
+    Ok(held.into_iter().map(|(_, file)| file).collect())
+}
+
+// Private files are created with FILE_ATTRIBUTE_NORMAL, not TEMPORARY. Rename
+// directly on the same volume; never clear read-only, copy across volumes, or
+// fall back to a permission repair. Native acceptance remains to be verified.
+pub fn publish(source: &Path, destination: &Path, overwrite: bool) -> io::Result<()> {
+    let source = wide(source)?;
+    let destination = wide(destination)?;
+    const MOVEFILE_REPLACE_EXISTING: u32 = 1;
+    let flags = if overwrite {
+        MOVEFILE_REPLACE_EXISTING
+    } else {
+        0
+    };
+    if unsafe { MoveFileExW(source.as_ptr(), destination.as_ptr(), flags) } == 0 {
+        return Err(diagnostic(
+            "windows.MoveFileExW",
+            io::Error::last_os_error(),
+        ));
+    }
+    Ok(())
+}
+
 pub fn preserve_access(temporary: &Path, destination: &Path) -> io::Result<()> {
     let existing = security(destination)?;
     let new = security(temporary)?;
@@ -444,7 +546,10 @@ pub fn preserve_access(temporary: &Path, destination: &Path) -> io::Result<()> {
         GetSecurityDescriptorControl(existing.as_ptr().cast(), &mut control, &mut revision)
     } == 0
     {
-        return Err(io::Error::last_os_error());
+        return Err(diagnostic(
+            "windows.GetSecurityDescriptorControl",
+            io::Error::last_os_error(),
+        ));
     }
     let inheritance = if control & 0x1000 != 0 {
         0x80000000
@@ -460,9 +565,13 @@ pub fn preserve_access(temporary: &Path, destination: &Path) -> io::Result<()> {
         )
     } == 0
     {
-        return Err(io::Error::last_os_error());
+        return Err(diagnostic(
+            "windows.SetFileSecurityW",
+            io::Error::last_os_error(),
+        ));
     }
     std::fs::set_permissions(temporary, std::fs::metadata(destination)?.permissions())
+        .map_err(|error| diagnostic("windows.preserve_readonly", error))
 }
 
 #[cfg(test)]

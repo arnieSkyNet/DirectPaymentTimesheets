@@ -297,7 +297,7 @@ fn save_drawn_checked(
     temporary.as_file().sync_all()?;
     let path = loop {
         let path = next_filename(&directory, &stem)?;
-        match temporary.persist_noclobber(&path) {
+        match crate::private_storage::publish_tempfile(temporary, &path, false) {
             Ok(_) => break path,
             Err(e) if e.error.kind() == std::io::ErrorKind::AlreadyExists => {
                 // A writer outside our OS/database lock raced publication.

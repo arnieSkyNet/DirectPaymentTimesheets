@@ -153,11 +153,11 @@ where
     let publication_result =
         crate::private_storage::preserve_access(&temporary_path, publication.final_pdf_path)
             .and_then(|_| {
-                if replacing {
-                    temporary.persist(publication.final_pdf_path)
-                } else {
-                    temporary.persist_noclobber(publication.final_pdf_path)
-                }
+                crate::private_storage::publish_tempfile(
+                    temporary,
+                    publication.final_pdf_path,
+                    replacing,
+                )
                 .map(|_| ())
                 .map_err(|e| e.error)
             });

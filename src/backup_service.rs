@@ -771,7 +771,8 @@ fn stage_config(source: &Path, destination: &Path) -> Result<PathBuf, BackupErro
         .map_err(|e| BackupError(e.to_string()))?;
     crate::private_storage::preserve_access(pending.path(), destination)
         .map_err(|e| BackupError(e.to_string()))?;
-    let (_, staged) = pending.keep().map_err(|e| BackupError(e.to_string()))?;
+    let (_, staged) =
+        crate::private_storage::keep_tempfile(pending).map_err(|e| BackupError(e.to_string()))?;
     Ok(staged)
 }
 

@@ -113,7 +113,7 @@ fn phase1_windows_read_only_staging_policy_survives_tempfile_keep() {
         .unwrap()
         .permissions()
         .readonly());
-    let (file, kept) = pending.keep().unwrap();
+    let (file, kept) = keep_tempfile(pending).unwrap();
     let retained_readonly = file.metadata().unwrap().permissions().readonly();
     assert!(platform::is_private(&kept).unwrap());
     assert_eq!(fs::read(&original).unwrap(), b"original synthetic bytes");
@@ -171,7 +171,7 @@ fn phase1_windows_read_only_policy_survives_tempfile_publication() {
     pending.write_all(b"synthetic filing copy").unwrap();
     preserve_access(pending.path(), &original).unwrap();
     let published = root.path().join("published-copy");
-    let file = pending.persist_noclobber(&published).unwrap();
+    let file = publish_tempfile(pending, &published, false).unwrap();
     let retained_readonly = file.metadata().unwrap().permissions().readonly();
     assert!(platform::is_private(&published).unwrap());
     assert_eq!(fs::read(&original).unwrap(), b"synthetic original");
@@ -234,4 +234,79 @@ fn phase1_windows_owner_rights_does_not_replace_actual_owner_validation() {
     );
     assert!(!platform::is_private(&child).unwrap());
     assert!(child.exists());
+}
+
+#[test]
+fn phase1_windows_database_refuses_private_parent_without_inheritable_access() {
+    let root = tempdir().unwrap();
+    let child = root.path().join("synthetic-no-inheritance");
+    create_private_dir(&child).unwrap();
+    powershell(
+        &child,
+        r#"
+        $ErrorActionPreference='Stop'
+        $acl = Get-Acl -LiteralPath $env:DPT_SYNTHETIC_PATH
+        $acl.SetAccessRuleProtection($true, $false)
+        foreach ($rule in @($acl.Access)) { [void]$acl.RemoveAccessRuleSpecific($rule) }
+        $current = [System.Security.Principal.WindowsIdentity]::GetCurrent().User
+        $system = [System.Security.Principal.SecurityIdentifier]::new('S-1-5-18')
+        foreach ($sid in @($current, $system)) {
+            $acl.AddAccessRule([System.Security.AccessControl.FileSystemAccessRule]::new(
+                $sid, 'FullControl', 'None', 'None', 'Allow'))
+        }
+        Set-Acl -LiteralPath $env:DPT_SYNTHETIC_PATH -AclObject $acl
+    "#,
+    );
+    assert!(platform::is_private(&child).unwrap());
+    let database = child.join("refused.sqlite");
+    assert!(prepare_database(&database).is_err());
+    assert!(!database.exists());
+}
+
+#[test]
+fn phase1_windows_ancestor_guard_blocks_rename_while_held() {
+    let root = tempdir().unwrap();
+    let child = root.path().join("synthetic-held-parent");
+    create_private_dir(&child).unwrap();
+    let database = child.join("live.sqlite");
+    let guard = platform::database_ancestor_guard(&database).unwrap();
+    let moved = root.path().join("moved-parent");
+    assert!(fs::rename(&child, &moved).is_err());
+    assert!(child.is_dir() && !moved.exists());
+    drop(guard);
+    fs::rename(&child, &moved).unwrap();
+}
+
+#[test]
+fn phase1_windows_blocking_handle_refuses_publication_and_retains_original() {
+    use std::os::windows::fs::OpenOptionsExt;
+    let root = tempdir().unwrap();
+    let original = root.path().join("synthetic-existing");
+    write_new(&original, b"synthetic original").unwrap();
+    let blocker = fs::OpenOptions::new()
+        .read(true)
+        .share_mode(3)
+        .open(&original)
+        .unwrap();
+    assert!(write_atomic(&original, b"synthetic replacement").is_err());
+    assert_eq!(fs::read(&original).unwrap(), b"synthetic original");
+    assert!(platform::is_private(&original).unwrap());
+    drop(blocker);
+}
+
+#[test]
+fn phase1_windows_library_temporary_attribute_is_refused_without_reset() {
+    let root = tempdir().unwrap();
+    let mut pending = tempfile::NamedTempFile::new_in(root.path()).unwrap();
+    pending.write_all(b"synthetic temporary").unwrap();
+    let before = pending.as_file().metadata().unwrap().permissions();
+    let error = keep_tempfile(pending).unwrap_err();
+    assert_eq!(
+        before,
+        error.file.as_file().metadata().unwrap().permissions()
+    );
+    let target = root.path().join("unexpected");
+    let error = publish_tempfile(error.file, &target, false).unwrap_err();
+    assert!(!target.exists());
+    assert_eq!(fs::read(error.file.path()).unwrap(), b"synthetic temporary");
 }

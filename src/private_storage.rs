@@ -325,6 +325,96 @@ pub fn tempdir() -> io::Result<PrivateTempDir> {
     tempdir_in(&std::env::temp_dir().canonicalize()?)
 }
 
+fn operation_error(operation: &str, error: io::Error) -> io::Error {
+    io::Error::new(
+        error.kind(),
+        format!(
+            "{operation}: code={:?}; class={:?}",
+            error.raw_os_error(),
+            error.kind()
+        ),
+    )
+}
+
+/// Keep our privately created file without tempfile's Windows attribute reset.
+pub fn keep_tempfile(
+    pending: tempfile::NamedTempFile,
+) -> Result<(File, PathBuf), tempfile::PersistError> {
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt;
+        let metadata = match pending.as_file().metadata() {
+            Ok(metadata) => metadata,
+            Err(error) => {
+                return Err(tempfile::PersistError {
+                    error,
+                    file: pending,
+                })
+            }
+        };
+        if metadata.file_attributes() & 0x100 != 0 {
+            return Err(tempfile::PersistError {
+                error: io::Error::other(
+                    "windows.keep_private: code=none; class=temporary_attribute_unsupported",
+                ),
+                file: pending,
+            });
+        }
+        let (file, mut path) = pending.into_parts();
+        let kept = path.to_path_buf();
+        path.disable_cleanup(true);
+        Ok((file, kept))
+    }
+    #[cfg(not(windows))]
+    pending.keep()
+}
+
+pub fn publish_tempfile(
+    pending: tempfile::NamedTempFile,
+    destination: &Path,
+    overwrite: bool,
+) -> Result<File, tempfile::PersistError> {
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt;
+        let metadata = match pending.as_file().metadata() {
+            Ok(metadata) => metadata,
+            Err(error) => {
+                return Err(tempfile::PersistError {
+                    error,
+                    file: pending,
+                })
+            }
+        };
+        if metadata.file_attributes() & 0x100 != 0 {
+            return Err(tempfile::PersistError {
+                error: io::Error::other(
+                    "windows.publish_private: code=none; class=temporary_attribute_unsupported",
+                ),
+                file: pending,
+            });
+        }
+        if let Err(error) = check_path(pending.path())
+            .and_then(|_| check_path(destination))
+            .and_then(|_| platform::publish(pending.path(), destination, overwrite))
+        {
+            return Err(tempfile::PersistError {
+                error,
+                file: pending,
+            });
+        }
+        let (file, mut path) = pending.into_parts();
+        path.disable_cleanup(true);
+        Ok(file)
+    }
+    #[cfg(not(windows))]
+    if overwrite {
+        pending.persist(destination)
+    } else {
+        pending.persist_noclobber(destination)
+    }
+}
+
 /// Retain an existing destination's access policy on a NEW replacement inode.
 /// Never alter the existing object, and refuse ownership changes on Unix.
 pub fn preserve_access(temporary: &Path, destination: &Path) -> io::Result<()> {
@@ -369,24 +459,39 @@ pub fn write_atomic(path: &Path, bytes: &[u8]) -> io::Result<()> {
         .filter(|p| !p.as_os_str().is_empty())
         .unwrap_or(Path::new("."));
     let original = match open_read(path) {
-        Ok(file) => Some(same_file::Handle::from_file(file)?),
+        Ok(file) => Some(
+            same_file::Handle::from_file(file)
+                .map_err(|e| operation_error("storage.write_atomic.original_identity", e))?,
+        ),
         Err(e) if e.kind() == io::ErrorKind::NotFound => None,
-        Err(e) => return Err(e),
+        Err(e) => return Err(operation_error("storage.write_atomic.open_original", e)),
     };
-    let mut pending = tempfile_in(parent)?;
-    pending.write_all(bytes)?;
-    pending.as_file().sync_all()?;
-    preserve_access(pending.path(), path)?;
+    let mut pending =
+        tempfile_in(parent).map_err(|e| operation_error("storage.write_atomic.create_stage", e))?;
+    pending
+        .write_all(bytes)
+        .map_err(|e| operation_error("storage.write_atomic.write_stage", e))?;
+    pending
+        .as_file()
+        .sync_all()
+        .map_err(|e| operation_error("storage.write_atomic.sync_stage", e))?;
+    preserve_access(pending.path(), path)
+        .map_err(|e| operation_error("storage.write_atomic.preserve", e))?;
     if let Some(original) = original {
         check_path(path)?;
-        if original != same_file::Handle::from_path(path)? {
+        if original
+            != same_file::Handle::from_path(path)
+                .map_err(|e| operation_error("storage.write_atomic.identity", e))?
+        {
             return Err(io::Error::other(
                 "Publication destination changed; original retained",
             ));
         }
-        pending.persist(path).map_err(|e| e.error)?;
+        publish_tempfile(pending, path, true)
+            .map_err(|e| operation_error("storage.write_atomic.publish", e.error))?;
     } else {
-        pending.persist_noclobber(path).map_err(|e| e.error)?;
+        publish_tempfile(pending, path, false)
+            .map_err(|e| operation_error("storage.write_atomic.publish_new", e.error))?;
     }
     #[cfg(unix)]
     File::open(parent)?.sync_all()?;
@@ -400,6 +505,8 @@ pub fn prepare_database(path: &Path) -> io::Result<()> {
         sidecar.push(suffix);
         check_path(Path::new(&sidecar))?;
     }
+    #[cfg(windows)]
+    let _ancestors = platform::database_ancestor_guard(path)?;
     #[cfg(windows)]
     {
         // SQLite creates sidecars using the parent DACL, not the database DACL.
@@ -943,5 +1050,43 @@ mod system_alias_tests {
             Path::new("/other"),
             Path::new("/private/other")
         ));
+    }
+}
+
+#[cfg(test)]
+mod publication_policy_tests {
+    use super::*;
+    #[test]
+    fn phase1_private_publication_preserves_policy_and_refuses_overwrite() {
+        let root = tempdir().unwrap();
+        let source = root.path().join("source");
+        write_new(&source, b"synthetic original").unwrap();
+        let mut pending = tempfile_in(root.path()).unwrap();
+        pending.write_all(b"synthetic retained").unwrap();
+        let before = pending.as_file().metadata().unwrap().permissions();
+        let (file, kept) = keep_tempfile(pending).unwrap();
+        assert_eq!(before, file.metadata().unwrap().permissions());
+        assert_eq!(fs::read(&kept).unwrap(), b"synthetic retained");
+        let mut pending = tempfile_in(root.path()).unwrap();
+        pending.write_all(b"synthetic refused").unwrap();
+        let error = publish_tempfile(pending, &source, false).unwrap_err();
+        assert_eq!(fs::read(&source).unwrap(), b"synthetic original");
+        assert_eq!(fs::read(error.file.path()).unwrap(), b"synthetic refused");
+        let target = root.path().join("published");
+        let mut pending = tempfile_in(root.path()).unwrap();
+        pending.write_all(b"synthetic published").unwrap();
+        let before = pending.as_file().metadata().unwrap().permissions();
+        let published = publish_tempfile(pending, &target, false).unwrap();
+        assert_eq!(before, published.metadata().unwrap().permissions());
+        assert_eq!(fs::read(target).unwrap(), b"synthetic published");
+    }
+    #[test]
+    fn phase1_operation_diagnostic_does_not_render_error_contents() {
+        let error = operation_error(
+            "storage.synthetic",
+            io::Error::other("synthetic private detail"),
+        );
+        assert!(!error.to_string().contains("synthetic private detail"));
+        assert!(error.to_string().contains("storage.synthetic"));
     }
 }
