@@ -2409,7 +2409,16 @@ mod about_read_only_tests {
         let path = dir.path().join("synthetic.sqlite");
         let writer = fixture(&path);
         writer.execute_batch("PRAGMA journal_mode=WAL; PRAGMA wal_autocheckpoint=0; UPDATE schema_version SET version=8;").unwrap();
+        assert_eq!(
+            writer
+                .query_row("PRAGMA journal_mode", [], |r| r.get::<_, String>(0))
+                .unwrap(),
+            "wal"
+        );
+        assert!(dir.path().join("synthetic.sqlite-wal").is_file());
+        assert!(dir.path().join("synthetic.sqlite-shm").is_file());
         let reader = open_read_only(&path).unwrap();
+        assert!(reader.is_readonly(rusqlite::DatabaseName::Main).unwrap());
         assert_eq!(
             reader
                 .query_row("SELECT version FROM schema_version", [], |r| r

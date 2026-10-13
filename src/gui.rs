@@ -6780,3 +6780,32 @@ mod about_database_tests {
         assert_eq!(std::fs::read(&path).unwrap(), before);
     }
 }
+
+#[cfg(all(test, windows))]
+mod about_windows_database_tests {
+    use super::read_about_schema_version;
+
+    #[test]
+    fn about_windows_unavailable_preserves_missing_and_refused_database() {
+        let root = crate::private_storage::tempdir().unwrap();
+        let path = root.path().join("synthetic.sqlite");
+        assert_eq!(read_about_schema_version(&path), "unavailable");
+        assert!(!path.exists());
+        crate::private_storage::write_new(&path, b"").unwrap();
+        let db = rusqlite::Connection::open(&path).unwrap();
+        db.execute_batch(
+            "CREATE TABLE schema_version(version INTEGER); INSERT INTO schema_version VALUES(7);",
+        )
+        .unwrap();
+        db.close().unwrap();
+        let before = std::fs::read(&path).unwrap();
+        let error = crate::database::open_read_only(&path)
+            .err()
+            .expect("Foreign-root fixture must remain refused");
+        assert!(error
+            .to_string()
+            .contains("class=unsafe_ancestor; reason=owner_mismatch; depth=0; role=volume_root"));
+        assert_eq!(read_about_schema_version(&path), "unavailable");
+        assert_eq!(std::fs::read(&path).unwrap(), before);
+    }
+}

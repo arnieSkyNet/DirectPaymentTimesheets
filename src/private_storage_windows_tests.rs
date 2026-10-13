@@ -490,3 +490,80 @@ fn phase1_windows_atomic_publication_handle_attribute_matrix() {
     }
     assert_eq!(unexpected, 0, "windows.synthetic.publication: class=matrix_expectation_mismatch; inspect controlled operation diagnostics");
 }
+
+#[test]
+fn about_windows_missing_database_is_not_created() {
+    let root = tempdir().unwrap();
+    let path = root.path().join("missing.sqlite");
+    let policy = platform::TestSecurityPolicy::capture(root.path()).unwrap();
+    let error = crate::database::open_read_only(&path)
+        .err()
+        .expect("Missing database must be refused");
+    match error {
+        rusqlite::Error::ToSqlConversionFailure(error) => {
+            assert_eq!(
+                error.downcast_ref::<io::Error>().unwrap().kind(),
+                io::ErrorKind::NotFound
+            );
+        }
+        _ => panic!("about.synthetic: unexpected_missing_classification"),
+    }
+    assert!(!path.exists());
+    assert_eq!(fs::read_dir(root.path()).unwrap().count(), 0);
+    assert!(policy.matches(root.path()).unwrap());
+}
+
+#[test]
+fn about_windows_reparse_database_ancestor_and_sidecars_are_refused() {
+    use std::os::windows::fs::{symlink_dir, symlink_file};
+    let root = tempdir().unwrap();
+    let parent = root.path().join("actual");
+    create_private_dir(&parent).unwrap();
+    let database = parent.join("synthetic.sqlite");
+    write_new(&database, b"synthetic target; never queried").unwrap();
+    let before = fs::read(&database).unwrap();
+    let parent_policy = platform::TestSecurityPolicy::capture(&parent).unwrap();
+    let policy = platform::TestSecurityPolicy::capture(&database).unwrap();
+    let alias = root.path().join("alias.sqlite");
+    symlink_file(&database, &alias).expect("about.synthetic: unsupported_reparse_fixture");
+    let parent_alias = root.path().join("alias-parent");
+    symlink_dir(&parent, &parent_alias).expect("about.synthetic: unsupported_reparse_fixture");
+    let refused = |path: &Path| {
+        let error = crate::database::open_read_only(path)
+            .err()
+            .expect("Reparse must be refused");
+        assert!(error
+            .to_string()
+            .contains("Reparse point in managed storage path"));
+    };
+    refused(&alias);
+    refused(&parent_alias.join("synthetic.sqlite"));
+    for suffix in ["-journal", "-wal", "-shm"] {
+        let sidecar = parent.join(format!("synthetic.sqlite{suffix}"));
+        symlink_file(&database, &sidecar).expect("about.synthetic: unsupported_reparse_fixture");
+        refused(&database);
+        assert!(fs::symlink_metadata(&sidecar)
+            .unwrap()
+            .file_type()
+            .is_symlink());
+        fs::remove_file(sidecar).unwrap();
+    }
+    assert_eq!(fs::read(&database).unwrap(), before);
+    assert!(parent_policy.matches(&parent).unwrap());
+    assert!(policy.matches(&database).unwrap());
+}
+
+#[test]
+fn about_windows_foreign_root_owner_refusal_preserves_fixture() {
+    let root = tempdir().unwrap();
+    let database = root.path().join("synthetic.sqlite");
+    write_new(&database, b"synthetic target; never queried").unwrap();
+    let before = fs::read(&database).unwrap();
+    let policy = platform::TestSecurityPolicy::capture(&database).unwrap();
+    let error = crate::database::open_read_only(&database).err().expect("Foreign-root fixture must not open; an admitted namespace requires separate positive coverage");
+    assert!(error
+        .to_string()
+        .contains("class=unsafe_ancestor; reason=owner_mismatch; depth=0; role=volume_root"));
+    assert_eq!(fs::read(&database).unwrap(), before);
+    assert!(policy.matches(&database).unwrap());
+}

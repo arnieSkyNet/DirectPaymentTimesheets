@@ -1861,3 +1861,47 @@ mod tests {
         assert!(is_private(&destination).unwrap());
     }
 }
+
+#[cfg(test)]
+mod about_read_only_policy_tests {
+    use super::*;
+
+    #[test]
+    fn about_windows_dacl_assessor_refuses_untrusted_allow_without_repair() {
+        // Tests the unchanged evaluator on one owned synthetic directory, not
+        // admission of its full ancestry or successful SQLite opening.
+        let root = crate::private_storage::tempdir().unwrap();
+        let parent = root.path().join("synthetic-parent");
+        crate::private_storage::create_private_dir(&parent).unwrap();
+        assert_eq!(
+            assess_access(&inspection_handle(&parent).unwrap(), true, false, None).unwrap(),
+            None
+        );
+        let mut raw = std::ptr::null_mut();
+        assert_ne!(
+            unsafe {
+                ConvertStringSecurityDescriptorToSecurityDescriptorW(
+                    wide(Path::new("D:P(A;OICI;FA;;;WD)")).unwrap().as_ptr(),
+                    1,
+                    &mut raw,
+                    std::ptr::null_mut(),
+                )
+            },
+            0,
+            "about.synthetic: descriptor_failure"
+        );
+        let descriptor = LocalMemory(raw);
+        assert_ne!(
+            unsafe { SetFileSecurityW(wide(&parent).unwrap().as_ptr(), 0x80000004, descriptor.0) },
+            0,
+            "about.synthetic: fixture_dacl_failure"
+        );
+        let policy = TestSecurityPolicy::capture(&parent).unwrap();
+        assert_eq!(
+            assess_access(&inspection_handle(&parent).unwrap(), true, false, None).unwrap(),
+            Some("untrusted_allow_ace")
+        );
+        assert!(policy.matches(&parent).unwrap());
+        assert_eq!(std::fs::read_dir(&parent).unwrap().count(), 0);
+    }
+}
