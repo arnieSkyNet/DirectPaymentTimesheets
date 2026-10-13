@@ -6752,10 +6752,11 @@ fn read_about_schema_version(path: &std::path::Path) -> String {
 #[cfg(all(test, unix))]
 mod about_database_tests {
     use super::read_about_schema_version;
+    use crate::database::about_read_only_tests::fixture_dir;
 
     #[test]
     fn about_displays_existing_schema_without_migration() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = fixture_dir();
         let path = dir.path().join("synthetic.sqlite");
         let db = rusqlite::Connection::open(&path).unwrap();
         db.execute_batch(
@@ -6770,7 +6771,7 @@ mod about_database_tests {
 
     #[test]
     fn about_preserves_unavailable_on_open_and_query_failure() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = fixture_dir();
         let path = dir.path().join("synthetic.sqlite");
         assert_eq!(read_about_schema_version(&path), "unavailable");
         assert!(!path.exists());

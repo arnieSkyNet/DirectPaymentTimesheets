@@ -2324,8 +2324,30 @@ pub(crate) mod tests {
 }
 
 #[cfg(all(test, unix))]
-mod about_read_only_tests {
+pub(crate) mod about_read_only_tests {
     use super::*;
+
+    pub(crate) fn fixture_dir() -> tempfile::TempDir {
+        // Canonicalize only the OS-supplied fixture root before creation, as
+        // private_storage::tempdir does. Never rewrite a database input path.
+        let root = std::env::temp_dir().canonicalize().unwrap();
+        let dir = tempfile::tempdir_in(root).unwrap();
+        assert!(dir.path().is_absolute());
+        let mut prefix = std::path::PathBuf::new();
+        for component in dir.path().components() {
+            prefix.push(component);
+            let metadata = std::fs::symlink_metadata(&prefix).unwrap();
+            assert!(
+                !metadata.file_type().is_symlink(),
+                "Synthetic fixture ancestor is a symlink"
+            );
+            assert!(
+                metadata.is_dir(),
+                "Synthetic fixture ancestor is not a directory"
+            );
+        }
+        dir
+    }
 
     fn fixture(path: &Path) -> Connection {
         let db = Connection::open(path).unwrap();
@@ -2338,7 +2360,7 @@ mod about_read_only_tests {
 
     #[test]
     fn missing_database_is_not_created() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = fixture_dir();
         let path = dir.path().join("missing.sqlite");
         assert!(open_read_only(&path).is_err());
         assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 0);
@@ -2346,7 +2368,7 @@ mod about_read_only_tests {
 
     #[test]
     fn ordinary_access_is_read_only_and_preserves_database() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = fixture_dir();
         let path = dir.path().join("synthetic.sqlite");
         fixture(&path).close().unwrap();
         let before = std::fs::read(&path).unwrap();
@@ -2378,7 +2400,7 @@ mod about_read_only_tests {
     #[test]
     fn database_ancestor_and_sidecar_symlinks_are_refused() {
         use std::os::unix::fs::symlink;
-        let dir = tempfile::tempdir().unwrap();
+        let dir = fixture_dir();
         let actual = dir.path().join("actual");
         std::fs::create_dir(&actual).unwrap();
         let path = actual.join("synthetic.sqlite");
@@ -2405,7 +2427,7 @@ mod about_read_only_tests {
 
     #[test]
     fn live_wal_committed_metadata_remains_readable() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = fixture_dir();
         let path = dir.path().join("synthetic.sqlite");
         let writer = fixture(&path);
         writer.execute_batch("PRAGMA journal_mode=WAL; PRAGMA wal_autocheckpoint=0; UPDATE schema_version SET version=8;").unwrap();
