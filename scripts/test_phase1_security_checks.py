@@ -117,7 +117,7 @@ def assert_fixture_handle_released(path):
         path.unlink()  # The native fixture opened without FILE_SHARE_DELETE.
     except OSError as error:
         raise AssertionError(
-            f"windows.synthetic.handle_release: class=refused; code={getattr(error, 'winerror', error.errno)}"
+            f"windows.synthetic.handle_release: class=refused; code={getattr(error, 'winerror', None)}"
         ) from None
 
 
@@ -166,9 +166,36 @@ class CleanupConfirmationTests(unittest.TestCase):
     def test_handle_release_refusal_is_not_success(self):
         path = Mock()
         path.unlink.side_effect = PermissionError(13, 'synthetic private text')
-        with self.assertRaisesRegex(AssertionError, 'class=refused; code=13') as error:
+        with self.assertRaisesRegex(AssertionError, 'class=refused; code=None') as error:
             assert_fixture_handle_released(path)
         self.assertNotIn('synthetic private text', str(error.exception))
+
+    def test_handle_release_reports_only_native_error_codes(self):
+        native = PermissionError(13, 'synthetic private text')
+        native.winerror = 5  # Model the native attribute on every test platform.
+        missing = OSError(13, 'synthetic private text')
+        missing.winerror = None
+        class WithoutWinerror(OSError):
+            def __getattribute__(self, name):
+                if name == 'winerror':
+                    raise AttributeError(name)
+                return super().__getattribute__(name)
+        absent = WithoutWinerror(13, 'synthetic private text')
+        for failure, expected in [(native, 5), (missing, None), (absent, None)]:
+            with self.subTest(expected=expected):
+                path = Mock()
+                path.unlink.side_effect = failure
+                with self.assertRaises(AssertionError) as error:
+                    assert_fixture_handle_released(path)
+                self.assertEqual(str(error.exception),
+                                 f'windows.synthetic.handle_release: class=refused; code={expected}')
+                self.assertTrue(error.exception.__suppress_context__)
+        path = Mock()
+        failure = RuntimeError('synthetic unexpected error')
+        path.unlink.side_effect = failure
+        with self.assertRaises(RuntimeError) as error:
+            assert_fixture_handle_released(path)
+        self.assertIs(error.exception, failure)
 
 
 @unittest.skipUnless(os.name == "nt", "Requires native Windows Job Objects")
