@@ -412,19 +412,9 @@ impl eframe::App for DirectPaymentApp {
 
                 if ui.button("About").clicked() {
                     // Only read metadata when opening About; never migrate or write.
-                    self.about_schema_version = rusqlite::Connection::open_with_flags(
+                    self.about_schema_version = read_about_schema_version(
                         &self.application.context.environment.database_path,
-                        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
-                    )
-                    .and_then(|connection| {
-                        connection.query_row(
-                            "SELECT version FROM schema_version LIMIT 1",
-                            [],
-                            |row| row.get::<_, i64>(0),
-                        )
-                    })
-                    .map(|version| version.to_string())
-                    .unwrap_or_else(|_| "unavailable".into());
+                    );
                     self.about_open = true;
                 }
 
@@ -6745,5 +6735,48 @@ mod stage7_view_tests {
         let output=context.run(egui::RawInput{screen_rect:Some(egui::Rect::from_min_size(egui::Pos2::ZERO,egui::vec2(900.0,900.0))),..Default::default()},|ctx|{egui::CentralPanel::default().show(ctx,|ui|{draw_timesheets(ui,&raw,&mut TimesheetSortState::default(),&mut None,&mut true,&Err("test scope".into()),&app,&mut imported_ui);});});
         let mut narrow=String::new();for s in &output.shapes{text(&s.shape,&mut narrow);}assert!(narrow.contains("Edit / review…"));
         assert!(labels.contains("1h 0m"));assert!(labels.contains("worked 97m"));assert!(labels.contains("break 5m"));assert!(labels.contains("Revert to original"));assert!(labels.contains("Exclude"));assert_eq!(app.get_timesheets().unwrap(),original);
+    }
+}
+
+fn read_about_schema_version(path: &std::path::Path) -> String {
+    crate::database::open_read_only(path)
+        .and_then(|connection| {
+            connection.query_row("SELECT version FROM schema_version LIMIT 1", [], |row| {
+                row.get::<_, i64>(0)
+            })
+        })
+        .map(|version| version.to_string())
+        .unwrap_or_else(|_| "unavailable".into())
+}
+
+#[cfg(all(test, unix))]
+mod about_database_tests {
+    use super::read_about_schema_version;
+
+    #[test]
+    fn about_displays_existing_schema_without_migration() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("synthetic.sqlite");
+        let db = rusqlite::Connection::open(&path).unwrap();
+        db.execute_batch(
+            "CREATE TABLE schema_version(version INTEGER); INSERT INTO schema_version VALUES(7);",
+        )
+        .unwrap();
+        db.close().unwrap();
+        let before = std::fs::read(&path).unwrap();
+        assert_eq!(read_about_schema_version(&path), "7");
+        assert_eq!(std::fs::read(&path).unwrap(), before);
+    }
+
+    #[test]
+    fn about_preserves_unavailable_on_open_and_query_failure() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("synthetic.sqlite");
+        assert_eq!(read_about_schema_version(&path), "unavailable");
+        assert!(!path.exists());
+        rusqlite::Connection::open(&path).unwrap().close().unwrap();
+        let before = std::fs::read(&path).unwrap();
+        assert_eq!(read_about_schema_version(&path), "unavailable");
+        assert_eq!(std::fs::read(&path).unwrap(), before);
     }
 }

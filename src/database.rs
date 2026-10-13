@@ -19,6 +19,17 @@ pub fn register_connection(connection: &Connection) -> Result<()> {
     Ok(())
 }
 
+/// Existing database only; no registration, migration or permission repair.
+/// SQLite may coordinate WAL/SHM normally. Static checks do not confine races.
+pub(crate) fn open_read_only(path: &Path) -> Result<Connection> {
+    let _guard = crate::private_storage::read_only_database_guard(path)
+        .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
+    Connection::open_with_flags(
+        path,
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NOFOLLOW,
+    )
+}
+
 pub fn open(path: impl AsRef<Path>) -> Result<Connection> {
     crate::private_storage::prepare_database(path.as_ref())
         .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
@@ -2309,5 +2320,114 @@ pub(crate) mod tests {
         );
         assert!(!table_exists(&connection, "payroll_timesheet_revisions").unwrap());
         assert!(table_exists(&connection, "timesheet_correction_events").unwrap());
+    }
+}
+
+#[cfg(all(test, unix))]
+mod about_read_only_tests {
+    use super::*;
+
+    fn fixture(path: &Path) -> Connection {
+        let db = Connection::open(path).unwrap();
+        db.execute_batch(
+            "CREATE TABLE schema_version(version INTEGER); INSERT INTO schema_version VALUES(7);",
+        )
+        .unwrap();
+        db
+    }
+
+    #[test]
+    fn missing_database_is_not_created() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("missing.sqlite");
+        assert!(open_read_only(&path).is_err());
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 0);
+    }
+
+    #[test]
+    fn ordinary_access_is_read_only_and_preserves_database() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("synthetic.sqlite");
+        fixture(&path).close().unwrap();
+        let before = std::fs::read(&path).unwrap();
+        let permissions = std::fs::metadata(&path).unwrap().permissions();
+        let db = open_read_only(&path).unwrap();
+        assert!(db.is_readonly(rusqlite::DatabaseName::Main).unwrap());
+        assert_eq!(
+            db.query_row("SELECT version FROM schema_version", [], |r| r
+                .get::<_, i64>(0))
+                .unwrap(),
+            7
+        );
+        assert!(db
+            .execute("INSERT INTO schema_version VALUES(8)", [])
+            .is_err());
+        assert!(db
+            .query_row("SELECT dpt_schema_version()", [], |r| r.get::<_, i64>(0))
+            .is_err());
+        db.close().unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), before);
+        use std::os::unix::fs::PermissionsExt;
+        assert_eq!(
+            std::fs::metadata(&path).unwrap().permissions().mode(),
+            permissions.mode()
+        );
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 1);
+    }
+
+    #[test]
+    fn database_ancestor_and_sidecar_symlinks_are_refused() {
+        use std::os::unix::fs::symlink;
+        let dir = tempfile::tempdir().unwrap();
+        let actual = dir.path().join("actual");
+        std::fs::create_dir(&actual).unwrap();
+        let path = actual.join("synthetic.sqlite");
+        fixture(&path).close().unwrap();
+        let before = std::fs::read(&path).unwrap();
+        let alias = dir.path().join("alias.sqlite");
+        symlink(&path, &alias).unwrap();
+        assert!(open_read_only(&alias).is_err());
+        let parent_alias = dir.path().join("alias-parent");
+        symlink(&actual, &parent_alias).unwrap();
+        assert!(open_read_only(&parent_alias.join("synthetic.sqlite")).is_err());
+        for suffix in ["-journal", "-wal", "-shm"] {
+            let sidecar = actual.join(format!("synthetic.sqlite{suffix}"));
+            symlink(&path, &sidecar).unwrap();
+            assert!(open_read_only(&path).is_err());
+            assert!(std::fs::symlink_metadata(&sidecar)
+                .unwrap()
+                .file_type()
+                .is_symlink());
+            std::fs::remove_file(sidecar).unwrap();
+        }
+        assert_eq!(std::fs::read(&path).unwrap(), before);
+    }
+
+    #[test]
+    fn live_wal_committed_metadata_remains_readable() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("synthetic.sqlite");
+        let writer = fixture(&path);
+        writer.execute_batch("PRAGMA journal_mode=WAL; PRAGMA wal_autocheckpoint=0; UPDATE schema_version SET version=8;").unwrap();
+        let reader = open_read_only(&path).unwrap();
+        assert_eq!(
+            reader
+                .query_row("SELECT version FROM schema_version", [], |r| r
+                    .get::<_, i64>(0))
+                .unwrap(),
+            8
+        );
+        assert!(reader
+            .execute("UPDATE schema_version SET version=9", [])
+            .is_err());
+        reader.close().unwrap();
+        assert_eq!(
+            writer
+                .query_row("SELECT version FROM schema_version", [], |r| r
+                    .get::<_, i64>(0))
+                .unwrap(),
+            8
+        );
+        writer.close().unwrap();
     }
 }

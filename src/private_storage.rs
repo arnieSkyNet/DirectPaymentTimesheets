@@ -498,6 +498,28 @@ pub fn write_atomic(path: &Path, bytes: &[u8]) -> io::Result<()> {
     Ok(())
 }
 
+/// Static checks only. Returned Windows handles cover the subsequent open,
+/// not the connection's lifetime or SQLite's internal pathname operations.
+pub(crate) fn read_only_database_guard(path: &Path) -> io::Result<Vec<File>> {
+    check_path(path)?;
+    for suffix in ["-journal", "-wal", "-shm"] {
+        let mut sidecar = path.as_os_str().to_os_string();
+        sidecar.push(suffix);
+        check_path(Path::new(&sidecar))?;
+    }
+    if !fs::symlink_metadata(path)?.is_file() {
+        return Err(io::Error::other("Database is not a regular file"));
+    }
+    #[cfg(windows)]
+    {
+        platform::database_ancestor_guard(path)
+    }
+    #[cfg(not(windows))]
+    {
+        Ok(Vec::new())
+    }
+}
+
 pub fn prepare_database(path: &Path) -> io::Result<()> {
     check_path(path)?;
     for suffix in ["-journal", "-wal", "-shm"] {
