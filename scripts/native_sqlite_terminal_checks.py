@@ -225,9 +225,15 @@ def windows_preflight():
     discovered = {name for name in unittest.defaultTestLoader.getTestCaseNames(guards.NativeContainmentTests)}
     if discovered != names:
         raise Refusal("unsupported_cleanup")
-    result = unittest.TestResult()
+    class PrerequisiteResult(unittest.TestResult):
+        def addSkip(self, test, reason):
+            super().addSkip(test, reason)
+            self.stop()
+
+    result = PrerequisiteResult()
+    result.failfast = True  # Failure/error (including subtests) stops the suite.
     unittest.defaultTestLoader.loadTestsFromTestCase(guards.NativeContainmentTests).run(result)
-    if result.testsRun != 3 or not result.wasSuccessful() or result.skipped:
+    if result.shouldStop or result.testsRun != 3 or not result.wasSuccessful() or result.skipped:
         raise Refusal("unsupported_cleanup")
 
 

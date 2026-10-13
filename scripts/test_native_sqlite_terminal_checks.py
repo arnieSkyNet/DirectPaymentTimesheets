@@ -124,6 +124,65 @@ class Gates(unittest.TestCase):
                 native.approved_executable(SHA)
 
 
+class WindowsPrerequisiteOrder(unittest.TestCase):
+    names = ("test_breakaway_is_refused",
+             "test_child_grandchild_timeout_releases_exclusive_handle",
+             "test_normal_exit_cleans_descendant")
+
+    def run_controls(self, failure=None, position=None):
+        import test_phase1_security_checks as guards
+        observed = []
+
+        def control(index):
+            def test(case):
+                observed.append(self.names[index])
+                if index == position:
+                    raise failure("synthetic refusal")
+            return test
+
+        # Real unittest dispatch/result behavior, fake control bodies only.
+        controls = type("SyntheticControls", (unittest.TestCase,),
+                        {name: control(index) for index, name in enumerate(self.names)})
+        with patch.object(guards, "NativeContainmentTests", controls):
+            if failure is None:
+                native.windows_preflight()
+            else:
+                with self.assertRaisesRegex(native.Refusal, "unsupported_cleanup"):
+                    native.windows_preflight()
+        return observed
+
+    def assert_stops(self, failure):
+        for position in range(3):
+            with self.subTest(position=position):
+                self.assertEqual(self.run_controls(failure, position),
+                                 list(self.names[:position + 1]))
+
+    def test_cleanup_uncertainty_stops_later_controls(self):
+        self.assert_stops(native.ContainmentError)
+
+    def test_assertion_failure_stops_later_controls(self):
+        self.assert_stops(AssertionError)
+
+    def test_unexpected_exception_stops_later_controls(self):
+        self.assert_stops(RuntimeError)
+
+    def test_skip_stops_later_controls(self):
+        self.assert_stops(unittest.SkipTest)
+
+    def test_success_runs_exactly_three_controls(self):
+        self.assertEqual(self.run_controls(), list(self.names))
+
+    def test_stopped_or_incomplete_suite_never_passes(self):
+        for count, stopped in ((0, False), (2, False), (3, True)):
+            def run(suite, result):
+                result.testsRun = count
+                if stopped:
+                    result.stop()
+            with self.subTest(count=count, stopped=stopped), patch.object(unittest.TestSuite, "run", run):
+                with self.assertRaisesRegex(native.Refusal, "unsupported_cleanup"):
+                    native.windows_preflight()
+
+
 class Supervisor(unittest.TestCase):
     def setUp(self):
         # Fake APIs on ALL hosts: never create a kqueue, process or real signal.

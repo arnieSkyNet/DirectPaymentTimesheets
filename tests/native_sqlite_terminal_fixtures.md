@@ -52,6 +52,13 @@ of root diagnostics. The suite verifies a separate exclusive fixture handle can
 be reopened after every child, including timeout. Broker-created/hostile processes
 are outside the trusted-launch scope.
 
+Prerequisite dispatch now stops at the first failure, error or skip, including
+unconfirmed cleanup. No later control starts after that result. A stopped or
+incomplete suite cannot pass; only all three successful controls permit progress.
+Test-owned teardown still runs as unittest requires; this change does not prove
+native cleanup or change the Job helper. Mock-only regressions exercise actual
+unittest dispatch with synthetic control bodies failing in each position.
+
 macOS requires Python's supported select.kqueue/kevent process filter, NOTE_EXIT
 and NOTE_FORK constants. Python 3.12 os.waitid is not available on macOS and is
 no longer used. Missing APIs report unsupported_cleanup before spawning. Each
