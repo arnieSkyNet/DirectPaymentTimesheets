@@ -238,6 +238,30 @@ jobs:
           env = {k: os.environ[k] for k in keep if k in os.environ}
           env.update(RUSTUP_TOOLCHAIN='1.98.1', CARGO_INCREMENTAL='0', CARGO_BUILD_JOBS='2', CARGO_PROFILE_TEST_DEBUG='0')
           phases = ('entry', 'pathname', 'vswhere', 'vsdevcmd', 'sdk', 'linker_metadata')
+          operations = ('join_path', 'full_path', 'get_item', 'attributes', 'parent')
+          def marker_snapshot(raw):
+              observed, count, last, pending = [], 0, None, None
+              valid = len(raw) <= 262144
+              for line in raw.decode('ascii', errors='replace').splitlines():
+                  if line.startswith('DPT_MSVC_PHASE:') and line.removeprefix('DPT_MSVC_PHASE:') in phases:
+                      observed.append(line.removeprefix('DPT_MSVC_PHASE:'))
+                  else:
+                      match = re.fullmatch(r'DPT_MSVC_OP:(join_path|full_path|get_item|attributes|parent):(before|after):([0-9]{1,2})', line)
+                      if not match or int(match[3]) >= 32:
+                          valid = False
+                          continue
+                      operation, edge, depth = match[1], match[2], int(match[3])
+                      count += 1
+                      if count > 4096: valid = False
+                      if edge == 'before':
+                          if pending is not None: valid = False
+                          pending = (operation, depth)
+                      else:
+                          if pending != (operation, depth): valid = False
+                          pending = None
+                      last = {'operation':operation, 'edge':edge, 'depth':depth}
+              ordered = observed == list(phases[:len(observed)])
+              return observed if ordered else [], last, count, valid and ordered, pending
           def native_code(error):
               code = getattr(error, 'winerror', None)
               return code if isinstance(code, int) and not isinstance(code, bool) else None
@@ -247,17 +271,9 @@ jobs:
               with tempfile.TemporaryFile() as out, tempfile.TemporaryFile() as err:
                   def evidence(classification, error=None, killed=False, reaped=False, exit_code=None):
                       err.seek(0)
-                      raw = err.read(4097)
-                      lines = raw.decode('ascii', errors='replace').splitlines()
-                      observed = []
-                      for line in lines:
-                          if discovery and line.startswith('DPT_MSVC_PHASE:'):
-                              phase = line.removeprefix('DPT_MSVC_PHASE:')
-                              if phase in phases: observed.append(phase)
-                      # Report only a prefix of the fixed phase sequence. Raw
-                      # stderr is rejected rather than interpreted as diagnostics.
-                      ordered = observed == list(phases[:len(observed)])
-                      record = {'class':classification, 'native_code':native_code(error), 'exit_code':exit_code, 'deadline_seconds':timeout, 'leader_killed':killed, 'leader_reaped':reaped, 'descendant_cleanup_confirmed':False, 'markers_valid':ordered and len(lines) == len(observed) and len(raw) <= 4096, 'phases':observed if ordered else []}
+                      raw = err.read(262145)
+                      observed, last, count, valid, pending = marker_snapshot(raw) if discovery else ([], None, 0, True, None)
+                      record = {'class':classification, 'native_code':native_code(error), 'exit_code':exit_code, 'deadline_seconds':timeout, 'leader_killed':killed, 'leader_reaped':reaped, 'descendant_cleanup_confirmed':False, 'markers_valid':valid, 'phases':observed, 'last_operation':last, 'operation_count':count}
                       print(json.dumps(record, sort_keys=True))
                   try:
                       process = subprocess.Popen(args, env=env, stdout=out, stderr=err)
@@ -287,10 +303,11 @@ jobs:
                   evidence('msvc_query_completed', reaped=True, exit_code=code)
                   out.seek(0)
                   err.seek(0)
-                  stdout, stderr = out.read(65537), err.read(4097)
-                  if len(stdout) > 65536 or len(stderr) > 4096: raise SystemExit('msvc_output_limit')
+                  stdout, stderr = out.read(65537), err.read(262145)
+                  if len(stdout) > 65536 or len(stderr) > 262144: raise SystemExit('msvc_output_limit')
                   if discovery:
-                      if stderr.decode('ascii', errors='replace').splitlines() != ['DPT_MSVC_PHASE:' + phase for phase in phases]: raise SystemExit('msvc_marker_output_refused')
+                      observed, last, count, valid, pending = marker_snapshot(stderr)
+                      if not valid or observed != list(phases) or pending is not None or count == 0: raise SystemExit('msvc_marker_output_refused')
                   return subprocess.CompletedProcess(args, code, stdout.decode('utf-8', errors='replace'), stderr.decode('utf-8', errors='replace'))
           def windows_toolchain(base):
               # Installed runner tools only. Capture configuration internally;
@@ -298,23 +315,55 @@ jobs:
               script = r'''
           $ErrorActionPreference = 'Stop'
           [Console]::Error.WriteLine('DPT_MSVC_PHASE:entry')
+          function Require-LocalAbsolute($path) {
+            if (!$path -or $path -notmatch '^[A-Za-z]:\\' -or $path.Substring(2) -match '[":%!?&|<>\r\n]' -or $path -match '(?:^|\\)(?:CON|PRN|AUX|NUL|COM[1-9¹²³]|LPT[1-9¹²³])(?:\.[^\\]*)?(?:\\|$)') { throw 'nonlocal_or_unsafe_path' }
+          }
+          function Trace-Operation($operation, $edge, [int]$depth) {
+            if ($operation -notin @('join_path','full_path','get_item','attributes','parent') -or $edge -notin @('before','after') -or $depth -lt 0 -or $depth -ge 32) { throw 'invalid_operation_record' }
+            [Console]::Error.WriteLine(('DPT_MSVC_OP:{0}:{1}:{2}' -f $operation,$edge,$depth))
+          }
+          function Join-LocalPath($base, $child) {
+            Require-LocalAbsolute $base
+            if ([IO.Path]::IsPathRooted($child) -or $child -match '[":%!?&|<>\r\n]') { throw 'unsafe_child_path' }
+            Trace-Operation 'join_path' 'before' 0
+            $joined = Join-Path $base $child
+            Trace-Operation 'join_path' 'after' 0
+            Require-LocalAbsolute $joined
+            return $joined
+          }
           function Require-PlainPath($path) {
+            Require-LocalAbsolute $path
+            Trace-Operation 'full_path' 'before' 0
             $full = [IO.Path]::GetFullPath($path)
-            if ($full -match '["%!?&|<>\r\n]') { throw 'unsafe_tool_path' }
-            $current = $full
-            while ($current) {
+            Trace-Operation 'full_path' 'after' 0
+            Require-LocalAbsolute $full
+            $root = $full.Substring(0,3)
+            $current = if ($full.Length -gt 3) { $full.TrimEnd('\') } else { $full }
+            $seen = @{}
+            for ($depth = 0; $depth -lt 32; $depth++) {
+              if ($seen.ContainsKey($current)) { throw 'path_cycle' }
+              $seen[$current] = $true
+              Trace-Operation 'get_item' 'before' $depth
               $entry = Get-Item -LiteralPath $current -Force
-              if ($entry.Attributes -band [IO.FileAttributes]::ReparsePoint) { throw 'reparse_tool_path' }
-              $parent = [IO.Path]::GetDirectoryName($current.TrimEnd('\'))
-              if ($parent -eq $current) { break }
+              Trace-Operation 'get_item' 'after' $depth
+              Trace-Operation 'attributes' 'before' $depth
+              $attributes = $entry.Attributes
+              Trace-Operation 'attributes' 'after' $depth
+              if ($null -eq $attributes -or ($attributes -band [IO.FileAttributes]::ReparsePoint)) { throw 'reparse_or_unconfirmed_path' }
+              if ($current -eq $root) { return $full }
+              Trace-Operation 'parent' 'before' $depth
+              $parent = [IO.Path]::GetDirectoryName($current)
+              Trace-Operation 'parent' 'after' $depth
+              Require-LocalAbsolute $parent
+              if ($parent.Length -ge $current.Length -or !$current.StartsWith(($parent.TrimEnd('\') + '\'), [StringComparison]::OrdinalIgnoreCase)) { throw 'path_nonprogress' }
               $current = $parent
             }
-            return $full
+            throw 'path_depth_exceeded'
           }
           $pf = ${env:ProgramFiles(x86)}
           if (!$pf) { throw 'missing_discovery_root' }
           [Console]::Error.WriteLine('DPT_MSVC_PHASE:pathname')
-          $vswhere = Require-PlainPath (Join-Path $pf 'Microsoft Visual Studio\Installer\vswhere.exe')
+          $vswhere = Require-PlainPath (Join-LocalPath $pf 'Microsoft Visual Studio\Installer\vswhere.exe')
           [Console]::Error.WriteLine('DPT_MSVC_PHASE:vswhere')
           $raw = & $vswhere -products '*' -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -format json
           if ($LASTEXITCODE -ne 0) { throw 'discovery_failed' }
@@ -322,8 +371,8 @@ jobs:
           if ($instances.Count -ne 1) { throw 'ambiguous_or_missing_toolchain' }
           $root = Require-PlainPath $instances[0].installationPath
           $allowedRoots = @($env:ProgramFiles, ${env:ProgramFiles(x86)}, $env:ProgramW6432) | Where-Object { $_ }
-          if (!($allowedRoots | Where-Object { $root.StartsWith((Join-Path $_ 'Microsoft Visual Studio\'), [StringComparison]::OrdinalIgnoreCase) })) { throw 'untrusted_installation' }
-          $dev = Require-PlainPath (Join-Path $root 'Common7\Tools\VsDevCmd.bat')
+          if (!($allowedRoots | Where-Object { $root.StartsWith((Join-LocalPath $_ 'Microsoft Visual Studio\'), [StringComparison]::OrdinalIgnoreCase) })) { throw 'untrusted_installation' }
+          $dev = Require-PlainPath (Join-LocalPath $root 'Common7\Tools\VsDevCmd.bat')
           if (!(Test-Path -LiteralPath $dev -PathType Leaf)) { throw 'missing_developer_environment' }
           [Console]::Error.WriteLine('DPT_MSVC_PHASE:vsdevcmd')
           $output = & "$env:SystemRoot\System32\cmd.exe" /d /s /c "`"`"$dev`" -arch=x64 -host_arch=x64 >nul && set`""
@@ -336,10 +385,10 @@ jobs:
           if ($values['VSCMD_ARG_TGT_ARCH'] -ne 'x64' -or $values['VSCMD_ARG_HOST_ARCH'] -ne 'x64') { throw 'wrong_architecture' }
           $tools = Require-PlainPath $values['VCTOOLSINSTALLDIR']
           if (!$tools.StartsWith(($root.TrimEnd('\') + '\VC\Tools\MSVC\'), [StringComparison]::OrdinalIgnoreCase)) { throw 'untrusted_tools' }
-          if ([IO.Path]::GetFullPath($values['VSINSTALLDIR']).TrimEnd('\') -ne $root.TrimEnd('\')) { throw 'installation_mismatch' }
+          if ((Require-PlainPath $values['VSINSTALLDIR']).TrimEnd('\') -ne $root.TrimEnd('\')) { throw 'installation_mismatch' }
           [Console]::Error.WriteLine('DPT_MSVC_PHASE:sdk')
           $sdk = Require-PlainPath $values['WINDOWSSDKDIR']
-          if (!($allowedRoots | Where-Object { $sdk.StartsWith((Join-Path $_ 'Windows Kits\'), [StringComparison]::OrdinalIgnoreCase) })) { throw 'untrusted_sdk' }
+          if (!($allowedRoots | Where-Object { $sdk.StartsWith((Join-LocalPath $_ 'Windows Kits\'), [StringComparison]::OrdinalIgnoreCase) })) { throw 'untrusted_sdk' }
           foreach ($key in @('VCINSTALLDIR','WINDOWSSDKBINPATH','WINDOWSSDKVERBINPATH','UNIVERSALCRTSDKDIR')) {
             if ($values[$key]) {
               $candidate = Require-PlainPath $values[$key]
@@ -347,9 +396,14 @@ jobs:
             }
           }
           [Console]::Error.WriteLine('DPT_MSVC_PHASE:linker_metadata')
-          $link = Require-PlainPath (Join-Path $tools 'bin\Hostx64\x64\link.exe')
+          $link = Require-PlainPath (Join-LocalPath $tools 'bin\Hostx64\x64\link.exe')
+          Trace-Operation 'get_item' 'before' 0
           $item = Get-Item -LiteralPath $link
-          if ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) { throw 'reparse_linker' }
+          Trace-Operation 'get_item' 'after' 0
+          Trace-Operation 'attributes' 'before' 0
+          $linkAttributes = $item.Attributes
+          Trace-Operation 'attributes' 'after' 0
+          if ($null -eq $linkAttributes -or ($linkAttributes -band [IO.FileAttributes]::ReparsePoint)) { throw 'reparse_linker' }
           $version = $item.VersionInfo
           if ($version.CompanyName -ne 'Microsoft Corporation' -or $version.ProductName -notmatch 'Visual Studio') { throw 'incompatible_linker' }
           $keep = @('PATH','INCLUDE','LIB','LIBPATH','VSINSTALLDIR','VCINSTALLDIR','VCTOOLSINSTALLDIR','WINDOWSSDKDIR','WINDOWSSDKVERSION','WINDOWSSDKBINPATH','WINDOWSSDKVERBINPATH','UNIVERSALCRTSDKDIR','UCRTVERSION','VSCMD_ARG_TGT_ARCH','VSCMD_ARG_HOST_ARCH')
