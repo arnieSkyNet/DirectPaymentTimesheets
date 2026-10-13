@@ -1,5 +1,6 @@
 """Mocks only: no child creation, signaling, SQLite or terminal execution."""
 import errno
+import json
 from pathlib import Path
 import unittest
 from unittest.mock import MagicMock, Mock, patch
@@ -10,6 +11,67 @@ SHA = "a" * 40
 
 
 class Gates(unittest.TestCase):
+    def test_safe_build_recipe_has_only_compile_and_listing_arguments(self):
+        data = json.loads((Path(__file__).resolve().parents[1] / "tests/native_sqlite_safe_build_manifest.json").read_text())
+        self.assertEqual(data["build"], ["cargo", "test", "--locked", "--test", "native_sqlite_terminal_fixtures", "--no-run", "--message-format=json"])
+        self.assertEqual(data["inventory_arguments"], ["--list", "--ignored"])
+        self.assertEqual(data["inventory_nonempty_lines"], ["native_child: test", "1 test, 0 benchmarks"])
+        self.assertEqual(data["containment"][-1], "--containment-only")
+        self.assertFalse(data["terminal_execution"])
+        self.assertFalse(data["root_diagnostics"])
+
+    def test_safe_mode_macos_uses_only_control_preflight(self):
+        for machine, runner in (("arm64", "macos-15"), ("x86_64", "macos-15-intel")):
+            env = self.env()
+            env.update(NATIVE_RUNNER=runner, DPT_NATIVE_SQLITE_SAFE_CONTAINMENT="1")
+            del env["DPT_SYNTHETIC_SQLITE_TERMINAL_TESTS"]
+            with patch.dict(native.os.environ, env, clear=True), patch.object(native.platform, "system", return_value="Darwin"), patch.object(native.platform, "machine", return_value=machine), patch.object(native.subprocess, "check_output", side_effect=[SHA, ""]), patch.object(native, "mac_preflight") as controls, patch.object(native, "execute") as execute, patch("builtins.print"):
+                self.assertEqual(native.containment_only(), 0)
+                controls.assert_called_once_with()
+                execute.assert_not_called()
+                self.assertNotIn("DPT_SYNTHETIC_SQLITE_TERMINAL_TESTS", native.os.environ)
+
+    def test_combined_modes_refuse_before_any_execution(self):
+        with patch.object(native.sys, "argv", ["checks", "--containment-only", "--run"]), patch.object(native, "execute") as execute, patch.object(native.subprocess, "check_output") as git, patch("builtins.print"):
+            self.assertEqual(native.main(), 2)
+            execute.assert_not_called()
+            git.assert_not_called()
+
+    def test_safe_mode_is_independent_and_never_loads_sqlite(self):
+        env = self.env()
+        env.update(DPT_NATIVE_SQLITE_SAFE_CONTAINMENT="1",
+                   DPT_NATIVE_SQLITE_CASE="panic_terminal")
+        with patch.dict(native.os.environ, env, clear=True), patch.object(native.sys, "argv", ["checks", "--containment-only"]), patch.object(native.platform, "system", return_value="Windows"), patch.object(native.platform, "machine", return_value="AMD64"), patch.object(native.subprocess, "check_output", side_effect=[SHA, ""]), patch.object(native, "windows_preflight") as controls, patch.object(native, "approved_executable") as executable, patch.object(native, "execute") as execute, patch.object(native, "fixture_env") as fixture_env, patch("builtins.print"):
+            self.assertEqual(native.main(), 0)
+            controls.assert_called_once_with()
+            executable.assert_not_called()
+            execute.assert_not_called()
+            fixture_env.assert_not_called()
+
+    def test_safe_mode_exact_gate(self):
+        for value in (None, "0", "true", " 1", "1 "):
+            env = {} if value is None else {"DPT_NATIVE_SQLITE_SAFE_CONTAINMENT": value}
+            with patch.dict(native.os.environ, env, clear=True), patch.object(native.subprocess, "check_output") as git:
+                with self.assertRaisesRegex(native.Refusal, "disabled"):
+                    native.containment_only()
+                git.assert_not_called()
+
+    def test_safe_mode_root_diagnostics_block_controls(self):
+        env = self.env()
+        env.update(DPT_NATIVE_SQLITE_SAFE_CONTAINMENT="1", DPT_WINDOWS_SYNTHETIC_ROOT_DIAGNOSTICS="1")
+        with patch.dict(native.os.environ, env, clear=True), patch.object(native.platform, "system", return_value="Windows"), patch.object(native.platform, "machine", return_value="AMD64"), patch.object(native.subprocess, "check_output", return_value=SHA), patch.object(native, "windows_preflight") as controls:
+            with self.assertRaisesRegex(native.Refusal, "root_diagnostics_refused"):
+                native.containment_only()
+            controls.assert_not_called()
+
+    def test_safe_mode_cleanup_refusal_stops(self):
+        env = self.env()
+        env["DPT_NATIVE_SQLITE_SAFE_CONTAINMENT"] = "1"
+        with patch.dict(native.os.environ, env, clear=True), patch.object(native.platform, "system", return_value="Windows"), patch.object(native.platform, "machine", return_value="AMD64"), patch.object(native.subprocess, "check_output", side_effect=[SHA, ""]), patch.object(native, "windows_preflight", side_effect=native.Refusal("unsupported_cleanup")), patch.object(native, "execute") as execute:
+            with self.assertRaisesRegex(native.Refusal, "unsupported_cleanup"):
+                native.containment_only()
+            execute.assert_not_called()
+
     def env(self):
         return dict(DPT_SYNTHETIC_SQLITE_TERMINAL_TESTS="1", EXPECTED_SHA=SHA,
                     GITHUB_ACTIONS="true", GITHUB_REF="refs/heads/main",

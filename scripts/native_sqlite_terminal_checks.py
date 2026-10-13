@@ -310,6 +310,10 @@ def windows_handle_release(root):
 
 
 def main():
+    # A structurally separate mode: no manifest/executable loading, fixture
+    # environment, execute(), recovery or terminal assessment is reachable.
+    if sys.argv[1:] == ["--containment-only"]:
+        return containment_only()
     # Even --run requires exact gates and a separately approved synthetic profile.
     if sys.argv[1:] != ["--run"]:
         print("native.sqlite: class=disabled")
@@ -343,6 +347,23 @@ def main():
             windows_handle_release(root)
         shutil.rmtree(root)
         print(f"native.sqlite: case={case}; class=verified")
+    return 0
+
+
+def containment_only():
+    if os.environ.get("DPT_NATIVE_SQLITE_SAFE_CONTAINMENT") != "1":
+        raise Refusal("disabled")
+    sha = subprocess.check_output(["git", "rev-parse", "HEAD"], text=True, timeout=5).strip()
+    # Reuse source/runner/privacy/root exclusions, without enabling the terminal
+    # gate in the process environment or handing it to a child.
+    records = dict(os.environ)
+    records["DPT_SYNTHETIC_SQLITE_TERMINAL_TESTS"] = "1"
+    system = platform.system()
+    prerequisites(records, system, platform.machine(), sha)
+    if subprocess.check_output(["git", "status", "--porcelain=v1"], text=True, timeout=5).strip():
+        raise Refusal("unapproved_source")
+    (windows_preflight if system == "Windows" else mac_preflight)()
+    print("native.sqlite: class=containment_verified; terminal_executed=false")
     return 0
 
 

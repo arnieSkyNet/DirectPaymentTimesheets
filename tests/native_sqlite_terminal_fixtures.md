@@ -170,3 +170,74 @@ distinguishes NOTE_EXIT from NOTE_REAP and documents aggregation and registratio
 checks; [Python 3.12 select](https://docs.python.org/3.12/library/select.html#kqueue-objects)
 provides the supported wrapper. This correction does not authorize native testing
 or change the default-off terminal/privacy gates.
+
+## Proposed compilation and safe containment stage (not wired to a workflow)
+
+The declarative [safe build manifest](native_sqlite_safe_build_manifest.json)
+records exact commands and inventory. It is a recipe, not a claim of bit-identical
+compiler output or an executable/artifact attestation. Dependencies are pinned by
+Cargo.lock; the future runners use Python 3.12 and Rust 1.98.1, matching the current
+native workflow. Native compilation remains unverified on all three runners.
+
+The new `--containment-only` command is independent of `--run`. It cannot load an
+executable manifest, call a SQLite child, construct a fixture environment or run
+recovery. Terminal flags and case selections in its environment do not change
+that control flow. It requires exactly `DPT_NATIVE_SQLITE_SAFE_CONTAINMENT=1`,
+the existing clean SHA/main/runner/profile checks and absent root-diagnostic
+variables. The profile records disposable control data only; it does not approve
+terminal execution or production privacy risk. Default invocation remains disabled.
+Windows requires the unchanged three Job tests with no skips; macOS runs only the
+two existing static Python no-descendant controls. No SQLite database is opened.
+Success prints `class=containment_verified; terminal_executed=false`. Any refusal
+stops the stage, including unsupported_cleanup or unsupported_privacy. No retry.
+
+Exact proposed main-workflow changes, for a separately approved PR:
+
+1. Replace its seven `d058c5c847215f81235acb6d23728937df8437b9` source references
+   with the final independently reviewed security commit containing this stage.
+   Do not use the recipe's starting commit or a moving branch as its checkout.
+   Preserve main-only dispatch, required expected_sha, pre/post remote-tip and
+   checkout-HEAD guards, existing immutable actions and read-only permissions.
+2. Add `controlled_sqlite_terminal_tests`, boolean, default false, and a separate
+   `compile_sqlite_containment_only`, boolean, default false. For this stage reject
+   terminal=true and root-diagnostics=true before checkout/build. There must be no
+   workflow step selecting `--run`, even if another input or environment enables it.
+   Add `if: ${{ !inputs.compile_sqlite_containment_only }}` to the existing guard
+   step and include that condition in the existing Phase 1 harness step. The new
+   safe steps use `if: ${{ inputs.compile_sqlite_containment_only && success() }}`.
+   This prevents duplicate native controls and excludes unrelated test execution
+   from the compile-only stage. The driver alone enforces its three Windows
+   prerequisites; no skip/failure can produce its success record.
+3. After source verification, compile only the manifest's target with the exact
+   `cargo test --locked --test native_sqlite_terminal_fixtures --no-run
+   --message-format=json` arguments, with a 30-minute step timeout. Capture JSON
+   locally in target; accept exactly one compiler-artifact with target name above,
+   kind=[test], profile.test=true and a non-null executable resolving under target.
+   A missing/duplicate/foreign artifact fails. No package/release build or upload.
+4. Invoke that executable with only `--list --ignored`, with a ten-second deadline,
+   locally capture output and require its nonempty stripped lines to equal the
+   manifest inventory exactly. This libtest listing does not invoke test bodies;
+   do not append arbitrary flags or run `--ignored` without `--list`. Any timeout
+   or uncertain child cleanup stops the job, with no subsequent controls or retry.
+5. Run the manifest containment command with a two-minute outer step timeout,
+   EXPECTED_SHA and exact NATIVE_RUNNER, GITHUB_ACTIONS=true, main ref, synthetic
+   profile and safe opt-in. Keep both root variables and terminal fixture/profile
+   variables unset. The driver's independent mode remains safe even if terminal
+   variables are injected. Require a successful step before recording verification.
+
+The macOS supervisor is deliberately unsuitable for Cargo's descendant tree. The
+future workflow must treat a compiler or inventory deadline as a failed job and
+delegate runner teardown to Actions; an Actions timeout is not proof of compiler
+descendant reaping. No later fixture may run after it. The single-child kqueue
+controls have their own deadlines and confirmed owned-child reap; all accounting
+uncertainty refuses success. A process exiting before kqueue registration is not
+assumed to generate an initial event: a missed event fails closed. The start
+barrier keeps the normal/stall controls alive until registration and isolation.
+Kernel-blocked tasks, competing reapers, unexpected forks or missing APIs remain
+unsupported. Native normal/stall evidence on both macOS runners is still required;
+mock tests prove only the selected control flow. These trusted controls can test
+kqueue, leader identity, signaling and reaping without loading SQLite terminal
+code. They do not establish arbitrary descendant containment or dump suppression.
+
+The actual workflow and its older source pin remain unchanged. No native command,
+emergency fixture, workflow dispatch or OS setting change is authorized here.
