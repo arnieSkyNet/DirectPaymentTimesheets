@@ -239,29 +239,41 @@ jobs:
           env.update(RUSTUP_TOOLCHAIN='1.98.1', CARGO_INCREMENTAL='0', CARGO_BUILD_JOBS='2', CARGO_PROFILE_TEST_DEBUG='0')
           phases = ('entry', 'module_init', 'module_load', 'module_ready', 'pathname', 'vswhere', 'vsdevcmd', 'sdk', 'linker_metadata')
           operations = ('join_path', 'full_path', 'get_item', 'attributes', 'parent')
+          status_order = [('vswhere','before'), ('vswhere','after'), ('json','before'), ('json','after'), ('instances','before'), ('instances','after')]
           def marker_snapshot(raw):
-              observed, count, last, pending = [], 0, None, None
-              valid = len(raw) <= 262144
+              observed, count, last, pending, statuses = [], 0, None, None, []
+              bounded, sequence, malformed, unexpected = len(raw) <= 262144, True, False, False
               for line in raw.decode('ascii', errors='replace').splitlines():
-                  if line.startswith('DPT_MSVC_PHASE:') and line.removeprefix('DPT_MSVC_PHASE:') in phases:
-                      observed.append(line.removeprefix('DPT_MSVC_PHASE:'))
+                  if line.startswith('DPT_MSVC_PHASE:'):
+                      phase = line.removeprefix('DPT_MSVC_PHASE:')
+                      if phase not in phases: malformed = True
+                      elif len(observed) >= len(phases) or phase != phases[len(observed)]: sequence = False
+                      else: observed.append(phase)
+                      continue
+                  status = re.fullmatch(r'DPT_MSVC_STATUS:(vswhere|json|instances):(before|after):(-?[0-9]{1,10})', line)
+                  if status:
+                      stage, edge, value = status[1], status[2], int(status[3])
+                      if not -2147483648 <= value <= 4294967295: malformed = True
+                      elif len(statuses) >= len(status_order) or (stage,edge) != status_order[len(statuses)]: sequence = False
+                      elif edge == 'before' and value != 0: malformed = True
+                      else: statuses.append({'stage':stage, 'edge':edge, 'code':value})
+                      continue
+                  match = re.fullmatch(r'DPT_MSVC_OP:(join_path|full_path|get_item|attributes|parent):(before|after):([0-9]{1,2})', line)
+                  if not match or int(match[3]) >= 32:
+                      if line.startswith(('DPT_MSVC_OP:', 'DPT_MSVC_STATUS:')): malformed = True
+                      else: unexpected = True
+                      continue
+                  operation, edge, depth = match[1], match[2], int(match[3])
+                  count += 1
+                  if count > 4096: bounded = False
+                  if edge == 'before':
+                      if pending is not None: sequence = False
+                      pending = (operation, depth)
                   else:
-                      match = re.fullmatch(r'DPT_MSVC_OP:(join_path|full_path|get_item|attributes|parent):(before|after):([0-9]{1,2})', line)
-                      if not match or int(match[3]) >= 32:
-                          valid = False
-                          continue
-                      operation, edge, depth = match[1], match[2], int(match[3])
-                      count += 1
-                      if count > 4096: valid = False
-                      if edge == 'before':
-                          if pending is not None: valid = False
-                          pending = (operation, depth)
-                      else:
-                          if pending != (operation, depth): valid = False
-                          pending = None
-                      last = {'operation':operation, 'edge':edge, 'depth':depth}
-              ordered = observed == list(phases[:len(observed)])
-              return observed if ordered else [], last, count, valid and ordered, pending
+                      if pending != (operation, depth): sequence = False
+                      pending = None
+                  last = {'operation':operation, 'edge':edge, 'depth':depth}
+              return {'phases':observed, 'last_operation':last, 'operation_count':count, 'operation_pending':pending is not None, 'statuses':statuses, 'markers_valid':bounded and sequence and not malformed and not unexpected, 'bounds_valid':bounded, 'sequence_valid':sequence, 'malformed_markers':malformed, 'unexpected_output':unexpected}
           def native_code(error):
               code = getattr(error, 'winerror', None)
               return code if isinstance(code, int) and not isinstance(code, bool) else None
@@ -272,8 +284,9 @@ jobs:
                   def evidence(classification, error=None, killed=False, reaped=False, exit_code=None):
                       err.seek(0)
                       raw = err.read(262145)
-                      observed, last, count, valid, pending = marker_snapshot(raw) if discovery else ([], None, 0, True, None)
-                      record = {'class':classification, 'native_code':native_code(error), 'exit_code':exit_code, 'deadline_seconds':timeout, 'leader_killed':killed, 'leader_reaped':reaped, 'descendant_cleanup_confirmed':False, 'markers_valid':valid, 'phases':observed, 'last_operation':last, 'operation_count':count}
+                      snapshot = marker_snapshot(raw) if discovery else {}
+                      record = {'class':classification, 'native_code':native_code(error), 'exit_code':exit_code, 'deadline_seconds':timeout, 'leader_killed':killed, 'leader_reaped':reaped, 'descendant_cleanup_confirmed':False}
+                      record.update(snapshot)
                       print(json.dumps(record, sort_keys=True))
                   try:
                       process = subprocess.Popen(args, env=env, stdout=out, stderr=err)
@@ -300,14 +313,16 @@ jobs:
                       # Wait failure leaves leader state uncertain; fail closed.
                       evidence('msvc_wait_failed', error)
                       raise SystemExit('msvc_wait_failed') from None
-                  evidence('msvc_query_completed', reaped=True, exit_code=code)
+                  evidence('msvc_discovery_refused' if discovery and code != 0 else 'msvc_query_completed', reaped=True, exit_code=code)
+                  if discovery and code != 0: raise SystemExit('msvc_discovery_refused')
                   out.seek(0)
                   err.seek(0)
                   stdout, stderr = out.read(65537), err.read(262145)
                   if len(stdout) > 65536 or len(stderr) > 262144: raise SystemExit('msvc_output_limit')
                   if discovery:
-                      observed, last, count, valid, pending = marker_snapshot(stderr)
-                      if not valid or observed != list(phases) or pending is not None or count == 0: raise SystemExit('msvc_marker_output_refused')
+                      snapshot = marker_snapshot(stderr)
+                      expected_statuses = [{'stage':stage,'edge':edge,'code':1 if stage == 'instances' and edge == 'after' else 0} for stage,edge in status_order]
+                      if not snapshot['markers_valid'] or snapshot['phases'] != list(phases) or snapshot['operation_pending'] or snapshot['operation_count'] == 0 or snapshot['statuses'] != expected_statuses: raise SystemExit('msvc_marker_output_refused')
                   return subprocess.CompletedProcess(args, code, stdout.decode('utf-8', errors='replace'), stderr.decode('utf-8', errors='replace'))
           def windows_toolchain(base):
               # Installed runner tools only. Capture configuration internally;
@@ -322,6 +337,10 @@ jobs:
           function Trace-Operation($operation, $edge, [int]$depth) {
             if ($operation -notin @('join_path','full_path','get_item','attributes','parent') -or $edge -notin @('before','after') -or $depth -lt 0 -or $depth -ge 32) { throw 'invalid_operation_record' }
             [Console]::Error.WriteLine(('DPT_MSVC_OP:{0}:{1}:{2}' -f $operation,$edge,$depth))
+          }
+          function Trace-Status($stage, $edge, [long]$code) {
+            if ($stage -notin @('vswhere','json','instances') -or $edge -notin @('before','after') -or $code -lt -2147483648 -or $code -gt 4294967295) { throw 'invalid_status_record' }
+            [Console]::Error.WriteLine(('DPT_MSVC_STATUS:{0}:{1}:{2}' -f $stage,$edge,$code))
           }
           function Join-LocalPath($base, $child) {
             Require-LocalAbsolute $base
@@ -395,10 +414,21 @@ jobs:
           [Console]::Error.WriteLine('DPT_MSVC_PHASE:pathname')
           $vswhere = Require-PlainFile (Join-LocalPath $pf 'Microsoft Visual Studio\Installer\vswhere.exe')
           [Console]::Error.WriteLine('DPT_MSVC_PHASE:vswhere')
-          $raw = & $vswhere -products '*' -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -format json
+          Trace-Status 'vswhere' 'before' 0
+          $LASTEXITCODE = $null
+          try { $raw = & $vswhere -products '*' -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -format json }
+          catch { Trace-Status 'vswhere' 'after' 1; throw 'vswhere_invocation_failed' }
+          if ($null -eq $LASTEXITCODE) { Trace-Status 'vswhere' 'after' 1; throw 'vswhere_status_unconfirmed' }
+          Trace-Status 'vswhere' 'after' $LASTEXITCODE
           if ($LASTEXITCODE -ne 0) { throw 'discovery_failed' }
-          $instances = & $fromJson -InputObject ($raw -join "`n")
-          if ($instances.Count -ne 1) { throw 'ambiguous_or_missing_toolchain' }
+          Trace-Status 'json' 'before' 0
+          try { $instances = & $fromJson -InputObject ($raw -join "`n") }
+          catch { Trace-Status 'json' 'after' 1; throw 'vswhere_json_failed' }
+          Trace-Status 'json' 'after' 0
+          Trace-Status 'instances' 'before' 0
+          $instanceCount = if ($null -eq $instances) { 0 } else { @($instances).Count }
+          Trace-Status 'instances' 'after' $instanceCount
+          if ($instanceCount -ne 1) { throw 'ambiguous_or_missing_toolchain' }
           $root = Require-PlainPath $instances[0].installationPath
           $allowedRoots = @()
           foreach ($candidateRoot in @($env:ProgramFiles, ${env:ProgramFiles(x86)}, $env:ProgramW6432)) { if ($candidateRoot) { $allowedRoots += $candidateRoot } }
@@ -467,7 +497,7 @@ jobs:
                   rust = tool_query(['rustc', '-vV'], configured, 5)
               except (OSError, subprocess.TimeoutExpired): raise SystemExit('msvc_identity_unconfirmed') from None
               if help_result.returncode or 'Microsoft' not in help_result.stdout + help_result.stderr or rust.returncode or 'host: x86_64-pc-windows-msvc' not in rust.stdout: raise SystemExit('msvc_identity_refused')
-              print(json.dumps({'class':'msvc_verified','linker':str(linker),'product':data['product'],'version':data['version'],'host':'x86_64-pc-windows-msvc','target':'x86_64-pc-windows-msvc','discovery_code':discovery.returncode,'help_code':help_result.returncode,'rust_code':rust.returncode,'required_present':{k:bool(config.get(k)) for k in ('INCLUDE','LIB','LIBPATH','WINDOWSSDKDIR')}}, sort_keys=True))
+              print(json.dumps({'class':'msvc_verified','product':data['product'],'version':data['version'],'host':'x86_64-pc-windows-msvc','target':'x86_64-pc-windows-msvc','discovery_code':discovery.returncode,'help_code':help_result.returncode,'rust_code':rust.returncode,'required_present':{k:bool(config.get(k)) for k in ('INCLUDE','LIB','LIBPATH','WINDOWSSDKDIR')}}, sort_keys=True))
               return configured
           if windows:
               env.pop('SDKROOT', None)
