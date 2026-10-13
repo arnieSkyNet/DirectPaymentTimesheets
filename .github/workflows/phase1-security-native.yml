@@ -5,7 +5,7 @@ on:
   workflow_dispatch:
     inputs:
       expected_sha:
-        description: Enter approved source SHA d4057855c8302aaec8a8d1b6cbdcea0256553e30; dispatch from main
+        description: Enter approved source SHA a681fb5a7f1f58ce23bbe74fd266775c36001217; dispatch from main
         required: true
         type: string
       controlled_windows_root_diagnostics:
@@ -14,6 +14,11 @@ on:
         default: false
         type: boolean
 
+      verify_about_only:
+        description: Run only synthetic About read-only tests after containment prerequisites
+        required: false
+        default: false
+        type: boolean
       compile_sqlite_containment_only:
         description: Compile and list synthetic fixtures; run only containment controls
         required: false
@@ -41,7 +46,7 @@ jobs:
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 90
     env:
-      EXPECTED_SHA: 'd4057855c8302aaec8a8d1b6cbdcea0256553e30'
+      EXPECTED_SHA: 'a681fb5a7f1f58ce23bbe74fd266775c36001217'
       GIT_TERMINAL_PROMPT: '0'
       CARGO_INCREMENTAL: '0'
       CARGO_BUILD_JOBS: '2'
@@ -55,6 +60,7 @@ jobs:
           SELECTED_REF: ${{ github.ref }}
           REQUESTED_SHA: ${{ inputs.expected_sha }}
           SAFE_ONLY: ${{ inputs.compile_sqlite_containment_only }}
+          ABOUT_ONLY: ${{ inputs.verify_about_only }}
           TERMINAL_REQUESTED: ${{ inputs.controlled_sqlite_terminal_tests }}
           ROOT_REQUESTED: ${{ inputs.controlled_windows_root_diagnostics }}
         run: |
@@ -62,29 +68,33 @@ jobs:
           test "$SELECTED_REF" = refs/heads/main
           test "$TERMINAL_REQUESTED" = false
           if [[ "$SAFE_ONLY" == true ]]; then test "$ROOT_REQUESTED" = false; fi
+          if [[ "$ABOUT_ONLY" == true ]]; then
+            test "$SAFE_ONLY" = false
+            test "$ROOT_REQUESTED" = false
+          fi
           [[ "$REQUESTED_SHA" =~ ^[0-9a-f]{40}$ ]]
-          test "$REQUESTED_SHA" = 'd4057855c8302aaec8a8d1b6cbdcea0256553e30'
+          test "$REQUESTED_SHA" = 'a681fb5a7f1f58ce23bbe74fd266775c36001217'
           remote_line="$(git -c credential.helper= ls-remote --exit-code --heads \
             https://github.com/arnieSkyNet/DirectPaymentTimesheets.git \
             refs/heads/security/v1.0.7-phase1)"
-          test "$remote_line" = $'d451407635c7e1c5141b0e809ba9ecc60d71f658\trefs/heads/security/v1.0.7-phase1'
+          test "$remote_line" = $'a681fb5a7f1f58ce23bbe74fd266775c36001217\trefs/heads/security/v1.0.7-phase1'
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
           repository: arnieSkyNet/DirectPaymentTimesheets
           # Fetch only the immutable approved source, not main or a branch tip.
-          ref: 'd4057855c8302aaec8a8d1b6cbdcea0256553e30'
+          ref: 'a681fb5a7f1f58ce23bbe74fd266775c36001217'
           fetch-depth: 1
           fetch-tags: false
           persist-credentials: false
       - name: Verify checkout HEAD and recheck the remote source tip
         run: |
           set -euo pipefail
-          test "$(git rev-parse HEAD)" = 'd4057855c8302aaec8a8d1b6cbdcea0256553e30'
+          test "$(git rev-parse HEAD)" = 'a681fb5a7f1f58ce23bbe74fd266775c36001217'
           test -z "$(git status --porcelain=v1 --untracked-files=all)"
           remote_line="$(git -c credential.helper= ls-remote --exit-code --heads \
             https://github.com/arnieSkyNet/DirectPaymentTimesheets.git \
             refs/heads/security/v1.0.7-phase1)"
-          test "$remote_line" = $'d451407635c7e1c5141b0e809ba9ecc60d71f658\trefs/heads/security/v1.0.7-phase1'
+          test "$remote_line" = $'a681fb5a7f1f58ce23bbe74fd266775c36001217\trefs/heads/security/v1.0.7-phase1'
       - name: Install the project's pinned native Rust toolchain
         run: rustup toolchain install 1.98.1 --profile minimal
       - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
@@ -92,7 +102,7 @@ jobs:
           python-version: '3.12'
       - name: Require synthetic harness guards and native Windows containment
         id: synthetic_guards
-        if: ${{ !inputs.compile_sqlite_containment_only }}
+        if: ${{ !inputs.compile_sqlite_containment_only && !inputs.verify_about_only }}
         env:
           NATIVE_RUNNER: ${{ matrix.runner }}
         run: |
@@ -133,7 +143,7 @@ jobs:
               raise SystemExit('Synthetic prerequisites refused')
           PYTHON
       - name: Compile and run isolated synthetic security tests
-        if: ${{ !inputs.compile_sqlite_containment_only && success() && steps.synthetic_guards.outcome == 'success' }}
+        if: ${{ !inputs.compile_sqlite_containment_only && !inputs.verify_about_only && success() && steps.synthetic_guards.outcome == 'success' }}
         env:
           RUSTUP_TOOLCHAIN: '1.98.1'
           NATIVE_RUNNER: ${{ matrix.runner }}
@@ -179,7 +189,8 @@ jobs:
           print('native.sqlite: inventory_verified=true; terminal_executed=false')
           PYTHON
       - name: Require strict native containment only
-        if: ${{ inputs.compile_sqlite_containment_only && success() }}
+        id: strict_containment
+        if: ${{ (inputs.compile_sqlite_containment_only || inputs.verify_about_only) && success() }}
         timeout-minutes: 2
         env:
           NATIVE_RUNNER: ${{ matrix.runner }}
@@ -194,6 +205,61 @@ jobs:
           sys.path.insert(0, str(pathlib.Path('scripts').resolve()))
           sys.argv = ['native_sqlite_terminal_checks.py', '--containment-only']
           runpy.run_path('scripts/native_sqlite_terminal_checks.py', run_name='__main__')
+          PYTHON
+      - name: Discover and run only exact synthetic About tests
+        if: ${{ inputs.verify_about_only && success() && steps.strict_containment.outcome == 'success' }}
+        timeout-minutes: 30
+        env:
+          RUSTUP_TOOLCHAIN: '1.98.1'
+          NATIVE_RUNNER: ${{ matrix.runner }}
+        run: |
+          python -I -B - <<'PYTHON'
+          import os, platform, re, subprocess, sys
+          runners = {('Windows', 'AMD64'): 'windows-2022', ('Darwin', 'x86_64'): 'macos-15-intel', ('Darwin', 'arm64'): 'macos-15'}
+          key = (platform.system(), platform.machine())
+          if key not in runners or runners[key] != os.environ.get('NATIVE_RUNNER'): raise SystemExit('unsupported_platform')
+          windows = platform.system() == 'Windows'
+          expected = {
+              'gui::about_windows_database_tests::about_windows_unavailable_preserves_missing_and_refused_database',
+              'private_storage::platform::about_read_only_policy_tests::about_windows_dacl_assessor_refuses_untrusted_allow_without_repair',
+              'private_storage::windows_verification_tests::about_windows_foreign_root_owner_refusal_preserves_fixture',
+              'private_storage::windows_verification_tests::about_windows_missing_database_is_not_created',
+              'private_storage::windows_verification_tests::about_windows_reparse_database_ancestor_and_sidecars_are_refused',
+          } if windows else {
+              'database::about_read_only_tests::database_ancestor_and_sidecar_symlinks_are_refused',
+              'database::about_read_only_tests::live_wal_committed_metadata_remains_readable',
+              'database::about_read_only_tests::missing_database_is_not_created',
+              'database::about_read_only_tests::ordinary_access_is_read_only_and_preserves_database',
+              'gui::about_database_tests::about_displays_existing_schema_without_migration',
+              'gui::about_database_tests::about_preserves_unavailable_on_open_and_query_failure',
+          }
+          keep = ('SystemRoot', 'WINDIR', 'PATH', 'TEMP', 'TMP', 'HOME', 'USERPROFILE', 'CARGO_HOME', 'RUSTUP_HOME', 'SDKROOT', 'DEVELOPER_DIR')
+          env = {k: os.environ[k] for k in keep if k in os.environ}
+          env.update(RUSTUP_TOOLCHAIN='1.98.1', CARGO_INCREMENTAL='0', CARGO_BUILD_JOBS='2', CARGO_PROFILE_TEST_DEBUG='0')
+          listing_args = ['cargo', 'test', '--locked', '--bin', 'direct_payment_timesheets', 'about_', '--', '--list']
+          execution_args = ['cargo', 'test', '--locked', '--bin', 'direct_payment_timesheets', 'about_', '--', '--test-threads=1']
+          try:
+              listing = subprocess.run(listing_args, env=env, capture_output=True, text=True, timeout=1200)
+          except (OSError, subprocess.TimeoutExpired): raise SystemExit('about_inventory_unconfirmed') from None
+          names = [line[:-6] for line in listing.stdout.splitlines() if line.endswith(': test')]
+          if listing.returncode:
+              print(listing.stderr, file=sys.stderr)
+              raise SystemExit('about_inventory_compilation_failed')
+          if len(names) != len(expected) or set(names) != expected: raise SystemExit('about_inventory_mismatch')
+          # Plain trusted Cargo execution is step-bounded; no descendant cleanup
+          # claim is made on timeout. Stop the job; do not retry or run later tests.
+          try:
+              result = subprocess.run(execution_args, env=env, capture_output=True, text=True, timeout=300)
+          except (OSError, subprocess.TimeoutExpired): raise SystemExit('about_execution_unconfirmed_cleanup') from None
+          print(result.stdout)
+          summary = re.findall(r'test result: ok[.] (\d+) passed; (\d+) failed; (\d+) ignored;', result.stdout)
+          # libtest emits "test NAME ... ok"; reject duplicate/absent/ignored cases.
+          completed = re.findall(r'^test (.+) \.\.\. ok$', result.stdout, re.M)
+          if result.returncode or summary != [(str(len(expected)), '0', '0')] or len(completed) != len(expected) or set(completed) != expected: raise SystemExit('about_tests_failed_or_incomplete')
+          if windows:
+              print('about: class=refusal_ui_evaluator_verified; positive_ordinary_wal_verified=false; staging_cleanup_verified=false')
+          else:
+              print('about: class=ordinary_and_live_wal_verified; pathname_confinement_verified=false')
           PYTHON
       - name: Explain the verification boundary
         if: always()
