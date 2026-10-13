@@ -7,7 +7,7 @@ import unittest
 import tempfile
 import sys
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import phase1_security_checks as checks
 
@@ -112,6 +112,65 @@ class RunnerTests(unittest.TestCase):
             run.assert_not_called()
 
 
+def assert_fixture_handle_released(path):
+    try:
+        path.unlink()  # The native fixture opened without FILE_SHARE_DELETE.
+    except OSError as error:
+        raise AssertionError(
+            f"windows.synthetic.handle_release: class=refused; code={getattr(error, 'winerror', error.errno)}"
+        ) from None
+
+
+class CleanupConfirmationTests(unittest.TestCase):
+    def test_delayed_leader_then_descendant_termination(self):
+        clock = [0.0]
+        def wait(leader, milliseconds):
+            self.assertEqual(leader, 1)
+            self.assertEqual(milliseconds, 10000)
+            clock[0] += 2  # Native wait completes later, within the budget.
+            return 0
+        def sleep(seconds): clock[0] += seconds
+        active = Mock(side_effect=[1, 0])
+        with patch.object(checks.time, 'monotonic', side_effect=lambda: clock[0]), \
+                patch.object(checks.time, 'sleep', side_effect=sleep):
+            checks.confirm_job_cleanup(1, wait, active)
+        self.assertEqual(active.call_count, 2)
+
+    def test_successful_reap_and_empty_job(self):
+        wait, active = Mock(return_value=0), Mock(return_value=0)
+        checks.confirm_job_cleanup(1, wait, active)
+        self.assertGreater(wait.call_args.args[1], 0)
+        self.assertLessEqual(wait.call_args.args[1], 10000)
+        active.assert_called_once()
+
+    def test_wait_failure_timeout_and_unexpected_are_refused(self):
+        for outcome, category in [(0xffffffff, 'leader_wait_failed'),
+                                  (258, 'leader_wait_timeout'), (128, 'leader_wait_unexpected')]:
+            active = Mock()
+            with patch.object(checks.ctypes, 'get_last_error', return_value=6, create=True):
+                with self.assertRaisesRegex(checks.ContainmentError, category):
+                    checks.confirm_job_cleanup(1, Mock(return_value=outcome), active)
+            active.assert_not_called()
+
+    def test_surviving_descendant_exhausts_shared_deadline(self):
+        with patch.object(checks.time, 'monotonic', side_effect=[0, 0, 1, 10]), \
+                patch.object(checks.time, 'sleep'):
+            with self.assertRaisesRegex(checks.ContainmentError, 'cleanup_unconfirmed'):
+                checks.confirm_job_cleanup(1, Mock(return_value=0), Mock(return_value=1))
+
+    def test_inaccessible_accounting_is_not_success(self):
+        with self.assertRaisesRegex(checks.ContainmentError, 'api_failure'):
+            checks.confirm_job_cleanup(1, Mock(return_value=0),
+                                       Mock(side_effect=checks.ContainmentError('windows.job: class=api_failure; code=5')))
+
+    def test_handle_release_refusal_is_not_success(self):
+        path = Mock()
+        path.unlink.side_effect = PermissionError(13, 'synthetic private text')
+        with self.assertRaisesRegex(AssertionError, 'class=refused; code=13') as error:
+            assert_fixture_handle_released(path)
+        self.assertNotIn('synthetic private text', str(error.exception))
+
+
 @unittest.skipUnless(os.name == "nt", "Requires native Windows Job Objects")
 class NativeContainmentTests(unittest.TestCase):
     def test_child_grandchild_timeout_releases_exclusive_handle(self):
@@ -144,7 +203,7 @@ time.sleep(60)
                 checks.run_windows_job([sys.executable, "-I", "-S", "-c", leader], env, timeout=10)
             # run_windows_job also requires ActiveProcesses==0 and a reaped leader.
             self.assertTrue((fixture / "ready").exists(), "Grandchild must reach held-handle state")
-            (fixture / "held").unlink()  # No FILE_SHARE_DELETE: succeeds only after handle release.
+            assert_fixture_handle_released(fixture / "held")
 
     def test_breakaway_is_refused(self):
         code = """

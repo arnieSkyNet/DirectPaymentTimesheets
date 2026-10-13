@@ -22,6 +22,31 @@ class ContainmentError(Exception):
     """Fixed failure output only; never serialize commands, env or OS messages."""
 
 
+def confirm_job_cleanup(leader, wait, active_processes):
+    """Separate process signaling and job accounting within one cleanup budget."""
+    deadline = time.monotonic() + 10
+    if leader:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise ContainmentError("windows.job: class=cleanup_unconfirmed")
+        remaining_ms = min(10000, max(1, int(remaining * 1000)))
+        outcome = wait(leader, remaining_ms)
+        if outcome == 0xffffffff:  # WAIT_FAILED; capture only its documented error.
+            code = ctypes.get_last_error()
+            raise ContainmentError(f"windows.job: class=leader_wait_failed; code={code}")
+        if outcome == 258:  # WAIT_TIMEOUT never confirms termination.
+            raise ContainmentError("windows.job: class=leader_wait_timeout; wait=258")
+        if outcome != 0:  # Only WAIT_OBJECT_0 is valid for a process handle.
+            raise ContainmentError(f"windows.job: class=leader_wait_unexpected; wait={outcome}")
+    while True:
+        active = active_processes()  # Query errors propagate; inaccessible is not empty.
+        if time.monotonic() >= deadline:
+            raise ContainmentError("windows.job: class=cleanup_unconfirmed")
+        if active == 0:
+            return
+        time.sleep(0.02)
+
+
 def run_windows_job(args, env, timeout=600):
     """Windows 10+ atomic job assignment; no uncontained launch fallback.
 
@@ -144,17 +169,11 @@ def run_windows_job(args, env, timeout=600):
         # Any cleanup failure escapes and stops the harness, never starts another group.
         try:
             require(terminate(job, 1))
-            deadline = time.monotonic() + 10
-            while True:
+            def active_processes():
                 accounting = Accounting()
                 require(query(job, 1, ctypes.byref(accounting), ctypes.sizeof(accounting), None))
-                if accounting.active == 0:
-                    break
-                if time.monotonic() >= deadline:
-                    raise ContainmentError("windows.job: class=cleanup_unconfirmed")
-                time.sleep(0.02)
-            if process.process and wait(process.process, 0) != 0:
-                raise ContainmentError("windows.job: class=reap_unconfirmed")
+                return accounting.active
+            confirm_job_cleanup(process.process, wait, active_processes)
         finally:
             if initialized:
                 delete(attributes)

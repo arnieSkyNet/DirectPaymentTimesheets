@@ -503,3 +503,35 @@ and runner/nested-job incompatibility fail the fixture; they are never silently
 accepted or skipped on Windows. A successful breakaway is immediately killed
 and waited on, and still fails verification. This is a controlled negative test,
 not proof against brokers or adversarial process creation.
+
+## Bounded leader wait after native timeout failure
+
+Run 38374457447 passed breakaway refusal and normal-exit cleanup, but the tree
+fixture failed with reap_unconfirmed after its ten-second timeout. The previous
+helper observed zero active job processes, then checked the leader with a
+zero-time wait. Its log did not preserve the wait result or OS error, so a
+completion-order race, wait failure or surviving leader cannot be distinguished.
+No handle-lifetime defect is established by that evidence; the owned process
+handle remained open until the cleanup finally block. The exclusive-handle
+assertion was not reached, and the workflow correctly skipped the Windows
+harness and root diagnostics. Both macOS jobs passed 19 Phase 1, 7 backup,
+29 database-recovery and 31 filing-recovery tests.
+
+The correction waits explicitly for the leader to signal within the same
+shared ten-second cleanup deadline, then independently confirms zero active job
+processes. WAIT_TIMEOUT, WAIT_FAILED (with numeric GetLastError), unexpected wait
+values, accounting failures, deadline exhaustion and handle-close failures remain
+refusals. GetExitCodeProcess remains an exit-status query after a successful wait,
+not a substitute for termination signaling; STILL_ACTIVE alone is not proof.
+The native fixture still requires a reached held-handle state and successful
+exclusive-file deletion after cleanup. A deletion refusal has fixed redacted
+classification and numeric error. Assignment, breakaway restrictions, diagnostic
+gates, admission and publication are unchanged.
+
+Linux Python validation: 14 tests passed, including six focused cleanup tests;
+three native fixtures were skipped. These mocks cover delayed leader signaling,
+successful reap, timeout, failed/unexpected wait, surviving descendant, inaccessible
+accounting and handle-release refusal; they are not Windows termination proof.
+Native success, exclusive-handle release and the underlying cause of the previous
+failure remain pending a separately authorized native run. No workflow pin was
+updated and no run was dispatched for this correction.
