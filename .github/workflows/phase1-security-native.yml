@@ -5,9 +5,14 @@ on:
   workflow_dispatch:
     inputs:
       expected_sha:
-        description: Enter approved source SHA 073ec14ae059d8e8f5c2e677e7c787aea47d5464; dispatch from main
+        description: Enter approved source SHA a9b7fa74abc651027fad268e6a36943eb1e27cd8; dispatch from main
         required: true
         type: string
+      controlled_windows_root_diagnostics:
+        description: Opt in to synthetic Windows root diagnostics after native containment passes
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: read
@@ -25,7 +30,7 @@ jobs:
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 90
     env:
-      EXPECTED_SHA: '073ec14ae059d8e8f5c2e677e7c787aea47d5464'
+      EXPECTED_SHA: 'a9b7fa74abc651027fad268e6a36943eb1e27cd8'
       GIT_TERMINAL_PROMPT: '0'
       CARGO_INCREMENTAL: '0'
       CARGO_BUILD_JOBS: '2'
@@ -42,39 +47,80 @@ jobs:
           set -euo pipefail
           test "$SELECTED_REF" = refs/heads/main
           [[ "$REQUESTED_SHA" =~ ^[0-9a-f]{40}$ ]]
-          test "$REQUESTED_SHA" = '073ec14ae059d8e8f5c2e677e7c787aea47d5464'
+          test "$REQUESTED_SHA" = 'a9b7fa74abc651027fad268e6a36943eb1e27cd8'
           remote_line="$(git -c credential.helper= ls-remote --exit-code --heads \
             https://github.com/arnieSkyNet/DirectPaymentTimesheets.git \
             refs/heads/security/v1.0.7-phase1)"
-          test "$remote_line" = $'073ec14ae059d8e8f5c2e677e7c787aea47d5464\trefs/heads/security/v1.0.7-phase1'
+          test "$remote_line" = $'a9b7fa74abc651027fad268e6a36943eb1e27cd8\trefs/heads/security/v1.0.7-phase1'
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
           repository: arnieSkyNet/DirectPaymentTimesheets
           # Fetch only the immutable approved source, not main or a branch tip.
-          ref: '073ec14ae059d8e8f5c2e677e7c787aea47d5464'
+          ref: 'a9b7fa74abc651027fad268e6a36943eb1e27cd8'
           fetch-depth: 1
           fetch-tags: false
           persist-credentials: false
       - name: Verify checkout HEAD and recheck the remote source tip
         run: |
           set -euo pipefail
-          test "$(git rev-parse HEAD)" = '073ec14ae059d8e8f5c2e677e7c787aea47d5464'
+          test "$(git rev-parse HEAD)" = 'a9b7fa74abc651027fad268e6a36943eb1e27cd8'
           test -z "$(git status --porcelain=v1 --untracked-files=all)"
           remote_line="$(git -c credential.helper= ls-remote --exit-code --heads \
             https://github.com/arnieSkyNet/DirectPaymentTimesheets.git \
             refs/heads/security/v1.0.7-phase1)"
-          test "$remote_line" = $'073ec14ae059d8e8f5c2e677e7c787aea47d5464\trefs/heads/security/v1.0.7-phase1'
+          test "$remote_line" = $'a9b7fa74abc651027fad268e6a36943eb1e27cd8\trefs/heads/security/v1.0.7-phase1'
       - name: Install the project's pinned native Rust toolchain
         run: rustup toolchain install 1.98.1 --profile minimal
       - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
         with:
           python-version: '3.12'
+      - name: Require synthetic harness guards and native Windows containment
+        id: synthetic_guards
+        env:
+          NATIVE_RUNNER: ${{ matrix.runner }}
+        run: |
+          set -euo pipefail
+          python -B - <<'PYTHON'
+          import os
+          import unittest
+          suite = unittest.defaultTestLoader.discover('scripts', pattern='test_phase1_security_checks.py')
+          def cases(node):
+              for item in node:
+                  if isinstance(item, unittest.TestSuite):
+                      yield from cases(item)
+                  else:
+                      yield item
+          tests = list(cases(suite))
+          windows = os.environ['NATIVE_RUNNER'] == 'windows-2022'
+          if windows:
+              assert os.name == 'nt', 'Containment requires native Windows'
+              expected = {
+                  'test_phase1_security_checks.NativeContainmentTests.test_breakaway_is_refused',
+                  'test_phase1_security_checks.NativeContainmentTests.test_child_grandchild_timeout_releases_exclusive_handle',
+                  'test_phase1_security_checks.NativeContainmentTests.test_normal_exit_cleans_descendant',
+              }
+              assert {test.id() for test in tests if '.NativeContainmentTests.' in test.id()} == expected, 'Containment fixture inventory mismatch'
+          assert tests, 'No harness guards discovered'
+          result = unittest.TextTestRunner(verbosity=2).run(suite)
+          assert result.wasSuccessful() and result.testsRun == len(tests), 'Synthetic guards failed or incomplete'
+          if windows:
+              assert not result.skipped, 'Skipped containment/guard test refuses Windows verification'
+          PYTHON
       - name: Compile and run isolated synthetic security tests
+        if: ${{ success() && steps.synthetic_guards.outcome == 'success' }}
         env:
           RUSTUP_TOOLCHAIN: '1.98.1'
+          NATIVE_RUNNER: ${{ matrix.runner }}
+          ROOT_DIAGNOSTICS_REQUESTED: ${{ inputs.controlled_windows_root_diagnostics }}
         run: |
-          python -B -m unittest discover -s scripts -p test_phase1_security_checks.py -v
-          python -B scripts/phase1_security_checks.py
+          set -euo pipefail
+          # The approved harness activates root queries only for its scoped Phase 1 fixture.
+          # Compilation, other groups and production admission never activate diagnostics.
+          if [[ "$NATIVE_RUNNER" == windows-2022 && "$ROOT_DIAGNOSTICS_REQUESTED" == true ]]; then
+            env -u DPT_WINDOWS_ROOT_DIAGNOSTICS DPT_WINDOWS_SYNTHETIC_ROOT_DIAGNOSTICS=1 python -B scripts/phase1_security_checks.py
+          else
+            env -u DPT_WINDOWS_ROOT_DIAGNOSTICS -u DPT_WINDOWS_SYNTHETIC_ROOT_DIAGNOSTICS python -B scripts/phase1_security_checks.py
+          fi
       - name: Explain the verification boundary
         if: always()
         run: |
