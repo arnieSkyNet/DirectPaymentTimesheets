@@ -2,9 +2,8 @@
 
 This is an isolated integration-test target, not a production API or connection
 migration. Only Windows/macOS compile its Rust body. Its sole libtest entry is
-ignored by default. The existing Linux proof is unchanged. No existing workflow,
-source pin, owner/trustee policy, ACL mask, diagnostic gate or publication path is
-changed. The fixture descriptors demonstrate ownership, not production-equivalent
+ignored by default. The existing Linux proof is unchanged. Owner/trustee policy, ACL masks, diagnostic gates and publication paths remain
+unchanged. The test-only workflow preparation is described below. The fixture descriptors demonstrate ownership, not production-equivalent
 namespace validation. Unix directory descriptors do not confine SQLite pathname
 opens. Windows volume-root owner rejection is neither tested around nor relaxed.
 
@@ -246,5 +245,29 @@ mock tests prove only the selected control flow. These trusted controls can test
 kqueue, leader identity, signaling and reaping without loading SQLite terminal
 code. They do not establish arbitrary descendant containment or dump suppression.
 
-The actual workflow and its older source pin remain unchanged. No native command,
+The active main workflow and its older source pin remain unchanged. No native command,
 emergency fixture, workflow dispatch or OS setting change is authorized here.
+
+## Prepared workflow and accepted compiler-timeout boundary
+
+The security-branch workflow now contains the proposed main-only preparation.
+Its immutable source pin stays d4057855c8302aaec8a8d1b6cbdcea0256553e30.
+Committing this preparation necessarily advances the remote security tip: the
+remote-tip guard will refuse dispatch until a separately reviewed pin update.
+Main is not changed and no dispatch is authorized by this preparation.
+
+Ordinary Actions job/step timeouts are explicitly accepted for Cargo compilation
+without proof of compiler-descendant reaping. Build failure/timeout blocks every
+later verification step. Inventory uses only --list --ignored with a ten-second
+child deadline; it never invokes the ignored SQLite test. Strict cleanup remains
+mandatory for the three Windows Job controls and the two macOS single-child
+controls. Their unsupported/error/skip outcomes cannot pass or permit later tests.
+The outer containment step deadline is a final failure boundary, not evidence of
+successful cleanup. Compiler cancellation and unsupported security cleanup must
+never be reported as verification.
+
+The compile-only input defaults false and rejects terminal/root diagnostic inputs.
+Terminal execution is refused by the workflow in every mode. Safe controls receive
+an allowlisted environment and hardcoded containment-only arguments. The normal
+Phase 1 mode remains separate, with an immediate-stop prerequisite runner and only
+the three exact documented macOS Windows-native skips accepted.
