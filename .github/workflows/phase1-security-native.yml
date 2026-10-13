@@ -5,7 +5,7 @@ on:
   workflow_dispatch:
     inputs:
       expected_sha:
-        description: Enter approved source SHA a681fb5a7f1f58ce23bbe74fd266775c36001217; dispatch from main
+        description: Enter approved source SHA d7e6994cce35da069c4dda5b62c8fd0e9f6770d8; dispatch from main
         required: true
         type: string
       controlled_windows_root_diagnostics:
@@ -46,7 +46,7 @@ jobs:
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 90
     env:
-      EXPECTED_SHA: 'a681fb5a7f1f58ce23bbe74fd266775c36001217'
+      EXPECTED_SHA: 'd7e6994cce35da069c4dda5b62c8fd0e9f6770d8'
       GIT_TERMINAL_PROMPT: '0'
       CARGO_INCREMENTAL: '0'
       CARGO_BUILD_JOBS: '2'
@@ -73,28 +73,28 @@ jobs:
             test "$ROOT_REQUESTED" = false
           fi
           [[ "$REQUESTED_SHA" =~ ^[0-9a-f]{40}$ ]]
-          test "$REQUESTED_SHA" = 'a681fb5a7f1f58ce23bbe74fd266775c36001217'
+          test "$REQUESTED_SHA" = 'd7e6994cce35da069c4dda5b62c8fd0e9f6770d8'
           remote_line="$(git -c credential.helper= ls-remote --exit-code --heads \
             https://github.com/arnieSkyNet/DirectPaymentTimesheets.git \
             refs/heads/security/v1.0.7-phase1)"
-          test "$remote_line" = $'a681fb5a7f1f58ce23bbe74fd266775c36001217\trefs/heads/security/v1.0.7-phase1'
+          test "$remote_line" = $'d7e6994cce35da069c4dda5b62c8fd0e9f6770d8\trefs/heads/security/v1.0.7-phase1'
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
           repository: arnieSkyNet/DirectPaymentTimesheets
           # Fetch only the immutable approved source, not main or a branch tip.
-          ref: 'a681fb5a7f1f58ce23bbe74fd266775c36001217'
+          ref: 'd7e6994cce35da069c4dda5b62c8fd0e9f6770d8'
           fetch-depth: 1
           fetch-tags: false
           persist-credentials: false
       - name: Verify checkout HEAD and recheck the remote source tip
         run: |
           set -euo pipefail
-          test "$(git rev-parse HEAD)" = 'a681fb5a7f1f58ce23bbe74fd266775c36001217'
+          test "$(git rev-parse HEAD)" = 'd7e6994cce35da069c4dda5b62c8fd0e9f6770d8'
           test -z "$(git status --porcelain=v1 --untracked-files=all)"
           remote_line="$(git -c credential.helper= ls-remote --exit-code --heads \
             https://github.com/arnieSkyNet/DirectPaymentTimesheets.git \
             refs/heads/security/v1.0.7-phase1)"
-          test "$remote_line" = $'a681fb5a7f1f58ce23bbe74fd266775c36001217\trefs/heads/security/v1.0.7-phase1'
+          test "$remote_line" = $'d7e6994cce35da069c4dda5b62c8fd0e9f6770d8\trefs/heads/security/v1.0.7-phase1'
       - name: Install the project's pinned native Rust toolchain
         run: rustup toolchain install 1.98.1 --profile minimal
       - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
@@ -214,7 +214,8 @@ jobs:
           NATIVE_RUNNER: ${{ matrix.runner }}
         run: |
           python -I -B - <<'PYTHON'
-          import os, platform, re, subprocess, sys
+          import json, os, platform, re, subprocess, sys, tempfile
+          from pathlib import Path
           runners = {('Windows', 'AMD64'): 'windows-2022', ('Darwin', 'x86_64'): 'macos-15-intel', ('Darwin', 'arm64'): 'macos-15'}
           key = (platform.system(), platform.machine())
           if key not in runners or runners[key] != os.environ.get('NATIVE_RUNNER'): raise SystemExit('unsupported_platform')
@@ -233,9 +234,116 @@ jobs:
               'gui::about_database_tests::about_displays_existing_schema_without_migration',
               'gui::about_database_tests::about_preserves_unavailable_on_open_and_query_failure',
           }
-          keep = ('SystemRoot', 'WINDIR', 'PATH', 'TEMP', 'TMP', 'HOME', 'USERPROFILE', 'CARGO_HOME', 'RUSTUP_HOME', 'SDKROOT', 'DEVELOPER_DIR')
+          keep = ('SystemRoot', 'WINDIR', 'PATH', 'TEMP', 'TMP', 'HOME', 'USERPROFILE', 'CARGO_HOME', 'RUSTUP_HOME', 'SDKROOT', 'DEVELOPER_DIR', 'ProgramFiles', 'ProgramFiles(x86)', 'ProgramW6432', 'SystemDrive')
           env = {k: os.environ[k] for k in keep if k in os.environ}
           env.update(RUSTUP_TOOLCHAIN='1.98.1', CARGO_INCREMENTAL='0', CARGO_BUILD_JOBS='2', CARGO_PROFILE_TEST_DEBUG='0')
+          def tool_query(args, env, timeout):
+              # Regular files prevent a stalled tool descendant retaining a pipe
+              # from making timeout handling wait indefinitely for pipe EOF.
+              with tempfile.TemporaryFile() as out, tempfile.TemporaryFile() as err:
+                  process = subprocess.Popen(args, env=env, stdout=out, stderr=err)
+                  try:
+                      code = process.wait(timeout=timeout)
+                  except subprocess.TimeoutExpired:
+                      process.kill()
+                      try: process.wait(timeout=5)
+                      except subprocess.TimeoutExpired: raise SystemExit('msvc_tool_reap_unconfirmed') from None
+                      raise
+                  out.seek(0)
+                  err.seek(0)
+                  return subprocess.CompletedProcess(args, code, out.read().decode('utf-8', errors='replace'), err.read().decode('utf-8', errors='replace'))
+          def windows_toolchain(base):
+              # Installed runner tools only. Capture configuration internally;
+              # never print developer-environment values or arbitrary PATH entries.
+              script = r'''
+          $ErrorActionPreference = 'Stop'
+          function Require-PlainPath($path) {
+            $full = [IO.Path]::GetFullPath($path)
+            if ($full -match '["%!?&|<>\r\n]') { throw 'unsafe_tool_path' }
+            $current = $full
+            while ($current) {
+              $entry = Get-Item -LiteralPath $current -Force
+              if ($entry.Attributes -band [IO.FileAttributes]::ReparsePoint) { throw 'reparse_tool_path' }
+              $parent = [IO.Path]::GetDirectoryName($current.TrimEnd('\'))
+              if ($parent -eq $current) { break }
+              $current = $parent
+            }
+            return $full
+          }
+          $pf = ${env:ProgramFiles(x86)}
+          if (!$pf) { throw 'missing_discovery_root' }
+          $vswhere = Require-PlainPath (Join-Path $pf 'Microsoft Visual Studio\Installer\vswhere.exe')
+          $raw = & $vswhere -products '*' -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -format json
+          if ($LASTEXITCODE -ne 0) { throw 'discovery_failed' }
+          $instances = ConvertFrom-Json -InputObject ($raw -join "`n")
+          if ($instances.Count -ne 1) { throw 'ambiguous_or_missing_toolchain' }
+          $root = Require-PlainPath $instances[0].installationPath
+          $allowedRoots = @($env:ProgramFiles, ${env:ProgramFiles(x86)}, $env:ProgramW6432) | Where-Object { $_ }
+          if (!($allowedRoots | Where-Object { $root.StartsWith((Join-Path $_ 'Microsoft Visual Studio\'), [StringComparison]::OrdinalIgnoreCase) })) { throw 'untrusted_installation' }
+          $dev = Require-PlainPath (Join-Path $root 'Common7\Tools\VsDevCmd.bat')
+          if (!(Test-Path -LiteralPath $dev -PathType Leaf)) { throw 'missing_developer_environment' }
+          $output = & "$env:SystemRoot\System32\cmd.exe" /d /s /c "`"`"$dev`" -arch=x64 -host_arch=x64 >nul && set`""
+          if ($LASTEXITCODE -ne 0) { throw 'developer_environment_failed' }
+          $values = @{}
+          foreach ($line in $output) {
+            $pair = $line.Split('=', 2)
+            if ($pair.Count -eq 2) { $values[$pair[0].ToUpperInvariant()] = $pair[1] }
+          }
+          if ($values['VSCMD_ARG_TGT_ARCH'] -ne 'x64' -or $values['VSCMD_ARG_HOST_ARCH'] -ne 'x64') { throw 'wrong_architecture' }
+          $tools = Require-PlainPath $values['VCTOOLSINSTALLDIR']
+          if (!$tools.StartsWith(($root.TrimEnd('\') + '\VC\Tools\MSVC\'), [StringComparison]::OrdinalIgnoreCase)) { throw 'untrusted_tools' }
+          if ([IO.Path]::GetFullPath($values['VSINSTALLDIR']).TrimEnd('\') -ne $root.TrimEnd('\')) { throw 'installation_mismatch' }
+          $sdk = Require-PlainPath $values['WINDOWSSDKDIR']
+          if (!($allowedRoots | Where-Object { $sdk.StartsWith((Join-Path $_ 'Windows Kits\'), [StringComparison]::OrdinalIgnoreCase) })) { throw 'untrusted_sdk' }
+          foreach ($key in @('VCINSTALLDIR','WINDOWSSDKBINPATH','WINDOWSSDKVERBINPATH','UNIVERSALCRTSDKDIR')) {
+            if ($values[$key]) {
+              $candidate = Require-PlainPath $values[$key]
+              if (!$candidate.StartsWith(($root.TrimEnd('\') + '\'), [StringComparison]::OrdinalIgnoreCase) -and !$candidate.StartsWith(($sdk.TrimEnd('\') + '\'), [StringComparison]::OrdinalIgnoreCase) -and $candidate.TrimEnd('\') -ne $sdk.TrimEnd('\')) { throw 'untrusted_toolchain_variable' }
+            }
+          }
+          $link = Require-PlainPath (Join-Path $tools 'bin\Hostx64\x64\link.exe')
+          $item = Get-Item -LiteralPath $link
+          if ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) { throw 'reparse_linker' }
+          $version = $item.VersionInfo
+          if ($version.CompanyName -ne 'Microsoft Corporation' -or $version.ProductName -notmatch 'Visual Studio') { throw 'incompatible_linker' }
+          $keep = @('PATH','INCLUDE','LIB','LIBPATH','VSINSTALLDIR','VCINSTALLDIR','VCTOOLSINSTALLDIR','WINDOWSSDKDIR','WINDOWSSDKVERSION','WINDOWSSDKBINPATH','WINDOWSSDKVERBINPATH','UNIVERSALCRTSDKDIR','UCRTVERSION','VSCMD_ARG_TGT_ARCH','VSCMD_ARG_HOST_ARCH')
+          $envOut = @{}
+          foreach ($key in $keep) { if ($values.ContainsKey($key)) { $envOut[$key] = $values[$key] } }
+          @{environment=$envOut; linker=$link; root=$root; company=$version.CompanyName; product=$version.ProductName; version=$version.FileVersion} | ConvertTo-Json -Depth 3 -Compress
+          '''
+              # These trusted setup-tool deadlines do not prove descendant-tree
+              # cleanup; any timeout stops the step without retries or About tests.
+              powershell = os.path.join(base['SystemRoot'], 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe')
+              try:
+                  discovery = tool_query([powershell, '-NoProfile', '-NonInteractive', '-Command', script], base, 30)
+              except (OSError, subprocess.TimeoutExpired): raise SystemExit('msvc_discovery_unconfirmed') from None
+              if discovery.returncode: raise SystemExit('msvc_discovery_refused')
+              try:
+                  data = json.loads(discovery.stdout)
+              except (ValueError, TypeError): raise SystemExit('msvc_discovery_invalid') from None
+              if not isinstance(data, dict) or not all(isinstance(data.get(k), str) for k in ('linker','root','company','product','version')) or not isinstance(data.get('environment'), dict): raise SystemExit('msvc_discovery_invalid')
+              allowed = {'PATH','INCLUDE','LIB','LIBPATH','VSINSTALLDIR','VCINSTALLDIR','VCTOOLSINSTALLDIR','WINDOWSSDKDIR','WINDOWSSDKVERSION','WINDOWSSDKBINPATH','WINDOWSSDKVERBINPATH','UNIVERSALCRTSDKDIR','UCRTVERSION','VSCMD_ARG_TGT_ARCH','VSCMD_ARG_HOST_ARCH'}
+              config = data['environment']
+              if set(config) - allowed or any(not isinstance(v, str) for v in config.values()): raise SystemExit('msvc_environment_refused')
+              if any(not config.get(k) for k in ('PATH','INCLUDE','LIB','LIBPATH','VCTOOLSINSTALLDIR','WINDOWSSDKDIR')): raise SystemExit('msvc_environment_incomplete')
+              linker = Path(data['linker'])
+              root = Path(data['root'])
+              if not root.is_absolute() or not linker.is_absolute() or not linker.is_relative_to(root / 'VC' / 'Tools' / 'MSVC') or linker.parts[-4:] != ('bin', 'Hostx64', 'x64', 'link.exe') or data['company'] != 'Microsoft Corporation' or 'Visual Studio' not in data['product']: raise SystemExit('msvc_linker_refused')
+              if config.get('VSCMD_ARG_TGT_ARCH') != 'x64' or config.get('VSCMD_ARG_HOST_ARCH') != 'x64': raise SystemExit('msvc_architecture_refused')
+              config['PATH'] = str(linker.parent) + os.pathsep + config['PATH']
+              config['CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER'] = str(linker)
+              configured = base | config
+              try:
+                  help_result = tool_query([str(linker), '/?'], configured, 5)
+                  rust = tool_query(['rustc', '-vV'], configured, 5)
+              except (OSError, subprocess.TimeoutExpired): raise SystemExit('msvc_identity_unconfirmed') from None
+              if help_result.returncode or 'Microsoft' not in help_result.stdout + help_result.stderr or rust.returncode or 'host: x86_64-pc-windows-msvc' not in rust.stdout: raise SystemExit('msvc_identity_refused')
+              print(json.dumps({'class':'msvc_verified','linker':str(linker),'product':data['product'],'version':data['version'],'host':'x86_64-pc-windows-msvc','target':'x86_64-pc-windows-msvc','discovery_code':discovery.returncode,'help_code':help_result.returncode,'rust_code':rust.returncode,'required_present':{k:bool(config.get(k)) for k in ('INCLUDE','LIB','LIBPATH','WINDOWSSDKDIR')}}, sort_keys=True))
+              return configured
+          if windows:
+              env.pop('SDKROOT', None)
+              env.pop('DEVELOPER_DIR', None)
+              env = windows_toolchain(env)
           listing_args = ['cargo', 'test', '--locked', '--bin', 'direct_payment_timesheets', 'about_', '--', '--list']
           execution_args = ['cargo', 'test', '--locked', '--bin', 'direct_payment_timesheets', 'about_', '--', '--test-threads=1']
           try:
