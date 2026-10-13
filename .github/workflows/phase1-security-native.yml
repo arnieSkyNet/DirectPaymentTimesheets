@@ -237,26 +237,67 @@ jobs:
           keep = ('SystemRoot', 'WINDIR', 'PATH', 'TEMP', 'TMP', 'HOME', 'USERPROFILE', 'CARGO_HOME', 'RUSTUP_HOME', 'SDKROOT', 'DEVELOPER_DIR', 'ProgramFiles', 'ProgramFiles(x86)', 'ProgramW6432', 'SystemDrive')
           env = {k: os.environ[k] for k in keep if k in os.environ}
           env.update(RUSTUP_TOOLCHAIN='1.98.1', CARGO_INCREMENTAL='0', CARGO_BUILD_JOBS='2', CARGO_PROFILE_TEST_DEBUG='0')
-          def tool_query(args, env, timeout):
-              # Regular files prevent a stalled tool descendant retaining a pipe
-              # from making timeout handling wait indefinitely for pipe EOF.
+          phases = ('entry', 'pathname', 'vswhere', 'vsdevcmd', 'sdk', 'linker_metadata')
+          def native_code(error):
+              code = getattr(error, 'winerror', None)
+              return code if isinstance(code, int) and not isinstance(code, bool) else None
+          def tool_query(args, env, timeout, discovery=False):
+              # Read only a bounded snapshot of regular-file output, including on
+              # failure. Never publish raw tool output or exception text.
               with tempfile.TemporaryFile() as out, tempfile.TemporaryFile() as err:
-                  process = subprocess.Popen(args, env=env, stdout=out, stderr=err)
+                  def evidence(classification, error=None, killed=False, reaped=False, exit_code=None):
+                      err.seek(0)
+                      raw = err.read(4097)
+                      lines = raw.decode('ascii', errors='replace').splitlines()
+                      observed = []
+                      for line in lines:
+                          if discovery and line.startswith('DPT_MSVC_PHASE:'):
+                              phase = line.removeprefix('DPT_MSVC_PHASE:')
+                              if phase in phases: observed.append(phase)
+                      # Report only a prefix of the fixed phase sequence. Raw
+                      # stderr is rejected rather than interpreted as diagnostics.
+                      ordered = observed == list(phases[:len(observed)])
+                      record = {'class':classification, 'native_code':native_code(error), 'exit_code':exit_code, 'deadline_seconds':timeout, 'leader_killed':killed, 'leader_reaped':reaped, 'descendant_cleanup_confirmed':False, 'markers_valid':ordered and len(lines) == len(observed) and len(raw) <= 4096, 'phases':observed if ordered else []}
+                      print(json.dumps(record, sort_keys=True))
+                  try:
+                      process = subprocess.Popen(args, env=env, stdout=out, stderr=err)
+                  except OSError as error:
+                      evidence('msvc_launch_failed', error)
+                      raise SystemExit('msvc_launch_failed') from None
                   try:
                       code = process.wait(timeout=timeout)
                   except subprocess.TimeoutExpired:
-                      process.kill()
+                      try: process.kill()
+                      except OSError as error:
+                          evidence('msvc_leader_kill_failed', error)
+                          raise SystemExit('msvc_leader_kill_failed') from None
                       try: process.wait(timeout=5)
-                      except subprocess.TimeoutExpired: raise SystemExit('msvc_tool_reap_unconfirmed') from None
-                      raise
+                      except subprocess.TimeoutExpired:
+                          evidence('msvc_leader_reap_timeout', killed=True)
+                          raise SystemExit('msvc_leader_reap_timeout') from None
+                      except OSError as error:
+                          evidence('msvc_leader_reap_failed', error, killed=True)
+                          raise SystemExit('msvc_leader_reap_failed') from None
+                      evidence('msvc_query_timeout', killed=True, reaped=True)
+                      raise SystemExit('msvc_query_timeout') from None
+                  except OSError as error:
+                      # Wait failure leaves leader state uncertain; fail closed.
+                      evidence('msvc_wait_failed', error)
+                      raise SystemExit('msvc_wait_failed') from None
+                  evidence('msvc_query_completed', reaped=True, exit_code=code)
                   out.seek(0)
                   err.seek(0)
-                  return subprocess.CompletedProcess(args, code, out.read().decode('utf-8', errors='replace'), err.read().decode('utf-8', errors='replace'))
+                  stdout, stderr = out.read(65537), err.read(4097)
+                  if len(stdout) > 65536 or len(stderr) > 4096: raise SystemExit('msvc_output_limit')
+                  if discovery:
+                      if stderr.decode('ascii', errors='replace').splitlines() != ['DPT_MSVC_PHASE:' + phase for phase in phases]: raise SystemExit('msvc_marker_output_refused')
+                  return subprocess.CompletedProcess(args, code, stdout.decode('utf-8', errors='replace'), stderr.decode('utf-8', errors='replace'))
           def windows_toolchain(base):
               # Installed runner tools only. Capture configuration internally;
               # never print developer-environment values or arbitrary PATH entries.
               script = r'''
           $ErrorActionPreference = 'Stop'
+          [Console]::Error.WriteLine('DPT_MSVC_PHASE:entry')
           function Require-PlainPath($path) {
             $full = [IO.Path]::GetFullPath($path)
             if ($full -match '["%!?&|<>\r\n]') { throw 'unsafe_tool_path' }
@@ -272,7 +313,9 @@ jobs:
           }
           $pf = ${env:ProgramFiles(x86)}
           if (!$pf) { throw 'missing_discovery_root' }
+          [Console]::Error.WriteLine('DPT_MSVC_PHASE:pathname')
           $vswhere = Require-PlainPath (Join-Path $pf 'Microsoft Visual Studio\Installer\vswhere.exe')
+          [Console]::Error.WriteLine('DPT_MSVC_PHASE:vswhere')
           $raw = & $vswhere -products '*' -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -format json
           if ($LASTEXITCODE -ne 0) { throw 'discovery_failed' }
           $instances = ConvertFrom-Json -InputObject ($raw -join "`n")
@@ -282,6 +325,7 @@ jobs:
           if (!($allowedRoots | Where-Object { $root.StartsWith((Join-Path $_ 'Microsoft Visual Studio\'), [StringComparison]::OrdinalIgnoreCase) })) { throw 'untrusted_installation' }
           $dev = Require-PlainPath (Join-Path $root 'Common7\Tools\VsDevCmd.bat')
           if (!(Test-Path -LiteralPath $dev -PathType Leaf)) { throw 'missing_developer_environment' }
+          [Console]::Error.WriteLine('DPT_MSVC_PHASE:vsdevcmd')
           $output = & "$env:SystemRoot\System32\cmd.exe" /d /s /c "`"`"$dev`" -arch=x64 -host_arch=x64 >nul && set`""
           if ($LASTEXITCODE -ne 0) { throw 'developer_environment_failed' }
           $values = @{}
@@ -293,6 +337,7 @@ jobs:
           $tools = Require-PlainPath $values['VCTOOLSINSTALLDIR']
           if (!$tools.StartsWith(($root.TrimEnd('\') + '\VC\Tools\MSVC\'), [StringComparison]::OrdinalIgnoreCase)) { throw 'untrusted_tools' }
           if ([IO.Path]::GetFullPath($values['VSINSTALLDIR']).TrimEnd('\') -ne $root.TrimEnd('\')) { throw 'installation_mismatch' }
+          [Console]::Error.WriteLine('DPT_MSVC_PHASE:sdk')
           $sdk = Require-PlainPath $values['WINDOWSSDKDIR']
           if (!($allowedRoots | Where-Object { $sdk.StartsWith((Join-Path $_ 'Windows Kits\'), [StringComparison]::OrdinalIgnoreCase) })) { throw 'untrusted_sdk' }
           foreach ($key in @('VCINSTALLDIR','WINDOWSSDKBINPATH','WINDOWSSDKVERBINPATH','UNIVERSALCRTSDKDIR')) {
@@ -301,6 +346,7 @@ jobs:
               if (!$candidate.StartsWith(($root.TrimEnd('\') + '\'), [StringComparison]::OrdinalIgnoreCase) -and !$candidate.StartsWith(($sdk.TrimEnd('\') + '\'), [StringComparison]::OrdinalIgnoreCase) -and $candidate.TrimEnd('\') -ne $sdk.TrimEnd('\')) { throw 'untrusted_toolchain_variable' }
             }
           }
+          [Console]::Error.WriteLine('DPT_MSVC_PHASE:linker_metadata')
           $link = Require-PlainPath (Join-Path $tools 'bin\Hostx64\x64\link.exe')
           $item = Get-Item -LiteralPath $link
           if ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) { throw 'reparse_linker' }
@@ -315,8 +361,10 @@ jobs:
               # cleanup; any timeout stops the step without retries or About tests.
               powershell = os.path.join(base['SystemRoot'], 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe')
               try:
-                  discovery = tool_query([powershell, '-NoProfile', '-NonInteractive', '-Command', script], base, 30)
-              except (OSError, subprocess.TimeoutExpired): raise SystemExit('msvc_discovery_unconfirmed') from None
+                  discovery = tool_query([powershell, '-NoProfile', '-NonInteractive', '-Command', script], base, 30, discovery=True)
+              except OSError as error:
+                  print(json.dumps({'class':'msvc_discovery_os_error','native_code':native_code(error),'deadline_seconds':30,'leader_killed':False,'leader_reaped':False,'descendant_cleanup_confirmed':False}, sort_keys=True))
+                  raise SystemExit('msvc_discovery_os_error') from None
               if discovery.returncode: raise SystemExit('msvc_discovery_refused')
               try:
                   data = json.loads(discovery.stdout)
