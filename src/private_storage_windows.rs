@@ -561,9 +561,44 @@ fn probe_root_service_owner(owner: *const c_void) -> RootProbe {
     report
 }
 
-// Explicit opt-in; no account resolution or SCM calls in ordinary refusals.
+// Diagnostics are reachable only from a synthetic test's thread-local scope.
+// The exact environment opt-in alone cannot activate production observations.
+#[cfg(test)]
+thread_local! {
+    static SYNTHETIC_ROOT_OBSERVATION: std::cell::Cell<Option<bool>> = const { std::cell::Cell::new(None) };
+}
+#[cfg(test)]
+pub(super) fn with_synthetic_root_observation<T>(run: impl FnOnce() -> T) -> T {
+    struct Reset;
+    impl Drop for Reset {
+        fn drop(&mut self) {
+            SYNTHETIC_ROOT_OBSERVATION.with(|active| active.set(None));
+        }
+    }
+    SYNTHETIC_ROOT_OBSERVATION.with(|active| {
+        assert!(active.get().is_none());
+        active.set(Some(false));
+    });
+    let _reset = Reset;
+    run()
+}
 fn root_diagnostics_enabled() -> bool {
-    std::env::var_os("DPT_WINDOWS_ROOT_DIAGNOSTICS").is_some_and(|v| v == "1")
+    #[cfg(test)]
+    {
+        std::env::var_os("DPT_WINDOWS_ROOT_DIAGNOSTICS").is_some_and(|v| v == "1")
+            && SYNTHETIC_ROOT_OBSERVATION.with(|active| {
+                if active.get() == Some(false) {
+                    active.set(Some(true));
+                    true
+                } else {
+                    false
+                }
+            })
+    }
+    #[cfg(not(test))]
+    {
+        false
+    }
 }
 #[repr(C)]
 #[derive(Default, PartialEq, Eq)]
@@ -969,7 +1004,7 @@ fn assess_access(
     {
         if root_probe_required(owner_valid, owner_category, context) && root_diagnostics_enabled() {
             diagnose_namespace_root(file, acl, &current, &system, &administrators);
-            eprintln!("{}", probe_root_service_owner(owner).render());
+            // No account or SCM queries: their latency cannot be bounded here.
         }
         return Ok(Some("owner_mismatch"));
     }
@@ -1702,6 +1737,49 @@ mod tests {
             "NT SERVICE"
         ));
         assert!(!lookup_field_matches(&[0xd800, 0], ROOT_SERVICE_CANDIDATE));
+    }
+    #[test]
+    fn phase1_windows_synthetic_observation_is_single_use_and_unwind_safe() {
+        // Isolated subprocess environments avoid mutating the parallel test process.
+        if std::env::var_os("DPT_SYNTHETIC_GATE_CHILD").is_none() {
+            for setting in [None, Some("0"), Some("true"), Some("1")] {
+                let mut command = std::process::Command::new(std::env::current_exe().unwrap());
+                command.args([
+                    "private_storage::platform::tests::phase1_windows_synthetic_observation_is_single_use_and_unwind_safe",
+                    "--exact", "--test-threads=1",
+                ]).env("DPT_SYNTHETIC_GATE_CHILD", "1")
+                  .env_remove("DPT_WINDOWS_ROOT_DIAGNOSTICS");
+                if let Some(value) = setting {
+                    command.env("DPT_WINDOWS_ROOT_DIAGNOSTICS", value);
+                }
+                let output = command.output().unwrap();
+                assert!(
+                    output.status.success(),
+                    "windows.synthetic.gate: class=child_failure; code={:?}",
+                    output.status.code()
+                );
+                assert!(String::from_utf8_lossy(&output.stdout).contains("1 passed"));
+            }
+            return;
+        }
+        let enabled = std::env::var_os("DPT_WINDOWS_ROOT_DIAGNOSTICS").is_some_and(|v| v == "1");
+        assert!(!root_diagnostics_enabled());
+        with_synthetic_root_observation(|| {
+            assert!(!std::thread::spawn(root_diagnostics_enabled).join().unwrap());
+            assert_eq!(root_diagnostics_enabled(), enabled);
+            assert!(!root_diagnostics_enabled());
+            // A consumed observation must not permit nested rearming.
+            assert!(std::panic::catch_unwind(|| with_synthetic_root_observation(|| ())).is_err());
+            assert!(!root_diagnostics_enabled());
+        });
+        assert!(!root_diagnostics_enabled());
+        assert!(std::panic::catch_unwind(|| {
+            with_synthetic_root_observation(|| panic!("synthetic unwind"));
+        })
+        .is_err());
+        assert!(!root_diagnostics_enabled());
+        with_synthetic_root_observation(|| assert_eq!(root_diagnostics_enabled(), enabled));
+        assert!(!root_diagnostics_enabled());
     }
     #[test]
     fn phase1_windows_root_probe_diagnostic_privacy() {

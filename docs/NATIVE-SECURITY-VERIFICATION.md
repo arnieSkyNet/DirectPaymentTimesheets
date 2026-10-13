@@ -397,3 +397,109 @@ opt in through a separately reviewed change; this candidate does not dispatch it
 API references: [final path by handle](https://learn.microsoft.com/en-us/windows/win32/api/fileapi/nf-fileapi-getfinalpathnamebyhandlew),
 [volume information by handle](https://learn.microsoft.com/en-us/windows/win32/api/fileapi/nf-fileapi-getvolumeinformationbyhandlew),
 [file information by handle](https://learn.microsoft.com/en-us/windows/win32/api/winbase/nf-winbase-getfileinformationbyhandleex).
+
+## Controlled synthetic root observation (verification candidate)
+
+This follow-up supersedes the opt-in execution boundary above. Production builds
+cannot activate root diagnostics, even with `DPT_WINDOWS_ROOT_DIAGNOSTICS=1`.
+Only the thread-local scope in
+`phase1_windows_positive_database_ancestor_admission` permits one observation,
+consumed on the first qualifying rejected root. Its ancestry walk starts from a
+fresh synthetic private-parent fixture. The only additional real objects queried
+are that fixture's runner-local volume root and the independently opened
+handle-derived GUID root; no real root ACL is changed. Other tests, threads and
+subsequent fixture operations cannot consume this scope. Scope exit, including
+panic unwinding, clears it. No account-resolution or SCM probe is invoked.
+
+For a separately reviewed controlled Windows run, set
+`DPT_WINDOWS_SYNTHETIC_ROOT_DIAGNOSTICS=1` in the environment of
+`python -B scripts/phase1_security_checks.py`, with the existing exact
+`EXPECTED_SHA` gate satisfied. The harness supplies
+`DPT_WINDOWS_ROOT_DIAGNOSTICS=1` and `--nocapture` only to the Phase 1 test
+execution. No workflow defaults or source pins are changed. Use this contained
+harness for diagnostic execution; a direct opt-in `cargo test` invocation does
+not establish process-tree containment. The harness never runs the application
+or accesses payroll data.
+
+Expect at most one `windows.root_namespace` and one `windows.root_dacl` record
+when the root has a valid rejected other owner. Namespace classification covers
+fixed local NTFS, persistent ACLs, reparse observations and matching independent
+and repeated file identities. DACL classification uses the unchanged admission
+scan, independently of the owner refusal. Records contain fixed classifications,
+booleans, depth/role and numeric error codes; identities and ACLs stay in memory.
+An admitted root produces no additional records. A rejected root still fails the
+positive test with owner_mismatch; verified namespace or policy_pass never grants
+admission, including to TrustedInstaller.
+
+Observation count and buffers are bounded, but synchronous volume/file APIs have
+no intrinsic latency guarantee. Only the opt-in Windows Phase 1 execution
+receives a 600-second budget, through
+an unnamed Job Object. Cargo is assigned atomically using
+PROC_THREAD_ATTRIBUTE_JOB_LIST at CreateProcessW time, created suspended,
+checked with IsProcessInJob, then resumed. Windows 10 / Server 2016 or newer is
+required; unsupported APIs or nested-job restrictions refuse execution without
+an uncontained fallback. JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE is set and neither
+breakaway flag is permitted. Only duplicated stdin/stdout/stderr handles are
+inherited through an explicit handle list; the job handle is never inherited.
+The harness is single-threaded during handle duplication and process creation.
+
+On success, failure, timeout or exception, the harness terminates the entire job,
+queries its active process count until zero (a separate ten-second cleanup
+budget), verifies the leader is signaled, and closes owned handles. Unconfirmed
+cleanup or an API/handle-close failure stops the verification run; later groups
+may run after timeout only when cleanup was confirmed. Other groups retain their
+original execution without a new timeout. The supervisor remains outside this
+new job; closing its last job handle is also the fallback for supervisor death.
+This contains trusted CreateProcess descendants, including Cargo's test binaries
+and their subprocesses. It is not a hostile-code sandbox: broker/WMI-created
+processes or work delegated to existing services are not covered. The controlled
+fixture commands do not launch processes through such brokers.
+Independent File handles retain RAII cleanup; injected drop tests do not prove
+native CloseHandle success. Native execution is still required for ABI, actual
+root observations and cleanup evidence. No native run was dispatched for this
+follow-up; the result of run 38319219921 was not fetched or independently verified.
+
+Follow-up Linux validation: targeted rustfmt and
+`cargo check --locked --offline --bins --tests` passed; Phase 1 tests passed 18/18,
+private-storage tests passed 15/15 (overlapping groups), and harness guard tests
+passed 8/8, with three native-only tests skipped on Linux. `git diff --check`
+passed. The Windows-only gate test now exercises missing / non-exact / exact
+environment
+settings in isolated test subprocesses, cross-thread isolation, scope consumption,
+nested-rearm refusal and unwind cleanup through the actual diagnostic gate. It
+was not executed on Linux. Production builds retain the separate cfg(not(test))
+false-returning branch; native production compilation is still unverified.
+The complete diff was
+reviewed separately for privacy and unchanged admission/publication policy.
+
+### Containment follow-up validation boundary
+
+Three native Python fixtures in the existing harness test file exercise a synthetic
+leader/child/grandchild timeout with a grandchild holding a non-shared file handle,
+cleanup of a descendant after normal leader exit, and explicit breakaway refusal.
+The timeout fixture requires
+that the grandchild reached its held-handle state, whole-job ActiveProcesses became
+zero, the leader was reaped, and deleting the held file succeeds after cleanup.
+They run on Windows and are explicitly skipped on Linux; mocked failure-accounting
+tests are not native containment proof. Run
+`python -B -m unittest discover -s scripts -p test_phase1_security_checks.py -v`
+on the approved Windows runner before opting into diagnostics. No native fixture
+or diagnostic run has been dispatched here. Windows ctypes ABI, runner nested-job
+compatibility, actual timeout termination and handle-release evidence remain
+unresolved until that run succeeds.
+
+The old subprocess.run(timeout=600) implementation was rejected because killing
+Cargo alone leaves descendants uncontained. It is removed. The Job Object candidate
+is ready for source review, not accepted as proven native containment.
+
+References: [Job Objects](https://learn.microsoft.com/en-us/windows/win32/procthread/job-objects),
+[process creation attributes](https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-updateprocthreadattribute).
+
+The breakaway fixture first creates and reaps an ordinary equivalent process.
+It then changes only CREATE_BREAKAWAY_FROM_JOB and accepts only
+ERROR_ACCESS_DENIED (5), the expected refusal when the containing job does not
+permit breakaway. Missing controls, unexpected denial codes, successful breakaway
+and runner/nested-job incompatibility fail the fixture; they are never silently
+accepted or skipped on Windows. A successful breakaway is immediately killed
+and waited on, and still fails verification. This is a controlled negative test,
+not proof against brokers or adversarial process creation.

@@ -323,7 +323,11 @@ fn phase1_windows_positive_database_ancestor_admission() {
     let parent = root.path().join("synthetic-private-parent");
     create_private_dir(&parent).unwrap();
     let database = parent.join("positive.sqlite");
-    drop(platform::database_ancestor_guard(&database).unwrap());
+    // Only this synthetic ancestry walk may consume the single observation.
+    // A foreign root remains refused; diagnostics never turn this control green.
+    let guard =
+        platform::with_synthetic_root_observation(|| platform::database_ancestor_guard(&database));
+    drop(guard.unwrap());
     prepare_database(&database).unwrap();
     assert!(platform::is_private(&database).unwrap());
 }
