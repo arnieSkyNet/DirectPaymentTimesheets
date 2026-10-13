@@ -237,7 +237,7 @@ jobs:
           keep = ('SystemRoot', 'WINDIR', 'PATH', 'TEMP', 'TMP', 'HOME', 'USERPROFILE', 'CARGO_HOME', 'RUSTUP_HOME', 'SDKROOT', 'DEVELOPER_DIR', 'ProgramFiles', 'ProgramFiles(x86)', 'ProgramW6432', 'SystemDrive')
           env = {k: os.environ[k] for k in keep if k in os.environ}
           env.update(RUSTUP_TOOLCHAIN='1.98.1', CARGO_INCREMENTAL='0', CARGO_BUILD_JOBS='2', CARGO_PROFILE_TEST_DEBUG='0')
-          phases = ('entry', 'pathname', 'vswhere', 'vsdevcmd', 'sdk', 'linker_metadata')
+          phases = ('entry', 'module_init', 'module_load', 'module_ready', 'pathname', 'vswhere', 'vsdevcmd', 'sdk', 'linker_metadata')
           operations = ('join_path', 'full_path', 'get_item', 'attributes', 'parent')
           def marker_snapshot(raw):
               observed, count, last, pending = [], 0, None, None
@@ -314,6 +314,7 @@ jobs:
               # never print developer-environment values or arbitrary PATH entries.
               script = r'''
           $ErrorActionPreference = 'Stop'
+          $PSModuleAutoLoadingPreference = 'None'
           [Console]::Error.WriteLine('DPT_MSVC_PHASE:entry')
           function Require-LocalAbsolute($path) {
             if (!$path -or $path -notmatch '^[A-Za-z]:\\' -or $path.Substring(2) -match '[":%!?&|<>\r\n]' -or $path -match '(?:^|\\)(?:CON|PRN|AUX|NUL|COM[1-9¹²³]|LPT[1-9¹²³])(?:\.[^\\]*)?(?:\\|$)') { throw 'nonlocal_or_unsafe_path' }
@@ -326,7 +327,7 @@ jobs:
             Require-LocalAbsolute $base
             if ([IO.Path]::IsPathRooted($child) -or $child -match '[":%!?&|<>\r\n]') { throw 'unsafe_child_path' }
             Trace-Operation 'join_path' 'before' 0
-            $joined = Join-Path $base $child
+            $joined = [IO.Path]::Combine($base, $child)
             Trace-Operation 'join_path' 'after' 0
             Require-LocalAbsolute $joined
             return $joined
@@ -343,13 +344,11 @@ jobs:
             for ($depth = 0; $depth -lt 32; $depth++) {
               if ($seen.ContainsKey($current)) { throw 'path_cycle' }
               $seen[$current] = $true
-              Trace-Operation 'get_item' 'before' $depth
-              $entry = Get-Item -LiteralPath $current -Force
-              Trace-Operation 'get_item' 'after' $depth
               Trace-Operation 'attributes' 'before' $depth
-              $attributes = $entry.Attributes
+              $attributes = [IO.File]::GetAttributes($current)
               Trace-Operation 'attributes' 'after' $depth
               if ($null -eq $attributes -or ($attributes -band [IO.FileAttributes]::ReparsePoint)) { throw 'reparse_or_unconfirmed_path' }
+              if (($depth -gt 0 -or $current -eq $root) -and !($attributes -band [IO.FileAttributes]::Directory)) { throw 'non_directory_ancestor' }
               if ($current -eq $root) { return $full }
               Trace-Operation 'parent' 'before' $depth
               $parent = [IO.Path]::GetDirectoryName($current)
@@ -360,20 +359,53 @@ jobs:
             }
             throw 'path_depth_exceeded'
           }
+          function Require-PlainFile($path) {
+            $full = Require-PlainPath $path
+            Trace-Operation 'attributes' 'before' 0
+            $attributes = [IO.File]::GetAttributes($full)
+            Trace-Operation 'attributes' 'after' 0
+            if ($attributes -band ([IO.FileAttributes]::Directory -bor [IO.FileAttributes]::ReparsePoint)) { throw 'non_plain_file' }
+            return $full
+          }
+          [Console]::Error.WriteLine('DPT_MSVC_PHASE:module_init')
+          $expectedHome = [IO.Path]::Combine($env:SystemRoot, 'System32\WindowsPowerShell\v1.0')
+          if ((Require-PlainPath $PSHOME).TrimEnd('\') -ne (Require-PlainPath $expectedHome).TrimEnd('\')) { throw 'unexpected_powershell_home' }
+          $manifest = Require-PlainFile (Join-LocalPath $PSHOME 'Modules\Microsoft.PowerShell.Utility\Microsoft.PowerShell.Utility.psd1')
+          [Console]::Error.WriteLine('DPT_MSVC_PHASE:module_load')
+          $modules = @(Microsoft.PowerShell.Core\Import-Module -Name $manifest -PassThru -ErrorAction Stop)
+          if ($modules.Count -ne 1) { throw 'ambiguous_utility_module' }
+          $module = $modules[0]
+          if ($module.Name -ne 'Microsoft.PowerShell.Utility' -or $module.Path -ne $manifest -or $module.ModuleType -ne 'Manifest' -or $module.Version -ne [version]'3.1.0.0') { throw 'unexpected_utility_module' }
+          $fromJson = $module.ExportedCmdlets['ConvertFrom-Json']
+          $toJson = $module.ExportedCmdlets['ConvertTo-Json']
+          $engineIdentity = [System.Management.Automation.PSObject].Assembly.GetName()
+          foreach ($command in @($fromJson,$toJson)) {
+            if ($null -eq $command -or $command.CommandType -ne 'Cmdlet') { throw 'missing_json_cmdlet' }
+            $assembly = $command.ImplementingType.Assembly
+            $identity = $assembly.GetName()
+            if ($identity.Name -ne 'Microsoft.PowerShell.Commands.Utility' -or $identity.Version -ne $engineIdentity.Version -or [BitConverter]::ToString($identity.GetPublicKeyToken()) -ne [BitConverter]::ToString($engineIdentity.GetPublicKeyToken())) { throw 'unexpected_json_assembly' }
+            $location = Require-PlainFile $assembly.Location
+            $gacRoot = Join-LocalPath $env:SystemRoot 'Microsoft.NET\assembly\GAC_MSIL\Microsoft.PowerShell.Commands.Utility\'
+            if (!$location.StartsWith(($PSHOME.TrimEnd('\') + '\'), [StringComparison]::OrdinalIgnoreCase) -and !$location.StartsWith($gacRoot, [StringComparison]::OrdinalIgnoreCase)) { throw 'unexpected_json_assembly_path' }
+          }
+          if ($fromJson.Name -ne 'ConvertFrom-Json' -or $toJson.Name -ne 'ConvertTo-Json') { throw 'unexpected_json_cmdlet' }
+          [Console]::Error.WriteLine('DPT_MSVC_PHASE:module_ready')
           $pf = ${env:ProgramFiles(x86)}
           if (!$pf) { throw 'missing_discovery_root' }
           [Console]::Error.WriteLine('DPT_MSVC_PHASE:pathname')
-          $vswhere = Require-PlainPath (Join-LocalPath $pf 'Microsoft Visual Studio\Installer\vswhere.exe')
+          $vswhere = Require-PlainFile (Join-LocalPath $pf 'Microsoft Visual Studio\Installer\vswhere.exe')
           [Console]::Error.WriteLine('DPT_MSVC_PHASE:vswhere')
           $raw = & $vswhere -products '*' -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -format json
           if ($LASTEXITCODE -ne 0) { throw 'discovery_failed' }
-          $instances = ConvertFrom-Json -InputObject ($raw -join "`n")
+          $instances = & $fromJson -InputObject ($raw -join "`n")
           if ($instances.Count -ne 1) { throw 'ambiguous_or_missing_toolchain' }
           $root = Require-PlainPath $instances[0].installationPath
-          $allowedRoots = @($env:ProgramFiles, ${env:ProgramFiles(x86)}, $env:ProgramW6432) | Where-Object { $_ }
-          if (!($allowedRoots | Where-Object { $root.StartsWith((Join-LocalPath $_ 'Microsoft Visual Studio\'), [StringComparison]::OrdinalIgnoreCase) })) { throw 'untrusted_installation' }
-          $dev = Require-PlainPath (Join-LocalPath $root 'Common7\Tools\VsDevCmd.bat')
-          if (!(Test-Path -LiteralPath $dev -PathType Leaf)) { throw 'missing_developer_environment' }
+          $allowedRoots = @()
+          foreach ($candidateRoot in @($env:ProgramFiles, ${env:ProgramFiles(x86)}, $env:ProgramW6432)) { if ($candidateRoot) { $allowedRoots += $candidateRoot } }
+          $installationAllowed = $false
+          foreach ($candidateRoot in $allowedRoots) { if ($root.StartsWith((Join-LocalPath $candidateRoot 'Microsoft Visual Studio\'), [StringComparison]::OrdinalIgnoreCase)) { $installationAllowed = $true } }
+          if (!$installationAllowed) { throw 'untrusted_installation' }
+          $dev = Require-PlainFile (Join-LocalPath $root 'Common7\Tools\VsDevCmd.bat')
           [Console]::Error.WriteLine('DPT_MSVC_PHASE:vsdevcmd')
           $output = & "$env:SystemRoot\System32\cmd.exe" /d /s /c "`"`"$dev`" -arch=x64 -host_arch=x64 >nul && set`""
           if ($LASTEXITCODE -ne 0) { throw 'developer_environment_failed' }
@@ -388,7 +420,9 @@ jobs:
           if ((Require-PlainPath $values['VSINSTALLDIR']).TrimEnd('\') -ne $root.TrimEnd('\')) { throw 'installation_mismatch' }
           [Console]::Error.WriteLine('DPT_MSVC_PHASE:sdk')
           $sdk = Require-PlainPath $values['WINDOWSSDKDIR']
-          if (!($allowedRoots | Where-Object { $sdk.StartsWith((Join-LocalPath $_ 'Windows Kits\'), [StringComparison]::OrdinalIgnoreCase) })) { throw 'untrusted_sdk' }
+          $sdkAllowed = $false
+          foreach ($candidateRoot in $allowedRoots) { if ($sdk.StartsWith((Join-LocalPath $candidateRoot 'Windows Kits\'), [StringComparison]::OrdinalIgnoreCase)) { $sdkAllowed = $true } }
+          if (!$sdkAllowed) { throw 'untrusted_sdk' }
           foreach ($key in @('VCINSTALLDIR','WINDOWSSDKBINPATH','WINDOWSSDKVERBINPATH','UNIVERSALCRTSDKDIR')) {
             if ($values[$key]) {
               $candidate = Require-PlainPath $values[$key]
@@ -396,20 +430,13 @@ jobs:
             }
           }
           [Console]::Error.WriteLine('DPT_MSVC_PHASE:linker_metadata')
-          $link = Require-PlainPath (Join-LocalPath $tools 'bin\Hostx64\x64\link.exe')
-          Trace-Operation 'get_item' 'before' 0
-          $item = Get-Item -LiteralPath $link
-          Trace-Operation 'get_item' 'after' 0
-          Trace-Operation 'attributes' 'before' 0
-          $linkAttributes = $item.Attributes
-          Trace-Operation 'attributes' 'after' 0
-          if ($null -eq $linkAttributes -or ($linkAttributes -band [IO.FileAttributes]::ReparsePoint)) { throw 'reparse_linker' }
-          $version = $item.VersionInfo
-          if ($version.CompanyName -ne 'Microsoft Corporation' -or $version.ProductName -notmatch 'Visual Studio') { throw 'incompatible_linker' }
+          $link = Require-PlainFile (Join-LocalPath $tools 'bin\Hostx64\x64\link.exe')
+          $version = [Diagnostics.FileVersionInfo]::GetVersionInfo($link)
+          if ($version.CompanyName -ne 'Microsoft Corporation' -or $version.ProductName -notmatch 'Visual Studio' -or [string]::IsNullOrWhiteSpace($version.FileVersion)) { throw 'incompatible_linker' }
           $keep = @('PATH','INCLUDE','LIB','LIBPATH','VSINSTALLDIR','VCINSTALLDIR','VCTOOLSINSTALLDIR','WINDOWSSDKDIR','WINDOWSSDKVERSION','WINDOWSSDKBINPATH','WINDOWSSDKVERBINPATH','UNIVERSALCRTSDKDIR','UCRTVERSION','VSCMD_ARG_TGT_ARCH','VSCMD_ARG_HOST_ARCH')
           $envOut = @{}
           foreach ($key in $keep) { if ($values.ContainsKey($key)) { $envOut[$key] = $values[$key] } }
-          @{environment=$envOut; linker=$link; root=$root; company=$version.CompanyName; product=$version.ProductName; version=$version.FileVersion} | ConvertTo-Json -Depth 3 -Compress
+          @{environment=$envOut; linker=$link; root=$root; company=$version.CompanyName; product=$version.ProductName; version=$version.FileVersion} | & $toJson -Depth 3 -Compress
           '''
               # These trusted setup-tool deadlines do not prove descendant-tree
               # cleanup; any timeout stops the step without retries or About tests.
