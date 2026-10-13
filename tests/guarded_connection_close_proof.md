@@ -37,12 +37,12 @@ fails the test, never passes it. There is no blocking `Child::wait` call. These
 are userspace bounds, not a guarantee against an unresponsive kernel or a process
 stuck in uninterruptible kernel I/O. Such a failure blocks acceptance of the proof.
 
-Fifteen tests comprise thirteen ownership/database/cleanup cases, a child-entry
+Sixteen tests comprise fourteen ownership/database/cleanup cases, a child-entry
 no-op in the parent, and the watchdog fixture. The raw native statement
 intentionally survives only in aborting children; successful cases finalize it before close. Abort cannot clean
 up staging or perform recovery; the parent removes only synthetic fixtures after
 reaping. This proof does not establish production shutdown, retry policy, sidecar
-security, close-error recovery, production guard acquisition, Windows handle retention or
+security, production close-error recovery, production guard acquisition, Windows handle retention or
 cross-platform terminal behavior. No production connections are migrated.
 
 ## Synthetic handle and staging extension
@@ -89,3 +89,39 @@ uses a controlled synthetic namespace; it demonstrates resource ownership and
 cleanup ordering, not a VFS security boundary. Windows/macOS implementation and
 abort behavior, native VFS failure cleanup, production terminal privacy/data-loss
 policy and complete production connection migration remain unverified or blocked.
+
+## Pending-write rollback recovery experiment
+
+One additional Linux test commits a synthetic baseline row, verifies DELETE
+journal mode, begins an uncommitted insert with an 8192-byte synthetic blob, and
+calls real `sqlite3_db_cacheflush` to force dirty database pages to disk. A native
+prepared statement then causes actual SQLITE_BUSY on checked close. The returned
+owner must retain its pending transaction, descriptors and staging. A fixed phase
+marker is written only after these assertions, immediately before destructor
+abort. The existing verified child-local dump controls and watchdog apply.
+
+After reaping the child, the parent requires SIGABRT, busy and pending-phase
+markers, and absence of guard/staging/return markers. Before any recovery open,
+it requires the original database, a nonempty rollback journal with SQLite's
+journal magic and recorded pages, and database bytes different from the saved
+committed baseline image. Only synthetic bytes are compared; none are printed.
+These observations establish that the test needs on-disk rollback recovery rather
+than merely losing a cached insert. The retained directory is found from the
+single-directory inventory of the parent's isolated fixture, never from a
+production path or child-supplied arbitrary pathname.
+
+A second independently bounded Linux child, with its own verified dump controls,
+opens that SAME database using ordinary rusqlite READ_WRITE/NOFOLLOW without
+CREATE. SQLite performs recovery; integrity_check must return ok, the baseline
+row must remain, and the uncommitted row must be absent. Explicit close must
+succeed and the DELETE journal must be removed. Staging remains present until
+parent test teardown, with no wrapper cleanup markers. Recovery failures use
+fixed messages and child output is discarded. Parent dump settings are checked
+unchanged for both children.
+
+This demonstrates one real rollback-journal recovery case on the tested bundled
+SQLite/Linux configuration. It is not WAL evidence, a power-loss/durability test,
+a custom-VFS failure proof, a production recovery-service test, or evidence that
+all close errors preserve recoverability. It does not decide whether production
+may abort with unsaved work or how recovery material and crash reports should be
+handled. Windows/macOS remain unsupported and unverified.

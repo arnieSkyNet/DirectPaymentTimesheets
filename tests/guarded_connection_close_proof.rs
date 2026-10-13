@@ -240,6 +240,41 @@ fn child_entry() {
     let root = PathBuf::from(std::env::var_os("DPT_CLOSE_PROOF_ROOT").expect("fixture missing"));
     assert!(std::fs::write(root.join("ready"), "dump-suppression-verified").is_ok());
     let mode = mode.to_str().expect("invalid proof mode");
+    if mode == "recover_pending" {
+        let stage = retained_stage(&root);
+        let database = stage.join("synthetic.sqlite");
+        // Normal SQLite recovery, not the production recovery service. No CREATE.
+        let recovered = Connection::open_with_flags(
+            database,
+            OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_NOFOLLOW,
+        )
+        .unwrap_or_else(|_| panic!("synthetic recovery open failed"));
+        recovered
+            .busy_timeout(std::time::Duration::from_millis(50))
+            .unwrap();
+        let integrity: String = recovered
+            .query_row("PRAGMA integrity_check", [], |r| r.get(0))
+            .unwrap_or_else(|_| panic!("synthetic recovery integrity query failed"));
+        assert!(integrity == "ok", "synthetic recovery integrity refused");
+        let rows: Vec<i64> = recovered
+            .prepare("SELECT value FROM evidence ORDER BY value")
+            .unwrap()
+            .query_map([], |r| r.get(0))
+            .unwrap()
+            .map(|r| r.unwrap())
+            .collect();
+        assert!(
+            rows == [1],
+            "committed baseline or rollback recovery mismatch"
+        );
+        assert!(recovered.close().is_ok(), "recovered close failed");
+        assert!(
+            !stage.join("synthetic.sqlite-journal").exists(),
+            "recovery journal retained unexpectedly"
+        );
+        assert!(std::fs::write(root.join("recovery-confirmed"), "recovered").is_ok());
+        return;
+    }
     if mode == "open_failure" {
         let staging = Staging::new(&root);
         let path = staging.path.clone();
@@ -429,6 +464,50 @@ fn child_entry() {
             let owner = confirm_busy(owner, &root);
             drop(owner);
         }
+        "pending_abort" => {
+            owner.db().execute_batch("PRAGMA page_size=1024; PRAGMA journal_mode=DELETE; PRAGMA synchronous=FULL; PRAGMA cache_size=1; CREATE TABLE evidence(value INTEGER, payload BLOB); INSERT INTO evidence VALUES(1, NULL);")
+                .unwrap_or_else(|_| panic!("rollback baseline setup failed"));
+            let journal_mode: String = owner
+                .db()
+                .query_row("PRAGMA journal_mode", [], |r| r.get(0))
+                .unwrap();
+            assert!(journal_mode == "delete", "rollback mode unconfirmed");
+            let database = owner.staging.path.join("synthetic.sqlite");
+            assert!(std::fs::write(
+                root.join("baseline-image"),
+                std::fs::read(&database).unwrap()
+            )
+            .is_ok());
+            owner
+                .db()
+                .execute_batch("BEGIN IMMEDIATE; INSERT INTO evidence VALUES(2, zeroblob(8192));")
+                .unwrap_or_else(|_| panic!("pending write failed"));
+            // SAFETY: live, same-thread connection. Force dirty pages to disk so
+            // reopen must recover a hot journal, rather than discard cache-only work.
+            let flushed = unsafe { ffi::sqlite3_db_cacheflush(owner.db().handle()) };
+            assert!(flushed == ffi::SQLITE_OK, "pending page flush failed");
+            let _statement = owner.outstanding_statement();
+            let owner = confirm_busy(owner, &root);
+            assert!(
+                !owner.db().is_autocommit(),
+                "busy close lost pending transaction"
+            );
+            assert!(owner.staging.path.is_dir(), "busy close lost staging");
+            assert!(
+                owner
+                    ._guard
+                    ._handles
+                    .iter()
+                    .all(|file| file.metadata().is_ok()),
+                "busy close lost handles"
+            );
+            assert!(
+                !root.join("staging-drop").exists(),
+                "busy close cleaned staging"
+            );
+            assert!(std::fs::write(root.join("pending-abort-ready"), "pending").is_ok());
+            drop(owner);
+        }
         "panic_abort" => {
             let _statement = owner.outstanding_statement();
             let owner = confirm_busy(owner, &root);
@@ -469,17 +548,39 @@ fn parent_dump_state() -> (libc::rlim_t, libc::rlim_t, libc::c_int) {
 }
 
 fn run_child(mode: &str, abort: bool) {
+    let root = tempfile::tempdir().expect("synthetic fixture creation failed");
+    run_child_at(mode, abort, root.path());
+}
+
+fn retained_stage(root: &std::path::Path) -> PathBuf {
+    let stages: Vec<_> = std::fs::read_dir(root)
+        .expect("retained fixture inspection failed")
+        .map(|entry| entry.expect("retained fixture entry failed"))
+        .filter(|entry| {
+            entry
+                .file_type()
+                .expect("retained fixture metadata failed")
+                .is_dir()
+        })
+        .map(|entry| entry.path())
+        .collect();
+    assert!(stages.len() == 1, "retained staging inventory mismatch");
+    stages.into_iter().next().unwrap()
+}
+
+fn run_child_at(mode: &str, abort: bool, fixture_root: &std::path::Path) {
     use std::os::unix::process::{CommandExt, ExitStatusExt};
     let original = parent_dump_state();
-    let root = tempfile::tempdir().expect("synthetic fixture creation failed");
+    // Borrowing the root lets a second bounded child recover the SAME fixture.
+    let root = fixture_root;
     let executable = std::env::current_exe().expect("test executable unavailable");
     let mut command = std::process::Command::new(executable);
     command
         .args(["--exact", "child_entry", "--test-threads=1"])
         .env_clear()
         .env("DPT_CLOSE_PROOF_MODE", mode)
-        .env("DPT_CLOSE_PROOF_ROOT", root.path())
-        .current_dir(root.path())
+        .env("DPT_CLOSE_PROOF_ROOT", root)
+        .current_dir(root)
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null());
@@ -537,44 +638,51 @@ fn run_child(mode: &str, abort: bool) {
         "parent dump settings changed"
     );
     assert!(
-        root.path().join("ready").exists(),
+        root.join("ready").exists(),
         "child dump suppression not verified"
     );
     assert!(!status.core_dumped(), "unexpected child core dump");
-    if mode == "watchdog" {
+    if mode == "recover_pending" {
+        assert!(status.success(), "bounded recovery child failed");
+        assert!(
+            root.join("recovery-confirmed").exists(),
+            "recovery evidence missing"
+        );
+        assert!(!root.join("guard-drop").exists());
+        assert!(!root.join("staging-drop").exists());
+    } else if mode == "watchdog" {
         assert_eq!(status.signal(), Some(libc::SIGALRM));
-        assert!(!root.path().join("guard-drop").exists());
-        assert!(!root.path().join("returned").exists());
-        assert!(!root.path().join("staging-drop").exists());
+        assert!(!root.join("guard-drop").exists());
+        assert!(!root.join("returned").exists());
+        assert!(!root.join("staging-drop").exists());
     } else if abort {
         assert!(
-            root.path().join("busy-confirmed").exists(),
+            root.join("busy-confirmed").exists(),
             "real busy close unconfirmed"
         );
-        assert!(!root.path().join("staging-drop").exists());
+        assert!(!root.join("staging-drop").exists());
         assert_eq!(
             status.signal(),
             Some(libc::SIGABRT),
             "expected non-unwinding abort"
         );
         assert!(
-            !root.path().join("guard-drop").exists(),
+            !root.join("guard-drop").exists(),
             "abort dropped namespace guard"
         );
         assert!(
-            !root.path().join("returned").exists(),
+            !root.join("returned").exists(),
             "abort unexpectedly returned"
         );
     } else {
         assert!(status.success(), "proof child failed");
         assert_eq!(
-            std::fs::read_to_string(root.path().join("guard-drop"))
-                .expect("guard sentinel missing"),
+            std::fs::read_to_string(root.join("guard-drop")).expect("guard sentinel missing"),
             "closed"
         );
-        assert!(root.path().join("returned").exists());
+        assert!(root.join("returned").exists());
         assert_eq!(
-            std::fs::read(root.path().join("staging-drop")).unwrap(),
+            std::fs::read(root.join("staging-drop")).unwrap(),
             if mode == "substitution" {
                 b"refused".as_slice()
             } else {
@@ -658,4 +766,40 @@ fn open_failure_releases_unopened_resources() {
 #[test]
 fn substituted_namespace_cleanup_is_refused() {
     run_child("substitution", false);
+}
+
+#[test]
+fn pending_write_abort_preserves_journal_and_recovers() {
+    let root = tempfile::tempdir().expect("synthetic recovery fixture failed");
+    run_child_at("pending_abort", true, root.path());
+    assert!(
+        root.path().join("pending-abort-ready").exists(),
+        "pending abort phase unconfirmed"
+    );
+    let stage = retained_stage(root.path());
+    let database = stage.join("synthetic.sqlite");
+    let journal = stage.join("synthetic.sqlite-journal");
+    assert!(
+        database.is_file(),
+        "original database missing before recovery"
+    );
+    let journal_bytes = std::fs::read(journal).expect("rollback journal missing before recovery");
+    assert!(journal_bytes.len() > 512, "rollback journal incomplete");
+    assert!(
+        journal_bytes[8..12] != [0, 0, 0, 0],
+        "rollback journal has no recorded pages"
+    );
+    assert!(
+        journal_bytes.starts_with(&[0xd9, 0xd5, 0x05, 0xf9, 0x20, 0xa1, 0x63, 0xd7]),
+        "hot rollback journal header unconfirmed"
+    );
+    assert!(
+        std::fs::read(database).unwrap()
+            != std::fs::read(root.path().join("baseline-image")).unwrap(),
+        "pending write did not reach database file"
+    );
+    assert!(!root.path().join("guard-drop").exists());
+    assert!(!root.path().join("staging-drop").exists());
+    run_child_at("recover_pending", false, root.path());
+    assert!(stage.is_dir(), "recovery unexpectedly removed staging");
 }
