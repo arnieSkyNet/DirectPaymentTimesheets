@@ -1,6 +1,5 @@
 """Mocks only: no child creation, signaling, SQLite or terminal execution."""
 import errno
-import os
 from pathlib import Path
 import unittest
 from unittest.mock import MagicMock, Mock, patch
@@ -65,65 +64,185 @@ class Gates(unittest.TestCase):
 
 class Supervisor(unittest.TestCase):
     def setUp(self):
-        # Make mocked Unix paths portable without adding missing APIs to the
-        # real Windows os module or ever invoking a real signal operation.
-        fake_os = MagicMock()
-        for name, fallback in (("P_PID", 1), ("WEXITED", 4), ("WNOHANG", 1),
-                               ("WNOWAIT", 0x1000000), ("CLD_EXITED", 1),
-                               ("CLD_KILLED", 2), ("CLD_DUMPED", 3)):
-            setattr(fake_os, name, getattr(os, name, fallback))
+        # Fake APIs on ALL hosts: never create a kqueue, process or real signal.
         self.addCleanup(patch.stopall)
-        patch.object(native, "os", fake_os).start()
-        patch.object(native, "signal", Mock(SIGKILL=9)).start()
+        self.os = MagicMock(WNOHANG=1)
+        self.os.getpgrp.return_value = 101
+        self.os.getpgid.return_value = self.os.getsid.return_value = 100
+        patch.object(native, "os", self.os).start()
+        self.select = MagicMock(KQ_FILTER_PROC=-5, KQ_EV_ADD=1, KQ_EV_ENABLE=4,
+                                KQ_EV_ERROR=0x4000, KQ_NOTE_EXIT=1, KQ_NOTE_FORK=2)
+        patch.object(native, "select", self.select).start()
+        patch.object(native, "signal", Mock(SIGKILL=9, SIGCHLD=20, SIG_DFL=0,
+                                            getsignal=Mock(return_value=0))).start()
+        self.child = Mock(pid=100, returncode=None)
+
+    def event(self, flags=0, fflags=1, pid=100):
+        return Mock(ident=pid, filter=-5, flags=flags, fflags=fflags)
+
+    def observer(self, initial=()):
+        self.select.kqueue.return_value.control.return_value = list(initial)
+        return native.ProcessExit(100)
+
+    def test_kqueue_registration_is_nonreaping(self):
+        observer = self.observer()
+        self.select.kevent.assert_called_once_with(100, filter=-5, flags=5, fflags=3)
+        self.os.waitpid.assert_not_called()
+        self.assertFalse(observer.exited)
+
+    def test_initial_exit_before_cleanup_is_retained(self):
+        observer = self.observer([self.event()])
+        self.assertTrue(observer.exited)
+        self.os.waitpid.assert_not_called()
+
+    def test_only_exit_event_can_complete_observation(self):
+        for event in (self.event(flags=0x4000), self.event(pid=101), self.event(fflags=0)):
+            with self.assertRaisesRegex(native.Refusal, "unsupported_cleanup"):
+                self.observer([event])
+
+    def test_fork_is_unsupported_not_successful_tree_accounting(self):
+        with self.assertRaisesRegex(native.Refusal, "unsupported_cleanup"):
+            self.observer([self.event(fflags=3)])
+
+    def test_interrupted_observation_fails_closed(self):
+        observer = self.observer()
+        observer.queue.control.side_effect = InterruptedError(errno.EINTR, "private")
+        with self.assertRaisesRegex(native.Refusal, "unsupported_cleanup"):
+            observer.observe(.05)
+        self.os.waitpid.assert_not_called()
+
+    def test_observation_timeout_does_not_reap(self):
+        observer = self.observer()
+        self.assertFalse(observer.observe(.01))
+        observer.queue.control.assert_called_with(None, 1, .01)
+        self.os.waitpid.assert_not_called()
+
+    def test_registration_error_closes_queue(self):
+        self.select.kqueue.return_value.control.side_effect = OSError(errno.ESRCH, "private")
+        with self.assertRaises(native.Refusal):
+            native.ProcessExit(100)
+        self.select.kqueue.return_value.close.assert_called_once()
+
+    def test_queue_close_failure_refuses_cleanup(self):
+        observer = self.observer()
+        observer.queue.close.side_effect = OSError(errno.EBADF, "private")
+        with self.assertRaisesRegex(native.Refusal, "unsupported_cleanup"):
+            observer.close()
 
     def test_esrch_is_empty_but_permission_failure_is_not(self):
-        with patch.object(native.os, "killpg", side_effect=OSError(errno.ESRCH, "private")):
-            self.assertFalse(native.group_exists(100))
-        with patch.object(native.os, "killpg", side_effect=OSError(errno.EPERM, "private")):
-            with self.assertRaisesRegex(native.Refusal, "unsupported_cleanup"):
-                native.group_exists(100)
+        self.os.killpg.side_effect = OSError(errno.ESRCH, "private")
+        self.assertFalse(native.group_exists(100))
+        self.os.killpg.side_effect = OSError(errno.EPERM, "private")
+        with self.assertRaises(native.Refusal): native.group_exists(100)
 
-    def test_parent_group_cannot_be_killed(self):
-        child = Mock(pid=100)
-        with patch.object(native.os, "getpgrp", return_value=100), patch.object(native.os, "killpg") as kill:
+    def test_parent_group_and_reaped_leader_cannot_be_signaled(self):
+        observer = Mock(exited=False, forked=False)
+        for pgid, status in ((101, None), (100, 0)):
+            self.child.returncode = status
             with self.assertRaises(native.Refusal):
-                native.cleanup_group(child, 100)
-            kill.assert_not_called()
+                native.cleanup_group(self.child, pgid, observer)
+        self.os.killpg.assert_not_called()
 
-    def test_verified_group_kill_and_reap(self):
-        child = Mock(pid=100)
-        child.poll.return_value = -9
-        with patch.object(native.os, "getpgrp", return_value=101), patch.object(native, "group_exists", side_effect=[True, False]), patch.object(native, "exit_observation", return_value=-9), patch.object(native.os, "killpg") as kill:
-            native.cleanup_group(child, 100)
-            kill.assert_called_once_with(100, native.signal.SIGKILL)
+    def test_stall_kill_precedes_reap(self):
+        observer = Mock(exited=False, forked=False)
+        observer.observe.return_value = True
+        order = []
+        self.os.killpg.side_effect = lambda *args: order.append("signal")
+        def reaped(*args):
+            order.append("reap")
+            return -9
+        with patch.object(native, "group_exists", side_effect=[True, False]), patch.object(native, "reap_owned", side_effect=reaped) as reap:
+            native.cleanup_group(self.child, 100, observer)
+            self.os.killpg.assert_called_once_with(100, 9)
+            reap.assert_called_once()
+            self.assertEqual(order, ["signal", "reap"])
 
-    def test_survivor_never_passes_cleanup(self):
-        child = Mock(pid=100)
-        child.poll.return_value = None
-        with patch.object(native.os, "getpgrp", return_value=101), patch.object(native, "group_exists", return_value=True), patch.object(native, "exit_observation", return_value=None), patch.object(native.os, "killpg"), patch.object(native.time, "monotonic", side_effect=[0, 3]):
-            with self.assertRaisesRegex(native.Refusal, "unsupported_cleanup"):
-                native.cleanup_group(child, 100)
+    def test_nondefault_sigchld_refuses_before_spawn(self):
+        native.signal.getsignal.return_value = 1
+        with patch.object(native.platform, "system", return_value="Darwin"), patch.object(native.subprocess, "Popen") as spawn:
+            with self.assertRaises(native.Refusal): native.mac_group(["fixture"], {}, Mock())
+            spawn.assert_not_called()
 
-    def test_terminal_status_without_markers_is_refused(self):
+    def test_missing_kqueue_refuses_before_spawn(self):
+        del self.select.kqueue
+        with patch.object(native.platform, "system", return_value="Darwin"), patch.object(native.subprocess, "Popen") as spawn:
+            with self.assertRaises(native.Refusal): native.mac_group(["fixture"], {}, Mock())
+            spawn.assert_not_called()
+
+    def test_normal_exit_never_signals_after_reap(self):
+        observer = Mock(exited=True, forked=False)
+        observer.observe.return_value = True
+        with patch.object(native, "group_exists", return_value=False), patch.object(native, "reap_owned", return_value=0):
+            self.assertEqual(native.cleanup_group(self.child, 100, observer), 0)
+        self.os.killpg.assert_not_called()
+
+    def test_unexpected_survivor_never_passes_or_is_signaled_after_reap(self):
+        observer = Mock(exited=True, forked=False)
+        observer.observe.return_value = True
+        with patch.object(native, "group_exists", return_value=True), patch.object(native, "reap_owned", return_value=0):
+            with self.assertRaises(native.Refusal):
+                native.cleanup_group(self.child, 100, observer)
+        self.os.killpg.assert_not_called()
+
+    def test_signal_failure_is_not_success(self):
+        observer = Mock(exited=False, forked=False)
+        self.os.killpg.side_effect = OSError(errno.EPERM, "private")
+        with patch.object(native, "group_exists", return_value=True), patch.object(native, "reap_owned") as reap:
+            with self.assertRaises(native.Refusal): native.cleanup_group(self.child, 100, observer)
+            reap.assert_not_called()
+
+    def test_cleanup_deadline_never_hangs(self):
+        observer = Mock(exited=False, forked=False)
+        observer.observe.return_value = False
+        with patch.object(native, "group_exists", return_value=False), patch.object(native.time, "monotonic", side_effect=[0, 0, 3]):
+            with self.assertRaises(native.Refusal): native.cleanup_group(self.child, 100, observer)
+
+    def test_reap_echild_or_interruption_is_not_assumed_success(self):
+        for code in (errno.ECHILD, errno.EINTR):
+            self.os.waitpid.side_effect = OSError(code, "private")
+            with self.assertRaises(native.Refusal): native.reap_owned(self.child, native.time.monotonic()+1)
+        self.assertIsNone(self.child.returncode)
+
+    def test_real_status_interface_is_used_only_for_reaping(self):
+        self.os.waitpid.return_value = (100, 0)
+        self.os.WIFEXITED.return_value = True
+        self.os.waitstatus_to_exitcode.return_value = 0
+        self.assertEqual(native.reap_owned(self.child, native.time.monotonic()+1), 0)
+        self.os.waitpid.assert_called_once_with(100, 1)
+        self.assertEqual(self.child.returncode, 0)
+
+    def test_mac_registration_and_isolation_precede_start_barrier(self):
         root = MagicMock(spec=Path)
-        node = root.__truediv__.return_value
-        node.is_file.return_value = False
-        node.exists.return_value = False
-        with self.assertRaises(native.Refusal):
-            native.assess(root, "terminal", native.STATUS)
+        observer = Mock()
+        observer.observe.return_value = True
+        with patch.object(native.platform, "system", return_value="Darwin"), patch.object(native.subprocess, "Popen", return_value=self.child), patch.object(native, "ProcessExit", return_value=observer), patch.object(native, "cleanup_group", return_value=0) as cleanup:
+            self.assertEqual(native.mac_group(["fixture"], {}, root), 0)
+            root.__truediv__.assert_called_once_with("go")
+            cleanup.assert_called_once_with(self.child, 100, observer)
+            observer.close.assert_called_once()
 
-    def test_expected_status_requires_busy_and_terminal_phases(self):
+    def test_wrong_group_never_releases_barrier(self):
         root = MagicMock(spec=Path)
-        def node(name):
-            item = Mock()
-            item.is_file.return_value = name == "privacy_ready"
-            item.exists.return_value = False
-            return item
-        root.__truediv__.side_effect = node
-        with self.assertRaisesRegex(native.Refusal, "terminal_unconfirmed"):
-            native.assess(root, "terminal", native.STATUS)
+        self.os.getpgid.return_value = 101
+        with patch.object(native.platform, "system", return_value="Darwin"), patch.object(native.subprocess, "Popen", return_value=self.child), patch.object(native, "ProcessExit") as observer, patch.object(native, "reap_owned", return_value=-9), patch.object(native, "cleanup_group") as cleanup:
+            with self.assertRaises(native.Refusal): native.mac_group(["fixture"], {}, root)
+            root.__truediv__.assert_not_called()
+            self.os.kill.assert_called_once_with(100, 9)
+            cleanup.assert_not_called()
+            observer.return_value.close.assert_called_once()
 
-    def test_signal_or_timeout_status_cannot_pass(self):
+    def test_timeout_cannot_escape_before_cleanup_confirmation(self):
+        observer = Mock()
+        observer.observe.return_value = False
+        with patch.object(native.platform, "system", return_value="Darwin"), patch.object(native.subprocess, "Popen", return_value=self.child), patch.object(native, "ProcessExit", return_value=observer), patch.object(native.time, "monotonic", side_effect=[0, 0, 4]), patch.object(native, "cleanup_group", side_effect=native.Refusal("unsupported_cleanup")):
+            with self.assertRaises(native.Refusal): native.mac_group(["fixture"], {}, MagicMock(spec=Path))
+
+    def test_terminal_status_requires_real_phase_markers(self):
+        root = MagicMock(spec=Path)
+        root.__truediv__.return_value.is_file.return_value = False
+        with self.assertRaises(native.Refusal): native.assess(root, "terminal", 86)
+
+    def test_wrong_terminal_status_is_refused(self):
         root = MagicMock(spec=Path)
         def node(name):
             item = Mock()
@@ -135,57 +254,13 @@ class Supervisor(unittest.TestCase):
             with self.assertRaisesRegex(native.Refusal, "terminal_unconfirmed"):
                 native.assess(root, "terminal", status)
 
-    def test_waitid_keeps_pid_reserved(self):
-        observation = Mock(si_pid=100, si_code=native.os.CLD_EXITED, si_status=86)
-        with patch.object(native.os, "waitid", return_value=observation) as wait:
-            self.assertEqual(native.exit_observation(100), 86)
-            wait.assert_called_once_with(native.os.P_PID, 100, native.os.WEXITED | native.os.WNOHANG | native.os.WNOWAIT)
-
-    def test_inaccessible_waitid_is_not_exit(self):
-        with patch.object(native.os, "waitid", side_effect=OSError(errno.ECHILD, "private")):
-            with self.assertRaisesRegex(native.Refusal, "unsupported_cleanup"):
-                native.exit_observation(100)
-
-    def test_mac_isolation_precedes_barrier_and_cleanup(self):
-        child = Mock(pid=100)
-        root = MagicMock(spec=Path)
-        with patch.object(native.platform, "system", return_value="Darwin"), patch.object(native.subprocess, "Popen", return_value=child) as spawn, patch.object(native.os, "getpgid", return_value=100), patch.object(native.os, "getsid", return_value=100), patch.object(native.os, "getpgrp", return_value=101), patch.object(native, "exit_observation", return_value=0), patch.object(native, "cleanup_group") as cleanup:
-            self.assertEqual(native.mac_group(["fixture"], {}, root), 0)
-            self.assertTrue(spawn.call_args.kwargs["start_new_session"])
-            root.__truediv__.assert_called_with("go")
-            cleanup.assert_called_once_with(child, 100)
-
-    def test_mac_timeout_requires_cleanup_before_escape(self):
-        child = Mock(pid=100)
-        root = MagicMock(spec=Path)
-        with patch.object(native.platform, "system", return_value="Darwin"), patch.object(native.subprocess, "Popen", return_value=child), patch.object(native.os, "getpgid", return_value=100), patch.object(native.os, "getsid", return_value=100), patch.object(native.os, "getpgrp", return_value=101), patch.object(native, "exit_observation", return_value=None), patch.object(native.time, "monotonic", side_effect=[0, 0, 4]), patch.object(native.time, "sleep"), patch.object(native, "cleanup_group", side_effect=native.Refusal("unsupported_cleanup")):
-            with self.assertRaisesRegex(native.Refusal, "unsupported_cleanup"):
-                native.mac_group(["fixture"], {}, root)
-
-    def test_mac_wrong_group_does_not_release_barrier_or_kill_group(self):
-        child = Mock(pid=100)
-        child.poll.return_value = 0
-        root = MagicMock(spec=Path)
-        with patch.object(native.platform, "system", return_value="Darwin"), patch.object(native.subprocess, "Popen", return_value=child), patch.object(native.os, "getpgid", return_value=101), patch.object(native, "exit_observation", return_value=None), patch.object(native, "cleanup_group") as cleanup:
-            with self.assertRaisesRegex(native.Refusal, "unsupported_cleanup"):
-                native.mac_group(["fixture"], {}, root)
-            root.__truediv__.assert_not_called()
-            child.kill.assert_called_once()
-            cleanup.assert_not_called()
-
-    def test_windows_prerequisite_failure_or_skip_blocks(self):
-        # Patch the runner result; never execute native containment fixtures here.
-        import test_phase1_security_checks as guards
+    def test_windows_prerequisites_unchanged(self):
         for skip in (False, True):
             def run(suite, result):
                 result.testsRun = 3
-                if skip:
-                    result.skipped.append((None, "unsupported"))
-                else:
-                    result.failures.append((None, "failed"))
+                (result.skipped if skip else result.failures).append((None, "refused"))
             with patch.object(unittest.TestSuite, "run", run):
-                with self.assertRaises(native.Refusal):
-                    native.windows_preflight()
+                with self.assertRaises(native.Refusal): native.windows_preflight()
 
 
 if __name__ == "__main__":

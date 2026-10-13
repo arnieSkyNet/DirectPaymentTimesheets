@@ -9,6 +9,7 @@ import os
 from pathlib import Path
 import platform
 import shutil
+import select
 import signal
 import subprocess
 import sys
@@ -53,92 +54,143 @@ def group_exists(pgid):
         raise Refusal("unsupported_cleanup") from None
 
 
-def exit_observation(pid):
-    # WNOWAIT reserves the leader PID/group identity until explicit reaping.
-    try:
-        observation = os.waitid(os.P_PID, pid, os.WEXITED | os.WNOHANG | os.WNOWAIT)
-    except (OSError, AttributeError):
-        raise Refusal("unsupported_cleanup") from None
-    if observation is None:
-        return None
-    if observation.si_pid != pid:
-        raise Refusal("unsupported_cleanup")
-    if observation.si_code == os.CLD_EXITED:
-        return observation.si_status
-    if observation.si_code in (os.CLD_KILLED, os.CLD_DUMPED):
-        return -observation.si_status
-    # Core-dumping or otherwise unexpected exits are never expected terminals.
-    raise Refusal("unexpected_child_exit")
+class ProcessExit:
+    """kqueue observation only; never wait/poll/reap the child here."""
+    def __init__(self, pid):
+        self.pid, self.exited, self.forked = pid, False, False
+        try:
+            self.queue = select.kqueue()
+        except OSError:
+            raise Refusal("unsupported_cleanup") from None
+        try:
+            event = select.kevent(pid, filter=select.KQ_FILTER_PROC,
+                                  flags=select.KQ_EV_ADD | select.KQ_EV_ENABLE,
+                                  fflags=select.KQ_NOTE_EXIT | select.KQ_NOTE_FORK)
+            self._consume(self.queue.control([event], 1, 0))
+        except Exception:
+            try:
+                self.queue.close()
+            finally:
+                raise Refusal("unsupported_cleanup") from None
+
+    def _consume(self, events):
+        if len(events) > 1:
+            raise Refusal("unsupported_cleanup")
+        for event in events:
+            if event.ident != self.pid or event.filter != select.KQ_FILTER_PROC or event.flags & select.KQ_EV_ERROR:
+                raise Refusal("unsupported_cleanup")
+            if event.fflags & select.KQ_NOTE_FORK:
+                self.forked = True
+                raise Refusal("unsupported_cleanup")
+            if not event.fflags & select.KQ_NOTE_EXIT or event.fflags & ~(select.KQ_NOTE_EXIT | select.KQ_NOTE_FORK):
+                raise Refusal("unsupported_cleanup")
+            self.exited = True
+
+    def observe(self, seconds):
+        if not self.exited:
+            try:
+                self._consume(self.queue.control(None, 1, max(0, seconds)))
+            except OSError:
+                # EINTR is a refusal, not an unbounded restart or successful exit.
+                raise Refusal("unsupported_cleanup") from None
+        return self.exited
+
+    def close(self):
+        try:
+            self.queue.close()
+        except OSError:
+            raise Refusal("unsupported_cleanup") from None
 
 
-def cleanup_group(child, pgid, budget=2):
-    # Only a verified private group; never signal the supervisor's own group.
-    if pgid != child.pid or pgid == os.getpgrp():
+def reap_owned(child, deadline):
+    while time.monotonic() < deadline:
+        try:
+            pid, raw = os.waitpid(child.pid, os.WNOHANG)
+        except OSError:
+            # Unlike Popen.poll, ECHILD must not be converted to success.
+            raise Refusal("unsupported_cleanup") from None
+        if pid == child.pid:
+            if not (os.WIFEXITED(raw) or os.WIFSIGNALED(raw)):
+                raise Refusal("unsupported_cleanup")
+            status = os.waitstatus_to_exitcode(raw)
+            child.returncode = status  # No later Popen destructor/poll reaping.
+            return status
+        if pid != 0:
+            raise Refusal("unsupported_cleanup")
+        time.sleep(0.01)
+    raise Refusal("unsupported_cleanup")
+
+
+def cleanup_group(child, pgid, observer, budget=2):
+    # Caller exclusively owns the child: no other waiter or SIGCHLD handler.
+    if pgid != child.pid or pgid == os.getpgrp() or child.returncode is not None:
         raise Refusal("unsupported_cleanup")
-    if group_exists(pgid):
+    # Reserve PID until ALL signals are done. NOTE_EXIT is not a wait operation.
+    if not observer.exited and group_exists(pgid):
         try:
             os.killpg(pgid, signal.SIGKILL)
         except OSError as error:
             if error.errno != errno.ESRCH:
                 raise Refusal("unsupported_cleanup") from None
     deadline = time.monotonic() + budget
-    while time.monotonic() < deadline:
-        if exit_observation(child.pid) is not None:
-            # After reaping, never signal this group ID again. A subsequent
-            # nonempty group is conservatively unconfirmed, not killed again.
-            if child.poll() is None:
-                raise Refusal("unsupported_cleanup")
-            while time.monotonic() < deadline:
-                if not group_exists(pgid):
-                    return
-                time.sleep(0.01)
-            break
-        time.sleep(0.01)
-    raise Refusal("unsupported_cleanup")
+    while not observer.observe(min(0.05, max(0, deadline - time.monotonic()))):
+        if time.monotonic() >= deadline:
+            raise Refusal("unsupported_cleanup")
+    status = reap_owned(child, deadline)
+    # Never signal this ID after reaping. Reuse can cause conservative refusal,
+    # never a signal to another process. Forks are outside the single-child scope.
+    if observer.forked or group_exists(pgid):
+        raise Refusal("unsupported_cleanup")
+    return status
 
 
 def mac_group(args, env, root, timeout=3):
-    if platform.system() != "Darwin" or not all(hasattr(os, name) for name in
-            ("waitid", "WNOWAIT", "WEXITED", "WNOHANG", "P_PID", "CLD_EXITED", "CLD_KILLED", "CLD_DUMPED")):
+    required = ("kqueue", "kevent", "KQ_FILTER_PROC", "KQ_EV_ADD", "KQ_EV_ENABLE",
+                "KQ_EV_ERROR", "KQ_NOTE_EXIT", "KQ_NOTE_FORK")
+    if platform.system() != "Darwin" or not all(hasattr(select, name) for name in required):
         raise Refusal("unsupported_cleanup")
-    child = subprocess.Popen(args, env=env, stdin=subprocess.DEVNULL,
-                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                             start_new_session=True)
-    # The child cannot perform database operations until the go marker appears.
-    # Trusted fixtures do not fork, setsid or request broker-created processes.
-    pgid = child.pid
-    isolated = False
+    if signal.getsignal(signal.SIGCHLD) != signal.SIG_DFL:
+        raise Refusal("unsupported_cleanup")
     try:
+        child = subprocess.Popen(args, env=env, stdin=subprocess.DEVNULL,
+                                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                                 start_new_session=True)
+    except OSError:
+        raise Refusal("unsupported_cleanup") from None
+    observer, isolated = None, False
+    status = None
+    try:
+        # Both registration and isolation verification precede the start barrier.
+        observer = ProcessExit(child.pid)
         try:
-            if os.getpgid(child.pid) != pgid or os.getsid(child.pid) != pgid or pgid == os.getpgrp():
-                raise Refusal("unsupported_cleanup")
-            isolated = True
+            verified = os.getpgid(child.pid) == child.pid and os.getsid(child.pid) == child.pid and child.pid != os.getpgrp()
         except OSError:
             raise Refusal("unsupported_cleanup") from None
+        if not verified:
+            raise Refusal("unsupported_cleanup")
+        isolated = True
         (root / "go").write_bytes(b"contained")
         deadline = time.monotonic() + timeout
-        while time.monotonic() < deadline:
-            result = exit_observation(child.pid)
-            if result is not None:
-                return result
-            time.sleep(0.01)
-        raise subprocess.TimeoutExpired("synthetic_native_child", timeout)
+        while not observer.observe(min(0.05, max(0, deadline - time.monotonic()))):
+            if time.monotonic() >= deadline:
+                raise subprocess.TimeoutExpired("synthetic_native_child", timeout)
     finally:
-        # Also verify group emptiness after normal leader exit. Unknown cleanup
-        # overrides all results and prevents recovery or subsequent fixtures.
-        if isolated:
-            cleanup_group(child, pgid)
-        else:
-            # Before the start barrier there are no descendants. Never kill an
-            # unverified group; kill only this owned child and confirm reaping.
-            # The leader is not reaped, so its PID cannot have been reused.
-            if exit_observation(child.pid) is None:
-                child.kill()
-            deadline = time.monotonic() + 2
-            while child.poll() is None:
-                if time.monotonic() >= deadline:
-                    raise Refusal("unsupported_cleanup")
-                time.sleep(0.01)
+        try:
+            if isolated:
+                status = cleanup_group(child, child.pid, observer)
+            else:
+                # Before go, trusted children do not fork. Signal the unreaped
+                # owned PID only, then bounded reap; never signal an unknown group.
+                try:
+                    os.kill(child.pid, signal.SIGKILL)
+                except OSError as error:
+                    if error.errno != errno.ESRCH:
+                        raise Refusal("unsupported_cleanup") from None
+                reap_owned(child, time.monotonic() + 2)
+        finally:
+            if observer is not None:
+                observer.close()
+    return status
 
 
 def mac_preflight():

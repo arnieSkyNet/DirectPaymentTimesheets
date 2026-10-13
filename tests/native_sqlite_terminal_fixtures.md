@@ -52,16 +52,41 @@ of root diagnostics. The suite verifies a separate exclusive fixture handle can
 be reopened after every child, including timeout. Broker-created/hostile processes
 are outside the trusted-launch scope.
 
-macOS requires Python waitid/WNOWAIT and associated constants before spawning.
-If unavailable, it reports unsupported_cleanup; there is no weaker fallback.
-Each child starts in a new session and waits at a file barrier before database
-operations. The supervisor verifies PID=PGID=SID and exclusion of its own group
-before releasing the barrier. Exit observation uses WNOWAIT to reserve the leader
-PID until group termination, preventing signaling a reused ID after reaping. The
-supervisor sends SIGKILL only to the verified group, then confirms leader reaping
-and group absence within two seconds. It never signals that ID again after reap.
-Before-isolation failures kill only the owned, unreaped child. These trusted
-fixtures do not fork, change groups or use brokers.
+macOS requires Python's supported select.kqueue/kevent process filter, NOTE_EXIT
+and NOTE_FORK constants. Python 3.12 os.waitid is not available on macOS and is
+no longer used. Missing APIs report unsupported_cleanup before spawning. Each
+child starts in a new session and waits at a barrier before database operations.
+The supervisor registers exit/fork observation and verifies PID=PGID=SID and
+exclusion of its own group before releasing the barrier. Initial events are
+validated too, including an exit before cleanup. NOTE_EXIT observes departure;
+it does not reap or supply a status this code interprets as wait status.
+
+This is a SINGLE direct-child supervisor, not general descendant containment.
+The reviewed fixture/control children do not fork or use brokers. Other processes
+cannot ordinarily join a different session's group. Unexpected NOTE_FORK, event
+errors, foreign PID/filter or unrecognized events refuse accounting, even if a
+subsequent group signal succeeds. No descendant termination/reaping is claimed.
+Do not use it for Cargo or arbitrary descendant-spawning programs.
+
+The parent must exclusively own waiting for this child: no competing waiter,
+SIGCHLD handler, SIGCHLD ignore or external native auto-reaper. A nondefault
+Python SIGCHLD disposition is rejected before spawn; this is a trusted plain
+Python harness, not protection against hidden C code altering signal flags.
+An unreaped direct child retains its PID. The supervisor signals only its
+verified private group while that identity is reserved, observes exit with bounded
+kqueue control calls, then uses bounded waitpid(WNOHANG) to reap that sole member.
+It never uses Popen.poll's ECHILD-to-success behavior. ECHILD, surfaced EINTR,
+unknown statuses, missing exit observation, signal errors and deadline exhaustion
+refuse cleanup. Python may restart an interrupted kevent internally using its
+recomputed finite timeout; every supplied timeout is finite and the outer deadline
+is monotonic.
+
+After reap, no further signal is sent to the old PID/group ID. Group presence at
+that point is conservatively unsupported_cleanup (including possible ID reuse),
+never evidence authorizing another kill. Registration/isolation failures before
+the barrier signal only the owned unreaped PID, then attempt bounded reaping;
+they never signal an unverified group and never permit fixture success. Queue
+handles are closed on normal and failure paths; close failure also refuses cleanup.
 
 Two future macOS prerequisite controls verify normal creation/exit and deliberate
 stall cleanup. Native Rust children have an independent ten-second alarm; control
@@ -124,9 +149,24 @@ No production cleanup or anchored Linux cleanup helper is changed.
 
 Python tests are mocked only: no process creation, signals or SQLite termination.
 They distinguish disabled/source/runner/privacy gates, missing phases, wrong
-statuses, inaccessible groups, retained PID observation and cleanup refusal.
+statuses, inaccessible groups, non-reaping kqueue observation, retained PID identity and cleanup refusal.
 Linux offline Cargo checks exclude the Windows/macOS body and do not prove its
 native compilation, FFI behavior, runner compatibility or privacy observations.
 Native execution remains required and unauthorized here. For safe local Linux
 proof validation, exclude busy_destructor, pending_write_abort and child_watchdog;
 those four existing tests perform termination and must not run in this task.
+
+The mocked supervisor cases cover registration, initial exit, unexpected fork,
+wrong/error events, interrupted observation, observation timeout, normal leader
+exit, stall termination-before-reap, signal failures, ECHILD/interrupted reap,
+deadline exhaustion, post-reap survivors and barrier isolation. These establish
+control-flow expectations only; no kqueue, process, signal or native fixture runs
+in the mocked suite. Native macOS Intel/Apple Silicon compilation and the two
+separately authorized containment controls remain required. No unsupported
+accounting condition is converted to a successful observation or cleanup result.
+
+API references: [Apple kqueue(2)](https://developer.apple.com/library/archive/documentation/System/Conceptual/ManPages_iPhoneOS/man2/kqueue.2.html)
+distinguishes NOTE_EXIT from NOTE_REAP and documents aggregation and registration
+checks; [Python 3.12 select](https://docs.python.org/3.12/library/select.html#kqueue-objects)
+provides the supported wrapper. This correction does not authorize native testing
+or change the default-off terminal/privacy gates.
