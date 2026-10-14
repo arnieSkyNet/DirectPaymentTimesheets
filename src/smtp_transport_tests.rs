@@ -455,3 +455,80 @@ fn handshake_detail<S>(error: native_tls::HandshakeError<S>) -> String {
         }
     }
 }
+
+#[test]
+fn standalone_async_test_uses_empty_database_and_writes_no_delivery_history() {
+    use crate::email_settings::{TestEmailTask, TestRecipient};
+    let (_directory, application) = crate::payroll_timesheet_screen::tests::test_application();
+    let db = &application.payroll_timesheet_email_repository.connection;
+    let snapshot = || -> Vec<i64> {
+        [
+            "personal_assistants",
+            "employers",
+            "payroll_schedules",
+            "payroll_timesheet_email_status",
+            "imported_payroll_documents",
+        ]
+        .iter()
+        .map(|table| {
+            db.query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |row| {
+                row.get(0)
+            })
+            .unwrap()
+        })
+        .collect()
+    };
+    let before = snapshot();
+    assert!(before.iter().all(|count| *count == 0));
+    let fixture = Fixture::new(SmtpSecurity::Plaintext, false, false, false);
+    let mut config = config(fixture.port, SmtpSecurity::Plaintext);
+    config.test_sender_address = "from@example.test".into();
+    config.payroll_test_email_address = "to@example.test".into();
+    let (repaint_tx, repaint_rx) = std::sync::mpsc::channel();
+    let mut task = TestEmailTask::default();
+    task.start(config, TestRecipient::Payroll, move || {
+        let _ = repaint_tx.send(());
+    })
+    .unwrap();
+    repaint_rx
+        .recv_timeout(std::time::Duration::from_secs(5))
+        .unwrap();
+    assert!(task.poll().unwrap().is_ok());
+    assert!(!task.pending());
+    assert_eq!(before, snapshot());
+    let commands = fixture.finish();
+    assert_eq!(
+        commands
+            .iter()
+            .filter(|(_, line)| line.starts_with("RCPT"))
+            .count(),
+        1
+    );
+    assert!(commands.iter().any(|(_, line)| line.starts_with("DATA")));
+}
+
+#[test]
+fn standalone_message_reuses_required_tls_authentication_and_custom_ports() {
+    for mode in [SmtpSecurity::RequiredStarttls, SmtpSecurity::ImplicitTls] {
+        let fixture = Fixture::new(mode, true, false, false);
+        let mut config = config(fixture.port, mode);
+        config.test_sender_address = "from@example.test".into();
+        config.pa_test_email_address = "to@example.test".into();
+        let message =
+            prepare_smtp_test_message(&config, crate::email_settings::TestRecipient::Pa).unwrap();
+        dispatch_message(&config, &message, Some(trusted("localhost"))).unwrap();
+        let commands = fixture.finish();
+        assert!(commands
+            .iter()
+            .any(|(encrypted, line)| *encrypted && line.starts_with("AUTH")));
+        assert_eq!(
+            commands
+                .iter()
+                .filter(|(_, line)| line.starts_with("RCPT"))
+                .count(),
+            1
+        );
+        assert!(!commands.iter().any(|(encrypted, line)| !encrypted
+            && (line.starts_with("AUTH") || line.starts_with("MAIL") || line.starts_with("DATA"))));
+    }
+}

@@ -1155,3 +1155,32 @@ pub fn prepare_bundle_message(
 #[cfg(test)]
 #[path = "smtp_transport_tests.rs"]
 mod smtp_transport_tests;
+
+/// A standalone test has exactly one explicitly selected test recipient, no
+/// attachments or production CC/BCC, and no access to payroll repositories.
+pub(crate) fn prepare_smtp_test_message(
+    config: &crate::config::EmailConfig,
+    recipient: crate::email_settings::TestRecipient,
+) -> Result<Message, ProductionSendError> {
+    let invalid = |message: &str| ProductionSendError::NotSent(message.into());
+    let username = config.smtp_username.trim();
+    let sender = if username.parse::<lettre::Address>().is_ok() {
+        username
+    } else {
+        config.test_sender_address.trim()
+    };
+    let sender = sender.parse::<lettre::Address>().map_err(|_| {
+        invalid("Enter a valid test sender address; SMTP username is not an email address.")
+    })?;
+    let to = match recipient {
+        crate::email_settings::TestRecipient::Payroll => &config.payroll_test_email_address,
+        crate::email_settings::TestRecipient::Pa => &config.pa_test_email_address,
+    }
+    .trim()
+    .parse::<lettre::Address>()
+    .map_err(|_| invalid("Enter a valid selected test recipient address."))?;
+    Message::builder().from(Mailbox::new(None, sender)).to(Mailbox::new(None, to))
+        .subject("DirectPaymentTimesheets  SMTP Test")
+        .body("This is an attachment-free DirectPaymentTimesheets SMTP transport test. No payroll records were used or changed.".to_string())
+        .map_err(|_| invalid("Unable to prepare SMTP test message."))
+}

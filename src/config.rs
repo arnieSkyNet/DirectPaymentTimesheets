@@ -271,7 +271,7 @@ impl SmtpSecurity {
     }
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct EmailConfig {
     #[serde(default = "default_timesheet_employer_cc")]
     pub timesheet_employer_cc: bool,
@@ -300,6 +300,9 @@ pub struct EmailConfig {
 
     #[serde(default)]
     pub pa_test_email_address: String,
+
+    #[serde(default)]
+    pub test_sender_address: String,
 
     // Retained for compatibility with existing config.toml files. The active
     // production body continues to be reconciled from PayrollConfig.
@@ -364,6 +367,7 @@ impl Default for EmailConfig {
             smtp_password: String::new(),
             payroll_test_email_address: String::new(),
             pa_test_email_address: String::new(),
+            test_sender_address: String::new(),
             timesheet_body: default_email_body(),
         }
     }

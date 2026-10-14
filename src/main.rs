@@ -19,6 +19,7 @@ mod database_recovery;
 mod date_utils;
 mod direct_shift_repository;
 mod email_service;
+mod email_settings;
 mod employer_repository;
 mod employer_screen;
 mod enter_hours_screen;
