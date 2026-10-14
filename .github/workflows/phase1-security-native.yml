@@ -358,7 +358,8 @@ jobs:
           def native_code(error):
               code = getattr(error, 'winerror', None)
               return code if isinstance(code, int) and not isinstance(code, bool) else None
-          def tool_query(args, env, timeout, discovery=False):
+          def tool_query(args, env, timeout, discovery=False, query='setup_query'):
+              if query not in ('setup_query','absolute_linker_help','rust_host'): raise SystemExit('msvc_query_identifier_refused')
               # Read only a bounded snapshot of regular-file output, including on
               # failure. Never publish raw tool output or exception text.
               with tempfile.TemporaryFile() as out, tempfile.TemporaryFile() as err:
@@ -371,7 +372,7 @@ jobs:
                           snapshot['developer_failure'] = None
                           for observation in snapshot['developer']:
                               if 'native_status' in observation: observation['native_status'] = None
-                      record = {'class':classification, 'native_code':native_code(error), 'exit_code':exit_code, 'deadline_seconds':timeout, 'leader_killed':killed, 'leader_reaped':reaped, 'descendant_cleanup_confirmed':False}
+                      record = {'class':classification, 'native_code':native_code(error), 'exit_code':exit_code, 'status_confirmed':isinstance(exit_code, int) and not isinstance(exit_code, bool), 'query':'msvc_discovery' if discovery else query, 'timed_out':classification in ('msvc_query_timeout','msvc_leader_kill_failed','msvc_leader_reap_timeout','msvc_leader_reap_failed'), 'deadline_seconds':timeout, 'leader_killed':killed, 'leader_reaped':reaped, 'descendant_cleanup_confirmed':False}
                       record.update(snapshot)
                       print(json.dumps(record, sort_keys=True))
                   try:
@@ -386,19 +387,23 @@ jobs:
                       except OSError as error:
                           evidence('msvc_leader_kill_failed', error)
                           raise SystemExit('msvc_leader_kill_failed') from None
-                      try: process.wait(timeout=5)
+                      try: reaped_code = process.wait(timeout=5)
                       except subprocess.TimeoutExpired:
                           evidence('msvc_leader_reap_timeout', killed=True)
                           raise SystemExit('msvc_leader_reap_timeout') from None
                       except OSError as error:
                           evidence('msvc_leader_reap_failed', error, killed=True)
                           raise SystemExit('msvc_leader_reap_failed') from None
-                      evidence('msvc_query_timeout', killed=True, reaped=True)
+                      confirmed = isinstance(reaped_code, int) and not isinstance(reaped_code, bool) and -2147483648 <= reaped_code <= 4294967295
+                      evidence('msvc_query_timeout', killed=True, reaped=True, exit_code=reaped_code if confirmed else None)
                       raise SystemExit('msvc_query_timeout') from None
                   except OSError as error:
                       # Wait failure leaves leader state uncertain; fail closed.
                       evidence('msvc_wait_failed', error)
                       raise SystemExit('msvc_wait_failed') from None
+                  if not isinstance(code, int) or isinstance(code, bool) or not -2147483648 <= code <= 4294967295:
+                      evidence('msvc_status_unconfirmed', reaped=True)
+                      raise SystemExit('msvc_status_unconfirmed')
                   evidence('msvc_discovery_refused' if discovery and code != 0 else 'msvc_query_completed', reaped=True, exit_code=code)
                   out.seek(0)
                   err.seek(0)
@@ -417,6 +422,29 @@ jobs:
                       expected_statuses = [{'stage':stage,'edge':edge,'code':1 if stage == 'instances' and edge == 'after' else 0} for stage,edge in status_order]
                       if not snapshot['markers_valid'] or snapshot['phases'] != list(phases) or snapshot['operation_pending'] or snapshot['operation_count'] == 0 or snapshot['statuses'] != expected_statuses or snapshot['developer'] != developer_success: raise SystemExit('msvc_marker_output_refused')
                   return subprocess.CompletedProcess(args, code, stdout.decode('utf-8', errors='replace'), stderr.decode('utf-8', errors='replace'))
+          def discovery_transport(powershell, script, discovery_env):
+              try:
+                  # The fixed inline helper exceeds Windows' command-line limit.
+                  # Use a private local script file; do not override execution policy.
+                  # Windows 0700 temporary-directory ACL support starts at 3.12.4.
+                  if os.name == 'nt' and sys.version_info < (3,12,4): raise SystemExit('msvc_script_privacy_unconfirmed')
+                  with tempfile.TemporaryDirectory(prefix='dpt-msvc-script-') as directory:
+                      script_path = os.path.join(directory, 'discovery.ps1')
+                      with open(script_path, 'x', encoding='utf-8-sig', newline='\n') as source:
+                          source.write(script)
+                      candidate = os.path.abspath(script_path)
+                      while True:
+                          metadata = os.lstat(candidate)
+                          attributes = getattr(metadata, 'st_file_attributes', None)
+                          if os.name == 'nt' and (not isinstance(attributes, int) or isinstance(attributes, bool) or attributes & 0x400): raise SystemExit('msvc_script_path_refused')
+                          if os.path.islink(candidate): raise SystemExit('msvc_script_path_refused')
+                          parent = os.path.dirname(candidate)
+                          if parent == candidate: break
+                          candidate = parent
+                      return tool_query([powershell, '-NoProfile', '-NonInteractive', '-File', script_path], discovery_env, 30, discovery=True)
+              except OSError as error:
+                  print(json.dumps({'class':'msvc_discovery_os_error','native_code':native_code(error),'deadline_seconds':30,'leader_killed':False,'leader_reaped':False,'descendant_cleanup_confirmed':False}, sort_keys=True))
+                  raise SystemExit('msvc_discovery_os_error') from None
           def windows_toolchain(base):
               # Installed runner tools only. Capture configuration internally;
               # never print developer-environment values or arbitrary PATH entries.
@@ -1042,29 +1070,8 @@ jobs:
               # These trusted setup-tool deadlines do not prove descendant-tree
               # cleanup; any timeout stops the step without retries or About tests.
               powershell = os.path.join(base['SystemRoot'], 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe')
-              try:
-                  discovery_env = base | {'PATH':'', 'PATHEXT':'.COM;.EXE;.BAT;.CMD'}
-                  # The fixed inline helper exceeds Windows' command-line limit.
-                  # Use a private local script file; do not override execution policy.
-                  # Windows 0700 temporary-directory ACL support starts at 3.12.4.
-                  if os.name == 'nt' and sys.version_info < (3,12,4): raise SystemExit('msvc_script_privacy_unconfirmed')
-                  with tempfile.TemporaryDirectory(prefix='dpt-msvc-script-') as directory:
-                      script_path = os.path.join(directory, 'discovery.ps1')
-                      with open(script_path, 'x', encoding='utf-8-sig', newline='\n') as source:
-                          source.write(script)
-                      candidate = os.path.abspath(script_path)
-                      while True:
-                          metadata = os.lstat(candidate)
-                          attributes = getattr(metadata, 'st_file_attributes', None)
-                          if os.name == 'nt' and (not isinstance(attributes, int) or isinstance(attributes, bool) or attributes & 0x400): raise SystemExit('msvc_script_path_refused')
-                          if os.path.islink(candidate): raise SystemExit('msvc_script_path_refused')
-                          parent = os.path.dirname(candidate)
-                          if parent == candidate: break
-                          candidate = parent
-                      discovery = tool_query([powershell, '-NoProfile', '-NonInteractive', '-File', script_path], discovery_env, 30, discovery=True)
-              except OSError as error:
-                  print(json.dumps({'class':'msvc_discovery_os_error','native_code':native_code(error),'deadline_seconds':30,'leader_killed':False,'leader_reaped':False,'descendant_cleanup_confirmed':False}, sort_keys=True))
-                  raise SystemExit('msvc_discovery_os_error') from None
+              discovery_env = base | {'PATH':'', 'PATHEXT':'.COM;.EXE;.BAT;.CMD'}
+              discovery = discovery_transport(powershell, script, discovery_env)
               if discovery.returncode: raise SystemExit('msvc_discovery_refused')
               try:
                   data = json.loads(discovery.stdout)
@@ -1082,12 +1089,28 @@ jobs:
               config['CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER'] = str(linker)
               configured = base | config
               try:
-                  help_result = tool_query([str(linker), '/?'], configured, 5)
-                  rust = tool_query(['rustc', '-vV'], configured, 5)
+                  help_result = tool_query([str(linker), '/?'], configured, 5, query='absolute_linker_help')
+                  rust = tool_query(['rustc', '-vV'], configured, 5, query='rust_host')
               except (OSError, subprocess.TimeoutExpired): raise SystemExit('msvc_identity_unconfirmed') from None
-              if help_result.returncode or 'Microsoft' not in help_result.stdout + help_result.stderr or rust.returncode or 'host: x86_64-pc-windows-msvc' not in rust.stdout: raise SystemExit('msvc_identity_refused')
+              microsoft_banner_valid = 'Microsoft' in help_result.stdout + help_result.stderr
+              rust_host_valid = 'host: x86_64-pc-windows-msvc' in rust.stdout
+              print(json.dumps({'class':'msvc_identity_evaluated','microsoft_banner_valid':microsoft_banner_valid,'rust_host_valid':rust_host_valid}, sort_keys=True))
+              if help_result.returncode or not microsoft_banner_valid or rust.returncode or not rust_host_valid: raise SystemExit('msvc_identity_refused')
               print(json.dumps({'class':'msvc_verified','product':data['product'],'version':data['version'],'host':'x86_64-pc-windows-msvc','target':'x86_64-pc-windows-msvc','discovery_code':discovery.returncode,'help_code':help_result.returncode,'rust_code':rust.returncode,'required_present':{k:bool(config.get(k)) for k in ('INCLUDE','LIB','LIBPATH','WINDOWSSDKDIR')}}, sort_keys=True))
               return configured
+          def protocol_mock_transport(powershell, script, discovery_env):
+              # Installed only by scoped unittest patches; production always uses
+              # discovery_transport and has no switch to select this mock.
+              return tool_query(['synthetic'], discovery_env, 30, discovery=True)
+          regression_cases = tuple('vswhere_%02d' % i for i in range(24)) + tuple('developer_%02d' % i for i in range(50)) + ('transport_old_python','transport_missing','transport_boolean','transport_reparse','transport_symlink','transport_lstat_failed','transport_valid','identity_1100','identity_banner','identity_missing_banner','identity_host','identity_valid')
+          regression_classes = ('invocation_failed','status_unconfirmed','native_nonzero','msvc_marker_output_refused','msvc_output_limit','msvc_discovery_refused','msvc_script_privacy_unconfirmed','msvc_script_path_refused','msvc_discovery_os_error','msvc_identity_refused','msvc_launch_failed','msvc_query_timeout','msvc_wait_failed','msvc_status_unconfirmed','msvc_leader_kill_failed','msvc_leader_reap_timeout','msvc_leader_reap_failed','success','refusal','unallowlisted') + tuple('msvc_developer_' + value for value in ('invocation_failed','status_unconfirmed','native_nonzero','unexpected_stderr','environment_capture_failed','environment_malformed','environment_duplicate','architecture_mismatch','tool_path_refused','stream_overflow','query_timeout','cancelled','cleanup_failed','invalid_decoding'))
+          def regression_mismatch(case, expected, actual):
+              # Values are selected from fixed finite inventories, never exceptions.
+              if case not in regression_cases: case = 'unallowlisted'
+              if expected not in regression_classes: expected = 'unallowlisted'
+              if actual not in regression_classes: actual = 'unallowlisted'
+              print(json.dumps({'class':'discovery_regression_mismatch','case':case,'expected':expected,'actual':actual}, sort_keys=True), file=sys.stderr)
+              raise RuntimeError('discovery_regression_mismatch') from None
           def discovery_protocol_regressions():
               # Safe in-memory mocks: never launch PowerShell, linker or Cargo.
               from unittest.mock import patch, Mock
@@ -1116,23 +1139,24 @@ jobs:
                   (prefix + b'x' * 262145, 1, b''), (prefix, 1, b'x' * 65537),
               ): cases.append((raw, code, output, None))
               import contextlib, io
-              for raw, code, output, expected_failure in cases:
+              if len(cases) != 24: raise RuntimeError('regression_case_inventory')
+              for index, (raw, code, output, expected_failure) in enumerate(cases):
                   def launch(args, **kwargs):
                       kwargs['stderr'].write(raw)
                       kwargs['stdout'].write(output)
                       return Mock(wait=Mock(return_value=code))
                   printed = io.StringIO()
-                  with patch.object(subprocess, 'Popen', side_effect=launch) as child, patch.object(subprocess, 'run') as cargo, patch.object(json, 'loads', side_effect=RuntimeError('json_unreachable')) as consume, contextlib.redirect_stdout(printed):
+                  with patch.object(tempfile,'TemporaryFile',side_effect=io.BytesIO), patch.dict(globals(),{'discovery_transport':protocol_mock_transport}), patch.object(subprocess, 'Popen', side_effect=launch) as child, patch.object(subprocess, 'run') as cargo, patch.object(json, 'loads', side_effect=RuntimeError('json_unreachable')) as consume, contextlib.redirect_stdout(printed):
                       try: windows_toolchain({'SystemRoot':'C:\\Windows'})
                       except SystemExit as refusal:
-                          if expected_failure is not None and str(refusal) != expected_failure: raise RuntimeError('regression_classification') from None
-                      else: raise RuntimeError('regression_refusal_missing')
+                          if expected_failure is not None and str(refusal) != expected_failure: regression_mismatch('vswhere_%02d' % index, expected_failure, str(refusal))
+                      else: regression_mismatch('vswhere_%02d' % index,'refusal','success')
                       if child.call_count != 1 or consume.called or cargo.called: raise RuntimeError('regression_downstream_reached')
                   if any(secret in printed.getvalue() for secret in ('private_exception_text','private_stdout','private_stderr')): raise RuntimeError('regression_private_output')
               success = prefix + b'DPT_MSVC_STATUS:vswhere:after:0\nDPT_MSVC_STATUS:json:before:0\nDPT_MSVC_STATUS:json:after:0\nDPT_MSVC_STATUS:instances:before:0\nDPT_MSVC_STATUS:instances:after:1\n'
               success += b'DPT_MSVC_PHASE:vsdevcmd\nDPT_MSVC_DEV:before\nDPT_MSVC_DEV:result:completed:0:0:1:1\nDPT_MSVC_DEV:cleanup:0:1:1:none:1:1:1\nDPT_MSVC_DEV:environment:validated\n'
               success += b''.join(('DPT_MSVC_PHASE:' + phase + '\n').encode('ascii') for phase in phases[7:])
-              with patch.object(subprocess, 'Popen', side_effect=launch), contextlib.redirect_stdout(io.StringIO()):
+              with patch.object(tempfile,'TemporaryFile',side_effect=io.BytesIO), patch.object(subprocess, 'Popen', side_effect=launch), contextlib.redirect_stdout(io.StringIO()):
                   raw, code, output = success, 0, b'{}'
                   result = tool_query(['synthetic'], {}, 30, discovery=True)
                   if result.returncode != 0 or result.stdout != '{}': raise RuntimeError('regression_native_zero')
@@ -1197,16 +1221,17 @@ jobs:
                   snapshot = marker_snapshot(raw)
                   if snapshot['markers_valid'] or len(snapshot['developer']) > 4: raise RuntimeError('developer_regression_marker_bounds')
                   cases.append((raw,None))
-              for raw, classification in cases:
+              if len(cases) != 50: raise RuntimeError('developer_regression_case_inventory')
+              for index, (raw, classification) in enumerate(cases):
                   def launch(args, **kwargs):
                       kwargs['stderr'].write(raw)
                       return Mock(wait=Mock(return_value=1))
                   printed = io.StringIO()
-                  with patch.object(subprocess,'Popen',side_effect=launch) as child, patch.object(subprocess,'run') as cargo, patch.object(json,'loads',side_effect=RuntimeError('json_unreachable')) as consume, contextlib.redirect_stdout(printed):
+                  with patch.object(tempfile,'TemporaryFile',side_effect=io.BytesIO), patch.dict(globals(),{'discovery_transport':protocol_mock_transport}), patch.object(subprocess,'Popen',side_effect=launch) as child, patch.object(subprocess,'run') as cargo, patch.object(json,'loads',side_effect=RuntimeError('json_unreachable')) as consume, contextlib.redirect_stdout(printed):
                       try: windows_toolchain({'SystemRoot':'C:\\Windows'})
                       except SystemExit as failure:
-                          if classification is not None and str(failure) != 'msvc_developer_' + classification: raise RuntimeError('developer_regression_classification') from None
-                      else: raise RuntimeError('developer_regression_missing_refusal')
+                          if classification is not None and str(failure) != 'msvc_developer_' + classification: regression_mismatch('developer_%02d' % index, 'msvc_developer_' + classification, str(failure))
+                      else: regression_mismatch('developer_%02d' % index,'refusal','success')
                       if child.call_count != 1 or cargo.called or consume.called: raise RuntimeError('developer_regression_downstream_reached')
                   if 'synthetic_private_stderr' in printed.getvalue(): raise RuntimeError('developer_regression_private_output')
               from pathlib import PureWindowsPath
@@ -1214,39 +1239,115 @@ jobs:
               success += b'DPT_MSVC_PHASE:sdk\nDPT_MSVC_PHASE:linker_metadata\n'
               configuration = {'PATH':'synthetic','INCLUDE':'synthetic=a=b','LIB':'synthetic','LIBPATH':'synthetic','VCTOOLSINSTALLDIR':'C:\\Synthetic\\VC\\Tools\\MSVC\\1','WINDOWSSDKDIR':'C:\\SyntheticSDK','VSCMD_ARG_TGT_ARCH':'x64','VSCMD_ARG_HOST_ARCH':'x64'}
               payload = {'root':'C:\\Synthetic','linker':'C:\\Synthetic\\VC\\Tools\\MSVC\\1\\bin\\Hostx64\\x64\\link.exe','company':'Microsoft Corporation','product':'Visual Studio synthetic','version':'synthetic','environment':configuration}
-              replies = [(json.dumps(payload).encode('ascii'),success),(b'Microsoft synthetic',b''),(b'host: x86_64-pc-windows-msvc',b'')]
-              def launch_success(args, **kwargs):
-                  output, markers = replies.pop(0)
-                  kwargs['stdout'].write(output)
-                  kwargs['stderr'].write(markers)
-                  return Mock(wait=Mock(return_value=0))
-              with patch.dict(globals(),{'Path':PureWindowsPath}), patch.object(subprocess,'Popen',side_effect=launch_success) as child, patch.object(subprocess,'run') as cargo, contextlib.redirect_stdout(io.StringIO()):
-                  configured = windows_toolchain({'SystemRoot':'C:\\Windows'})
-                  if configured['INCLUDE'] != 'synthetic=a=b' or child.call_count != 3 or cargo.called or replies: raise RuntimeError('developer_regression_valid_configuration')
+              # Exercise production identity gates using byte-only fake processes.
+              for case, help_code, banner, host, accepted in (
+                  ('identity_1100',1100,b'Microsoft synthetic',b'host: x86_64-pc-windows-msvc',False),
+                  ('identity_banner',0,b'incompatible synthetic',b'host: x86_64-pc-windows-msvc',False),
+                  ('identity_missing_banner',0,b'',b'host: x86_64-pc-windows-msvc',False),
+                  ('identity_host',0,b'Microsoft synthetic',b'host: incompatible synthetic',False),
+                  ('identity_valid',0,b'Microsoft synthetic',b'host: x86_64-pc-windows-msvc',True),
+              ):
+                  replies = [(json.dumps(payload).encode('ascii'),success,0),(banner,b'',help_code),(host,b'',0)]
+                  arguments = []
+                  def launch_success(args, **kwargs):
+                      arguments.append(args)
+                      output, markers, code = replies.pop(0)
+                      kwargs['stdout'].write(output)
+                      kwargs['stderr'].write(markers)
+                      return Mock(wait=Mock(return_value=code))
+                  printed = io.StringIO()
+                  with patch.object(tempfile,'TemporaryFile',side_effect=io.BytesIO), patch.dict(globals(),{'Path':PureWindowsPath,'discovery_transport':protocol_mock_transport}), patch.object(subprocess,'Popen',side_effect=launch_success) as child, patch.object(subprocess,'run') as cargo, contextlib.redirect_stdout(printed):
+                      try: configured = windows_toolchain({'SystemRoot':'C:\\Windows'})
+                      except SystemExit as failure:
+                          if accepted or str(failure) != 'msvc_identity_refused': regression_mismatch(case, 'success' if accepted else 'msvc_identity_refused', str(failure))
+                      else:
+                          if not accepted: regression_mismatch(case,'msvc_identity_refused','success')
+                          if configured['INCLUDE'] != 'synthetic=a=b': raise RuntimeError('developer_regression_valid_configuration')
+                      if child.call_count != 3 or cargo.called or replies or arguments[1] != [payload['linker'],'/?'] or arguments[2] != ['rustc','-vV']: raise RuntimeError('identity_regression_query_or_downstream')
+                  records = [json.loads(line) for line in printed.getvalue().splitlines()]
+                  for record, query, code in zip(records[1:3],('absolute_linker_help','rust_host'),(help_code,0)):
+                      if record['query'] != query or record['exit_code'] != code or not record['status_confirmed'] or record['timed_out'] or not record['leader_reaped'] or record['deadline_seconds'] != 5: raise RuntimeError('identity_regression_evidence')
+                  if records[3] != {'class':'msvc_identity_evaluated','microsoft_banner_valid':case not in ('identity_banner','identity_missing_banner'),'rust_host_valid':case != 'identity_host'}: raise RuntimeError('identity_regression_validation')
+                  if any(value in printed.getvalue() for value in (payload['linker'],'incompatible synthetic','Microsoft synthetic','host:')): raise RuntimeError('identity_regression_private_output')
           developer_protocol_regressions()
           def developer_script_regressions():
-              # Mock Windows metadata without changing the host OS or launching tools.
+              # Fully virtual filesystem: test real transport without host ancestry
+              # or native execution. The production function is never replaced here.
+              import contextlib, io, posixpath
               from types import SimpleNamespace
-              from unittest.mock import patch
-              real_os = os
-              class ScriptOS:
-                  name = 'nt'
-                  def __init__(self, attributes): self.attributes = attributes
-                  def __getattr__(self, key): return getattr(real_os, key)
-                  def lstat(self, candidate): return SimpleNamespace(st_file_attributes=self.attributes)
-              for version, attributes, refusal in (
-                  ((3,12,3),0,'msvc_script_privacy_unconfirmed'),
-                  ((3,12,4),None,'msvc_script_path_refused'),
-                  ((3,12,4),True,'msvc_script_path_refused'),
-                  ((3,12,4),0x400,'msvc_script_path_refused'),
+              from unittest.mock import patch, Mock
+              class Directory:
+                  def __init__(self, **kwargs): pass
+                  def __enter__(self): return '/synthetic/temporary'
+                  def __exit__(self, *args): pass
+              class Source(io.StringIO):
+                  def __exit__(self, *args): pass
+              for case, version, attributes, symlink, expected in (
+                  ('transport_old_python',(3,12,3),0,False,'msvc_script_privacy_unconfirmed'),
+                  ('transport_missing',(3,12,4),None,False,'msvc_script_path_refused'),
+                  ('transport_boolean',(3,12,4),True,False,'msvc_script_path_refused'),
+                  ('transport_reparse',(3,12,4),0x400,False,'msvc_script_path_refused'),
+                  ('transport_symlink',(3,12,4),0,True,'msvc_script_path_refused'),
+                  ('transport_lstat_failed',(3,12,4),'missing',False,'msvc_discovery_os_error'),
+                  ('transport_valid',(3,12,4),0,False,None),
               ):
-                  with patch.dict(globals(),{'os':ScriptOS(attributes),'sys':SimpleNamespace(version_info=version)}), patch.object(subprocess,'Popen') as child, patch.object(subprocess,'run') as cargo, patch.object(json,'loads') as consume:
-                      try: windows_toolchain({'SystemRoot':'C:\\Windows'})
+                  source = Source()
+                  path = SimpleNamespace(join=posixpath.join,abspath=lambda value:value,dirname=posixpath.dirname,islink=lambda value:symlink and value == '/synthetic')
+                  def metadata(value):
+                      if attributes == 'missing': raise OSError()
+                      return SimpleNamespace(st_file_attributes=0 if case == 'transport_reparse' and value != '/synthetic' else attributes)
+                  virtual_os = SimpleNamespace(name='nt',path=path,lstat=metadata)
+                  with patch.dict(globals(),{'os':virtual_os,'sys':SimpleNamespace(version_info=version,stderr=sys.stderr),'tempfile':SimpleNamespace(TemporaryDirectory=Directory),'open':lambda *args,**kwargs:source}), patch.object(subprocess,'Popen') as child, patch.object(subprocess,'run') as cargo, patch.object(json,'loads') as consume, patch.dict(globals(),{'tool_query':Mock(return_value=Mock(returncode=0))}) as namespace, contextlib.redirect_stdout(io.StringIO()):
+                      query = namespace['tool_query']
+                      try: discovery_transport('synthetic-powershell','fixed-script',{})
                       except SystemExit as error:
-                          if str(error) != refusal: raise RuntimeError('script_regression_classification') from None
-                      else: raise RuntimeError('script_regression_refusal_missing')
-                      if child.called or cargo.called or consume.called: raise RuntimeError('script_regression_downstream_reached')
+                          if expected is None or str(error) != expected: regression_mismatch(case,expected or 'success',str(error))
+                      else:
+                          if expected is not None: regression_mismatch(case,expected,'success')
+                      if child.called or cargo.called or consume.called or query.call_count != (1 if expected is None else 0): raise RuntimeError('script_regression_downstream_reached')
+                      if expected is None and (source.getvalue() != 'fixed-script' or query.call_args.args[0] != ['synthetic-powershell','-NoProfile','-NonInteractive','-File','/synthetic/temporary/discovery.ps1'] or query.call_args.args[2] != 30 or query.call_args.kwargs != {'discovery':True}): raise RuntimeError('script_regression_transport_changed')
+              # Fixed diagnostic identifiers/classifications also refuse private text.
+              for case, expected, actual in (('vswhere_00','invocation_failed','msvc_script_path_refused'),('private-path','private-expected','private-actual')):
+                  printed = io.StringIO()
+                  with contextlib.redirect_stderr(printed):
+                      try: regression_mismatch(case,expected,actual)
+                      except RuntimeError: pass
+                  record = json.loads(printed.getvalue())
+                  if len(printed.getvalue()) > 256 or record != {'class':'discovery_regression_mismatch','case':case if case in regression_cases else 'unallowlisted','expected':expected if expected in regression_classes else 'unallowlisted','actual':actual if actual in regression_classes else 'unallowlisted'}: raise RuntimeError('regression_diagnostic_allowlist')
           developer_script_regressions()
+          def identity_query_regressions():
+              import contextlib, io
+              from unittest.mock import patch, Mock
+              for query in ('absolute_linker_help','rust_host'):
+                  for failure, expected, killed, reaped in (
+                      ('timeout','msvc_query_timeout',True,True),
+                      ('kill','msvc_leader_kill_failed',False,False),
+                      ('reap','msvc_leader_reap_timeout',True,False),
+                      ('launch','msvc_launch_failed',False,False),
+                      ('wait','msvc_wait_failed',False,False),
+                      ('status','msvc_status_unconfirmed',False,True),
+                      ('boolean','msvc_status_unconfirmed',False,True),
+                      ('oversized','msvc_status_unconfirmed',False,True),
+                      ('negative','msvc_status_unconfirmed',False,True),
+                  ):
+                      process = Mock()
+                      if failure in ('status','boolean','oversized','negative'): process.wait.return_value = {'status':None,'boolean':True,'oversized':4294967296,'negative':-2147483649}[failure]
+                      elif failure == 'wait': process.wait.side_effect = OSError()
+                      else: process.wait.side_effect = [subprocess.TimeoutExpired('synthetic',5),subprocess.TimeoutExpired('synthetic',5) if failure == 'reap' else 0]
+                      if failure == 'kill': process.kill.side_effect = OSError()
+                      printed = io.StringIO()
+                      with patch.object(tempfile,'TemporaryFile',side_effect=io.BytesIO), patch.object(subprocess,'Popen',side_effect=OSError() if failure == 'launch' else None,return_value=process), patch.object(subprocess,'run') as cargo, patch.object(json,'loads') as consume, contextlib.redirect_stdout(printed):
+                          try: tool_query(['synthetic'],{},5,query=query)
+                          except SystemExit as error:
+                              if str(error) != expected: raise RuntimeError('identity_query_regression_classification') from None
+                          else: raise RuntimeError('identity_query_regression_refusal_missing')
+                          if cargo.called or consume.called: raise RuntimeError('identity_query_regression_downstream')
+                      record = json.loads(printed.getvalue())
+                      if record['query'] != query or record['class'] != expected or record['status_confirmed'] != (failure == 'timeout') or record['exit_code'] != (0 if failure == 'timeout' else None) or record['leader_killed'] != killed or record['leader_reaped'] != reaped or record['descendant_cleanup_confirmed'] or record['timed_out'] != (failure in ('timeout','kill','reap')) or len(printed.getvalue()) > 512: raise RuntimeError('identity_query_regression_evidence')
+              for status in (-2147483648,0,1100,4294967295):
+                  with patch.object(tempfile,'TemporaryFile',side_effect=io.BytesIO), patch.object(subprocess,'Popen',return_value=Mock(wait=Mock(return_value=status))), contextlib.redirect_stdout(io.StringIO()):
+                      if tool_query(['synthetic'],{},5,query='absolute_linker_help').returncode != status: raise RuntimeError('identity_query_regression_numeric_status')
+          identity_query_regressions()
           if windows:
               env.pop('SDKROOT', None)
               env.pop('DEVELOPER_DIR', None)
