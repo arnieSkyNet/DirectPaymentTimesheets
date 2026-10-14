@@ -358,6 +358,57 @@ jobs:
           def native_code(error):
               code = getattr(error, 'winerror', None)
               return code if isinstance(code, int) and not isinstance(code, bool) else None
+          def linker_snapshot_diagnostics(stdout, stderr, completed):
+              # Evidence only: never used by identity acceptance. Input snapshots
+              # are capped before decoding; no path, message or matched text escapes.
+              # The existing Microsoft substring predicate remains an unresolved
+              # identity-assurance limitation; these flags are not security proof.
+              # Completed/reaped leader evidence does not prove descendant silence.
+              record = dict(classification='unknown', canonical_banner=False,
+                  usage_heading=False, options_structure=False, usage_signal=False,
+                  error_signal=False, warning_signal=False, diagnostic_family='none',
+                  unknown_output=True, malformed_output=False, decoding_checked=False,
+                  decoding_valid=False, stdout_present=False, stderr_present=False,
+                  stdout_bounds_valid=False, stderr_bounds_valid=False,
+                  snapshot_incomplete=True, snapshot_read_valid=True, parser_valid=True)
+              try:
+                  if type(stdout) is not bytes or type(stderr) is not bytes or type(completed) is not bool: raise ValueError()
+                  record.update(stdout_present=bool(stdout),stderr_present=bool(stderr),stdout_bounds_valid=len(stdout) <= 65536,stderr_bounds_valid=len(stderr) <= 262144,snapshot_incomplete=not completed)
+                  if not record['stdout_bounds_valid'] or not record['stderr_bounds_valid']:
+                      record.update(classification='malformed',malformed_output=True,snapshot_incomplete=True)
+                      return record
+                  record['decoding_checked'] = True
+                  try: texts = (stdout.decode('utf-8',errors='strict'),stderr.decode('utf-8',errors='strict'))
+                  except UnicodeError:
+                      record.update(classification='malformed',malformed_output=True)
+                      return record
+                  record['decoding_valid'] = True
+                  record['snapshot_incomplete'] |= any(text and not text.endswith(('\n','\r')) for text in texts)
+                  record['malformed_output'] = any(re.search(r'[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]',text) for text in texts)
+                  banner = r'(?im)^[ \t]{0,128}Microsoft \(R\) Incremental Linker Version [0-9]{1,5}(?:\.[0-9]{1,5}){1,4}[ \t]*\r?$'
+                  heading = r'(?im)^[ \t]{0,128}usage:[ \t]+LINK(?:\.exe)?[ \t]+\[options\][ \t]+\[files\](?:[ \t]+\[@commandfile\])?[ \t]*\r?$'
+                  record['canonical_banner'] = any(re.search(banner,text) is not None for text in texts)
+                  record['usage_heading'] = any(re.search(heading,text) is not None for text in texts)
+                  options = tuple(any(re.search(r'(?im)^[ \t]{0,128}/' + option + r'(?:[: \t]|\r?$)',text) is not None for text in texts) for option in ('OUT','MACHINE','NOLOGO'))
+                  record['options_structure'] = sum(options) >= 2
+                  record['usage_signal'] = record['canonical_banner'] and record['usage_heading'] and record['options_structure']
+                  # Usage prose mentioning errors/warnings is not a diagnostic.
+                  error = r'(?im)(?:\b(?:fatal[ \t]+)?error[ \t]+(?:LNK|C|CVT|U)[0-9]{4}\b|^[ \t]{0,128}LINK[ \t]*:[ \t]*(?:fatal[ \t]+)?error\b|^[^\r\n]{0,256}\bMicrosoft\b[^\r\n]{0,128}\berror\b)'
+                  warning = r'(?im)(?:\bwarning[ \t]+(?:LNK|C|CVT|U)[0-9]{4}\b|^[ \t]{0,128}LINK[ \t]*:[ \t]*warning\b|^[^\r\n]{0,256}\bMicrosoft\b[^\r\n]{0,128}\bwarning\b)'
+                  record['error_signal'] = any(re.search(error,text) is not None for text in texts)
+                  record['warning_signal'] = any(re.search(warning,text) is not None for text in texts)
+                  families = tuple(name for name,pattern in (
+                      ('link',r'(?i)\b(?:fatal[ \t]+error|error|warning)[ \t]+LNK[0-9]{4}\b'),
+                      ('msvc_other',r'(?i)\b(?:fatal[ \t]+error|error|warning)[ \t]+(?:C|CVT|U)[0-9]{4}\b'),
+                  ) if any(re.search(pattern,text) is not None for text in texts))
+                  diagnostic = record['error_signal'] or record['warning_signal']
+                  record['diagnostic_family'] = 'multiple' if len(families) > 1 else families[0] if families else 'microsoft_text' if diagnostic and any('Microsoft' in text for text in texts) else 'unknown' if diagnostic else 'none'
+                  record['unknown_output'] = (not record['usage_signal'] and not families) or record['malformed_output'] or record['snapshot_incomplete']
+                  record['classification'] = 'malformed' if record['malformed_output'] else 'unknown' if record['snapshot_incomplete'] else 'usage_and_diagnostic' if record['usage_signal'] and diagnostic else 'usage' if record['usage_signal'] else 'diagnostic' if families else 'unknown'
+              except Exception:
+                  # Parser faults are evidence failures, never acceptance changes.
+                  record.update(classification='parser_failed',parser_valid=False,unknown_output=True,malformed_output=True)
+              return record
           def tool_query(args, env, timeout, discovery=False, query='setup_query'):
               if query not in ('setup_query','absolute_linker_help','rust_host'): raise SystemExit('msvc_query_identifier_refused')
               # Read only a bounded snapshot of regular-file output, including on
@@ -375,6 +426,14 @@ jobs:
                       record = {'class':classification, 'native_code':native_code(error), 'exit_code':exit_code, 'status_confirmed':isinstance(exit_code, int) and not isinstance(exit_code, bool), 'query':'msvc_discovery' if discovery else query, 'timed_out':classification in ('msvc_query_timeout','msvc_leader_kill_failed','msvc_leader_reap_timeout','msvc_leader_reap_failed'), 'deadline_seconds':timeout, 'leader_killed':killed, 'leader_reaped':reaped, 'descendant_cleanup_confirmed':False}
                       record.update(snapshot)
                       print(json.dumps(record, sort_keys=True))
+                      if query == 'absolute_linker_help' and not discovery:
+                          try:
+                              out.seek(0)
+                              diagnostic = linker_snapshot_diagnostics(out.read(65537),raw,classification == 'msvc_query_completed' and reaped)
+                          except Exception:
+                              diagnostic = linker_snapshot_diagnostics(b'',b'',False)
+                              diagnostic.update(classification='parser_failed',snapshot_read_valid=False,parser_valid=False,unknown_output=True,malformed_output=True)
+                          print(json.dumps({'class':'msvc_linker_snapshot','query':'absolute_linker_help'} | diagnostic, sort_keys=True))
                   try:
                       process = subprocess.Popen(args, env=env, stdout=out, stderr=err)
                   except OSError as error:
@@ -1266,7 +1325,7 @@ jobs:
                           if not accepted: regression_mismatch(case,'msvc_identity_refused','success')
                           if configured['INCLUDE'] != 'synthetic=a=b': raise RuntimeError('developer_regression_valid_configuration')
                       if child.call_count != 3 or cargo.called or replies or arguments[1] != [payload['linker']] or arguments[2] != ['rustc','-vV']: raise RuntimeError('identity_regression_query_or_downstream')
-                  records = [json.loads(line) for line in printed.getvalue().splitlines()]
+                  records = [record for line in printed.getvalue().splitlines() if (record := json.loads(line)).get('class') != 'msvc_linker_snapshot']
                   for record, query, code in zip(records[1:3],('absolute_linker_help','rust_host'),(help_code,0)):
                       if record['query'] != query or record['exit_code'] != code or not record['status_confirmed'] or record['timed_out'] or not record['leader_reaped'] or record['deadline_seconds'] != 5: raise RuntimeError('identity_regression_evidence')
                   if records[3] != {'class':'msvc_identity_evaluated','microsoft_banner_valid':case not in ('identity_banner','identity_missing_banner'),'rust_host_valid':case != 'identity_host'}: raise RuntimeError('identity_regression_validation')
@@ -1372,12 +1431,61 @@ jobs:
                               if str(error) != expected: raise RuntimeError('identity_query_regression_classification') from None
                           else: raise RuntimeError('identity_query_regression_refusal_missing')
                           if cargo.called or consume.called: raise RuntimeError('identity_query_regression_downstream')
-                      record = json.loads(printed.getvalue())
-                      if record['query'] != query or record['class'] != expected or record['status_confirmed'] != (failure == 'timeout') or record['exit_code'] != (0 if failure == 'timeout' else None) or record['leader_killed'] != killed or record['leader_reaped'] != reaped or record['descendant_cleanup_confirmed'] or record['timed_out'] != (failure in ('timeout','kill','reap')) or len(printed.getvalue()) > 512: raise RuntimeError('identity_query_regression_evidence')
+                      records = [json.loads(line) for line in printed.getvalue().splitlines()]
+                      record = records[0]
+                      if len(records) != (2 if query == 'absolute_linker_help' else 1): raise RuntimeError('identity_query_regression_snapshot_schema')
+                      if record['query'] != query or record['class'] != expected or record['status_confirmed'] != (failure == 'timeout') or record['exit_code'] != (0 if failure == 'timeout' else None) or record['leader_killed'] != killed or record['leader_reaped'] != reaped or record['descendant_cleanup_confirmed'] or record['timed_out'] != (failure in ('timeout','kill','reap')) or len(printed.getvalue()) > 2048: raise RuntimeError('identity_query_regression_evidence')
               for status in (-2147483648,0,1100,4294967295):
                   with patch.object(tempfile,'TemporaryFile',side_effect=io.BytesIO), patch.object(subprocess,'Popen',return_value=Mock(wait=Mock(return_value=status))), contextlib.redirect_stdout(io.StringIO()):
                       if tool_query(['synthetic'],{},5,query='absolute_linker_help').returncode != status: raise RuntimeError('identity_query_regression_numeric_status')
           identity_query_regressions()
+          def linker_snapshot_regressions():
+              import contextlib, io
+              from unittest.mock import patch, Mock
+              usage = b'Microsoft (R) Incremental Linker Version 14.44.35217.0\r\nusage: LINK [options] [files] [@commandfile]\r\n  /OUT:synthetic\r\n  /MACHINE:X64\r\n'
+              diagnostic = b'LINK : fatal error LNK1100: synthetic_private_message\r\n'
+              cases = (
+                  (usage,b'','usage',True,False,'none'),
+                  (usage + b'  /ERRORREPORT reports internal errors to Microsoft\n',b'','usage',True,False,'none'),
+                  (b'',b'LINK : warning LNK4099: synthetic_private_message\n','diagnostic',False,False,'link'),
+                  (usage,diagnostic,'usage_and_diagnostic',True,True,'link'),
+                  (b'',b'unrelated Microsoft error synthetic_private_message\n','unknown',False,True,'microsoft_text'),
+                  (b'',diagnostic,'diagnostic',False,True,'link'),
+                  (b'synthetic_private_unknown\n',b'','unknown',False,False,'none'),
+                  (b'\xff\n',b'','malformed',False,False,'none'),
+                  (b'',b'','unknown',False,False,'none'),
+                  (b'x' * 65537,b'','malformed',False,False,'none'),
+                  (b'',b'x' * 262145,'malformed',False,False,'none'),
+                  (usage + b'partial',b'','unknown',True,False,'none'),
+              )
+              schema = set(linker_snapshot_diagnostics(b'',b'',True))
+              for out,err,classification,usage_flag,error_flag,family in cases:
+                  record = linker_snapshot_diagnostics(out,err,True)
+                  if set(record) != schema or record['classification'] != classification or record['usage_signal'] != usage_flag or record['error_signal'] != error_flag or record['diagnostic_family'] != family: raise RuntimeError('linker_snapshot_regression_classification')
+                  published = json.dumps(record,sort_keys=True)
+                  if len(published) > 1024 or 'synthetic_private' in published or any(not isinstance(value,(str,bool)) for value in record.values()): raise RuntimeError('linker_snapshot_regression_schema')
+              if linker_snapshot_diagnostics(usage,b'',False)['classification'] != 'unknown': raise RuntimeError('linker_snapshot_regression_incomplete')
+              with patch.object(re,'search',side_effect=RuntimeError('synthetic_private_exception')):
+                  failed = linker_snapshot_diagnostics(usage,b'',True)
+              if failed['classification'] != 'parser_failed' or failed['parser_valid'] or not failed['unknown_output'] or 'synthetic_private' in json.dumps(failed): raise RuntimeError('linker_snapshot_regression_parser_failure')
+              # Snapshot diagnostics must not alter return status, limits or refusal.
+              for code in (0,1100,7,None):
+                  def launch(args, **kwargs):
+                      kwargs['stdout'].write(usage)
+                      return Mock(wait=Mock(return_value=code))
+                  for forced in ('usage','parser_failed'):
+                      printed = io.StringIO()
+                      evidence = linker_snapshot_diagnostics(usage,b'',True) | {'classification':forced,'parser_valid':forced != 'parser_failed'}
+                      with patch.object(tempfile,'TemporaryFile',side_effect=io.BytesIO), patch.object(subprocess,'Popen',side_effect=launch), patch.object(subprocess,'run') as cargo, patch.object(json,'loads') as consume, patch.dict(globals(),{'linker_snapshot_diagnostics':Mock(return_value=evidence)}), contextlib.redirect_stdout(printed):
+                          try: result = tool_query(['synthetic'],{},5,query='absolute_linker_help')
+                          except SystemExit as failure:
+                              if code is not None or str(failure) != 'msvc_status_unconfirmed': raise RuntimeError('linker_snapshot_regression_acceptance') from None
+                          else:
+                              if code is None or result.returncode != code: raise RuntimeError('linker_snapshot_regression_status')
+                          if cargo.called or consume.called: raise RuntimeError('linker_snapshot_regression_downstream')
+                      records = [json.loads(line) for line in printed.getvalue().splitlines()]
+                      if len(records) != 2 or records[1]['class'] != 'msvc_linker_snapshot' or records[1]['query'] != 'absolute_linker_help': raise RuntimeError('linker_snapshot_regression_published_schema')
+          linker_snapshot_regressions()
           if windows:
               env.pop('SDKROOT', None)
               env.pop('DEVELOPER_DIR', None)
