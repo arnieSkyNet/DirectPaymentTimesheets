@@ -240,6 +240,7 @@ jobs:
           phases = ('entry', 'module_init', 'module_load', 'module_ready', 'pathname', 'vswhere', 'vsdevcmd', 'sdk', 'linker_metadata')
           operations = ('join_path', 'full_path', 'get_item', 'attributes', 'parent')
           status_order = [('vswhere','before'), ('vswhere','after'), ('json','before'), ('json','after'), ('instances','before'), ('instances','after')]
+          developer_success = [{'observation':'before'},{'observation':'completed','native_status':0,'stderr_present':False,'stderr_bounds_valid':True,'capture_valid':True},{'observation':'cleanup','leader_killed':False,'leader_reaped':True,'readers_stopped':True,'stop_reason':'none','stdout_bounds_valid':True,'total_bounds_valid':True,'cleanup_valid':True,'descendant_cleanup_confirmed':False},{'observation':'environment_validated'}]
           def marker_snapshot(raw):
               observed, count, last, pending, statuses = [], 0, None, None, []
               bounded, sequence, malformed, unexpected = len(raw) <= 262144, True, False, False
@@ -263,27 +264,54 @@ jobs:
                           continue
                       developer.append({'observation':result[1], 'native_status':status, 'stderr_present':result[3] == '1', 'stderr_bounds_valid':result[4] == '1', 'capture_valid':result[5] == '1'})
                       continue
+                  cleanup = re.fullmatch(r'DPT_MSVC_DEV:cleanup:(0|1):(0|1):(0|1):(none|stream_overflow|timeout|cancelled|capture_failed|invocation_failed):(0|1):(0|1):(0|1)', line)
+                  if cleanup:
+                      if len(developer) != 2 or observed != list(phases[:7]) or pending is not None:
+                          sequence = False
+                          continue
+                      result = developer[1]
+                      killed, reaped, readers = cleanup[1] == '1', cleanup[2] == '1', cleanup[3] == '1'
+                      if (result['native_status'] is not None and not reaped) or (result['observation'] == 'completed') != reaped: malformed = True
+                      if killed and cleanup[4] == 'none': malformed = True
+                      developer.append({'observation':'cleanup', 'leader_killed':killed, 'leader_reaped':reaped, 'readers_stopped':readers, 'stop_reason':cleanup[4], 'stdout_bounds_valid':cleanup[5] == '1', 'total_bounds_valid':cleanup[6] == '1', 'cleanup_valid':cleanup[7] == '1', 'descendant_cleanup_confirmed':False})
+                      continue
                   if line == 'DPT_MSVC_DEV:environment:validated':
-                      if len(developer) != 2 or developer[-1] != {'observation':'completed','native_status':0,'stderr_present':False,'stderr_bounds_valid':True,'capture_valid':True} or observed != list(phases[:7]) or pending is not None:
+                      if developer != developer_success[:3] or observed != list(phases[:7]) or pending is not None:
                           sequence = False
                           continue
                       developer.append({'observation':'environment_validated'})
                       continue
-                  refusal = re.fullmatch(r'DPT_MSVC_DEV_FAILURE:(invocation_failed|status_unconfirmed|native_nonzero|unexpected_stderr|environment_capture_failed|environment_malformed|environment_duplicate|architecture_mismatch|tool_path_refused)', line)
+                  refusal = re.fullmatch(r'DPT_MSVC_DEV_FAILURE:(invocation_failed|status_unconfirmed|native_nonzero|unexpected_stderr|environment_capture_failed|environment_malformed|environment_duplicate|architecture_mismatch|tool_path_refused|stream_overflow|query_timeout|cancelled|cleanup_failed|invalid_decoding)', line)
                   if refusal:
                       classification = refusal[1]
-                      if observed != list(phases[:7]) or not developer or len(developer) > 2: sequence = False
-                      if classification != 'tool_path_refused' and len(developer) != 2: sequence = False
-                      if len(developer) == 2:
-                          result = developer[-1]
-                          if classification == 'invocation_failed':
-                              if result.get('observation') != 'interrupted': sequence = False
-                          elif result.get('observation') != 'completed': sequence = False
-                          if classification == 'status_unconfirmed' and result.get('native_status') is not None: sequence = False
-                          if classification == 'native_nonzero' and (result.get('native_status') is None or result.get('native_status') == 0): sequence = False
-                          if classification == 'unexpected_stderr' and (not result.get('stderr_present') or result.get('native_status') != 0): sequence = False
-                          if classification == 'environment_capture_failed' and (result.get('native_status') != 0 or result.get('stderr_present') or not result.get('stderr_bounds_valid')): sequence = False
-                          if classification in ('environment_malformed','environment_duplicate','architecture_mismatch','tool_path_refused') and (result.get('native_status') != 0 or result.get('stderr_present') or not result.get('stderr_bounds_valid') or not result.get('capture_valid')): sequence = False
+                      if observed != list(phases[:7]) or not developer or len(developer) > 3: sequence = False
+                      if len(developer) not in (1,3) or (len(developer) == 1 and classification != 'tool_path_refused'): sequence = False
+                      if len(developer) == 3:
+                          result, cleanup = developer[1:]
+                          status, reason = result['native_status'], cleanup['stop_reason']
+                          good_cleanup = cleanup['cleanup_valid'] and cleanup['readers_stopped']
+                          capture_bounded = result['stderr_bounds_valid'] and cleanup['stdout_bounds_valid'] and cleanup['total_bounds_valid']
+                          if classification == 'cleanup_failed':
+                              if cleanup['cleanup_valid'] or result['capture_valid']: sequence = False
+                          elif not good_cleanup: sequence = False
+                          if good_cleanup and not cleanup['leader_reaped'] and (cleanup['leader_killed'] or status is not None or classification not in ('invocation_failed','query_timeout','cancelled')): sequence = False
+                          if classification in ('stream_overflow','query_timeout','cancelled'):
+                              if reason != {'stream_overflow':'stream_overflow','query_timeout':'timeout','cancelled':'cancelled'}[classification] or result['capture_valid']: sequence = False
+                              if classification == 'stream_overflow' and capture_bounded: sequence = False
+                          elif classification == 'invocation_failed':
+                              if reason not in ('none','invocation_failed') or result['capture_valid']: sequence = False
+                              if reason == 'none' and (result['observation'] != 'interrupted' or status is not None): sequence = False
+                          elif classification == 'environment_capture_failed':
+                              if reason not in ('none','capture_failed'): sequence = False
+                              if reason == 'none' and (status != 0 or result['stderr_present']): sequence = False
+                          elif classification != 'cleanup_failed':
+                              if reason != 'none' or not capture_bounded or not cleanup['leader_reaped']: sequence = False
+                              if classification == 'status_unconfirmed' and status is not None: sequence = False
+                              if classification == 'native_nonzero' and (status is None or status == 0): sequence = False
+                              if classification == 'unexpected_stderr' and (status != 0 or not result['stderr_present']): sequence = False
+                              if classification in ('environment_malformed','environment_duplicate','architecture_mismatch','tool_path_refused','invalid_decoding') and (status != 0 or result['stderr_present']): sequence = False
+                              if classification in ('status_unconfirmed','native_nonzero','unexpected_stderr','invalid_decoding') and result['capture_valid']: sequence = False
+                              if classification in ('environment_duplicate','architecture_mismatch','tool_path_refused') and not result['capture_valid']: sequence = False
                       developer_failure = classification
                       continue
                   refusal = re.fullmatch(r'DPT_MSVC_FAILURE:(invocation_failed|status_unconfirmed|native_nonzero):(none|-?(?:0|[1-9][0-9]{0,9}))', line)
@@ -341,6 +369,8 @@ jobs:
                       if discovery and not snapshot['markers_valid']:
                           snapshot['failure'] = None
                           snapshot['developer_failure'] = None
+                          for observation in snapshot['developer']:
+                              if 'native_status' in observation: observation['native_status'] = None
                       record = {'class':classification, 'native_code':native_code(error), 'exit_code':exit_code, 'deadline_seconds':timeout, 'leader_killed':killed, 'leader_reaped':reaped, 'descendant_cleanup_confirmed':False}
                       record.update(snapshot)
                       print(json.dumps(record, sort_keys=True))
@@ -385,7 +415,7 @@ jobs:
                           raise SystemExit(snapshot['failure']['class'])
                       if code != 0: raise SystemExit('msvc_discovery_refused')
                       expected_statuses = [{'stage':stage,'edge':edge,'code':1 if stage == 'instances' and edge == 'after' else 0} for stage,edge in status_order]
-                      if not snapshot['markers_valid'] or snapshot['phases'] != list(phases) or snapshot['operation_pending'] or snapshot['operation_count'] == 0 or snapshot['statuses'] != expected_statuses or snapshot['developer'] != [{'observation':'before'},{'observation':'completed','native_status':0,'stderr_present':False,'stderr_bounds_valid':True,'capture_valid':True},{'observation':'environment_validated'}]: raise SystemExit('msvc_marker_output_refused')
+                      if not snapshot['markers_valid'] or snapshot['phases'] != list(phases) or snapshot['operation_pending'] or snapshot['operation_count'] == 0 or snapshot['statuses'] != expected_statuses or snapshot['developer'] != developer_success: raise SystemExit('msvc_marker_output_refused')
                   return subprocess.CompletedProcess(args, code, stdout.decode('utf-8', errors='replace'), stderr.decode('utf-8', errors='replace'))
           def windows_toolchain(base):
               # Installed runner tools only. Capture configuration internally;
@@ -395,6 +425,7 @@ jobs:
           $PSModuleAutoLoadingPreference = 'None'
           # Never publish PowerShell exception formatting on discovery refusal.
           trap { exit 1 }
+          $discoveryClock = [Diagnostics.Stopwatch]::StartNew()
           [Console]::Error.WriteLine('DPT_MSVC_PHASE:entry')
           function Require-LocalAbsolute($path) {
             if (!$path -or $path -notmatch '^[A-Za-z]:\\' -or $path.Substring(2) -match '[":%!?&|<>\r\n]' -or $path -match '(?:^|\\)(?:CON|PRN|AUX|NUL|COM[1-9¹²³]|LPT[1-9¹²³])(?:\.[^\\]*)?(?:\\|$)') { throw 'nonlocal_or_unsafe_path' }
@@ -462,8 +493,9 @@ jobs:
           if ($module.Name -ne 'Microsoft.PowerShell.Utility' -or $module.Path -ne $manifest -or $module.ModuleType -ne 'Manifest' -or $module.Version -ne [version]'3.1.0.0') { throw 'unexpected_utility_module' }
           $fromJson = $module.ExportedCmdlets['ConvertFrom-Json']
           $toJson = $module.ExportedCmdlets['ConvertTo-Json']
+          $addType = $module.ExportedCmdlets['Add-Type']
           $engineIdentity = [System.Management.Automation.PSObject].Assembly.GetName()
-          foreach ($command in @($fromJson,$toJson)) {
+          foreach ($command in @($fromJson,$toJson,$addType)) {
             if ($null -eq $command -or $command.CommandType -ne 'Cmdlet') { throw 'missing_json_cmdlet' }
             $assembly = $command.ImplementingType.Assembly
             $identity = $assembly.GetName()
@@ -472,7 +504,7 @@ jobs:
             $gacRoot = Join-LocalPath $env:SystemRoot 'Microsoft.NET\assembly\GAC_MSIL\Microsoft.PowerShell.Commands.Utility\'
             if (!$location.StartsWith(($PSHOME.TrimEnd('\') + '\'), [StringComparison]::OrdinalIgnoreCase) -and !$location.StartsWith($gacRoot, [StringComparison]::OrdinalIgnoreCase)) { throw 'unexpected_json_assembly_path' }
           }
-          if ($fromJson.Name -ne 'ConvertFrom-Json' -or $toJson.Name -ne 'ConvertTo-Json') { throw 'unexpected_json_cmdlet' }
+          if ($fromJson.Name -ne 'ConvertFrom-Json' -or $toJson.Name -ne 'ConvertTo-Json' -or $addType.Name -ne 'Add-Type') { throw 'unexpected_json_cmdlet' }
           [Console]::Error.WriteLine('DPT_MSVC_PHASE:module_ready')
           $pf = ${env:ProgramFiles(x86)}
           if (!$pf) { throw 'missing_discovery_root' }
@@ -541,51 +573,376 @@ jobs:
           $dev = Require-PlainFile (Join-LocalPath $root 'Common7\Tools\VsDevCmd.bat')
           [Console]::Error.WriteLine('DPT_MSVC_PHASE:vsdevcmd')
           function Refuse-Developer($classification) {
-            if ($classification -notin @('invocation_failed','status_unconfirmed','native_nonzero','unexpected_stderr','environment_capture_failed','environment_malformed','environment_duplicate','architecture_mismatch','tool_path_refused')) { exit 1 }
+            if ($classification -notin @('invocation_failed','status_unconfirmed','native_nonzero','unexpected_stderr','environment_capture_failed','environment_malformed','environment_duplicate','architecture_mismatch','tool_path_refused','stream_overflow','query_timeout','cancelled','cleanup_failed','invalid_decoding')) { exit 1 }
             [Console]::Error.WriteLine(('DPT_MSVC_DEV_FAILURE:{0}' -f $classification))
             exit 1
           }
-          function Query-Developer($invoke) {
-            # Continue is local to this helper so redirected native stderr can be
-            # counted privately. It is always refused, never accepted or printed.
-            $ErrorActionPreference = 'Continue'
-            $state = @{lines=[Collections.Generic.List[string]]::new(); bytes=0; stderrBytes=0; stderrPresent=$false; stderrBounds=$true; captureValid=$true}
-            $global:LASTEXITCODE = $null
-            $completed = $false
-            try {
-              & $invoke 2>&1 | & {
-                process {
-                  if ($_ -is [Management.Automation.ErrorRecord]) {
-                    $state.stderrPresent = $true
-                    $privateText = $_.ToString()
-                    if ($privateText.Length -gt 65536) { $state.stderrBounds = $false }
-                    elseif ($state.stderrBounds) {
-                      $state.stderrBytes += [Text.Encoding]::UTF8.GetByteCount($privateText) + 1
-                      if ($state.stderrBytes -gt 65536) { $state.stderrBounds = $false }
-                    }
-                  } elseif ($_ -is [string]) {
-                    if ($_.Length -gt 65536) { $state.captureValid = $false }
-                    elseif ($state.captureValid) {
-                      $state.bytes += [Text.Encoding]::UTF8.GetByteCount($_) + 1
-                      if ($state.bytes -gt 65536 -or $state.lines.Count -ge 4096) { $state.captureValid = $false }
-                      else { $state.lines.Add($_) }
-                    }
-                    if (!$state.captureValid) { $state.lines.Clear() }
-                  } else { $state.captureValid = $false; $state.lines.Clear() }
-                }
+          # Trusted inline helper; the Utility cmdlet/assembly was validated above.
+          $boundedSource = @'
+          using System;
+          using System.Collections.Generic;
+          using System.Diagnostics;
+          using System.IO;
+          using System.Text;
+          using System.Threading;
+
+          public static class DptBoundedDeveloper {
+              public const int Chunk = 4096, StreamLimit = 65536, TotalLimit = 98304;
+              public interface IChild {
+                  Stream Out { get; }
+                  Stream Err { get; }
+                  bool Wait(int milliseconds);
+                  void Kill();
+                  int Code { get; }
+                  void Close();
               }
-              $status = $global:LASTEXITCODE
-              $completed = $true
-            } catch { $status = $global:LASTEXITCODE }
-            if ($status -isnot [int]) { $status = $null }
-            $classification = if (!$completed) { 'invocation_failed' }
-              elseif ($null -eq $status) { 'status_unconfirmed' }
-              elseif ($status -ne 0) { 'native_nonzero' }
-              elseif ($state.stderrPresent) { 'unexpected_stderr' }
-              elseif (!$state.captureValid) { 'environment_capture_failed' }
-              else { $null }
-            return @{completed=$completed; status=$status; stderrPresent=$state.stderrPresent; stderrBounds=$state.stderrBounds; captureValid=$state.captureValid; classification=$classification; lines=$state.lines}
+              public sealed class Result {
+                  public string Classification, StopReason = "none";
+                  public int? NativeStatus;
+                  public bool Completed, StderrPresent, StderrBounds = true, StdoutBounds = true;
+                  public bool TotalBounds = true, CaptureValid = true, LeaderKilled, LeaderReaped, ReadersStopped = true, CleanupValid = true;
+                  public string[] Lines;
+                  internal int OutCount, ErrCount;
+                  internal bool Decoded;
+              }
+              private sealed class LaunchFailure : Exception {
+                  internal readonly Result Evidence;
+                  internal LaunchFailure(Result evidence) { Evidence = evidence; }
+              }
+              private sealed class State {
+                  internal readonly object Gate = new object();
+                  internal readonly byte[] OutBytes = new byte[StreamLimit], ErrBytes = new byte[StreamLimit];
+                  internal int OutCount, ErrCount;
+                  internal bool OutEof, ErrEof, StderrPresent, OutBounds = true, ErrBounds = true, TotalBounds = true;
+                  internal string StopReason = "none";
+              }
+              private static void Stop(State state, string reason) {
+                  lock (state.Gate) { if (state.StopReason == "none") state.StopReason = reason; }
+              }
+              private static void Drain(Stream stream, State state, bool stderr) {
+                  // The producer can provide an arbitrarily long line: every read still
+                  // targets this single fixed buffer. No line or ErrorRecord is created.
+                  byte[] chunk = new byte[Chunk];
+                  try {
+                      while (true) {
+                          lock (state.Gate) { if (state.StopReason != "none") return; }
+                          int read = stream.Read(chunk, 0, Chunk);
+                          if (read < 0 || read > Chunk) { Stop(state, "capture_failed"); return; }
+                          lock (state.Gate) {
+                              if (read == 0) { if (stderr) state.ErrEof = true; else state.OutEof = true; return; }
+                              if (stderr) state.StderrPresent = true;
+                              if (state.StopReason != "none") return;
+                              int used = stderr ? state.ErrCount : state.OutCount;
+                              bool streamOverflow = read > StreamLimit - used;
+                              bool totalOverflow = read > TotalLimit - state.OutCount - state.ErrCount;
+                              if (streamOverflow || totalOverflow) {
+                                  if (streamOverflow) { if (stderr) state.ErrBounds = false; else state.OutBounds = false; }
+                                  if (totalOverflow) state.TotalBounds = false;
+                                  state.StopReason = "stream_overflow";
+                                  return;
+                              }
+                              Buffer.BlockCopy(chunk, 0, stderr ? state.ErrBytes : state.OutBytes, used, read);
+                              if (stderr) state.ErrCount += read; else state.OutCount += read;
+                          }
+                      }
+                  } catch { Stop(state, "capture_failed"); }
+              }
+              public static Result Capture(Func<IChild> launch, int budgetMilliseconds, Encoding encoding, CancellationToken cancellation) {
+                  Result result = new Result();
+                  State state = new State();
+                  Stopwatch clock = Stopwatch.StartNew();
+                  IChild child;
+                  if (cancellation.IsCancellationRequested || budgetMilliseconds <= 0) {
+                      result.Classification = cancellation.IsCancellationRequested ? "cancelled" : "query_timeout";
+                      result.StopReason = cancellation.IsCancellationRequested ? "cancelled" : "timeout";
+                      result.CaptureValid = false;
+                      return result;
+                  }
+                  try { child = launch(); if (child == null) throw new InvalidOperationException(); }
+                  catch (LaunchFailure failure) { return failure.Evidence; }
+                  catch { result.Classification = "invocation_failed"; result.CaptureValid = false; return result; }
+                  Thread stdout = null, stderr = null;
+                  bool cleanup = true;
+                  try {
+                      Stream outStream = child.Out, errStream = child.Err;
+                      stdout = new Thread(delegate() { Drain(outStream, state, false); });
+                      stderr = new Thread(delegate() { Drain(errStream, state, true); });
+                      stdout.IsBackground = stderr.IsBackground = true;
+                      stdout.Start(); stderr.Start();
+                      while (true) {
+                          if (cancellation.IsCancellationRequested) { Stop(state, "cancelled"); break; }
+                          if (clock.ElapsedMilliseconds >= budgetMilliseconds) { Stop(state, "timeout"); break; }
+                          lock (state.Gate) {
+                              if (state.StopReason != "none") break;
+                              // Leader exit alone is insufficient: descendants may still
+                              // hold a pipe open. EOF on both streams is required.
+                              if (state.OutEof && state.ErrEof && child.Wait(0)) break;
+                          }
+                          Thread.Sleep(2);
+                      }
+                  } catch { Stop(state, "capture_failed"); }
+                  finally {
+                      try {
+                          if (!child.Wait(0)) {
+                              child.Kill();
+                              result.LeaderKilled = true;
+                          }
+                      } catch { cleanup = false; }
+                      try { result.LeaderReaped = child.Wait(2000); }
+                      catch { cleanup = false; }
+                      result.Completed = result.LeaderReaped;
+                      if (result.LeaderReaped) {
+                          try { result.NativeStatus = child.Code; } catch { result.NativeStatus = null; }
+                      }
+                      // A stream close can itself stall. Bound both close operations and
+                      // both reader joins; lingering helpers are reported, not certified.
+                      int closeFailed = 0;
+                      Thread closeOut = new Thread(delegate() { try { child.Out.Close(); } catch { Interlocked.Exchange(ref closeFailed, 1); } });
+                      Thread closeErr = new Thread(delegate() { try { child.Err.Close(); } catch { Interlocked.Exchange(ref closeFailed, 1); } });
+                      closeOut.IsBackground = closeErr.IsBackground = true;
+                      try {
+                          closeOut.Start(); closeErr.Start();
+                          if (!closeOut.Join(500) || !closeErr.Join(500)) result.ReadersStopped = false;
+                      } catch { result.ReadersStopped = false; }
+                      if (closeFailed != 0) cleanup = false;
+                      try { if (stdout != null && stdout.IsAlive && !stdout.Join(500)) result.ReadersStopped = false; }
+                      catch { result.ReadersStopped = false; }
+                      try { if (stderr != null && stderr.IsAlive && !stderr.Join(500)) result.ReadersStopped = false; }
+                      catch { result.ReadersStopped = false; }
+                      try { child.Close(); } catch { cleanup = false; }
+                  }
+                  lock (state.Gate) {
+                      result.StopReason = state.StopReason;
+                      result.StderrPresent = state.StderrPresent;
+                      result.StderrBounds = state.ErrBounds;
+                      result.StdoutBounds = state.OutBounds;
+                      result.TotalBounds = state.TotalBounds;
+                      result.OutCount = state.OutCount; result.ErrCount = state.ErrCount;
+                  }
+                  result.CleanupValid = cleanup && result.LeaderReaped && result.ReadersStopped;
+                  if (!result.CleanupValid) result.Classification = "cleanup_failed";
+                  else if (result.StopReason == "stream_overflow") result.Classification = "stream_overflow";
+                  else if (result.StopReason == "timeout") result.Classification = "query_timeout";
+                  else if (result.StopReason == "cancelled") result.Classification = "cancelled";
+                  else if (result.StopReason != "none") result.Classification = "environment_capture_failed";
+                  else if (!result.NativeStatus.HasValue) result.Classification = "status_unconfirmed";
+                  else if (result.NativeStatus.Value != 0) result.Classification = "native_nonzero";
+                  else if (result.StderrPresent) result.Classification = "unexpected_stderr";
+                  if (result.Classification != null) { result.CaptureValid = false; return result; }
+                  try {
+                      // Decoding is reachable only after bounded capture and confirmed EOF.
+                      Encoding strict = Encoding.GetEncoding(encoding.CodePage, EncoderFallback.ExceptionFallback, DecoderFallback.ExceptionFallback);
+                      result.Decoded = true;
+                      string text = strict.GetString(state.OutBytes, 0, state.OutCount);
+                      if (text.Length == 0 || text[text.Length - 1] != '\n') { result.Classification = "environment_malformed"; }
+                      else {
+                          List<string> lines = new List<string>();
+                          int start = 0;
+                          for (int i = 0; i < text.Length; i++) {
+                              if (text[i] != '\n') continue;
+                              if (lines.Count == 4096) { result.Classification = "environment_capture_failed"; break; }
+                              int length = i - start;
+                              if (length > 0 && text[i - 1] == '\r') length--;
+                              lines.Add(text.Substring(start, length));
+                              start = i + 1;
+                          }
+                          if (result.Classification == null) result.Lines = lines.ToArray();
+                      }
+                  } catch { result.Classification = "invalid_decoding"; }
+                  result.CaptureValid = result.Classification == null;
+                  return result;
+              }
+              private sealed class InstalledChild : IChild {
+                  private readonly Process process;
+                  internal InstalledChild(string executable, string arguments) {
+                      process = new Process();
+                      process.StartInfo = new ProcessStartInfo(executable, arguments) {
+                          UseShellExecute = false, CreateNoWindow = true,
+                          RedirectStandardOutput = true, RedirectStandardError = true
+                      };
+                      try { if (!process.Start()) throw new InvalidOperationException(); }
+                      catch {
+                          // Start can fail after association. Attempt leader cleanup before
+                          // disposing the handle; absence of an associated process is not
+                          // treated as proof of cleanup. Never expose exception text.
+                          Result failure = new Result();
+                          failure.Classification = "invocation_failed";
+                          failure.StopReason = "invocation_failed";
+                          failure.CaptureValid = false;
+                          bool disposed = true;
+                          try {
+                              if (!process.WaitForExit(0)) { process.Kill(); failure.LeaderKilled = true; }
+                              failure.LeaderReaped = process.WaitForExit(2000);
+                              failure.Completed = failure.LeaderReaped;
+                              if (failure.LeaderReaped) { try { failure.NativeStatus = process.ExitCode; } catch { } }
+                          } catch { }
+                          try { process.Dispose(); } catch { disposed = false; }
+                          failure.CleanupValid = disposed && failure.LeaderReaped;
+                          if (!failure.CleanupValid) failure.Classification = "cleanup_failed";
+                          throw new LaunchFailure(failure);
+                      }
+                  }
+                  public Stream Out { get { return process.StandardOutput.BaseStream; } }
+                  public Stream Err { get { return process.StandardError.BaseStream; } }
+                  public bool Wait(int milliseconds) { return process.WaitForExit(milliseconds); }
+                  public void Kill() { process.Kill(); }
+                  public int Code { get { return process.ExitCode; } }
+                  public void Close() { process.Dispose(); }
+              }
+              public static Result RunInstalled(string executable, string arguments, int budgetMilliseconds, int codePage) {
+                  return Capture(delegate() { return new InstalledChild(executable, arguments); }, budgetMilliseconds,
+                      Encoding.GetEncoding(codePage), CancellationToken.None);
+              }
+              private sealed class FakeStream : Stream {
+                  private readonly byte[] data;
+                  private long remaining;
+                  private int position;
+                  private readonly bool blocking;
+                  private readonly ManualResetEvent closed = new ManualResetEvent(false);
+                  internal int MaxRead, Reads, CloseDelay;
+                  internal bool CloseFails, ReadFails;
+                  internal Action OnRead;
+                  internal FakeStream(byte[] bytes) { data = bytes; }
+                  internal FakeStream(long generatedBytes, bool block) { remaining = generatedBytes; blocking = block; }
+                  public override int Read(byte[] buffer, int offset, int count) {
+                      Check(buffer.Length == Chunk && offset == 0 && count == Chunk, "read_allocation_bound");
+                      MaxRead = Math.Max(MaxRead, count); Reads++;
+                      if (ReadFails) throw new IOException();
+                      if (OnRead != null) OnRead();
+                      if (data != null) {
+                          int size = Math.Min(count, data.Length - position);
+                          Buffer.BlockCopy(data, position, buffer, offset, size); position += size; return size;
+                      }
+                      if (remaining > 0) {
+                          int size = (int)Math.Min(count, remaining);
+                          for (int i = 0; i < size; i++) buffer[offset + i] = (byte)'x';
+                          remaining -= size;
+                          return size;
+                      }
+                      if (blocking) closed.WaitOne();
+                      return 0;
+                  }
+                  protected override void Dispose(bool disposing) { if (CloseDelay > 0) Thread.Sleep(CloseDelay); closed.Set(); if (CloseFails) throw new IOException(); }
+                  internal bool WaitClosed(int milliseconds) { return closed.WaitOne(milliseconds); }
+                  public override bool CanRead { get { return true; } }
+                  public override bool CanSeek { get { return false; } }
+                  public override bool CanWrite { get { return false; } }
+                  public override long Length { get { throw new NotSupportedException(); } }
+                  public override long Position { get { throw new NotSupportedException(); } set { throw new NotSupportedException(); } }
+                  public override void Flush() { }
+                  public override long Seek(long offset, SeekOrigin origin) { throw new NotSupportedException(); }
+                  public override void SetLength(long value) { throw new NotSupportedException(); }
+                  public override void Write(byte[] bytes, int offset, int count) { throw new NotSupportedException(); }
+              }
+              private sealed class FakeChild : IChild {
+                  internal readonly FakeStream Output, Error;
+                  internal bool Exited = true, ReapFails, KillFails, CodeFails;
+                  internal int Status, Kills, Waits;
+                  internal FakeChild(FakeStream output, FakeStream error) { Output = output; Error = error; }
+                  public Stream Out { get { return Output; } }
+                  public Stream Err { get { return Error; } }
+                  public bool Wait(int milliseconds) { Check(milliseconds == 0 || milliseconds == 2000, "reap_bound"); Waits++; return Exited && !ReapFails; }
+                  public void Kill() { Kills++; if (KillFails) throw new IOException(); Exited = true; }
+                  public int Code { get { if (CodeFails) throw new IOException(); return Status; } }
+                  public void Close() { }
+              }
+              private static void Check(bool condition, string name) { if (!condition) throw new InvalidOperationException("bounded_mock_" + name); }
+              private static Result MockCapture(FakeChild child, int budget, CancellationToken cancellation) {
+                  Result result = Capture(delegate() { return child; }, budget, new UTF8Encoding(false, true), cancellation);
+                  Check(child.Output.MaxRead <= Chunk && child.Error.MaxRead <= Chunk, "fixed_reads");
+                  Check(result.OutCount <= StreamLimit && result.ErrCount <= StreamLimit && result.OutCount + result.ErrCount <= TotalLimit, "retained_limits");
+                  if (result.Classification != null) Check(result.Lines == null, "refusal_records_unreachable");
+                  return result;
+              }
+              public static void SelfTest() {
+                  byte[] valid = Encoding.UTF8.GetBytes("SYNTHETIC=a=b\r\n");
+                  for (int i = 0; i < 5; i++) {
+                      FakeChild child = new FakeChild(new FakeStream(1L << 30, false), new FakeStream(new byte[0])); child.Exited = false;
+                      Result result = MockCapture(child, 1000, CancellationToken.None);
+                      Check(result.Classification == "stream_overflow" && !result.StdoutBounds && !result.Decoded, "newline_free_overflow");
+                      Check(result.LeaderKilled && result.LeaderReaped && result.ReadersStopped && child.Kills == 1, "overflow_reap");
+                  }
+                  FakeChild both = new FakeChild(new FakeStream(60000, false), new FakeStream(60000, false)); both.Exited = false;
+                  using (ManualResetEvent outStarted = new ManualResetEvent(false))
+                  using (ManualResetEvent errStarted = new ManualResetEvent(false)) {
+                      both.Output.OnRead = delegate() { if (both.Output.Reads == 1) { outStarted.Set(); Check(errStarted.WaitOne(500), "stderr_concurrent"); } };
+                      both.Error.OnRead = delegate() { if (both.Error.Reads == 1) { errStarted.Set(); Check(outStarted.WaitOne(500), "stdout_concurrent"); } };
+                      Result simultaneous = MockCapture(both, 1000, CancellationToken.None);
+                      Check(simultaneous.Classification == "stream_overflow" && !simultaneous.TotalBounds && simultaneous.StdoutBounds && simultaneous.StderrBounds && !simultaneous.Decoded, "simultaneous_total_limit");
+                  }
+                  FakeChild totalChild = new FakeChild(new FakeStream(60000, false), new FakeStream(60000, false)); totalChild.Exited = false;
+                  Result total = MockCapture(totalChild, 1000, CancellationToken.None);
+                  Check(total.Classification == "stream_overflow" && !total.TotalBounds && total.StdoutBounds && total.StderrBounds && !total.Decoded, "simultaneous_total_limit");
+                  FakeChild errOverflow = new FakeChild(new FakeStream(new byte[0]), new FakeStream(1L << 30, false)); errOverflow.Exited = false;
+                  Result errorLimit = MockCapture(errOverflow, 1000, CancellationToken.None);
+                  Check(errorLimit.Classification == "stream_overflow" && errorLimit.StderrPresent && !errorLimit.StderrBounds && !errorLimit.Decoded, "stderr_limit");
+                  foreach (int code in new int[] { 0, 7, int.MinValue, int.MaxValue }) {
+                      FakeChild child = new FakeChild(new FakeStream(valid), new FakeStream(Encoding.ASCII.GetBytes("private"))); child.Status = code;
+                      Result result = MockCapture(child, 1000, CancellationToken.None);
+                      Check(result.Classification == (code == 0 ? "unexpected_stderr" : "native_nonzero") && result.NativeStatus == code && result.StderrPresent && !result.Decoded, "stderr_status");
+                  }
+                  FakeChild early = new FakeChild(new FakeStream(valid), new FakeStream(new byte[0]));
+                  Result success = MockCapture(early, 1000, CancellationToken.None);
+                  Check(success.Classification == null && success.NativeStatus == 0 && success.Lines[0] == "SYNTHETIC=a=b" && !success.LeaderKilled && success.LeaderReaped, "early_exit_drained");
+                  byte[] boundary = new byte[Chunk + 3];
+                  for (int i = 0; i < boundary.Length; i++) boundary[i] = (byte)'x';
+                  boundary[Chunk - 1] = 195; boundary[Chunk] = 169; boundary[Chunk + 1] = 13; boundary[Chunk + 2] = 10;
+                  FakeChild split = new FakeChild(new FakeStream(boundary), new FakeStream(new byte[0]));
+                  Result splitResult = MockCapture(split, 1000, CancellationToken.None);
+                  Check(splitResult.Classification == null && splitResult.Lines[0][Chunk - 1] == (char)233, "chunk_boundary_decode");
+                  byte[] manyLines = new byte[4097];
+                  for (int i = 0; i < manyLines.Length; i++) manyLines[i] = 10;
+                  FakeChild recordLimit = new FakeChild(new FakeStream(manyLines), new FakeStream(new byte[0]));
+                  Check(MockCapture(recordLimit, 1000, CancellationToken.None).Classification == "environment_capture_failed", "bounded_record_count");
+                  FakeChild partial = new FakeChild(new FakeStream(Encoding.ASCII.GetBytes("SYNTHETIC=partial")), new FakeStream(new byte[0]));
+                  Check(MockCapture(partial, 1000, CancellationToken.None).Classification == "environment_malformed", "partial_record");
+                  FakeChild invalid = new FakeChild(new FakeStream(new byte[] { 255, 10 }), new FakeStream(new byte[0]));
+                  Check(MockCapture(invalid, 1000, CancellationToken.None).Classification == "invalid_decoding", "strict_decode");
+                  FakeChild blocked = new FakeChild(new FakeStream(0, true), new FakeStream(0, true)); blocked.Exited = false;
+                  Result timeout = MockCapture(blocked, 20, CancellationToken.None);
+                  Check(timeout.Classification == "query_timeout" && timeout.LeaderKilled && timeout.LeaderReaped && timeout.ReadersStopped, "timeout_reap");
+                  FakeChild heldPipe = new FakeChild(new FakeStream(0, true), new FakeStream(0, true));
+                  Result held = MockCapture(heldPipe, 20, CancellationToken.None);
+                  Check(held.Classification == "query_timeout" && !held.LeaderKilled && held.LeaderReaped, "leader_exit_not_pipe_cleanup");
+                  using (CancellationTokenSource cancellation = new CancellationTokenSource()) {
+                      FakeChild child = new FakeChild(new FakeStream(0, true), new FakeStream(0, true)); child.Exited = false;
+                      child.Output.OnRead = delegate() { cancellation.Cancel(); };
+                      Result result = MockCapture(child, 1000, cancellation.Token);
+                      Check(result.Classification == "cancelled" && result.LeaderKilled && result.LeaderReaped && result.ReadersStopped, "cancel_reap");
+                  }
+                  FakeChild failedKill = new FakeChild(new FakeStream(0, true), new FakeStream(0, true)); failedKill.Exited = false; failedKill.KillFails = true;
+                  Result kill = MockCapture(failedKill, 20, CancellationToken.None);
+                  Check(kill.Classification == "cleanup_failed" && !kill.LeaderReaped && !kill.NativeStatus.HasValue, "kill_failure");
+                  FakeChild failedReap = new FakeChild(new FakeStream(valid), new FakeStream(new byte[0])); failedReap.ReapFails = true;
+                  Check(MockCapture(failedReap, 20, CancellationToken.None).Classification == "cleanup_failed", "reap_failure");
+                  FakeChild failedClose = new FakeChild(new FakeStream(valid), new FakeStream(new byte[0])); failedClose.Output.CloseFails = true;
+                  Check(MockCapture(failedClose, 1000, CancellationToken.None).Classification == "cleanup_failed", "pipe_cleanup_failure");
+                  FakeChild stalledClose = new FakeChild(new FakeStream(valid), new FakeStream(new byte[0])); stalledClose.Output.CloseDelay = 700;
+                  Result closeTimeout = MockCapture(stalledClose, 1000, CancellationToken.None);
+                  Check(closeTimeout.Classification == "cleanup_failed" && !closeTimeout.ReadersStopped && closeTimeout.LeaderReaped, "bounded_close_wait");
+                  Check(stalledClose.Output.WaitClosed(1000), "mock_close_released");
+                  FakeChild unknown = new FakeChild(new FakeStream(valid), new FakeStream(new byte[0])); unknown.CodeFails = true;
+                  Check(MockCapture(unknown, 1000, CancellationToken.None).Classification == "status_unconfirmed", "status_unknown");
+                  FakeChild failedRead = new FakeChild(new FakeStream(0, false), new FakeStream(new byte[0])); failedRead.Output.ReadFails = true;
+                  Result readFailure = MockCapture(failedRead, 1000, CancellationToken.None);
+                  Check(readFailure.Classification == "environment_capture_failed" && !readFailure.Decoded, "stream_read_failure");
+                  using (CancellationTokenSource cancellation = new CancellationTokenSource()) {
+                      cancellation.Cancel();
+                      Result cancelled = Capture(delegate() { throw new InvalidOperationException(); }, 1000, Encoding.UTF8, cancellation.Token);
+                      Check(cancelled.Classification == "cancelled" && !cancelled.NativeStatus.HasValue, "cancellation_before_launch");
+                  }
+                  Result launch = Capture(delegate() { throw new IOException(); }, 1000, Encoding.UTF8, CancellationToken.None);
+                  Check(launch.Classification == "invocation_failed" && !launch.NativeStatus.HasValue && !launch.LeaderReaped, "invocation_exception");
+                  Result partialStartEvidence = new Result { Classification = "invocation_failed", StopReason = "invocation_failed", CaptureValid = false, NativeStatus = int.MinValue, Completed = true, LeaderReaped = true };
+                  Result partialStart = Capture(delegate() { throw new LaunchFailure(partialStartEvidence); }, 1000, Encoding.UTF8, CancellationToken.None);
+                  Check(partialStart.Classification == "invocation_failed" && partialStart.NativeStatus == int.MinValue && partialStart.LeaderReaped, "partial_start_evidence");
+                  Result expired = Capture(delegate() { throw new InvalidOperationException(); }, 0, Encoding.UTF8, CancellationToken.None);
+                  Check(expired.Classification == "query_timeout" && !expired.NativeStatus.HasValue, "budget_before_launch");
+              }
           }
+          '@
+          & $addType -TypeDefinition $boundedSource -Language CSharp -ErrorAction Stop
+          [DptBoundedDeveloper]::SelfTest()
           function Parse-Developer($lines) {
             $values = @{}
             foreach ($line in $lines) {
@@ -613,41 +970,10 @@ jobs:
             } catch { return @{classification='tool_path_refused'; tools=$null} }
           }
           function Developer-MockRegressions {
-            # Scriptblocks and synthetic records only; never launch a process.
-            $global:LASTEXITCODE = 77
-            $mock = Query-Developer { throw 'synthetic_private_exception' }
-            if ($mock.classification -ne 'invocation_failed' -or $mock.completed -or $null -ne $mock.status) { exit 1 }
-            $mock = Query-Developer { $global:LASTEXITCODE = 23; throw 'synthetic_private_exception' }
-            if ($mock.classification -ne 'invocation_failed' -or $mock.status -ne 23) { exit 1 }
-            foreach ($value in @($null,'0')) {
-              $global:LASTEXITCODE = 77
-              $mock = Query-Developer { $LASTEXITCODE = 0; $global:LASTEXITCODE = $value }
-              if ($mock.classification -ne 'status_unconfirmed' -or $null -ne $mock.status -or !$mock.completed) { exit 1 }
-            }
-            $global:LASTEXITCODE = 77
-            $mock = Query-Developer { $LASTEXITCODE = 0 }
-            if ($mock.classification -ne 'status_unconfirmed' -or $null -ne $mock.status) { exit 1 }
-            foreach ($value in @([long]2147483648,[long]-2147483649)) {
-              $mock = Query-Developer { $global:LASTEXITCODE = $value }
-              if ($mock.classification -ne 'status_unconfirmed' -or $null -ne $mock.status) { exit 1 }
-            }
-            foreach ($code in @(-2147483648,1,2147483647)) {
-              $mock = Query-Developer { $global:LASTEXITCODE = $code }
-              if ($mock.classification -ne 'native_nonzero' -or $mock.status -ne $code) { exit 1 }
-            }
-            foreach ($code in @(0,9)) {
-              $mock = Query-Developer { $global:LASTEXITCODE = $code; [Management.Automation.ErrorRecord]::new([Exception]::new('synthetic_private_stderr'),'synthetic',[Management.Automation.ErrorCategory]::NotSpecified,$null) }
-              $expected = if ($code -eq 0) { 'unexpected_stderr' } else { 'native_nonzero' }
-              if ($mock.classification -ne $expected -or !$mock.stderrPresent -or !$mock.stderrBounds -or $mock.lines.Count -ne 0) { exit 1 }
-            }
-            $mock = Query-Developer { $global:LASTEXITCODE = 0; [Management.Automation.ErrorRecord]::new([Exception]::new(('x' * 65537)),'synthetic',[Management.Automation.ErrorCategory]::NotSpecified,$null) }
-            if ($mock.classification -ne 'unexpected_stderr' -or $mock.stderrBounds) { exit 1 }
-            $mock = Query-Developer { $global:LASTEXITCODE = 0; 'x' * 65537 }
-            if ($mock.classification -ne 'environment_capture_failed' -or $mock.captureValid -or $mock.lines.Count -ne 0) { exit 1 }
+            # Environment/path mocks only. Chunked stream mocks run in C#.
             $good = @('PATH=synthetic','INCLUDE=synthetic','LIB=synthetic','LIBPATH=synthetic','VCTOOLSINSTALLDIR=C:\Synthetic\VC\Tools\MSVC\1','VSINSTALLDIR=C:\Synthetic','WINDOWSSDKDIR=C:\SyntheticSDK','VSCMD_ARG_TGT_ARCH=x64','VSCMD_ARG_HOST_ARCH=x64','SYNTHETIC=a=b')
-            $mock = Query-Developer { $global:LASTEXITCODE = 0; $good }
-            $parsed = Parse-Developer $mock.lines
-            if ($null -ne $mock.classification -or $null -ne $parsed.classification -or $parsed.values['SYNTHETIC'] -ne 'a=b') { exit 1 }
+            $parsed = Parse-Developer $good
+            if ($null -ne $parsed.classification -or $parsed.values['SYNTHETIC'] -ne 'a=b') { exit 1 }
             foreach ($record in @('no_separator','=unsafe','bad key=value',"BAD=line`nvalue")) {
               $parsed = Parse-Developer ($good + @($record))
               if ($parsed.classification -ne 'environment_malformed' -or $null -ne $parsed.values) { exit 1 }
@@ -671,10 +997,19 @@ jobs:
           try { $null = Require-PlainFile (Join-LocalPath $env:SystemRoot 'System32\cmd.exe') }
           catch { Refuse-Developer 'tool_path_refused' }
           # Preserve the native command string, quoting, PATH and selection policy.
-          $query = Query-Developer { & "$env:SystemRoot\System32\cmd.exe" /d /s /c "`"`"$dev`" -arch=x64 -host_arch=x64 >nul && set`"" }
+          $global:LASTEXITCODE = $null
+          # Preserve the original quoted /c command; bypass native enumeration.
+          $arguments = "/d /s /c `"`"$dev`" -arch=x64 -host_arch=x64 >nul && set`""
+          # Leave four seconds for bounded leader/reader cleanup inside the outer
+          # thirty-second discovery deadline; setup and mocks consume this budget.
+          $remaining = [Math]::Max(0,25000 - [int]$discoveryClock.ElapsedMilliseconds)
+          $captured = [DptBoundedDeveloper]::RunInstalled("$env:SystemRoot\System32\cmd.exe",$arguments,$remaining,[Console]::OutputEncoding.CodePage)
+          if ($captured.LeaderReaped -and $null -ne $captured.NativeStatus) { $global:LASTEXITCODE = $captured.NativeStatus }
+          $query = @{completed=$captured.Completed; status=$global:LASTEXITCODE; stderrPresent=$captured.StderrPresent; stderrBounds=$captured.StderrBounds; captureValid=$captured.CaptureValid; classification=$captured.Classification; lines=$captured.Lines}
           $observation = if ($query.completed) { 'completed' } else { 'interrupted' }
           $token = if ($null -eq $query.status) { 'none' } else { $query.status.ToString([Globalization.CultureInfo]::InvariantCulture) }
           [Console]::Error.WriteLine(('DPT_MSVC_DEV:result:{0}:{1}:{2}:{3}:{4}' -f $observation,$token,[int]$query.stderrPresent,[int]$query.stderrBounds,[int]$query.captureValid))
+          [Console]::Error.WriteLine(('DPT_MSVC_DEV:cleanup:{0}:{1}:{2}:{3}:{4}:{5}:{6}' -f [int]$captured.LeaderKilled,[int]$captured.LeaderReaped,[int]$captured.ReadersStopped,$captured.StopReason,[int]$captured.StdoutBounds,[int]$captured.TotalBounds,[int]$captured.CleanupValid))
           if ($null -ne $query.classification) { Refuse-Developer $query.classification }
           try { $parsed = Parse-Developer $query.lines }
           catch { Refuse-Developer 'environment_capture_failed' }
@@ -709,7 +1044,24 @@ jobs:
               powershell = os.path.join(base['SystemRoot'], 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe')
               try:
                   discovery_env = base | {'PATH':'', 'PATHEXT':'.COM;.EXE;.BAT;.CMD'}
-                  discovery = tool_query([powershell, '-NoProfile', '-NonInteractive', '-Command', script], discovery_env, 30, discovery=True)
+                  # The fixed inline helper exceeds Windows' command-line limit.
+                  # Use a private local script file; do not override execution policy.
+                  # Windows 0700 temporary-directory ACL support starts at 3.12.4.
+                  if os.name == 'nt' and sys.version_info < (3,12,4): raise SystemExit('msvc_script_privacy_unconfirmed')
+                  with tempfile.TemporaryDirectory(prefix='dpt-msvc-script-') as directory:
+                      script_path = os.path.join(directory, 'discovery.ps1')
+                      with open(script_path, 'x', encoding='utf-8-sig', newline='\n') as source:
+                          source.write(script)
+                      candidate = os.path.abspath(script_path)
+                      while True:
+                          metadata = os.lstat(candidate)
+                          attributes = getattr(metadata, 'st_file_attributes', None)
+                          if os.name == 'nt' and (not isinstance(attributes, int) or isinstance(attributes, bool) or attributes & 0x400): raise SystemExit('msvc_script_path_refused')
+                          if os.path.islink(candidate): raise SystemExit('msvc_script_path_refused')
+                          parent = os.path.dirname(candidate)
+                          if parent == candidate: break
+                          candidate = parent
+                      discovery = tool_query([powershell, '-NoProfile', '-NonInteractive', '-File', script_path], discovery_env, 30, discovery=True)
               except OSError as error:
                   print(json.dumps({'class':'msvc_discovery_os_error','native_code':native_code(error),'deadline_seconds':30,'leader_killed':False,'leader_reaped':False,'descendant_cleanup_confirmed':False}, sort_keys=True))
                   raise SystemExit('msvc_discovery_os_error') from None
@@ -778,7 +1130,7 @@ jobs:
                       if child.call_count != 1 or consume.called or cargo.called: raise RuntimeError('regression_downstream_reached')
                   if any(secret in printed.getvalue() for secret in ('private_exception_text','private_stdout','private_stderr')): raise RuntimeError('regression_private_output')
               success = prefix + b'DPT_MSVC_STATUS:vswhere:after:0\nDPT_MSVC_STATUS:json:before:0\nDPT_MSVC_STATUS:json:after:0\nDPT_MSVC_STATUS:instances:before:0\nDPT_MSVC_STATUS:instances:after:1\n'
-              success += b'DPT_MSVC_PHASE:vsdevcmd\nDPT_MSVC_DEV:before\nDPT_MSVC_DEV:result:completed:0:0:1:1\nDPT_MSVC_DEV:environment:validated\n'
+              success += b'DPT_MSVC_PHASE:vsdevcmd\nDPT_MSVC_DEV:before\nDPT_MSVC_DEV:result:completed:0:0:1:1\nDPT_MSVC_DEV:cleanup:0:1:1:none:1:1:1\nDPT_MSVC_DEV:environment:validated\n'
               success += b''.join(('DPT_MSVC_PHASE:' + phase + '\n').encode('ascii') for phase in phases[7:])
               with patch.object(subprocess, 'Popen', side_effect=launch), contextlib.redirect_stdout(io.StringIO()):
                   raw, code, output = success, 0, b'{}'
@@ -794,18 +1146,27 @@ jobs:
               prefix += b''.join(('DPT_MSVC_STATUS:%s:%s:%d\n' % (stage,edge,1 if stage == 'instances' and edge == 'after' else 0)).encode('ascii') for stage,edge in status_order)
               prefix += b'DPT_MSVC_DEV:before\n'
               cases = []
-              def refusal(observation, status, stderr, bounds, capture, classification):
-                  return prefix + ('DPT_MSVC_DEV:result:%s:%s:%d:%d:%d\nDPT_MSVC_DEV_FAILURE:%s\n' % (observation,status,stderr,bounds,capture,classification)).encode('ascii')
-              for status in ('none','23','-2147483648','2147483647'):
-                  cases.append((refusal('interrupted',status,0,1,1,'invocation_failed'),'invocation_failed'))
-              cases.append((refusal('completed','none',0,1,1,'status_unconfirmed'),'status_unconfirmed'))
+              def refusal(observation, status, stderr, bounds, capture, classification, stop='none', killed=0, reaped=1, readers=1, stdout_bounds=1, total_bounds=1, cleanup_valid=1):
+                  return prefix + ('DPT_MSVC_DEV:result:%s:%s:%d:%d:%d\nDPT_MSVC_DEV:cleanup:%d:%d:%d:%s:%d:%d:%d\nDPT_MSVC_DEV_FAILURE:%s\n' % (observation,status,stderr,bounds,capture,killed,reaped,readers,stop,stdout_bounds,total_bounds,cleanup_valid,classification)).encode('ascii')
+              cases.append((refusal('interrupted','none',0,1,0,'invocation_failed',reaped=0),'invocation_failed'))
+              cases.append((refusal('completed','none',0,1,0,'status_unconfirmed'),'status_unconfirmed'))
               for status in ('-2147483648','1','2147483647'):
-                  for stderr, bounds in ((0,1),(1,1),(1,0)):
-                      cases.append((refusal('completed',status,stderr,bounds,1,'native_nonzero'),'native_nonzero'))
-              for bounds in (0,1): cases.append((refusal('completed','0',1,bounds,1,'unexpected_stderr'),'unexpected_stderr'))
-              for capture in (0,1): cases.append((refusal('completed','0',0,1,capture,'environment_capture_failed'),'environment_capture_failed'))
+                  for stderr in (0,1):
+                      cases.append((refusal('completed',status,stderr,1,0,'native_nonzero'),'native_nonzero'))
+              cases.append((refusal('completed','0',1,1,0,'unexpected_stderr'),'unexpected_stderr'))
+              cases.append((refusal('completed','0',0,1,0,'environment_capture_failed',stop='capture_failed'),'environment_capture_failed'))
+              cases.append((refusal('completed','0',0,1,1,'environment_capture_failed'),'environment_capture_failed'))
               for classification in ('environment_malformed','environment_duplicate','architecture_mismatch','tool_path_refused'):
                   cases.append((refusal('completed','0',0,1,1,classification),classification))
+              cases.append((refusal('completed','0',0,1,0,'invalid_decoding'),'invalid_decoding'))
+              for reason, classification in (('timeout','query_timeout'),('cancelled','cancelled')):
+                  cases.append((refusal('completed','1',0,1,0,classification,stop=reason,killed=1),classification))
+              for stderr, stderr_bounds, stdout_bounds, total_bounds in ((0,1,0,1),(1,0,1,1),(1,1,1,0)):
+                  cases.append((refusal('completed','1',stderr,stderr_bounds,0,'stream_overflow',stop='stream_overflow',killed=1,stdout_bounds=stdout_bounds,total_bounds=total_bounds),'stream_overflow'))
+              cases.append((refusal('interrupted','none',0,1,0,'cleanup_failed',stop='timeout',reaped=0,cleanup_valid=0),'cleanup_failed'))
+              cases.append((refusal('completed','1',0,1,0,'cleanup_failed',stop='stream_overflow',killed=1,readers=0,stdout_bounds=0,cleanup_valid=0),'cleanup_failed'))
+              cases.append((refusal('completed','-2147483648',0,1,0,'invocation_failed',stop='invocation_failed'),'invocation_failed'))
+              cases.append((refusal('interrupted','none',0,1,0,'cleanup_failed',stop='invocation_failed',reaped=0,cleanup_valid=0),'cleanup_failed'))
               cases.append((prefix + b'DPT_MSVC_DEV_FAILURE:tool_path_refused\n','tool_path_refused'))
               good = refusal('completed','0',0,1,1,'architecture_mismatch')
               for raw in (
@@ -823,12 +1184,18 @@ jobs:
                   refusal('completed','1',1,1,1,'unexpected_stderr'),
                   refusal('completed','1',0,1,0,'environment_capture_failed'),
                   refusal('completed','0',0,0,1,'environment_capture_failed'),
+                  good.replace(b'DPT_MSVC_DEV:cleanup:0:1:1:none:1:1:1\n',b''),
+                  good.replace(b'DPT_MSVC_DEV:cleanup:0:1:1:none:1:1:1\n',b'DPT_MSVC_DEV:cleanup:0:0:1:none:1:1:1\n'),
+                  good.replace(b'DPT_MSVC_DEV:cleanup:0:1:1:none:1:1:1\n',b'DPT_MSVC_DEV:cleanup:0:1:0:none:1:1:1\n'),
+                  good.replace(b'DPT_MSVC_DEV:cleanup:0:1:1:none:1:1:1\n',b'DPT_MSVC_DEV:cleanup:0:1:1:unknown:1:1:1\n'),
+                  refusal('completed','0',0,1,1,'tool_path_refused').replace(b'DPT_MSVC_DEV:cleanup:0:1:1:none:1:1:1\n',b''),
+                  refusal('completed','0',0,1,0,'architecture_mismatch'),
                   prefix + b'DPT_MSVC_DEV:result:completed:0:0:1:1\n',
               ): cases.append((raw,None))
               for marker in (b'DPT_MSVC_DEV:before\n',b'DPT_MSVC_DEV:result:completed:0:0:1:1\n',b'DPT_MSVC_DEV:environment:validated\n'):
                   raw = prefix + marker * 5000
                   snapshot = marker_snapshot(raw)
-                  if snapshot['markers_valid'] or len(snapshot['developer']) > 3: raise RuntimeError('developer_regression_marker_bounds')
+                  if snapshot['markers_valid'] or len(snapshot['developer']) > 4: raise RuntimeError('developer_regression_marker_bounds')
                   cases.append((raw,None))
               for raw, classification in cases:
                   def launch(args, **kwargs):
@@ -843,7 +1210,7 @@ jobs:
                       if child.call_count != 1 or cargo.called or consume.called: raise RuntimeError('developer_regression_downstream_reached')
                   if 'synthetic_private_stderr' in printed.getvalue(): raise RuntimeError('developer_regression_private_output')
               from pathlib import PureWindowsPath
-              success = prefix + b'DPT_MSVC_DEV:result:completed:0:0:1:1\nDPT_MSVC_DEV:environment:validated\n'
+              success = prefix + b'DPT_MSVC_DEV:result:completed:0:0:1:1\nDPT_MSVC_DEV:cleanup:0:1:1:none:1:1:1\nDPT_MSVC_DEV:environment:validated\n'
               success += b'DPT_MSVC_PHASE:sdk\nDPT_MSVC_PHASE:linker_metadata\n'
               configuration = {'PATH':'synthetic','INCLUDE':'synthetic=a=b','LIB':'synthetic','LIBPATH':'synthetic','VCTOOLSINSTALLDIR':'C:\\Synthetic\\VC\\Tools\\MSVC\\1','WINDOWSSDKDIR':'C:\\SyntheticSDK','VSCMD_ARG_TGT_ARCH':'x64','VSCMD_ARG_HOST_ARCH':'x64'}
               payload = {'root':'C:\\Synthetic','linker':'C:\\Synthetic\\VC\\Tools\\MSVC\\1\\bin\\Hostx64\\x64\\link.exe','company':'Microsoft Corporation','product':'Visual Studio synthetic','version':'synthetic','environment':configuration}
@@ -857,6 +1224,29 @@ jobs:
                   configured = windows_toolchain({'SystemRoot':'C:\\Windows'})
                   if configured['INCLUDE'] != 'synthetic=a=b' or child.call_count != 3 or cargo.called or replies: raise RuntimeError('developer_regression_valid_configuration')
           developer_protocol_regressions()
+          def developer_script_regressions():
+              # Mock Windows metadata without changing the host OS or launching tools.
+              from types import SimpleNamespace
+              from unittest.mock import patch
+              real_os = os
+              class ScriptOS:
+                  name = 'nt'
+                  def __init__(self, attributes): self.attributes = attributes
+                  def __getattr__(self, key): return getattr(real_os, key)
+                  def lstat(self, candidate): return SimpleNamespace(st_file_attributes=self.attributes)
+              for version, attributes, refusal in (
+                  ((3,12,3),0,'msvc_script_privacy_unconfirmed'),
+                  ((3,12,4),None,'msvc_script_path_refused'),
+                  ((3,12,4),True,'msvc_script_path_refused'),
+                  ((3,12,4),0x400,'msvc_script_path_refused'),
+              ):
+                  with patch.dict(globals(),{'os':ScriptOS(attributes),'sys':SimpleNamespace(version_info=version)}), patch.object(subprocess,'Popen') as child, patch.object(subprocess,'run') as cargo, patch.object(json,'loads') as consume:
+                      try: windows_toolchain({'SystemRoot':'C:\\Windows'})
+                      except SystemExit as error:
+                          if str(error) != refusal: raise RuntimeError('script_regression_classification') from None
+                      else: raise RuntimeError('script_regression_refusal_missing')
+                      if child.called or cargo.called or consume.called: raise RuntimeError('script_regression_downstream_reached')
+          developer_script_regressions()
           if windows:
               env.pop('SDKROOT', None)
               env.pop('DEVELOPER_DIR', None)
