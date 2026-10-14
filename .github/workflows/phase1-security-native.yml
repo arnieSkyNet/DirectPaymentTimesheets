@@ -1089,7 +1089,8 @@ jobs:
               config['CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER'] = str(linker)
               configured = base | config
               try:
-                  help_result = tool_query([str(linker), '/?'], configured, 5, query='absolute_linker_help')
+                  # Documented no-argument usage query; zero status remains required.
+                  help_result = tool_query([str(linker)], configured, 5, query='absolute_linker_help')
                   rust = tool_query(['rustc', '-vV'], configured, 5, query='rust_host')
               except (OSError, subprocess.TimeoutExpired): raise SystemExit('msvc_identity_unconfirmed') from None
               microsoft_banner_valid = 'Microsoft' in help_result.stdout + help_result.stderr
@@ -1102,8 +1103,8 @@ jobs:
               # Installed only by scoped unittest patches; production always uses
               # discovery_transport and has no switch to select this mock.
               return tool_query(['synthetic'], discovery_env, 30, discovery=True)
-          regression_cases = tuple('vswhere_%02d' % i for i in range(24)) + tuple('developer_%02d' % i for i in range(50)) + ('transport_old_python','transport_missing','transport_boolean','transport_reparse','transport_symlink','transport_lstat_failed','transport_valid','identity_1100','identity_banner','identity_missing_banner','identity_host','identity_valid')
-          regression_classes = ('invocation_failed','status_unconfirmed','native_nonzero','msvc_marker_output_refused','msvc_output_limit','msvc_discovery_refused','msvc_script_privacy_unconfirmed','msvc_script_path_refused','msvc_discovery_os_error','msvc_identity_refused','msvc_launch_failed','msvc_query_timeout','msvc_wait_failed','msvc_status_unconfirmed','msvc_leader_kill_failed','msvc_leader_reap_timeout','msvc_leader_reap_failed','success','refusal','unallowlisted') + tuple('msvc_developer_' + value for value in ('invocation_failed','status_unconfirmed','native_nonzero','unexpected_stderr','environment_capture_failed','environment_malformed','environment_duplicate','architecture_mismatch','tool_path_refused','stream_overflow','query_timeout','cancelled','cleanup_failed','invalid_decoding'))
+          regression_cases = tuple('vswhere_%02d' % i for i in range(24)) + tuple('developer_%02d' % i for i in range(50)) + ('transport_old_python','transport_missing','transport_boolean','transport_reparse','transport_symlink','transport_lstat_failed','transport_valid','identity_1100','identity_nonzero','identity_architecture','identity_status','identity_timeout','identity_cleanup','identity_banner','identity_missing_banner','identity_host','identity_valid')
+          regression_classes = ('invocation_failed','status_unconfirmed','native_nonzero','msvc_marker_output_refused','msvc_output_limit','msvc_discovery_refused','msvc_script_privacy_unconfirmed','msvc_script_path_refused','msvc_discovery_os_error','msvc_identity_refused','msvc_architecture_refused','msvc_launch_failed','msvc_query_timeout','msvc_wait_failed','msvc_status_unconfirmed','msvc_leader_kill_failed','msvc_leader_reap_timeout','msvc_leader_reap_failed','success','refusal','unallowlisted') + tuple('msvc_developer_' + value for value in ('invocation_failed','status_unconfirmed','native_nonzero','unexpected_stderr','environment_capture_failed','environment_malformed','environment_duplicate','architecture_mismatch','tool_path_refused','stream_overflow','query_timeout','cancelled','cleanup_failed','invalid_decoding'))
           def regression_mismatch(case, expected, actual):
               # Values are selected from fixed finite inventories, never exceptions.
               if case not in regression_cases: case = 'unallowlisted'
@@ -1242,6 +1243,7 @@ jobs:
               # Exercise production identity gates using byte-only fake processes.
               for case, help_code, banner, host, accepted in (
                   ('identity_1100',1100,b'Microsoft synthetic',b'host: x86_64-pc-windows-msvc',False),
+                  ('identity_nonzero',7,b'Microsoft synthetic',b'host: x86_64-pc-windows-msvc',False),
                   ('identity_banner',0,b'incompatible synthetic',b'host: x86_64-pc-windows-msvc',False),
                   ('identity_missing_banner',0,b'',b'host: x86_64-pc-windows-msvc',False),
                   ('identity_host',0,b'Microsoft synthetic',b'host: incompatible synthetic',False),
@@ -1263,12 +1265,40 @@ jobs:
                       else:
                           if not accepted: regression_mismatch(case,'msvc_identity_refused','success')
                           if configured['INCLUDE'] != 'synthetic=a=b': raise RuntimeError('developer_regression_valid_configuration')
-                      if child.call_count != 3 or cargo.called or replies or arguments[1] != [payload['linker'],'/?'] or arguments[2] != ['rustc','-vV']: raise RuntimeError('identity_regression_query_or_downstream')
+                      if child.call_count != 3 or cargo.called or replies or arguments[1] != [payload['linker']] or arguments[2] != ['rustc','-vV']: raise RuntimeError('identity_regression_query_or_downstream')
                   records = [json.loads(line) for line in printed.getvalue().splitlines()]
                   for record, query, code in zip(records[1:3],('absolute_linker_help','rust_host'),(help_code,0)):
                       if record['query'] != query or record['exit_code'] != code or not record['status_confirmed'] or record['timed_out'] or not record['leader_reaped'] or record['deadline_seconds'] != 5: raise RuntimeError('identity_regression_evidence')
                   if records[3] != {'class':'msvc_identity_evaluated','microsoft_banner_valid':case not in ('identity_banner','identity_missing_banner'),'rust_host_valid':case != 'identity_host'}: raise RuntimeError('identity_regression_validation')
                   if any(value in printed.getvalue() for value in (payload['linker'],'incompatible synthetic','Microsoft synthetic','host:')): raise RuntimeError('identity_regression_private_output')
+              # Refuse before any later query or Cargo; discovery JSON is consumed
+              # once on successful discovery, never again after a subsequent refusal.
+              for case, expected in (
+                  ('identity_architecture','msvc_architecture_refused'),
+                  ('identity_status','msvc_status_unconfirmed'),
+                  ('identity_timeout','msvc_query_timeout'),
+                  ('identity_cleanup','msvc_leader_kill_failed'),
+              ):
+                  record = payload | {'environment':configuration | ({'VSCMD_ARG_TGT_ARCH':'arm64'} if case == 'identity_architecture' else {})}
+                  calls = []
+                  def launch_refusal(args, **kwargs):
+                      calls.append(args)
+                      if len(calls) == 1:
+                          kwargs['stdout'].write(json.dumps(record).encode('ascii'))
+                          kwargs['stderr'].write(success)
+                          return Mock(wait=Mock(return_value=0))
+                      if args != [payload['linker']] or len(calls) != 2: raise RuntimeError('identity_candidate_downstream_reached')
+                      process = Mock(wait=Mock(return_value=None))
+                      if case in ('identity_timeout','identity_cleanup'):
+                          process.wait.side_effect = [subprocess.TimeoutExpired('synthetic',5),0]
+                      if case == 'identity_cleanup': process.kill.side_effect = OSError()
+                      return process
+                  with patch.object(tempfile,'TemporaryFile',side_effect=io.BytesIO), patch.dict(globals(),{'Path':PureWindowsPath,'discovery_transport':protocol_mock_transport}), patch.object(subprocess,'Popen',side_effect=launch_refusal), patch.object(subprocess,'run') as cargo, patch.object(json,'loads',wraps=json.loads) as consume, contextlib.redirect_stdout(io.StringIO()):
+                      try: windows_toolchain({'SystemRoot':'C:\\Windows'})
+                      except SystemExit as failure:
+                          if str(failure) != expected: regression_mismatch(case,expected,str(failure))
+                      else: regression_mismatch(case,expected,'success')
+                      if cargo.called or consume.call_count != 1 or len(calls) != (1 if case == 'identity_architecture' else 2): raise RuntimeError('identity_candidate_downstream_reached')
           developer_protocol_regressions()
           def developer_script_regressions():
               # Fully virtual filesystem: test real transport without host ancestry
