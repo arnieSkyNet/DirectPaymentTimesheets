@@ -244,8 +244,48 @@ jobs:
               observed, count, last, pending, statuses = [], 0, None, None, []
               bounded, sequence, malformed, unexpected = len(raw) <= 262144, True, False, False
               failure = None
+              developer, developer_failure = [], None
               for line in raw.decode('ascii', errors='replace').splitlines():
-                  if failure is not None: sequence = False
+                  if failure is not None or developer_failure is not None: sequence = False
+                  if line == 'DPT_MSVC_DEV:before':
+                      if developer or observed != list(phases[:7]) or statuses != [{'stage':stage,'edge':edge,'code':1 if stage == 'instances' and edge == 'after' else 0} for stage,edge in status_order] or pending is not None:
+                          sequence = False
+                          continue
+                      developer.append({'observation':'before'})
+                      continue
+                  result = re.fullmatch(r'DPT_MSVC_DEV:result:(completed|interrupted):(none|-?(?:0|[1-9][0-9]{0,9})):(0|1):(0|1):(0|1)', line)
+                  if result:
+                      status = None if result[2] == 'none' else int(result[2])
+                      if status is not None and not -2147483648 <= status <= 2147483647: malformed = True
+                      if result[4] == '0' and result[3] != '1': malformed = True
+                      if len(developer) != 1 or observed != list(phases[:7]) or pending is not None:
+                          sequence = False
+                          continue
+                      developer.append({'observation':result[1], 'native_status':status, 'stderr_present':result[3] == '1', 'stderr_bounds_valid':result[4] == '1', 'capture_valid':result[5] == '1'})
+                      continue
+                  if line == 'DPT_MSVC_DEV:environment:validated':
+                      if len(developer) != 2 or developer[-1] != {'observation':'completed','native_status':0,'stderr_present':False,'stderr_bounds_valid':True,'capture_valid':True} or observed != list(phases[:7]) or pending is not None:
+                          sequence = False
+                          continue
+                      developer.append({'observation':'environment_validated'})
+                      continue
+                  refusal = re.fullmatch(r'DPT_MSVC_DEV_FAILURE:(invocation_failed|status_unconfirmed|native_nonzero|unexpected_stderr|environment_capture_failed|environment_malformed|environment_duplicate|architecture_mismatch|tool_path_refused)', line)
+                  if refusal:
+                      classification = refusal[1]
+                      if observed != list(phases[:7]) or not developer or len(developer) > 2: sequence = False
+                      if classification != 'tool_path_refused' and len(developer) != 2: sequence = False
+                      if len(developer) == 2:
+                          result = developer[-1]
+                          if classification == 'invocation_failed':
+                              if result.get('observation') != 'interrupted': sequence = False
+                          elif result.get('observation') != 'completed': sequence = False
+                          if classification == 'status_unconfirmed' and result.get('native_status') is not None: sequence = False
+                          if classification == 'native_nonzero' and (result.get('native_status') is None or result.get('native_status') == 0): sequence = False
+                          if classification == 'unexpected_stderr' and (not result.get('stderr_present') or result.get('native_status') != 0): sequence = False
+                          if classification == 'environment_capture_failed' and (result.get('native_status') != 0 or result.get('stderr_present') or not result.get('stderr_bounds_valid')): sequence = False
+                          if classification in ('environment_malformed','environment_duplicate','architecture_mismatch','tool_path_refused') and (result.get('native_status') != 0 or result.get('stderr_present') or not result.get('stderr_bounds_valid') or not result.get('capture_valid')): sequence = False
+                      developer_failure = classification
+                      continue
                   refusal = re.fullmatch(r'DPT_MSVC_FAILURE:(invocation_failed|status_unconfirmed|native_nonzero):(none|-?(?:0|[1-9][0-9]{0,9}))', line)
                   if refusal:
                       classification, token = refusal[1], refusal[2]
@@ -273,7 +313,7 @@ jobs:
                       continue
                   match = re.fullmatch(r'DPT_MSVC_OP:(join_path|full_path|get_item|attributes|parent):(before|after):([0-9]{1,2})', line)
                   if not match or int(match[3]) >= 32:
-                      if line.startswith(('DPT_MSVC_OP:', 'DPT_MSVC_STATUS:')): malformed = True
+                      if line.startswith(('DPT_MSVC_OP:', 'DPT_MSVC_STATUS:', 'DPT_MSVC_DEV:', 'DPT_MSVC_DEV_FAILURE:')): malformed = True
                       else: unexpected = True
                       continue
                   operation, edge, depth = match[1], match[2], int(match[3])
@@ -286,7 +326,7 @@ jobs:
                       if pending != (operation, depth): sequence = False
                       pending = None
                   last = {'operation':operation, 'edge':edge, 'depth':depth}
-              return {'phases':observed, 'last_operation':last, 'operation_count':count, 'operation_pending':pending is not None, 'statuses':statuses, 'markers_valid':bounded and sequence and not malformed and not unexpected, 'bounds_valid':bounded, 'sequence_valid':sequence, 'malformed_markers':malformed, 'unexpected_output':unexpected, 'failure':failure}
+              return {'phases':observed, 'last_operation':last, 'operation_count':count, 'operation_pending':pending is not None, 'statuses':statuses, 'markers_valid':bounded and sequence and not malformed and not unexpected, 'bounds_valid':bounded, 'sequence_valid':sequence, 'malformed_markers':malformed, 'unexpected_output':unexpected, 'failure':failure, 'developer':developer, 'developer_failure':developer_failure}
           def native_code(error):
               code = getattr(error, 'winerror', None)
               return code if isinstance(code, int) and not isinstance(code, bool) else None
@@ -298,7 +338,9 @@ jobs:
                       err.seek(0)
                       raw = err.read(262145)
                       snapshot = marker_snapshot(raw) if discovery else {}
-                      if discovery and not snapshot['markers_valid']: snapshot['failure'] = None
+                      if discovery and not snapshot['markers_valid']:
+                          snapshot['failure'] = None
+                          snapshot['developer_failure'] = None
                       record = {'class':classification, 'native_code':native_code(error), 'exit_code':exit_code, 'deadline_seconds':timeout, 'leader_killed':killed, 'leader_reaped':reaped, 'descendant_cleanup_confirmed':False}
                       record.update(snapshot)
                       print(json.dumps(record, sort_keys=True))
@@ -334,13 +376,16 @@ jobs:
                   if len(stdout) > 65536 or len(stderr) > 262144: raise SystemExit('msvc_output_limit')
                   if discovery:
                       snapshot = marker_snapshot(stderr)
+                      if snapshot['developer_failure'] is not None:
+                          if code != 1 or stdout or not snapshot['markers_valid']: raise SystemExit('msvc_marker_output_refused')
+                          raise SystemExit('msvc_developer_' + snapshot['developer_failure'])
                       if snapshot['failure'] is not None:
                           if code != 1 or stdout or not snapshot['markers_valid']: raise SystemExit('msvc_marker_output_refused')
                           print(json.dumps(snapshot['failure'], sort_keys=True))
                           raise SystemExit(snapshot['failure']['class'])
                       if code != 0: raise SystemExit('msvc_discovery_refused')
                       expected_statuses = [{'stage':stage,'edge':edge,'code':1 if stage == 'instances' and edge == 'after' else 0} for stage,edge in status_order]
-                      if not snapshot['markers_valid'] or snapshot['phases'] != list(phases) or snapshot['operation_pending'] or snapshot['operation_count'] == 0 or snapshot['statuses'] != expected_statuses: raise SystemExit('msvc_marker_output_refused')
+                      if not snapshot['markers_valid'] or snapshot['phases'] != list(phases) or snapshot['operation_pending'] or snapshot['operation_count'] == 0 or snapshot['statuses'] != expected_statuses or snapshot['developer'] != [{'observation':'before'},{'observation':'completed','native_status':0,'stderr_present':False,'stderr_bounds_valid':True,'capture_valid':True},{'observation':'environment_validated'}]: raise SystemExit('msvc_marker_output_refused')
                   return subprocess.CompletedProcess(args, code, stdout.decode('utf-8', errors='replace'), stderr.decode('utf-8', errors='replace'))
           def windows_toolchain(base):
               # Installed runner tools only. Capture configuration internally;
@@ -495,17 +540,150 @@ jobs:
           if (!$installationAllowed) { throw 'untrusted_installation' }
           $dev = Require-PlainFile (Join-LocalPath $root 'Common7\Tools\VsDevCmd.bat')
           [Console]::Error.WriteLine('DPT_MSVC_PHASE:vsdevcmd')
-          $output = & "$env:SystemRoot\System32\cmd.exe" /d /s /c "`"`"$dev`" -arch=x64 -host_arch=x64 >nul && set`""
-          if ($LASTEXITCODE -ne 0) { throw 'developer_environment_failed' }
-          $values = @{}
-          foreach ($line in $output) {
-            $pair = $line.Split('=', 2)
-            if ($pair.Count -eq 2) { $values[$pair[0].ToUpperInvariant()] = $pair[1] }
+          function Refuse-Developer($classification) {
+            if ($classification -notin @('invocation_failed','status_unconfirmed','native_nonzero','unexpected_stderr','environment_capture_failed','environment_malformed','environment_duplicate','architecture_mismatch','tool_path_refused')) { exit 1 }
+            [Console]::Error.WriteLine(('DPT_MSVC_DEV_FAILURE:{0}' -f $classification))
+            exit 1
           }
-          if ($values['VSCMD_ARG_TGT_ARCH'] -ne 'x64' -or $values['VSCMD_ARG_HOST_ARCH'] -ne 'x64') { throw 'wrong_architecture' }
-          $tools = Require-PlainPath $values['VCTOOLSINSTALLDIR']
-          if (!$tools.StartsWith(($root.TrimEnd('\') + '\VC\Tools\MSVC\'), [StringComparison]::OrdinalIgnoreCase)) { throw 'untrusted_tools' }
-          if ((Require-PlainPath $values['VSINSTALLDIR']).TrimEnd('\') -ne $root.TrimEnd('\')) { throw 'installation_mismatch' }
+          function Query-Developer($invoke) {
+            # Continue is local to this helper so redirected native stderr can be
+            # counted privately. It is always refused, never accepted or printed.
+            $ErrorActionPreference = 'Continue'
+            $state = @{lines=[Collections.Generic.List[string]]::new(); bytes=0; stderrBytes=0; stderrPresent=$false; stderrBounds=$true; captureValid=$true}
+            $global:LASTEXITCODE = $null
+            $completed = $false
+            try {
+              & $invoke 2>&1 | & {
+                process {
+                  if ($_ -is [Management.Automation.ErrorRecord]) {
+                    $state.stderrPresent = $true
+                    $privateText = $_.ToString()
+                    if ($privateText.Length -gt 65536) { $state.stderrBounds = $false }
+                    elseif ($state.stderrBounds) {
+                      $state.stderrBytes += [Text.Encoding]::UTF8.GetByteCount($privateText) + 1
+                      if ($state.stderrBytes -gt 65536) { $state.stderrBounds = $false }
+                    }
+                  } elseif ($_ -is [string]) {
+                    if ($_.Length -gt 65536) { $state.captureValid = $false }
+                    elseif ($state.captureValid) {
+                      $state.bytes += [Text.Encoding]::UTF8.GetByteCount($_) + 1
+                      if ($state.bytes -gt 65536 -or $state.lines.Count -ge 4096) { $state.captureValid = $false }
+                      else { $state.lines.Add($_) }
+                    }
+                    if (!$state.captureValid) { $state.lines.Clear() }
+                  } else { $state.captureValid = $false; $state.lines.Clear() }
+                }
+              }
+              $status = $global:LASTEXITCODE
+              $completed = $true
+            } catch { $status = $global:LASTEXITCODE }
+            if ($status -isnot [int]) { $status = $null }
+            $classification = if (!$completed) { 'invocation_failed' }
+              elseif ($null -eq $status) { 'status_unconfirmed' }
+              elseif ($status -ne 0) { 'native_nonzero' }
+              elseif ($state.stderrPresent) { 'unexpected_stderr' }
+              elseif (!$state.captureValid) { 'environment_capture_failed' }
+              else { $null }
+            return @{completed=$completed; status=$status; stderrPresent=$state.stderrPresent; stderrBounds=$state.stderrBounds; captureValid=$state.captureValid; classification=$classification; lines=$state.lines}
+          }
+          function Parse-Developer($lines) {
+            $values = @{}
+            foreach ($line in $lines) {
+              if ($line -isnot [string] -or $line -match '[\x00-\x1f\x7f]') { return @{classification='environment_malformed'; values=$null} }
+              $separator = $line.IndexOf('=')
+              if ($separator -le 0) { return @{classification='environment_malformed'; values=$null} }
+              $key = $line.Substring(0,$separator)
+              if ($key -notmatch '^[A-Za-z_][A-Za-z0-9_()]*$') { return @{classification='environment_malformed'; values=$null} }
+              $key = $key.ToUpperInvariant()
+              if ($values.ContainsKey($key)) { return @{classification='environment_duplicate'; values=$null} }
+              $values[$key] = $line.Substring($separator + 1)
+            }
+            foreach ($key in @('PATH','INCLUDE','LIB','LIBPATH','VCTOOLSINSTALLDIR','VSINSTALLDIR','WINDOWSSDKDIR')) {
+              if (!$values[$key]) { return @{classification='environment_capture_failed'; values=$null} }
+            }
+            if ($values['VSCMD_ARG_TGT_ARCH'] -ne 'x64' -or $values['VSCMD_ARG_HOST_ARCH'] -ne 'x64') { return @{classification='architecture_mismatch'; values=$null} }
+            return @{classification=$null; values=$values}
+          }
+          function Assess-DeveloperTools($values, $installation, $require) {
+            try {
+              $tools = & $require $values['VCTOOLSINSTALLDIR']
+              if (!$tools.StartsWith(($installation.TrimEnd('\') + '\VC\Tools\MSVC\'), [StringComparison]::OrdinalIgnoreCase)) { throw 'untrusted_tools' }
+              if ((& $require $values['VSINSTALLDIR']).TrimEnd('\') -ne $installation.TrimEnd('\')) { throw 'installation_mismatch' }
+              return @{classification=$null; tools=$tools}
+            } catch { return @{classification='tool_path_refused'; tools=$null} }
+          }
+          function Developer-MockRegressions {
+            # Scriptblocks and synthetic records only; never launch a process.
+            $global:LASTEXITCODE = 77
+            $mock = Query-Developer { throw 'synthetic_private_exception' }
+            if ($mock.classification -ne 'invocation_failed' -or $mock.completed -or $null -ne $mock.status) { exit 1 }
+            $mock = Query-Developer { $global:LASTEXITCODE = 23; throw 'synthetic_private_exception' }
+            if ($mock.classification -ne 'invocation_failed' -or $mock.status -ne 23) { exit 1 }
+            foreach ($value in @($null,'0')) {
+              $global:LASTEXITCODE = 77
+              $mock = Query-Developer { $LASTEXITCODE = 0; $global:LASTEXITCODE = $value }
+              if ($mock.classification -ne 'status_unconfirmed' -or $null -ne $mock.status -or !$mock.completed) { exit 1 }
+            }
+            $global:LASTEXITCODE = 77
+            $mock = Query-Developer { $LASTEXITCODE = 0 }
+            if ($mock.classification -ne 'status_unconfirmed' -or $null -ne $mock.status) { exit 1 }
+            foreach ($value in @([long]2147483648,[long]-2147483649)) {
+              $mock = Query-Developer { $global:LASTEXITCODE = $value }
+              if ($mock.classification -ne 'status_unconfirmed' -or $null -ne $mock.status) { exit 1 }
+            }
+            foreach ($code in @(-2147483648,1,2147483647)) {
+              $mock = Query-Developer { $global:LASTEXITCODE = $code }
+              if ($mock.classification -ne 'native_nonzero' -or $mock.status -ne $code) { exit 1 }
+            }
+            foreach ($code in @(0,9)) {
+              $mock = Query-Developer { $global:LASTEXITCODE = $code; [Management.Automation.ErrorRecord]::new([Exception]::new('synthetic_private_stderr'),'synthetic',[Management.Automation.ErrorCategory]::NotSpecified,$null) }
+              $expected = if ($code -eq 0) { 'unexpected_stderr' } else { 'native_nonzero' }
+              if ($mock.classification -ne $expected -or !$mock.stderrPresent -or !$mock.stderrBounds -or $mock.lines.Count -ne 0) { exit 1 }
+            }
+            $mock = Query-Developer { $global:LASTEXITCODE = 0; [Management.Automation.ErrorRecord]::new([Exception]::new(('x' * 65537)),'synthetic',[Management.Automation.ErrorCategory]::NotSpecified,$null) }
+            if ($mock.classification -ne 'unexpected_stderr' -or $mock.stderrBounds) { exit 1 }
+            $mock = Query-Developer { $global:LASTEXITCODE = 0; 'x' * 65537 }
+            if ($mock.classification -ne 'environment_capture_failed' -or $mock.captureValid -or $mock.lines.Count -ne 0) { exit 1 }
+            $good = @('PATH=synthetic','INCLUDE=synthetic','LIB=synthetic','LIBPATH=synthetic','VCTOOLSINSTALLDIR=C:\Synthetic\VC\Tools\MSVC\1','VSINSTALLDIR=C:\Synthetic','WINDOWSSDKDIR=C:\SyntheticSDK','VSCMD_ARG_TGT_ARCH=x64','VSCMD_ARG_HOST_ARCH=x64','SYNTHETIC=a=b')
+            $mock = Query-Developer { $global:LASTEXITCODE = 0; $good }
+            $parsed = Parse-Developer $mock.lines
+            if ($null -ne $mock.classification -or $null -ne $parsed.classification -or $parsed.values['SYNTHETIC'] -ne 'a=b') { exit 1 }
+            foreach ($record in @('no_separator','=unsafe','bad key=value',"BAD=line`nvalue")) {
+              $parsed = Parse-Developer ($good + @($record))
+              if ($parsed.classification -ne 'environment_malformed' -or $null -ne $parsed.values) { exit 1 }
+            }
+            $parsed = Parse-Developer ($good + @('path=duplicate'))
+            if ($parsed.classification -ne 'environment_duplicate') { exit 1 }
+            $parsed = Parse-Developer @('PATH=synthetic')
+            if ($parsed.classification -ne 'environment_capture_failed') { exit 1 }
+            $parsed = Parse-Developer ($good -replace '^VSCMD_ARG_TGT_ARCH=x64$', 'VSCMD_ARG_TGT_ARCH=x86')
+            if ($parsed.classification -ne 'architecture_mismatch') { exit 1 }
+            $values = (Parse-Developer $good).values
+            $assessed = Assess-DeveloperTools $values 'C:\Synthetic' { throw 'synthetic_private_path_refusal' }
+            if ($assessed.classification -ne 'tool_path_refused') { exit 1 }
+            $assessed = Assess-DeveloperTools $values 'C:\Other' { param($path) $path }
+            if ($assessed.classification -ne 'tool_path_refused') { exit 1 }
+            $assessed = Assess-DeveloperTools $values 'C:\Synthetic' { param($path) $path }
+            if ($null -ne $assessed.classification -or $assessed.tools -ne $values['VCTOOLSINSTALLDIR']) { exit 1 }
+          }
+          Developer-MockRegressions
+          [Console]::Error.WriteLine('DPT_MSVC_DEV:before')
+          try { $null = Require-PlainFile (Join-LocalPath $env:SystemRoot 'System32\cmd.exe') }
+          catch { Refuse-Developer 'tool_path_refused' }
+          # Preserve the native command string, quoting, PATH and selection policy.
+          $query = Query-Developer { & "$env:SystemRoot\System32\cmd.exe" /d /s /c "`"`"$dev`" -arch=x64 -host_arch=x64 >nul && set`"" }
+          $observation = if ($query.completed) { 'completed' } else { 'interrupted' }
+          $token = if ($null -eq $query.status) { 'none' } else { $query.status.ToString([Globalization.CultureInfo]::InvariantCulture) }
+          [Console]::Error.WriteLine(('DPT_MSVC_DEV:result:{0}:{1}:{2}:{3}:{4}' -f $observation,$token,[int]$query.stderrPresent,[int]$query.stderrBounds,[int]$query.captureValid))
+          if ($null -ne $query.classification) { Refuse-Developer $query.classification }
+          try { $parsed = Parse-Developer $query.lines }
+          catch { Refuse-Developer 'environment_capture_failed' }
+          if ($null -ne $parsed.classification) { Refuse-Developer $parsed.classification }
+          $values = $parsed.values
+          $assessed = Assess-DeveloperTools $values $root { param($path) Require-PlainPath $path }
+          if ($null -ne $assessed.classification) { Refuse-Developer $assessed.classification }
+          $tools = $assessed.tools
+          [Console]::Error.WriteLine('DPT_MSVC_DEV:environment:validated')
           [Console]::Error.WriteLine('DPT_MSVC_PHASE:sdk')
           $sdk = Require-PlainPath $values['WINDOWSSDKDIR']
           $sdkAllowed = $false
@@ -600,12 +778,85 @@ jobs:
                       if child.call_count != 1 or consume.called or cargo.called: raise RuntimeError('regression_downstream_reached')
                   if any(secret in printed.getvalue() for secret in ('private_exception_text','private_stdout','private_stderr')): raise RuntimeError('regression_private_output')
               success = prefix + b'DPT_MSVC_STATUS:vswhere:after:0\nDPT_MSVC_STATUS:json:before:0\nDPT_MSVC_STATUS:json:after:0\nDPT_MSVC_STATUS:instances:before:0\nDPT_MSVC_STATUS:instances:after:1\n'
-              success += b''.join(('DPT_MSVC_PHASE:' + phase + '\n').encode('ascii') for phase in phases[6:])
+              success += b'DPT_MSVC_PHASE:vsdevcmd\nDPT_MSVC_DEV:before\nDPT_MSVC_DEV:result:completed:0:0:1:1\nDPT_MSVC_DEV:environment:validated\n'
+              success += b''.join(('DPT_MSVC_PHASE:' + phase + '\n').encode('ascii') for phase in phases[7:])
               with patch.object(subprocess, 'Popen', side_effect=launch), contextlib.redirect_stdout(io.StringIO()):
                   raw, code, output = success, 0, b'{}'
                   result = tool_query(['synthetic'], {}, 30, discovery=True)
                   if result.returncode != 0 or result.stdout != '{}': raise RuntimeError('regression_native_zero')
           discovery_protocol_regressions()
+          def developer_protocol_regressions():
+              # Run real refusal gates with fake processes; no native execution.
+              import contextlib, io
+              from unittest.mock import patch, Mock
+              prefix = b''.join(('DPT_MSVC_PHASE:' + phase + '\n').encode('ascii') for phase in phases[:7])
+              prefix += b'DPT_MSVC_OP:attributes:before:0\nDPT_MSVC_OP:attributes:after:0\n'
+              prefix += b''.join(('DPT_MSVC_STATUS:%s:%s:%d\n' % (stage,edge,1 if stage == 'instances' and edge == 'after' else 0)).encode('ascii') for stage,edge in status_order)
+              prefix += b'DPT_MSVC_DEV:before\n'
+              cases = []
+              def refusal(observation, status, stderr, bounds, capture, classification):
+                  return prefix + ('DPT_MSVC_DEV:result:%s:%s:%d:%d:%d\nDPT_MSVC_DEV_FAILURE:%s\n' % (observation,status,stderr,bounds,capture,classification)).encode('ascii')
+              for status in ('none','23','-2147483648','2147483647'):
+                  cases.append((refusal('interrupted',status,0,1,1,'invocation_failed'),'invocation_failed'))
+              cases.append((refusal('completed','none',0,1,1,'status_unconfirmed'),'status_unconfirmed'))
+              for status in ('-2147483648','1','2147483647'):
+                  for stderr, bounds in ((0,1),(1,1),(1,0)):
+                      cases.append((refusal('completed',status,stderr,bounds,1,'native_nonzero'),'native_nonzero'))
+              for bounds in (0,1): cases.append((refusal('completed','0',1,bounds,1,'unexpected_stderr'),'unexpected_stderr'))
+              for capture in (0,1): cases.append((refusal('completed','0',0,1,capture,'environment_capture_failed'),'environment_capture_failed'))
+              for classification in ('environment_malformed','environment_duplicate','architecture_mismatch','tool_path_refused'):
+                  cases.append((refusal('completed','0',0,1,1,classification),classification))
+              cases.append((prefix + b'DPT_MSVC_DEV_FAILURE:tool_path_refused\n','tool_path_refused'))
+              good = refusal('completed','0',0,1,1,'architecture_mismatch')
+              for raw in (
+                  good.replace(b'DPT_MSVC_DEV:before\n',b''),
+                  good.replace(b'DPT_MSVC_PHASE:vsdevcmd\n',b''),
+                  good.replace(b':completed:0:',b':completed:2147483648:'),
+                  good.replace(b':completed:0:',b':completed:-2147483649:'),
+                  good.replace(b':completed:0:',b':completed:none:'),
+                  good.replace(b':completed:0:',b':interrupted:0:'),
+                  good.replace(b':0:1:1\n',b':1:1:1\n'),
+                  good + b'DPT_MSVC_DEV:environment:validated\n',
+                  good + b'synthetic_private_stderr\n',
+                  good.replace(b'DPT_MSVC_DEV:before\n',b'DPT_MSVC_DEV:before\nDPT_MSVC_DEV:before\n'),
+                  prefix + b'DPT_MSVC_DEV_FAILURE:unknown\n',
+                  refusal('completed','1',1,1,1,'unexpected_stderr'),
+                  refusal('completed','1',0,1,0,'environment_capture_failed'),
+                  refusal('completed','0',0,0,1,'environment_capture_failed'),
+                  prefix + b'DPT_MSVC_DEV:result:completed:0:0:1:1\n',
+              ): cases.append((raw,None))
+              for marker in (b'DPT_MSVC_DEV:before\n',b'DPT_MSVC_DEV:result:completed:0:0:1:1\n',b'DPT_MSVC_DEV:environment:validated\n'):
+                  raw = prefix + marker * 5000
+                  snapshot = marker_snapshot(raw)
+                  if snapshot['markers_valid'] or len(snapshot['developer']) > 3: raise RuntimeError('developer_regression_marker_bounds')
+                  cases.append((raw,None))
+              for raw, classification in cases:
+                  def launch(args, **kwargs):
+                      kwargs['stderr'].write(raw)
+                      return Mock(wait=Mock(return_value=1))
+                  printed = io.StringIO()
+                  with patch.object(subprocess,'Popen',side_effect=launch) as child, patch.object(subprocess,'run') as cargo, patch.object(json,'loads',side_effect=RuntimeError('json_unreachable')) as consume, contextlib.redirect_stdout(printed):
+                      try: windows_toolchain({'SystemRoot':'C:\\Windows'})
+                      except SystemExit as failure:
+                          if classification is not None and str(failure) != 'msvc_developer_' + classification: raise RuntimeError('developer_regression_classification') from None
+                      else: raise RuntimeError('developer_regression_missing_refusal')
+                      if child.call_count != 1 or cargo.called or consume.called: raise RuntimeError('developer_regression_downstream_reached')
+                  if 'synthetic_private_stderr' in printed.getvalue(): raise RuntimeError('developer_regression_private_output')
+              from pathlib import PureWindowsPath
+              success = prefix + b'DPT_MSVC_DEV:result:completed:0:0:1:1\nDPT_MSVC_DEV:environment:validated\n'
+              success += b'DPT_MSVC_PHASE:sdk\nDPT_MSVC_PHASE:linker_metadata\n'
+              configuration = {'PATH':'synthetic','INCLUDE':'synthetic=a=b','LIB':'synthetic','LIBPATH':'synthetic','VCTOOLSINSTALLDIR':'C:\\Synthetic\\VC\\Tools\\MSVC\\1','WINDOWSSDKDIR':'C:\\SyntheticSDK','VSCMD_ARG_TGT_ARCH':'x64','VSCMD_ARG_HOST_ARCH':'x64'}
+              payload = {'root':'C:\\Synthetic','linker':'C:\\Synthetic\\VC\\Tools\\MSVC\\1\\bin\\Hostx64\\x64\\link.exe','company':'Microsoft Corporation','product':'Visual Studio synthetic','version':'synthetic','environment':configuration}
+              replies = [(json.dumps(payload).encode('ascii'),success),(b'Microsoft synthetic',b''),(b'host: x86_64-pc-windows-msvc',b'')]
+              def launch_success(args, **kwargs):
+                  output, markers = replies.pop(0)
+                  kwargs['stdout'].write(output)
+                  kwargs['stderr'].write(markers)
+                  return Mock(wait=Mock(return_value=0))
+              with patch.dict(globals(),{'Path':PureWindowsPath}), patch.object(subprocess,'Popen',side_effect=launch_success) as child, patch.object(subprocess,'run') as cargo, contextlib.redirect_stdout(io.StringIO()):
+                  configured = windows_toolchain({'SystemRoot':'C:\\Windows'})
+                  if configured['INCLUDE'] != 'synthetic=a=b' or child.call_count != 3 or cargo.called or replies: raise RuntimeError('developer_regression_valid_configuration')
+          developer_protocol_regressions()
           if windows:
               env.pop('SDKROOT', None)
               env.pop('DEVELOPER_DIR', None)
