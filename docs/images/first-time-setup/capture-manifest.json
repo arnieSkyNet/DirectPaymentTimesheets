@@ -1,0 +1,2075 @@
+{
+  "version": "v1.0.6",
+  "commit": "e157cbd754020e250806b07d40d0fd1a8e755938",
+  "capture_date": "15/10/2026",
+  "method": "Real X11 window captures; crops, numbered margin captions and transparent outlines only. Image 62 is generated output displayed in a PDF reader; 26\u201327 are the native file chooser.",
+  "screenshots": [
+    {
+      "number": 1,
+      "file": "01-first-launch.png",
+      "title": "First launch",
+      "alt": "Check v1.0.6 and schema 41 before starting.",
+      "raw_capture": "01-first-launch.png",
+      "raw_sha256": "f0239e6f8d9bbd7232c220e02260f21ea34a461487f5d248ee3efa577377294a",
+      "crop": [
+        0,
+        0,
+        700,
+        205
+      ],
+      "highlights": [
+        [
+          5,
+          2,
+          368,
+          24
+        ]
+      ],
+      "sha256": "b0ecfe22567914069bb761ef43dc17af8abe9b4071b13a4f8efff1d75453137c",
+      "size": [
+        716,
+        279
+      ]
+    },
+    {
+      "number": 2,
+      "file": "02-about-version.png",
+      "title": "Confirm the release",
+      "alt": "About confirms application version 1.0.6 and database schema 41.",
+      "raw_capture": "02-about-version.png",
+      "raw_sha256": "f9e7e0b93e38d57ab5e31a0efc4be534600065dbac9e075056014cafda804aa3",
+      "crop": [
+        15,
+        18,
+        491,
+        121
+      ],
+      "highlights": [
+        [
+          22,
+          77,
+          270,
+          116
+        ]
+      ],
+      "sha256": "bd023ed2c050b24c747aa8b174c3433980130ef39b9d473defa834305f865afb",
+      "size": [
+        492,
+        198
+      ]
+    },
+    {
+      "number": 3,
+      "file": "03-date-display.png",
+      "title": "Choose UK dates",
+      "alt": "Select DD/MM/YYYY for day-first dates.",
+      "raw_capture": "03-date-display.png",
+      "raw_sha256": "e457f6bd86d2009812bfae3678756dd39905b12d87067ba5c05fa243780c6a65",
+      "crop": [
+        0,
+        29,
+        465,
+        188
+      ],
+      "highlights": [
+        [
+          138,
+          110,
+          328,
+          138
+        ]
+      ],
+      "sha256": "5630e8f1e1c640c644c5b543c9d9e89015bc5326880f0fb8cd0bb428de60ff59",
+      "size": [
+        481,
+        233
+      ]
+    },
+    {
+      "number": 4,
+      "file": "04-folder-settings.png",
+      "title": "Keep folders together",
+      "alt": "These /demo folders belong only to the fictional screenshot session.",
+      "raw_capture": "04-folder-settings.png",
+      "raw_sha256": "00c6e44382bf08cfdfe5a70fd800df712925a21c7c18423ac6d62ece41e3854d",
+      "crop": [
+        0,
+        141,
+        732,
+        284
+      ],
+      "highlights": [
+        [
+          222,
+          162,
+          625,
+          279
+        ]
+      ],
+      "sha256": "58b3e0de7620e4063bbaca353c6882b8fe97d199b1f59a4dc08d5bd2a431281e",
+      "size": [
+        748,
+        217
+      ]
+    },
+    {
+      "number": 5,
+      "file": "05-employer-empty.png",
+      "title": "Create the employer",
+      "alt": "Choose New Employer when no employer exists.",
+      "raw_capture": "05-employer-empty.png",
+      "raw_sha256": "bb26223e65fb10f04352b44faeef048372fb33bfbc3fc238e8601dfe185244b1",
+      "crop": [
+        0,
+        29,
+        420,
+        139
+      ],
+      "highlights": [
+        [
+          197,
+          33,
+          305,
+          55
+        ]
+      ],
+      "sha256": "5b1169ce0bbb4fecaa4fafc3056533012194f2c83cb07106c68422c5721e9712",
+      "size": [
+        436,
+        184
+      ]
+    },
+    {
+      "number": 6,
+      "file": "06-new-employer.png",
+      "title": "Employer form",
+      "alt": "Enter confirmed details, then use Save Employer.",
+      "raw_capture": "06-new-employer.png",
+      "raw_sha256": "b737d7b47b8dcea2a99085a3014d1396c817751a03ad036dd4d3423f8d4525e1",
+      "crop": [
+        0,
+        29,
+        1378,
+        351
+      ],
+      "highlights": [
+        [
+          7,
+          63,
+          342,
+          105
+        ],
+        [
+          7,
+          306,
+          104,
+          328
+        ]
+      ],
+      "sha256": "08fdc78b50e6575b3727db915dbea6b4136bc660b60ee034abdca6ab474332ea",
+      "size": [
+        1394,
+        396
+      ]
+    },
+    {
+      "number": 7,
+      "file": "07-employer-identity.png",
+      "title": "Employer identity",
+      "alt": "Morgan Example, date of birth and NI number are fictional.",
+      "raw_capture": "07-employer-identity.png",
+      "raw_sha256": "12af23fd065afe8a464fcca10c8d47497dbbb45fd268ef843bf0d9ef148c32bf",
+      "crop": [
+        0,
+        61,
+        1028,
+        109
+      ],
+      "highlights": [
+        [
+          7,
+          83,
+          341,
+          105
+        ],
+        [
+          349,
+          83,
+          683,
+          105
+        ],
+        [
+          690,
+          83,
+          1025,
+          105
+        ]
+      ],
+      "sha256": "79b0c3caed95655d5d89cbcaea3087d2fe37daa9d1f4312fa59b40cb478446db",
+      "size": [
+        1044,
+        122
+      ]
+    },
+    {
+      "number": 8,
+      "file": "08-employer-contact.png",
+      "title": "Employer contact details",
+      "alt": "Use your actual sender email and confirmed DP account reference.",
+      "raw_capture": "08-employer-contact.png",
+      "raw_sha256": "14ec935f88e2b33ea9455a3e2a3d4a1c781477b00657ad50cee08b896f70d153",
+      "crop": [
+        0,
+        108,
+        1028,
+        151
+      ],
+      "highlights": [
+        [
+          7,
+          126,
+          342,
+          148
+        ],
+        [
+          349,
+          126,
+          683,
+          148
+        ]
+      ],
+      "sha256": "2b64559676eb598dc1ce642d6f73f7d3d93c7da43d5968aa7538c3acb27d1765",
+      "size": [
+        1044,
+        117
+      ]
+    },
+    {
+      "number": 9,
+      "file": "09-employer-address.png",
+      "title": "Employer address",
+      "alt": "Enter the complete address; this example address is fictional.",
+      "raw_capture": "09-employer-address.png",
+      "raw_sha256": "abd190c7526488cc5d883ab0cea76eac4ec4fdd3047042c254e2ca54e67d61c4",
+      "crop": [
+        1027,
+        61,
+        1378,
+        231
+      ],
+      "highlights": [
+        [
+          1031,
+          82,
+          1372,
+          225
+        ]
+      ],
+      "sha256": "5c1246f21a720cf44913b653e4f1bca2c83890193fba89cc48456d3d65d10334",
+      "size": [
+        430,
+        265
+      ]
+    },
+    {
+      "number": 10,
+      "file": "10-employer-saved.png",
+      "title": "Employer saved",
+      "alt": "Look for Employer saved successfully.",
+      "raw_capture": "10-employer-saved.png",
+      "raw_sha256": "c4b19eb859d967bf871f31239bc20bc6e8f1280f71ddfe2f32af6be9f399185c",
+      "crop": [
+        0,
+        301,
+        570,
+        359
+      ],
+      "highlights": [
+        [
+          7,
+          334,
+          298,
+          356
+        ]
+      ],
+      "sha256": "9fbb11ea8bea2cfe486200a9eaaab559e50f4ff872b913425286a177fc25d31b",
+      "size": [
+        586,
+        132
+      ]
+    },
+    {
+      "number": 11,
+      "file": "11-employer-signature.png",
+      "title": "Optional PDF signature",
+      "alt": "You can do this later: select or draw an authorised signature.",
+      "raw_capture": "11-employer-signature.png",
+      "raw_sha256": "c4b19eb859d967bf871f31239bc20bc6e8f1280f71ddfe2f32af6be9f399185c",
+      "crop": [
+        0,
+        232,
+        570,
+        303
+      ],
+      "highlights": [
+        [
+          7,
+          256,
+          233,
+          280
+        ]
+      ],
+      "sha256": "17cbe2489d7060c51fd0ba933fafbf646e93df039a752ef8e02e7bee6703dea6",
+      "size": [
+        586,
+        145
+      ]
+    },
+    {
+      "number": 12,
+      "file": "12-provider-form.png",
+      "title": "Payroll provider",
+      "alt": "Save the provider before entering the Payroll Department address.",
+      "raw_capture": "12-provider-form.png",
+      "raw_sha256": "85be1e299d848b62d1d2b0bbe4bfd7f754612991cbdfb804ea2145cf89d3ad49",
+      "crop": [
+        0,
+        64,
+        680,
+        215
+      ],
+      "highlights": [
+        [
+          7,
+          107,
+          676,
+          128
+        ],
+        [
+          7,
+          147,
+          676,
+          168
+        ]
+      ],
+      "sha256": "b4f448993ad63fefcf56eb07bef5dc62310b15971705db32caf988a1359875fe",
+      "size": [
+        696,
+        225
+      ]
+    },
+    {
+      "number": 13,
+      "file": "13-holiday-region.png",
+      "title": "Public-holiday region",
+      "alt": "Choose the correct UK region; holiday dates do not establish entitlement.",
+      "raw_capture": "13-holiday-region.png",
+      "raw_sha256": "57b24063170b000b2c6465c93e9f445504ff9b5bdf0bcd9728f18ba5e76c842d",
+      "crop": [
+        0,
+        311,
+        850,
+        473
+      ],
+      "highlights": [
+        [
+          7,
+          351,
+          147,
+          381
+        ]
+      ],
+      "sha256": "888da4af496f7d8abc20bbb9ebefa5e458c99d2969e75e8fd1832b62a2d1c316",
+      "size": [
+        866,
+        236
+      ]
+    },
+    {
+      "number": 14,
+      "file": "14-rounding-options.png",
+      "title": "Check payroll rounding",
+      "alt": "The default is 15 Minutes Up; confirm the rule with your provider.",
+      "raw_capture": "14-rounding-options.png",
+      "raw_sha256": "05ae86f8440fdf64ad6372661601476ef2587115818302b5af98f0360d771e37",
+      "crop": [
+        389,
+        484,
+        850,
+        810
+      ],
+      "highlights": [
+        [
+          396,
+          518,
+          589,
+          799
+        ]
+      ],
+      "sha256": "3fa7eae6ff3875d4f6e52c15defd1da8f6d377e8957c974df396b1b0387b5065",
+      "size": [
+        477,
+        421
+      ]
+    },
+    {
+      "number": 15,
+      "file": "15-provider-saved.png",
+      "title": "Save Payroll Settings",
+      "alt": "Confirm Payroll settings saved before continuing.",
+      "raw_capture": "15-provider-saved.png",
+      "raw_sha256": "25fe0081300bb467e14626490a4c572c4fe063b2b99b66b4533ed14b6c0daf95",
+      "crop": [
+        0,
+        852,
+        650,
+        914
+      ],
+      "highlights": [
+        [
+          7,
+          862,
+          137,
+          886
+        ],
+        [
+          7,
+          891,
+          283,
+          914
+        ]
+      ],
+      "sha256": "bc6900d2fed42802981a35f7fca855b67bad77a34f0ad1130185ac0dcd24bcb2",
+      "size": [
+        666,
+        136
+      ]
+    },
+    {
+      "number": 16,
+      "file": "16-email-transport.png",
+      "title": "Select SMTP Server",
+      "alt": "Choose SMTP Server for GMX or Gmail.",
+      "raw_capture": "16-email-transport.png",
+      "raw_sha256": "b17d26a005e538d92c52c50a6837bbb475b0b64244ac0efa91b562ce904c67db",
+      "crop": [
+        0,
+        79,
+        510,
+        201
+      ],
+      "highlights": [
+        [
+          104,
+          121,
+          232,
+          193
+        ]
+      ],
+      "sha256": "7e2d577982e32fdebeb68e100c82f8b0ba68754030d2bc1c7bf467d86189afab",
+      "size": [
+        526,
+        196
+      ]
+    },
+    {
+      "number": 17,
+      "file": "17-smtp-security.png",
+      "title": "Require STARTTLS",
+      "alt": "Select Required STARTTLS and set port 587 separately.",
+      "raw_capture": "18-smtp-security.png",
+      "raw_sha256": "21157da886e613c86e3af29e59574bd6713aeaa30888b8deb6f788c81608c39e",
+      "crop": [
+        0,
+        125,
+        675,
+        250
+      ],
+      "highlights": [
+        [
+          7,
+          142,
+          251,
+          228
+        ]
+      ],
+      "sha256": "20c00f3816563aae1061f07ca2a05058d59753e7a9061e2e1c6aebca3a2f9769",
+      "size": [
+        691,
+        199
+      ]
+    },
+    {
+      "number": 18,
+      "file": "18-test-addresses.png",
+      "title": "Safe test recipients",
+      "alt": "For a test, use only mailboxes you control; these addresses are fictional.",
+      "raw_capture": "20-test-addresses.png",
+      "raw_sha256": "e3ae16b2b0ceaf708686585d86e536949856f04de48fc49254a915519ea30007",
+      "crop": [
+        0,
+        358,
+        730,
+        512
+      ],
+      "highlights": [
+        [
+          7,
+          377,
+          299,
+          439
+        ]
+      ],
+      "sha256": "29f70de4306633cac57fc9e8eb2971c33719a4ed21e695bcaaeb43b34611da58",
+      "size": [
+        746,
+        228
+      ]
+    },
+    {
+      "number": 19,
+      "file": "19-department-address.png",
+      "title": "Payroll Department address",
+      "alt": "Save the verified timesheet recipient with its own Save button.",
+      "raw_capture": "21-department-address.png",
+      "raw_sha256": "9c36f91dbb5ecbed2518e9832c2244ec4f9e5caa0f673c9bfa8b086b5c2c3557",
+      "crop": [
+        0,
+        588,
+        660,
+        678
+      ],
+      "highlights": [
+        [
+          7,
+          628,
+          299,
+          672
+        ]
+      ],
+      "sha256": "355b7d1cd5eabff6cb09cdd724d907bee9d9eec5a2e0a525826e0a8660a02ea3",
+      "size": [
+        676,
+        164
+      ]
+    },
+    {
+      "number": 20,
+      "file": "20-email-saved.png",
+      "title": "Save Email Settings",
+      "alt": "Saving settings does not send a message.",
+      "raw_capture": "23-email-saved.png",
+      "raw_sha256": "3b3965f0e66a7019fd136b4973e45f95f6cd6179978161e265864eca926a8db2",
+      "crop": [
+        0,
+        853,
+        650,
+        915
+      ],
+      "highlights": [
+        [
+          7,
+          872,
+          145,
+          897
+        ],
+        [
+          7,
+          893,
+          225,
+          913
+        ]
+      ],
+      "sha256": "7da7642a4cc82b236c86b17697a9322435949116ff14291a452ede09a7ea5cfc",
+      "size": [
+        666,
+        136
+      ]
+    },
+    {
+      "number": 21,
+      "file": "21-gmx-smtp.png",
+      "title": "GMX SMTP example",
+      "alt": "Host mail.gmx.com; port 587; full account address and application-specific password.",
+      "raw_capture": "17-gmx-smtp.png",
+      "raw_sha256": "ccbc3e6cea806c98d08beb6ff044c15b968c4885e9f453278ecef3e89bbe602a",
+      "crop": [
+        0,
+        123,
+        670,
+        357
+      ],
+      "highlights": [
+        [
+          7,
+          141,
+          252,
+          164
+        ],
+        [
+          7,
+          198,
+          298,
+          222
+        ],
+        [
+          7,
+          239,
+          57,
+          262
+        ]
+      ],
+      "sha256": "d1c8322d630f369546400d01e80d2d432b1ef7bc46dd8fd51a6506e535fc7d67",
+      "size": [
+        686,
+        308
+      ]
+    },
+    {
+      "number": 22,
+      "file": "22-gmail-smtp.png",
+      "title": "Gmail SMTP example",
+      "alt": "Host smtp.gmail.com; use your full Gmail address and a Google App Password.",
+      "raw_capture": "19-gmail-smtp.png",
+      "raw_sha256": "be169a96389011b32009b268c312549d927a6edc48265784842e73643929a3ac",
+      "crop": [
+        0,
+        123,
+        670,
+        357
+      ],
+      "highlights": [
+        [
+          7,
+          198,
+          298,
+          222
+        ],
+        [
+          7,
+          279,
+          299,
+          300
+        ]
+      ],
+      "sha256": "37b1e7e961d853204c4fce4aa20ae019d32aac8b45e154fb825f236bd7dde24c",
+      "size": [
+        686,
+        308
+      ]
+    },
+    {
+      "number": 23,
+      "file": "23-local-relay.png",
+      "title": "Optional local relay",
+      "alt": "Local SMTP Server means unencrypted localhost:25 with no credentials.",
+      "raw_capture": "24-local-relay.png",
+      "raw_sha256": "fdd92304764b1cea14ec673aa2f60e05e0322f288b0c2e5efa2d4fac99f5c859",
+      "crop": [
+        0,
+        123,
+        730,
+        202
+      ],
+      "highlights": [
+        [
+          7,
+          143,
+          721,
+          179
+        ]
+      ],
+      "sha256": "2412da6e745a24a3bf94149a25ce62f20ac12ebc4daf94218b4a8bac929939b3",
+      "size": [
+        746,
+        153
+      ]
+    },
+    {
+      "number": 24,
+      "file": "24-email-signature.png",
+      "title": "Optional email sign-off",
+      "alt": "You can do this later: save a typed email signature separately.",
+      "raw_capture": "22-email-signature.png",
+      "raw_sha256": "51ee4541a4b66cd480aa9232ecdc1d137e4fc85ae352a5e96a40a99a6e5d30e5",
+      "crop": [
+        0,
+        702,
+        650,
+        884
+      ],
+      "highlights": [
+        [
+          7,
+          727,
+          609,
+          855
+        ],
+        [
+          7,
+          853,
+          228,
+          875
+        ]
+      ],
+      "sha256": "0d3c7215023c739f01ae0305be47f1f928649bc5cbdb8d77d68bfdda4963d982",
+      "size": [
+        666,
+        256
+      ]
+    },
+    {
+      "number": 25,
+      "file": "25-before-schedule-import.png",
+      "title": "Import the provider schedule",
+      "alt": "Choose Import Payroll Documents for the provider preparation PDF.",
+      "raw_capture": "25-before-schedule-import.png",
+      "raw_sha256": "90e76d0c845cd503980c54be4b1a72c1cdbe9acd54131aad092aca737238ee55",
+      "crop": [
+        0,
+        29,
+        705,
+        205
+      ],
+      "highlights": [
+        [
+          7,
+          174,
+          233,
+          196
+        ]
+      ],
+      "sha256": "b33da700a82650d8bb7b9b0a9da7fa4c981813ae3668ef947c7b1b3fc7ce94c1",
+      "size": [
+        721,
+        250
+      ]
+    },
+    {
+      "number": 26,
+      "file": "26-schedule-file-chooser.png",
+      "title": "Find the saved PDF",
+      "alt": "This Linux file chooser shows only the disposable demonstration files.",
+      "raw_capture": "26-schedule-file-chooser.png",
+      "raw_sha256": "9816216bdb813a8904065b7a50bed6cfb43efbedaab728ee5e74c14e5f106882",
+      "crop": [
+        0,
+        0,
+        863,
+        418
+      ],
+      "highlights": [
+        [
+          150,
+          79,
+          850,
+          150
+        ],
+        [
+          434,
+          314,
+          850,
+          351
+        ]
+      ],
+      "sha256": "283a74589e9d98cd017b01ef85a536da40d272b710fb8ca5c7295d72841be57f",
+      "size": [
+        879,
+        492
+      ]
+    },
+    {
+      "number": 27,
+      "file": "27-schedule-file-selected.png",
+      "title": "Choose the preparation sheet",
+      "alt": "Select the original provider PDF, then confirm the file choice.",
+      "raw_capture": "27-schedule-file-selected.png",
+      "raw_sha256": "211236115b4d730664e5a9057b24d08c16a6dfa7b957a4ebb9b66c40cc42b8a7",
+      "crop": [
+        0,
+        0,
+        863,
+        418
+      ],
+      "highlights": [
+        [
+          149,
+          33,
+          852,
+          71
+        ],
+        [
+          789,
+          366,
+          848,
+          404
+        ]
+      ],
+      "sha256": "072a2015f81fbbf5f0fbcb200451511cf2a2e02232b64931c8b1f72f392874a1",
+      "size": [
+        879,
+        492
+      ]
+    },
+    {
+      "number": 28,
+      "file": "28-schedule-import-result.png",
+      "title": "Check imported periods",
+      "alt": "Look for Payroll schedule entries imported: 13, not just a stored file count.",
+      "raw_capture": "28-schedule-import-result.png",
+      "raw_sha256": "f71fd5264aa5381c331bf1b1b23840fa2d2d2c45956792d177adeee91c449fc4",
+      "crop": [
+        0,
+        305,
+        980,
+        524
+      ],
+      "highlights": [
+        [
+          7,
+          437,
+          467,
+          458
+        ]
+      ],
+      "sha256": "5bcbc893543cdd688ab3c90b5154694e93b22a93a02868c85d35c6075256c325",
+      "size": [
+        996,
+        293
+      ]
+    },
+    {
+      "number": 29,
+      "file": "29-payroll-schedule.png",
+      "title": "Verify all 13 periods",
+      "alt": "Compare every start, posting and pay date with the provider PDF.",
+      "raw_capture": "29-payroll-schedule.png",
+      "raw_sha256": "b22926464886ade7a25c21fb1e5a1b2ec68dea40eb7af85136f14deab433d66a",
+      "crop": [
+        0,
+        420,
+        720,
+        786
+      ],
+      "highlights": [
+        [
+          7,
+          482,
+          409,
+          776
+        ]
+      ],
+      "sha256": "94ecc8c1e9f4960f38a9dca471967e71afed13af4d791fe6ea744089f04dbce6",
+      "size": [
+        736,
+        440
+      ]
+    },
+    {
+      "number": 30,
+      "file": "30-payroll-year.png",
+      "title": "Choose the payroll year",
+      "alt": "Use Payroll year to inspect the imported year.",
+      "raw_capture": "30-payroll-year.png",
+      "raw_sha256": "3f5e4aea38d841830c813839dd1ea11a044d66966a17ec22ce800a800192fa09",
+      "crop": [
+        0,
+        420,
+        720,
+        520
+      ],
+      "highlights": [
+        [
+          91,
+          427,
+          202,
+          482
+        ]
+      ],
+      "sha256": "bfde263a6756f7f80ded8cdaacb94970696ef6689045de3a15c34b0942c44b92",
+      "size": [
+        736,
+        174
+      ]
+    },
+    {
+      "number": 31,
+      "file": "31-period-selector.png",
+      "title": "Select the working period",
+      "alt": "Check the full date range and scheduled pay date before preparing payroll.",
+      "raw_capture": "31-period-selector.png",
+      "raw_sha256": "07bd6ecf85b46c2736719084a3a8dfe871655928fc330af0ce091ef1342637d3",
+      "crop": [
+        0,
+        29,
+        720,
+        343
+      ],
+      "highlights": [
+        [
+          14,
+          80,
+          555,
+          337
+        ]
+      ],
+      "sha256": "eb8f83561487d0faa73c3808adca00d4cc7feb665b7f0f1853a1dd05389ad4ea",
+      "size": [
+        736,
+        388
+      ]
+    },
+    {
+      "number": 32,
+      "file": "32-pa-empty.png",
+      "title": "Create a PA",
+      "alt": "Choose New Personal Assistant.",
+      "raw_capture": "32-pa-empty.png",
+      "raw_sha256": "1192ae79abcd8e7dd7a84211c511d64aa5c9001169ca16b299053a28e8f921e2",
+      "crop": [
+        0,
+        29,
+        620,
+        159
+      ],
+      "highlights": [
+        [
+          7,
+          64,
+          153,
+          85
+        ]
+      ],
+      "sha256": "07d7c61bafc90e9ad18ddcf4c18a8414f5043cbf51012bc1ca046c5f086e41b2",
+      "size": [
+        636,
+        204
+      ]
+    },
+    {
+      "number": 33,
+      "file": "33-new-pa.png",
+      "title": "PA details form",
+      "alt": "Save the PA before adding dated pay rates and hours basis.",
+      "raw_capture": "33-new-pa.png",
+      "raw_sha256": "a0ff751b0a2bcd5f2b2f0417adf2fb3f70029d8134035163a43fbb65c1d030f9",
+      "crop": [
+        0,
+        94,
+        1378,
+        442
+      ],
+      "highlights": [
+        [
+          176,
+          136,
+          1373,
+          158
+        ],
+        [
+          176,
+          356,
+          325,
+          378
+        ]
+      ],
+      "sha256": "03b2f1a758f2ff807df5298eb78cb4d66d98e2bf9d01a8869b3bfcd52d182b1c",
+      "size": [
+        1394,
+        422
+      ]
+    },
+    {
+      "number": 34,
+      "file": "34-pa-contact.png",
+      "title": "PA contact details",
+      "alt": "Alex Example and every personal detail shown here are fictional.",
+      "raw_capture": "34-pa-contact.png",
+      "raw_sha256": "47a70e6a98836da34bc96586060df3a43037600bda1b83be257d56446186d9bb",
+      "crop": [
+        169,
+        120,
+        1378,
+        293
+      ],
+      "highlights": [
+        [
+          176,
+          162,
+          884,
+          185
+        ]
+      ],
+      "sha256": "f78e1e8c2b2171e43e05693d3bc99e1c32a8ed73200eda9fd7b6784a23394e61",
+      "size": [
+        1225,
+        247
+      ]
+    },
+    {
+      "number": 35,
+      "file": "35-pa-employment.png",
+      "title": "Employment dates",
+      "alt": "Keep a current employee Active; enter their actual Start date.",
+      "raw_capture": "35-pa-employment.png",
+      "raw_sha256": "a59bbd284ecdc0e044bf1d7ec427a31432961134eafa310c26be9b1d3327122c",
+      "crop": [
+        169,
+        194,
+        708,
+        292
+      ],
+      "highlights": [
+        [
+          176,
+          232,
+          234,
+          254
+        ],
+        [
+          241,
+          253,
+          363,
+          277
+        ]
+      ],
+      "sha256": "94645a821b1448b6cb3a95947cb7ba0689f1b572a4586ac1ee5f1cd0cf498735",
+      "size": [
+        555,
+        172
+      ]
+    },
+    {
+      "number": 36,
+      "file": "36-pa-saved.png",
+      "title": "Select the saved PA",
+      "alt": "Select the PA under Existing Assistants to reveal their saved histories.",
+      "raw_capture": "36-pa-saved.png",
+      "raw_sha256": "804a528bac54eb95f6075d33c53b423070311307adaeb26edb859aec03d50bdf",
+      "crop": [
+        0,
+        94,
+        770,
+        186
+      ],
+      "highlights": [
+        [
+          7,
+          117,
+          104,
+          142
+        ]
+      ],
+      "sha256": "957050379d499f5d433279197d49d35c3f50207f6d80bbd490db66f9decf291a",
+      "size": [
+        786,
+        166
+      ]
+    },
+    {
+      "number": 37,
+      "file": "37-hours-basis-entry.png",
+      "title": "Enter weekly hours basis",
+      "alt": "Use the agreed effective date and contracted weekly hours, then Save Hours Basis.",
+      "raw_capture": "37-hours-basis-entry.png",
+      "raw_sha256": "2734ba9ee9636a721a8d48b0137e8d4a544293b5cb45c1cde32c02893babb032",
+      "crop": [
+        771,
+        469,
+        1205,
+        565
+      ],
+      "highlights": [
+        [
+          777,
+          519,
+          1127,
+          543
+        ],
+        [
+          777,
+          540,
+          886,
+          564
+        ]
+      ],
+      "sha256": "b98afb50a5cb8bce6085c9c4d0f801d0dcf64aba59f7cd42ca4f98e8cad949f8",
+      "size": [
+        450,
+        191
+      ]
+    },
+    {
+      "number": 38,
+      "file": "38-hours-basis-saved.png",
+      "title": "Check the saved hours row",
+      "alt": "The dated Contracted 20 row confirms this fictional hours basis was saved.",
+      "raw_capture": "38-hours-basis-saved.png",
+      "raw_sha256": "0772aecb803e41fb6afd6f0a8a60c363e7794a0a93e08d1e4222509b49f5449f",
+      "crop": [
+        771,
+        447,
+        1205,
+        568
+      ],
+      "highlights": [
+        [
+          777,
+          472,
+          1037,
+          499
+        ]
+      ],
+      "sha256": "df18b8d7e058e9d237714b315a35ecbef0b05e706e3203f46f350bcc4d9982b1",
+      "size": [
+        450,
+        216
+      ]
+    },
+    {
+      "number": 39,
+      "file": "39-variable-hours-option.png",
+      "title": "Variable hours option",
+      "alt": "Choose Variable only where it matches the actual employment arrangement.",
+      "raw_capture": "39-variable-hours-option.png",
+      "raw_sha256": "04fbf142f1e0abe810e5c29bcb9e36c2324f604d4d887a2f55ad9e30089e18f0",
+      "crop": [
+        771,
+        493,
+        1205,
+        609
+      ],
+      "highlights": [
+        [
+          903,
+          519,
+          1002,
+          592
+        ]
+      ],
+      "sha256": "267c63f9a0fa2c6c4d3782e66db3ac0cb349d72b4950bf89ef83fefc6b472319",
+      "size": [
+        450,
+        211
+      ]
+    },
+    {
+      "number": 40,
+      "file": "40-pay-rate-entry.png",
+      "title": "Enter the agreed pay rate",
+      "alt": "Use numbers without a pound sign and a date covering the work.",
+      "raw_capture": "40-pay-rate-entry.png",
+      "raw_sha256": "a2864b7fc3deafcc4232b353a901d74c877fec8173268dbcce2844e456d15ee3",
+      "crop": [
+        170,
+        497,
+        650,
+        568
+      ],
+      "highlights": [
+        [
+          176,
+          521,
+          495,
+          544
+        ],
+        [
+          176,
+          542,
+          274,
+          566
+        ]
+      ],
+      "sha256": "3334e5ee64a8e7f0b2211a6ea4ba0e75d69ca081d67e7ff34c0d5ec82a3876e2",
+      "size": [
+        496,
+        166
+      ]
+    },
+    {
+      "number": 41,
+      "file": "41-pay-rate-saved.png",
+      "title": "Check the saved pay rate",
+      "alt": "Verify the saved base rate and top-up; a successful save does not validate the amount.",
+      "raw_capture": "41-pay-rate-saved.png",
+      "raw_sha256": "9eddcf65dec1fe00cb3f0a9842181bda8e798c13919adb74c8b2c8b3a1279ceb",
+      "crop": [
+        170,
+        448,
+        770,
+        596
+      ],
+      "highlights": [
+        [
+          176,
+          473,
+          545,
+          500
+        ]
+      ],
+      "sha256": "d3eff284cd78a807c811df794f48917c9fa64773f06902fb022a0a98d55e7a7c",
+      "size": [
+        616,
+        243
+      ]
+    },
+    {
+      "number": 42,
+      "file": "42-pa-signature.png",
+      "title": "Optional PA signature",
+      "alt": "You can do this later: add only an authorised signature.",
+      "raw_capture": "42-pa-signature.png",
+      "raw_sha256": "9eddcf65dec1fe00cb3f0a9842181bda8e798c13919adb74c8b2c8b3a1279ceb",
+      "crop": [
+        170,
+        301,
+        650,
+        354
+      ],
+      "highlights": [
+        [
+          260,
+          306,
+          489,
+          331
+        ]
+      ],
+      "sha256": "213f2ea35ca87255c5dcfa06593da64a5c2f01955ebfa28ed9891152449c0477",
+      "size": [
+        496,
+        127
+      ]
+    },
+    {
+      "number": 43,
+      "file": "43-shifts-empty.png",
+      "title": "Enter a past shift",
+      "alt": "Choose the PA, then Clock in at\u2026 for an exact past start.",
+      "raw_capture": "43-shifts-empty.png",
+      "raw_sha256": "fc933a5e90d573f6ac37542db8ec54ee8719fa0a591a97c120454e81d2383c49",
+      "crop": [
+        0,
+        29,
+        720,
+        269
+      ],
+      "highlights": [
+        [
+          7,
+          145,
+          199,
+          196
+        ]
+      ],
+      "sha256": "fed1b4836e69de3261e4a630fdab79b6adf73c0c507d794cfde53a5513815c7f",
+      "size": [
+        736,
+        314
+      ]
+    },
+    {
+      "number": 44,
+      "file": "44-clock-in-time.png",
+      "title": "Exact clock-in time",
+      "alt": "Set day, month, year, hour and minute, then Use this time.",
+      "raw_capture": "44-clock-in-time.png",
+      "raw_sha256": "628394dba07fba38c42a4f80de816e592a741c906141c02426b5b316b9a2c2a3",
+      "crop": [
+        0,
+        194,
+        470,
+        358
+      ],
+      "highlights": [
+        [
+          14,
+          262,
+          408,
+          305
+        ],
+        [
+          14,
+          328,
+          101,
+          352
+        ]
+      ],
+      "sha256": "ef0b4b84d53d01c784cf3c7e3306588f775592e7b84b087ef33ffd5659c49725",
+      "size": [
+        486,
+        238
+      ]
+    },
+    {
+      "number": 45,
+      "file": "45-running-shift.png",
+      "title": "Check the shift start",
+      "alt": "The running shift shows which PA and start time will be completed.",
+      "raw_capture": "45-running-shift.png",
+      "raw_sha256": "461607b81acf24ee51bda98d5d2e820719f59e6a5ab5b7872b1a2d632b5f9426",
+      "crop": [
+        0,
+        117,
+        595,
+        206
+      ],
+      "highlights": [
+        [
+          7,
+          120,
+          261,
+          204
+        ]
+      ],
+      "sha256": "7f0657402d36dce07d6d9806b537060829ff557e53b8cf03568e62a531f02e1f",
+      "size": [
+        611,
+        163
+      ]
+    },
+    {
+      "number": 46,
+      "file": "46-shift-break-notes.png",
+      "title": "Break and optional notes",
+      "alt": "Enter break minutes and save optional notes; clock-out saves the completed shift.",
+      "raw_capture": "46-shift-break-notes.png",
+      "raw_sha256": "33fe60feb47b78a802538c0fc9cfa55adc882e561c9c60e758939bb4fb8a5a6f",
+      "crop": [
+        0,
+        204,
+        700,
+        320
+      ],
+      "highlights": [
+        [
+          7,
+          223,
+          510,
+          297
+        ],
+        [
+          103,
+          295,
+          223,
+          317
+        ]
+      ],
+      "sha256": "f2c67a2b7c27ac1474f44fa5b3629dfcbcd55ee6aa9604d78834571b957c6966",
+      "size": [
+        716,
+        190
+      ]
+    },
+    {
+      "number": 47,
+      "file": "47-clock-out-time.png",
+      "title": "Exact clock-out time",
+      "alt": "Use the actual finish date and time, including the next date for overnight work.",
+      "raw_capture": "47-clock-out-time.png",
+      "raw_sha256": "91d7cfcec2b44c3077cbbc0ea77d9612d089c8df1ac26308de009255d6ef11c0",
+      "crop": [
+        0,
+        367,
+        475,
+        534
+      ],
+      "highlights": [
+        [
+          14,
+          435,
+          408,
+          478
+        ],
+        [
+          14,
+          501,
+          101,
+          526
+        ]
+      ],
+      "sha256": "8fe80ea211fc494fb8be2ab5da547e3ab45a04420a2ed1534b32dbfee760a6cb",
+      "size": [
+        491,
+        262
+      ]
+    },
+    {
+      "number": 48,
+      "file": "48-completed-shift.png",
+      "title": "Check the completed shift",
+      "alt": "This fictional shift is 09:00\u201312:15 with a 15-minute break: 3 hours worked.",
+      "raw_capture": "48-completed-shift.png",
+      "raw_sha256": "efaaea9ff09921e14c873cf0ccdd5cb3a765b240faa14eabad38e4ebfb35f8ad",
+      "crop": [
+        0,
+        199,
+        710,
+        346
+      ],
+      "highlights": [
+        [
+          10,
+          287,
+          480,
+          320
+        ],
+        [
+          7,
+          325,
+          326,
+          346
+        ]
+      ],
+      "sha256": "5112ccafd7370c3dca59a8db95ed46d855fc96c65c14c4c6ae894b4f786e656e",
+      "size": [
+        726,
+        221
+      ]
+    },
+    {
+      "number": 49,
+      "file": "49-csv-import-folder.png",
+      "title": "Find the CSV import folder",
+      "alt": "Copy the intended Hours Keeper CSV into the configured folder.",
+      "raw_capture": "49-csv-import-folder.png",
+      "raw_sha256": "cf9d4d2f9586723e833d4876f2a4b58138139fde9b8ea455e908fbb9d1f95715",
+      "crop": [
+        0,
+        141,
+        732,
+        207
+      ],
+      "highlights": [
+        [
+          222,
+          163,
+          625,
+          185
+        ],
+        [
+          630,
+          163,
+          692,
+          185
+        ]
+      ],
+      "sha256": "4a8f25e4aef2672e3cd8d3a9792e924e651b0ff6c036088836806aa59fce03dd",
+      "size": [
+        748,
+        140
+      ]
+    },
+    {
+      "number": 50,
+      "file": "50-import-hours-action.png",
+      "title": "Import Hours CSV",
+      "alt": "The button scans the import folder; it does not ask for a single CSV file.",
+      "raw_capture": "50-import-hours-action.png",
+      "raw_sha256": "ad487c0fc33753321b65a412d2d30aa96d48536b51387e8a5be65d8aebe98a34",
+      "crop": [
+        0,
+        115,
+        720,
+        204
+      ],
+      "highlights": [
+        [
+          240,
+          135,
+          469,
+          158
+        ]
+      ],
+      "sha256": "9c21d14f8548da7059fbc170ff6ad71ec47eab89fa746bc18858a2b361b6ff05",
+      "size": [
+        736,
+        163
+      ]
+    },
+    {
+      "number": 51,
+      "file": "51-hours-import-summary.png",
+      "title": "Check the import summary",
+      "alt": "The demo imported four rows from one file, with no failures or skipped rows.",
+      "raw_capture": "51-hours-import-summary.png",
+      "raw_sha256": "8755e2f9b01987e6f4670bb6bd1a31d33c3c4415c3fa899f292fc6f884668553",
+      "crop": [
+        0,
+        211,
+        720,
+        391
+      ],
+      "highlights": [
+        [
+          7,
+          275,
+          241,
+          387
+        ]
+      ],
+      "sha256": "691f1ea591a4acfd2792e4876e71a51e26a685c856357b02e5e0f07df10049da",
+      "size": [
+        736,
+        254
+      ]
+    },
+    {
+      "number": 52,
+      "file": "52-imported-hours.png",
+      "title": "Review imported hours",
+      "alt": "Compare the PA, dates, worked time, rate and amount with the original export.",
+      "raw_capture": "52-imported-hours.png",
+      "raw_sha256": "b60fd2e03ffdeb442297d646360b3d6a0b88303f5975df18445bec76f802a64c",
+      "crop": [
+        0,
+        166,
+        952,
+        694
+      ],
+      "highlights": [
+        [
+          262,
+          278,
+          945,
+          672
+        ]
+      ],
+      "sha256": "60c254183cb8b3460bf5ff75fb35e2d98ee2aa04b38714a6cfd09f95f09773a3",
+      "size": [
+        968,
+        602
+      ]
+    },
+    {
+      "number": 53,
+      "file": "53-imported-hours-filter.png",
+      "title": "Filter by PA",
+      "alt": "Use the PA Name filter to inspect one assistant\u2019s imported rows.",
+      "raw_capture": "53-imported-hours-filter.png",
+      "raw_sha256": "c70ea8aacaa2b0b790782735e6af551e399d5b3e235b7b60c590087fa0230cf8",
+      "crop": [
+        0,
+        167,
+        700,
+        381
+      ],
+      "highlights": [
+        [
+          14,
+          276,
+          365,
+          354
+        ]
+      ],
+      "sha256": "1a9813c4cb2469050e386b0dbeb465c4ea40f3627b340a617e735c074c7c9aec",
+      "size": [
+        716,
+        288
+      ]
+    },
+    {
+      "number": 54,
+      "file": "54-imported-source-details.png",
+      "title": "Inspect original source evidence",
+      "alt": "Expand Source, notes and history to check the archived fictional CSV evidence.",
+      "raw_capture": "54-imported-source-details.png",
+      "raw_sha256": "b6b45fa563b8e03e9eba10fbdaadc5f63eec675f5e48afe18eefb440616833fb",
+      "crop": [
+        949,
+        276,
+        1352,
+        569
+      ],
+      "highlights": [
+        [
+          954,
+          368,
+          1348,
+          565
+        ]
+      ],
+      "sha256": "4a9ddefd28272559faed66fc9a0e3c1e33bd470e6506a9ca0ed0cfc465788f1c",
+      "size": [
+        430,
+        388
+      ]
+    },
+    {
+      "number": 55,
+      "file": "55-preparation-overview.png",
+      "title": "Payroll Timesheet Preparation",
+      "alt": "Check the selected period and all four week-commencing rows.",
+      "raw_capture": "55-preparation-overview.png",
+      "raw_sha256": "2aa4abd3184baeefa42d9ef46ca035e836161e6b26629c2d35ba2fb4003599c4",
+      "crop": [
+        0,
+        29,
+        775,
+        658
+      ],
+      "highlights": [
+        [
+          7,
+          175,
+          771,
+          217
+        ],
+        [
+          7,
+          415,
+          457,
+          523
+        ]
+      ],
+      "sha256": "f75d970459ac26dcc4d07db5b88eb977b4d1878d91ec144e5c0a63cefd698067",
+      "size": [
+        791,
+        703
+      ]
+    },
+    {
+      "number": 56,
+      "file": "56-worked-hours-review.png",
+      "title": "Review weekly worked totals",
+      "alt": "The demo has 10 hours in week one and 6 in week two; check against your records.",
+      "raw_capture": "56-worked-hours-review.png",
+      "raw_sha256": "a9e0790c9712afb4d2caa1064194369f3c548a02f464782012e5a9f7bedee708",
+      "crop": [
+        0,
+        396,
+        610,
+        527
+      ],
+      "highlights": [
+        [
+          81,
+          435,
+          138,
+          522
+        ]
+      ],
+      "sha256": "ebfb48f8d757f73ec1b94e97af5336f1744a7d887b60b39fcfe0d8dd6677a6ef",
+      "size": [
+        626,
+        226
+      ]
+    },
+    {
+      "number": 57,
+      "file": "57-optional-sickness-review.png",
+      "title": "Optional sickness-date review",
+      "alt": "Only enter confirmed sickness. Close this window if no sickness applies.",
+      "raw_capture": "57-optional-sickness-review.png",
+      "raw_sha256": "1102982de417144487aadb9a9c9df9d59ee0270bf90af77701bd54865c8148da",
+      "crop": [
+        437,
+        309,
+        943,
+        632
+      ],
+      "highlights": [
+        [
+          448,
+          397,
+          933,
+          420
+        ],
+        [
+          448,
+          601,
+          491,
+          624
+        ]
+      ],
+      "sha256": "a4c83f3872564d0015ca910813165a2d90a97db3eeec569c78d1e62360c8af07",
+      "size": [
+        522,
+        418
+      ]
+    },
+    {
+      "number": 58,
+      "file": "58-payroll-notes.png",
+      "title": "Notes for Payroll Department",
+      "alt": "The demonstration-only note is within the 256-character limit.",
+      "raw_capture": "58-payroll-notes.png",
+      "raw_sha256": "34bba3e6ae1c354886db200141ef3f0ec012e5c77b9188b7529288ea7338e0ce",
+      "crop": [
+        0,
+        526,
+        1000,
+        640
+      ],
+      "highlights": [
+        [
+          7,
+          541,
+          996,
+          595
+        ],
+        [
+          7,
+          593,
+          132,
+          614
+        ]
+      ],
+      "sha256": "ff23f51cdf99d92562d70edd55aadbfeb0b9cac219b316ac14e5fef24084acf9",
+      "size": [
+        1016,
+        188
+      ]
+    },
+    {
+      "number": 59,
+      "file": "59-preparation-saved.png",
+      "title": "Save the prepared timesheet",
+      "alt": "Use Save Alex Example and check the success message.",
+      "raw_capture": "59-preparation-saved.png",
+      "raw_sha256": "ef6785525aa90f8bbcd4fd785b4ece445fa473cc74ce74bafdc3264d5d3b809b",
+      "crop": [
+        0,
+        590,
+        700,
+        659
+      ],
+      "highlights": [
+        [
+          7,
+          610,
+          127,
+          634
+        ],
+        [
+          7,
+          639,
+          693,
+          659
+        ]
+      ],
+      "sha256": "1bfbe05916cf2cd4ac9a5efaf97d39bfa678ba2fa3b7ede1cb88205647ca097b",
+      "size": [
+        716,
+        143
+      ]
+    },
+    {
+      "number": 60,
+      "file": "60-generation-selection.png",
+      "title": "Select PAs for PDF generation",
+      "alt": "Choose the intended PA and Generate selected PAs; drawing a signature is optional.",
+      "raw_capture": "60-generation-selection.png",
+      "raw_sha256": "9799daa87c8bf566c751eaef7be7595b288fe293c83f2b4526991bb5cb5b1045",
+      "crop": [
+        14,
+        39,
+        373,
+        354
+      ],
+      "highlights": [
+        [
+          23,
+          196,
+          363,
+          235
+        ],
+        [
+          23,
+          325,
+          161,
+          347
+        ]
+      ],
+      "sha256": "448809f1f50f26748f48b6c5528de359b86ecc77a8bab1b02e6221f91c535ea4",
+      "size": [
+        430,
+        410
+      ]
+    },
+    {
+      "number": 61,
+      "file": "61-generation-result.png",
+      "title": "Check generation results",
+      "alt": "Completed means the PDF was generated; it does not mean it was emailed.",
+      "raw_capture": "61-generation-result.png",
+      "raw_sha256": "b1c5bc05379c1c6755104d733b4c99f9c23113d5f982ca5fe13e75a1b779cf3c",
+      "crop": [
+        0,
+        180,
+        720,
+        249
+      ],
+      "highlights": [
+        [
+          7,
+          183,
+          625,
+          246
+        ]
+      ],
+      "sha256": "f83d17e3d06b948ae020ee03caa2c0ca9572cddbb96c5aa0745b060c457e388a",
+      "size": [
+        736,
+        143
+      ]
+    },
+    {
+      "number": 62,
+      "file": "62-generated-pdf.png",
+      "title": "Review the generated PDF",
+      "alt": "Genuine v1.0.6 output in a separate PDF reader: check identity, weeks, totals and signatures.",
+      "raw_capture": "62-generated-pdf.png",
+      "raw_sha256": "ac6ca3d4edaa8429b23e6a1d54c86e8fbc818c1ad32d941586565fa71d755d7b",
+      "crop": [
+        425,
+        30,
+        995,
+        882
+      ],
+      "highlights": [
+        [
+          472,
+          289,
+          923,
+          569
+        ]
+      ],
+      "sha256": "220a37660ca9ad86cab4357f880980df172a6480df5650947482285a25eddc86",
+      "size": [
+        586,
+        947
+      ]
+    },
+    {
+      "number": 63,
+      "file": "63-timesheet-email-preview.png",
+      "title": "Preview without sending",
+      "alt": "Check From, To, CC, BCC, subject, attachment and body before any real send.",
+      "raw_capture": "63-timesheet-email-preview.png",
+      "raw_sha256": "d56ebd58fe625d93b0b820c257dcd7b3da62a4d94bbc578436199f4d8930c295",
+      "crop": [
+        0,
+        518,
+        810,
+        867
+      ],
+      "highlights": [
+        [
+          7,
+          588,
+          798,
+          710
+        ]
+      ],
+      "sha256": "c55cbb32c3cf25d315317cca0507cbe1742fa21c8f78d60ce55434205ad363c1",
+      "size": [
+        826,
+        423
+      ]
+    },
+    {
+      "number": 64,
+      "file": "64-test-controls-not-used.png",
+      "title": "Optional test controls",
+      "alt": "These buttons send actual test mail. They were not clicked for these screenshots.",
+      "raw_capture": "64-test-controls-not-used.png",
+      "raw_sha256": "59be3f0f63915559b3d30c2ae7dd4648dbad6cc9e87510a0fedc3179c3463fe0",
+      "crop": [
+        0,
+        356,
+        730,
+        516
+      ],
+      "highlights": [
+        [
+          7,
+          377,
+          298,
+          439
+        ],
+        [
+          7,
+          486,
+          252,
+          512
+        ]
+      ],
+      "sha256": "520891da16d7a8861a0c0d006d8a4c7f3da6b55fef575b4202186d29e21443f6",
+      "size": [
+        746,
+        234
+      ]
+    },
+    {
+      "number": 65,
+      "file": "65-email-pa-selection.png",
+      "title": "Choose the email batch",
+      "alt": "Only select the PAs and current PDFs you intend to submit.",
+      "raw_capture": "65-email-pa-selection.png",
+      "raw_sha256": "dc72d1a856c207d4dce78d30565aa1a2077877e436f431c00c4b5da6dc0acab1",
+      "crop": [
+        14,
+        39,
+        944,
+        186
+      ],
+      "highlights": [
+        [
+          23,
+          119,
+          934,
+          157
+        ],
+        [
+          23,
+          157,
+          174,
+          181
+        ]
+      ],
+      "sha256": "64558ddfb478bb9dd2baed11890f8596e61ae2e88935fe529da1c09b58205be5",
+      "size": [
+        946,
+        221
+      ]
+    },
+    {
+      "number": 66,
+      "file": "66-email-notes-choice.png",
+      "title": "Optional additional email note",
+      "alt": "Choose No Additional Note if you have nothing to add.",
+      "raw_capture": "66-email-notes-choice.png",
+      "raw_sha256": "50afba63262d97f4d2dd14509fa9fc96d13d108d7fccf7d1843c66226221e80f",
+      "crop": [
+        0,
+        248,
+        640,
+        294
+      ],
+      "highlights": [
+        [
+          7,
+          267,
+          264,
+          289
+        ]
+      ],
+      "sha256": "2b405e0cbe3df1583ad3ff7e05749b8b7bbc2f0bd06ee6be394855ea84acc84a",
+      "size": [
+        656,
+        120
+      ]
+    },
+    {
+      "number": 67,
+      "file": "67-final-email-confirmation.png",
+      "title": "Final check before Send",
+      "alt": "Check every recipient and the period. This demonstration stopped here and used Cancel.",
+      "raw_capture": "67-final-email-confirmation.png",
+      "raw_sha256": "20c2d2bb9bbe955a0362d1b09e087c09fe6e3664a5053ff137480fecb48bf62a",
+      "crop": [
+        14,
+        39,
+        369,
+        419
+      ],
+      "highlights": [
+        [
+          22,
+          226,
+          359,
+          258
+        ],
+        [
+          22,
+          390,
+          115,
+          413
+        ]
+      ],
+      "sha256": "3ddfbad2410605d0a0c1a0ecae8c6b106a4971064c9a2ff51603431e8e66f4bf",
+      "size": [
+        430,
+        475
+      ]
+    },
+    {
+      "number": 68,
+      "file": "68-unsent-status.png",
+      "title": "The demo remains unsent",
+      "alt": "Current PDF not sent confirms that generating and previewing did not submit payroll.",
+      "raw_capture": "68-unsent-status.png",
+      "raw_sha256": "697fc7747865b11655795f4427dc543a109c9e5c7576339d777ff44c15b7a216",
+      "crop": [
+        0,
+        755,
+        700,
+        836
+      ],
+      "highlights": [
+        [
+          7,
+          762,
+          395,
+          829
+        ]
+      ],
+      "sha256": "c2e914f439665e2ff26eda3901dada599b325a6a9ff6bc913cc9f286d0eea52f",
+      "size": [
+        716,
+        155
+      ]
+    }
+  ],
+  "verification": {
+    "release_tree_files_byte_verified": 169,
+    "release_tree_unchanged": true,
+    "build": "cargo build --locked --offline; archived tag; separate temporary target directory",
+    "binary_sha256": "bdcfb1a972668473e51bd4f0e8f20e129335645d98bcb39af817988f032e0da7",
+    "initial_preflight": {
+      "production_home_visible": false,
+      "host_user_runtime_visible": false,
+      "network_interfaces": [
+        "lo"
+      ],
+      "existing_databases": 0,
+      "business_folders_explicit_and_inside_demo": true,
+      "symlinks_in_demo_before_launch": 0
+    },
+    "isolation": {
+      "filesystem": "Bubblewrap empty root, read-only system libraries/fonts, disposable state bound at /demo and /tmp; no host /home or user session sockets",
+      "network": "Separate network namespace; no external interfaces/routes; no SMTP server in the namespace",
+      "environment": {
+        "HOME": "/demo/home",
+        "DIRECTPAYMENTTIMESHEETS_HOME": "/demo/app",
+        "XDG_CONFIG_HOME": "/demo/config",
+        "XDG_CACHE_HOME": "/demo/cache",
+        "XDG_DATA_HOME": "/demo/data",
+        "XDG_RUNTIME_DIR": "/demo/runtime",
+        "TMPDIR": "/tmp",
+        "DISPLAY": ":99"
+      }
+    },
+    "database_counts": {
+      "employers": 1,
+      "personal_assistants": 1,
+      "personal_assistant_pay_rates": 1,
+      "personal_assistant_contracted_hours": 1,
+      "payroll_schedules": 13,
+      "timesheets": 4,
+      "direct_shifts": 1,
+      "payroll_timesheet_email_status": 0,
+      "timesheet_delivery_attempts": 0,
+      "payroll_bundle_attempts": 0
+    },
+    "smtp_connects_in_application_traces": 0,
+    "production_home_paths_in_application_traces": 0,
+    "all_fixture_paths_inside_disposable_state": true,
+    "live_email_tests_performed": false,
+    "production_send_performed": false,
+    "stale_import_warning_clears_on_reopen": true,
+    "privacy_review": "All 68 final images visually reviewed; no production data or personal host paths; fictional records and masked dummy credentials only.",
+    "ocr_privacy_scan": "All 68 images passed: no production home/runtime paths or visible dummy password; email strings visually confirmed as fictional example.com addresses.",
+    "virtual_desktop_stopped": true
+  }
+}
