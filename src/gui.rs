@@ -228,7 +228,6 @@ pub struct DirectPaymentApp {
     email_preview: Option<PayrollEmailPreview>,
     test_personal_assistant_id: Option<i64>,
     smtp_test: crate::email_settings::TestEmailTask,
-    smtp_test_recipient: Option<crate::email_settings::TestRecipient>,
     email_saved_fingerprint: u64,
     email_signature_saved: Option<String>,
     email_provider_saved: Option<String>,
@@ -303,7 +302,6 @@ impl DirectPaymentApp {
             email_preview: None,
             test_personal_assistant_id: None,
             smtp_test: Default::default(),
-            smtp_test_recipient: None,
             email_saved_fingerprint,
             email_signature_saved: None,
             email_provider_saved: None,
@@ -338,6 +336,12 @@ impl DirectPaymentApp {
 
 impl eframe::App for DirectPaymentApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        #[cfg(all(windows, debug_assertions, feature = "windows-dev-isolation"))]
+        if let Some(warning) = crate::development::warning() {
+            egui::TopBottomPanel::top("isolated_development_warning").show(ctx, |ui| {
+                ui.colored_label(egui::Color32::YELLOW, warning);
+            });
+        }
         self.poll_smtp_test();
         if self.smtp_test.pending() {
             ctx.request_repaint_after(std::time::Duration::from_millis(250));
@@ -447,38 +451,10 @@ impl eframe::App for DirectPaymentApp {
             });
         });
 
-        egui::TopBottomPanel::bottom("navigation").show(ctx, |ui| {
-            ui.horizontal_wrapped(|ui| {
-                if ui.button("Dashboard").clicked() {
-                    self.active_screen = ActiveScreen::Dashboard;
-                }
-
-                if ui.button("Employer Maintenance").clicked() {
-                    self.active_screen = ActiveScreen::Employer;
-                }
-
-                if ui.button("Personal Assistant Maintenance").clicked() {
-                    self.active_screen = ActiveScreen::PersonalAssistant;
-                }
-
-                if ui.button("Payroll Settings").clicked() {
-                    self.active_screen = ActiveScreen::PayrollSettings;
-                }
-
-                if ui.button("Exit").clicked() {
-                    requested_close = true;
-                }
+        if self.active_screen != ActiveScreen::EmailSettings {
+            egui::TopBottomPanel::bottom("navigation").show(ctx, |ui| {
+                requested_close |= self.draw_navigation(ui);
             });
-        });
-
-        self.guard_smtp_test_close(ctx, &mut requested_close);
-        if !self.defer_preparation_navigation(was_preparation, requested_close) && requested_close {
-            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
-        }
-
-        if self.active_screen == ActiveScreen::EmailSettings {
-            egui::TopBottomPanel::bottom("email_status_footer")
-                .show(ctx, |ui| self.draw_email_footer(ui));
         }
         egui::CentralPanel::default().show(ctx, |ui| match self.active_screen {
             ActiveScreen::Dashboard => {
@@ -562,11 +538,13 @@ impl eframe::App for DirectPaymentApp {
             }
 
             ActiveScreen::EmailSettings => {
-                egui::ScrollArea::vertical().show(ui, |ui| {
-                    self.draw_email_settings(ui);
-                });
+                requested_close |= self.draw_email_settings_page(ui);
             }
         });
+        self.guard_smtp_test_close(ctx, &mut requested_close);
+        if !self.defer_preparation_navigation(was_preparation, requested_close) && requested_close {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+        }
         if self.pending_preparation_navigation.is_some() {
             if let Some(proceed) = self
                 .payroll_timesheet_screen
@@ -979,8 +957,86 @@ impl DirectPaymentApp {
         }
     }
 
+    fn draw_navigation(&mut self, ui: &mut egui::Ui) -> bool {
+        let mut close = false;
+        ui.horizontal_wrapped(|ui| {
+            if ui.button("Dashboard").clicked() {
+                self.active_screen = ActiveScreen::Dashboard;
+            }
+
+            if ui.button("Employer Maintenance").clicked() {
+                self.active_screen = ActiveScreen::Employer;
+            }
+
+            if ui.button("Personal Assistant Maintenance").clicked() {
+                self.active_screen = ActiveScreen::PersonalAssistant;
+            }
+
+            if ui.button("Payroll Settings").clicked() {
+                self.active_screen = ActiveScreen::PayrollSettings;
+            }
+
+            if ui.button("Exit").clicked() {
+                close = true;
+            }
+        });
+        close
+    }
+
+    fn draw_save_email_settings_button(&mut self, ui: &mut egui::Ui) {
+        if ui.button("Save Email Settings").clicked() {
+            match self.application.save_config() {
+                Ok(()) => {
+                    self.email_saved_fingerprint = email_config_fingerprint(&self.application.context.config);
+                    self.status_message = "Email settings and templates saved. Signature and payroll address have separate Save controls.".into();
+                }
+                Err(error) => self.status_message = format!("Failed saving email settings: {error}"),
+            }
+        }
+    }
+
+    fn draw_email_controls(&mut self, ui: &mut egui::Ui) -> bool {
+        self.draw_email_footer(ui);
+        ui.separator();
+        self.draw_navigation(ui)
+    }
+
+    fn draw_email_settings_page(&mut self, ui: &mut egui::Ui) -> bool {
+        // Measure non-interactively at the current width, including wrapped
+        // feedback/navigation. Reserve only that height; the form shrinks to its
+        // contents on tall windows and scrolls independently on short windows.
+        let mut controls_rect = ui.available_rect_before_wrap();
+        let mut measure = ui.new_child(
+            egui::UiBuilder::new()
+                .id_salt("email_controls_measure")
+                .max_rect(ui.available_rect_before_wrap())
+                .layout(egui::Layout::top_down(egui::Align::Min))
+                .invisible(),
+        );
+        self.draw_email_controls(&mut measure);
+        let reserved = measure.min_rect().height() + ui.spacing().item_spacing.y;
+        egui::ScrollArea::vertical()
+            .id_salt("email_settings_form")
+            .auto_shrink([false, true])
+            .min_scrolled_height(0.0)
+            .max_height((ui.available_height() - reserved).max(0.0))
+            .show(ui, |ui| self.draw_email_settings(ui));
+        // Wide form rows must not expand the feedback/navigation beyond the
+        // viewport width when the user narrows the window.
+        controls_rect.set_top(ui.cursor().top());
+        ui.scope_builder(
+            egui::UiBuilder::new()
+                .max_rect(controls_rect)
+                .layout(egui::Layout::top_down(egui::Align::Min)),
+            |ui| self.draw_email_controls(ui),
+        ).inner
+    }
+
     fn draw_email_settings(&mut self, ui: &mut egui::Ui) {
-        ui.heading("Email Settings");
+        ui.horizontal(|ui| {
+            ui.heading("Email Settings");
+            self.draw_save_email_settings_button(ui);
+        });
         ui.label("SMTP, timesheet employer copy and test-recipient settings.");
         ui.separator();
 
@@ -1037,8 +1093,8 @@ impl DirectPaymentApp {
             });
         });
         if email.smtp_transport == "SMTP Server" {
-            let width = ((ui.available_width() - 270.0) / 3.0).clamp(100.0, 240.0);
-            ui.horizontal_wrapped(|ui| {
+            email_settings_row(ui, "smtp_fields", |ui, row_width| {
+                let width = (row_width - 320.0) / 3.0;
                 ui.label("Host");
                 ui.add(egui::TextEdit::singleline(&mut email.smtp_host).desired_width(width));
                 ui.label("Port");
@@ -1058,40 +1114,48 @@ impl DirectPaymentApp {
             {
                 ui.colored_label(egui::Color32::YELLOW,"Unencrypted SMTP exposes credentials and messages. Use only an intentionally trusted relay.");
             }
-            ui.small("Passwords remain plaintext in config.toml and backups; protect these files.");
+            ui.small("Passwords use your OS credential store. Backups contain references only; another account or computer may require password re-entry. Save changed SMTP settings before testing.");
         } else {
             ui.label("Uses unencrypted localhost:25 with no credentials. The relay must secure onward delivery.");
         }
-        let width = ((ui.available_width() - 330.0) / 2.0).clamp(120.0, 300.0);
-        ui.horizontal_wrapped(|ui| {
-            ui.label("Payroll test address");
+        if let Some(error) = &email.smtp_credential_error {
+            ui.colored_label(egui::Color32::RED, error);
+        }
+        email_settings_row(ui, "test_addresses", |ui, row_width| {
+            let width = (row_width - 260.0) / 2.0;
+            ui.label("Payroll Test Address");
             ui.add(
                 egui::TextEdit::singleline(&mut email.payroll_test_email_address)
                     .desired_width(width),
             );
-            ui.label("PA test address");
+            ui.label("PA Test Address");
             ui.add(
                 egui::TextEdit::singleline(&mut email.pa_test_email_address).desired_width(width),
             );
         });
-        ui.horizontal_wrapped(|ui| {
-            ui.label("Explicit test sender"); ui.add(egui::TextEdit::singleline(&mut email.test_sender_address).desired_width(260.0));
-            ui.small("Required unless SMTP username is a valid email address. Test actions use current drafts.");
-        });
+        egui::CollapsingHeader::new("Advanced SMTP Options")
+            .id_salt("advanced_smtp_options")
+            .default_open(false)
+            .show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    ui.label("Explicit Test Sender");
+                    ui.add(egui::TextEdit::singleline(&mut email.test_sender_address));
+                });
+                ui.small("Leave empty to use a valid SMTP username as the From address. An explicit test sender is required when the username is not an email address. Test actions use current drafts.");
+            });
         ui.checkbox(
             &mut email.timesheet_employer_cc,
             "Send a CC copy of timesheet emails to the employer",
         );
         ui.small("Employer copies apply to production timesheets. SMTP acceptance does not prove inbox receipt.");
-        if ui.available_width() >= 780.0 {
+        ui.separator();
+        egui::ScrollArea::horizontal().id_salt("email_actions_row").show(ui, |ui| {
+            ui.set_width(ui.available_width().max(900.0));
             ui.columns(2, |columns| {
                 self.draw_test_timesheet_email_action(&mut columns[0]);
                 self.draw_email_preview_controls(&mut columns[1]);
             });
-        } else {
-            self.draw_test_timesheet_email_action(ui);
-            self.draw_email_preview_controls(ui);
-        }
+        });
         ui.separator();
         if self.email_settings_payroll_provider.is_none() {
             self.email_settings_payroll_provider = self
@@ -1275,19 +1339,14 @@ impl DirectPaymentApp {
 
     fn draw_email_footer(&mut self, ui: &mut egui::Ui) {
         ui.horizontal_wrapped(|ui| {
-            if ui.button("Save Email Settings").clicked() {
-                match self.application.save_config() {
-                    Ok(()) => { self.email_saved_fingerprint = email_config_fingerprint(&self.application.context.config); self.status_message = "Email settings and templates saved. Signature and payroll address have separate Save controls.".into(); }
-                    Err(error) => self.status_message = format!("Failed saving email settings: {error}"),
-                }
-            }
+            self.draw_save_email_settings_button(ui);
             if email_config_fingerprint(&self.application.context.config) != self.email_saved_fingerprint { ui.label("Unsaved email settings/templates"); }
             if self.email_settings_employer.as_ref().and_then(|e| e.email_signature.as_ref()).filter(|v| !v.is_empty()) != self.email_signature_saved.as_ref().filter(|v| !v.is_empty()) { ui.label("Unsaved signature (save separately)"); }
             if self.email_settings_payroll_provider.as_ref().and_then(|e| e.payroll_department_email.as_ref()).filter(|v| !v.is_empty()) != self.email_provider_saved.as_ref().filter(|v| !v.is_empty()) { ui.label("Unsaved payroll address (save separately)"); }
             if self.smtp_test.stalled() { ui.label("SMTP outcome uncertain — worker still active; retry and closure blocked."); }
             else if self.smtp_test.pending() { ui.spinner(); ui.label("Sending SMTP test…"); }
         });
-        ui.label(&self.status_message);
+        ui.add(egui::Label::new(&self.status_message).wrap());
     }
 
     fn guard_smtp_test_close(&mut self, ctx: &egui::Context, requested_close: &mut bool) {
@@ -1462,44 +1521,44 @@ impl DirectPaymentApp {
         check().map_err(|error| format!("Unavailable: {error}"))
     }
 
-    fn draw_test_timesheet_email_action(&mut self, ui: &mut egui::Ui) {
-        ui.separator();
-        ui.heading("Test Email");
-        if ui
-            .add_enabled(
-                !self.smtp_test.pending() && self.smtp_test_recipient.is_some(),
-                egui::Button::new(egui::RichText::new("Send Test Email").strong()),
-            )
-            .clicked()
-        {
-            if let Some(recipient) = self.smtp_test_recipient {
-                let ctx = ui.ctx().clone();
-                match self.smtp_test.start(
-                    self.application.context.config.email.clone(),
-                    recipient,
-                    move || ctx.request_repaint_of(egui::ViewportId::ROOT),
-                ) {
-                    Ok(()) => {
-                        self.status_message =
-                            "Sending standalone SMTP test using current draft settings…".into()
-                    }
-                    Err(error) => self.status_message = format!("Test email not started: {error}"),
+    fn draw_standalone_test_email(&mut self, ui: &mut egui::Ui) -> egui::Response {
+        ui.heading("Send Test Email");
+        let recipient = crate::email_settings::TestRecipient::Payroll;
+        let label = "Test Email Configuration";
+        let readiness = crate::email_settings::validate_standalone_test(
+            &self.application.context.config.email,
+            Some(recipient),
+        );
+        let send_button = ui.add_enabled(
+            !self.smtp_test.pending() && readiness.is_ok(),
+            egui::Button::new(egui::RichText::new(label).strong()),
+        );
+        if send_button.clicked() {
+            let ctx = ui.ctx().clone();
+            match self.smtp_test.start(
+                self.application.context.config.email.clone(),
+                recipient,
+                move || ctx.request_repaint_of(egui::ViewportId::ROOT),
+            ) {
+                Ok(()) => {
+                    self.status_message =
+                        format!("{label}: sending with current draft settings…")
                 }
+                Err(error) => self.status_message = format!("Test email not started: {error}"),
             }
         }
-        ui.horizontal_wrapped(|ui| {
-            ui.selectable_value(
-                &mut self.smtp_test_recipient,
-                Some(crate::email_settings::TestRecipient::Payroll),
-                "Payroll Test Address",
-            );
-            ui.selectable_value(
-                &mut self.smtp_test_recipient,
-                Some(crate::email_settings::TestRecipient::Pa),
-                "PA Test Address",
-            );
-        });
-        ui.label("Select a test address above before sending. Only that address receives the standalone test; no attachments or CC/BCC.");
+        let email = &self.application.context.config.email;
+        let address = &email.payroll_test_email_address;
+        ui.add(egui::Label::new(if address.trim().is_empty() { "(not configured)" } else { address.trim() }).wrap());
+        if let Err(reason) = readiness {
+            ui.small(reason);
+        }
+        ui.label("Tests SMTP configuration using only Payroll Test Address, shown above. No attachments, CC/BCC, payroll history or Personal Assistant is required. Sending requires an explicit button click. SMTP acceptance does not confirm inbox delivery.");
+        send_button
+    }
+
+    fn draw_test_timesheet_email_action(&mut self, ui: &mut egui::Ui) {
+        self.draw_standalone_test_email(ui);
         ui.small("Document buttons use metadata hints; files and integrity are checked when you execute an action.");
 
         let assistants = match self.payslip_email_assistants() {
@@ -2426,7 +2485,7 @@ impl DirectPaymentApp {
     }
 
     fn draw_email_preview_controls(&mut self, ui: &mut egui::Ui) {
-        ui.heading("Email Preview");
+        ui.heading("Preview Email");
         if ui
             .button(egui::RichText::new("Preview Email").strong())
             .clicked()
@@ -3004,7 +3063,7 @@ impl DirectPaymentApp {
             Err(e) => return Err(e.into()),
         };
         Ok(crate::payroll_delivery::digest(
-            format!("{}:{disk}", toml::to_string(config)?).as_bytes(),
+            format!("{}:{disk}:{:016x}", toml::to_string(config)?, crate::smtp_credentials::runtime_change_tag(&config.email)).as_bytes(),
         ))
     }
 
@@ -7167,13 +7226,15 @@ mod about_windows_database_tests {
         .unwrap();
         db.close().unwrap();
         let before = std::fs::read(&path).unwrap();
-        let error = crate::database::open_read_only(&path)
-            .err()
-            .expect("Foreign-root fixture must remain refused");
-        assert!(error
-            .to_string()
-            .contains("class=unsafe_ancestor; reason=owner_mismatch; depth=0; role=volume_root"));
-        assert_eq!(read_about_schema_version(&path), "unavailable");
+        assert_eq!(read_about_schema_version(&path), "7");
+        let link=root.path().join("controlled-junction");
+        let output=std::process::Command::new("powershell.exe")
+            .args(["-NoProfile","-NonInteractive","-Command","$ErrorActionPreference='Stop'; New-Item -ItemType Junction -Path $env:DPT_LINK -Target $env:DPT_TARGET | Out-Null"])
+            .env("DPT_LINK",&link).env("DPT_TARGET",root.path()).output().unwrap();
+        assert!(output.status.success(),"Synthetic junction creation failed");
+        assert!(crate::database::open_read_only(&link.join("synthetic.sqlite")).is_err());
+        assert_eq!(read_about_schema_version(&link.join("synthetic.sqlite")), "unavailable");
+        std::fs::remove_dir(&link).unwrap(); // Remove only the synthetic link.
         assert_eq!(std::fs::read(&path).unwrap(), before);
     }
 }
@@ -7202,10 +7263,22 @@ fn email_config_fingerprint(config: &crate::config::AppConfig) -> u64 {
     serde_json::to_vec(&config.email)
         .unwrap_or_default()
         .hash(&mut hash);
+    // Runtime-only dirty tracking: serialization intentionally excludes secrets.
+    config.email.smtp_password.hash(&mut hash);
     config.payroll.email_subject_format.hash(&mut hash);
     config.payroll.timesheet_email_body.hash(&mut hash);
     config.payroll.payslip_email_body.hash(&mut hash);
     hash.finish()
+}
+
+// Keep each field group on one row. Narrow windows scroll horizontally rather
+// than hiding a field on another line or making text inputs unusably small.
+fn email_settings_row(ui: &mut egui::Ui, id: &str, contents: impl FnOnce(&mut egui::Ui, f32)) {
+    let width = ui.available_width().max(900.0);
+    egui::ScrollArea::horizontal().id_salt(id).show(ui, |ui| {
+        ui.set_width(width);
+        ui.horizontal(|ui| contents(ui, width));
+    });
 }
 
 fn unavailable_email_actions(ui: &mut egui::Ui, test: bool) {
@@ -7220,6 +7293,302 @@ fn unavailable_email_actions(ui: &mut egui::Ui, test: bool) {
 #[cfg(test)]
 mod standalone_email_ui_tests {
     use super::*;
+    #[test]
+    fn smtp_feedback_lifecycle_startup_navigation_and_single_completion() {
+        use eframe::App;
+        let (_directory, application) = crate::payroll_timesheet_screen::tests::test_application();
+        let mut app = DirectPaymentApp::new(application);
+        let email = &mut app.application.context.config.email;
+        email.smtp_transport = "SMTP Server".into();
+        email.smtp_host = "smtp.example.invalid".into();
+        email.smtp_port = 587;
+        email.smtp_username = "synthetic@example.invalid".into();
+        email.smtp_password = "synthetic password".into();
+        email.payroll_test_email_address = "recipient@example.invalid".into();
+        app.smtp_test.forbid_real_start_for_test();
+        let ready = app.status_message.clone();
+        assert!(ready.starts_with("Application ready."));
+        assert!(!app.smtp_test.pending());
+        let ctx = egui::Context::default();
+        let mut frame = eframe::Frame::_new_kittest();
+        let draw = |app: &mut DirectPaymentApp, frame: &mut eframe::Frame, events| {
+            let output = ctx.run(egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO,egui::vec2(1100.0,1000.0))),
+                events, ..Default::default()
+            }, |ctx| app.update(ctx,frame));
+            let mut labels = Vec::new();
+            for shape in &output.shapes { positioned_text(&shape.shape,&mut labels); }
+            labels
+        };
+        let mut labels = Vec::new();
+        for _ in 0..3 { labels=draw(&mut app,&mut frame,vec![]); }
+        // Exercise the real header click and update/render paths, not a direct
+        // screen assignment. Any attempted SMTP start panics before networking.
+        let pos = labels.iter().find(|(s,_)|s=="Email Settings").unwrap().1.center();
+        for pressed in [true,false] {
+            draw(&mut app,&mut frame,vec![egui::Event::PointerMoved(pos),egui::Event::PointerButton {
+                pos,button:egui::PointerButton::Primary,pressed,modifiers:egui::Modifiers::default(),
+            }]);
+        }
+        assert!(app.active_screen==ActiveScreen::EmailSettings);
+        for _ in 0..5 { draw(&mut app,&mut frame,vec![]); }
+        assert_eq!(app.status_message,ready);
+        assert!(!app.smtp_test.pending());
+        let (wake,completion)=std::sync::mpsc::channel();
+        app.smtp_test.start_mock(||Ok(()),move || {wake.send(()).unwrap();}).unwrap();
+        completion.recv_timeout(std::time::Duration::from_secs(2)).unwrap();
+        draw(&mut app,&mut frame,vec![]);
+        let accepted=app.status_message.clone();
+        assert_eq!(accepted,"SMTP accepted the test email. Inbox receipt is not established.");
+        assert!(!app.smtp_test.pending());
+        // A completed result leaves feedback visible in the same process,
+        // across navigation, without producing another completion or send.
+        for screen in [ActiveScreen::Dashboard,ActiveScreen::EmailSettings] {
+            app.active_screen=screen;
+            for _ in 0..3 { draw(&mut app,&mut frame,vec![]); }
+            assert_eq!(app.status_message,accepted);
+            assert!(!app.smtp_test.pending());
+        }
+        app.status_message="Different feedback".into();
+        app.poll_smtp_test();
+        assert_eq!(app.status_message,"Different feedback");
+        // A new GUI instance with the same application/profile does not inherit
+        // the old GUI status or its completion channel.
+        let mut fresh=DirectPaymentApp::new(app.application);
+        fresh.smtp_test.forbid_real_start_for_test();
+        assert!(fresh.status_message.starts_with("Application ready."));
+        fresh.poll_smtp_test();
+        assert!(!fresh.smtp_test.pending());
+        assert!(!fresh.status_message.contains("SMTP accepted"));
+    }
+
+    #[test]
+    fn advanced_smtp_is_collapsed_and_toggling_preserves_sender_without_saving() {
+        let (_directory, application) = crate::payroll_timesheet_screen::tests::test_application();
+        let mut app = DirectPaymentApp::new(application);
+        app.application.context.config.email.test_sender_address = "saved-sender@example.invalid".into();
+        let config_path = app.application.context.environment.data_dir.join("config.toml");
+        app.application.save_config().unwrap(); // Synthetic profile only.
+        let disk_before = std::fs::read(&config_path).unwrap();
+        let fingerprint = email_config_fingerprint(&app.application.context.config);
+        let before: i64 = app.application.payroll_timesheet_email_repository.connection
+            .query_row("SELECT total_changes()", [], |r| r.get(0)).unwrap();
+        let ctx = egui::Context::default();
+        ctx.style_mut(|style| style.animation_time = 0.0);
+        let size = egui::vec2(1100.0, 1200.0);
+        let mut labels = Vec::new();
+        for _ in 0..3 { labels = page_frame(&mut app,&ctx,size,vec![]); }
+        assert!(!labels.iter().any(|(s,_)| s == "Explicit Test Sender"));
+        for expanded in [true,false,true] {
+            let pos = labels.iter().find(|(s,_)| s == "Advanced SMTP Options").unwrap().1.center();
+            for pressed in [true,false] {
+                page_frame(&mut app,&ctx,size,vec![egui::Event::PointerMoved(pos),egui::Event::PointerButton {
+                    pos,button:egui::PointerButton::Primary,pressed,modifiers:egui::Modifiers::default(),
+                }]);
+            }
+            for _ in 0..3 { labels = page_frame(&mut app,&ctx,size,vec![]); }
+            assert_eq!(labels.iter().any(|(s,_)| s == "Explicit Test Sender"),expanded);
+            assert_eq!(labels.iter().any(|(s,_)| s == "saved-sender@example.invalid"),expanded);
+            assert_eq!(email_config_fingerprint(&app.application.context.config),fingerprint);
+            assert_eq!(std::fs::read(&config_path).unwrap(),disk_before);
+            assert!(!app.smtp_test.pending());
+        }
+        // The expanded editor remains editable without implicitly saving.
+        let pos = labels.iter().find(|(s,_)| s == "saved-sender@example.invalid").unwrap().1.center();
+        for pressed in [true,false] {
+            page_frame(&mut app,&ctx,size,vec![egui::Event::PointerMoved(pos),egui::Event::PointerButton {
+                pos,button:egui::PointerButton::Primary,pressed,modifiers:egui::Modifiers::default(),
+            }]);
+        }
+        page_frame(&mut app,&ctx,size,vec![egui::Event::Text("x".into())]);
+        assert_ne!(app.application.context.config.email.test_sender_address,"saved-sender@example.invalid");
+        assert_eq!(std::fs::read(&config_path).unwrap(),disk_before);
+        assert_eq!(before, app.application.payroll_timesheet_email_repository.connection
+            .query_row::<i64,_,_>("SELECT total_changes()", [], |r| r.get(0)).unwrap());
+    }
+
+    #[test]
+    fn configuration_test_uses_payroll_only_and_blocks_duplicates() {
+        let (_directory, application) = crate::payroll_timesheet_screen::tests::test_application();
+        let mut app = DirectPaymentApp::new(application);
+        let email = &mut app.application.context.config.email;
+        email.smtp_transport = "SMTP Server".into();
+        email.smtp_host = "smtp.example.invalid".into();
+        email.smtp_port = 587;
+        email.smtp_username = "sender@example.invalid".into();
+        email.smtp_password = "synthetic password".into();
+        email.payroll_test_email_address = "payroll@example.invalid".into();
+        email.pa_test_email_address = "pa@example.invalid".into();
+        let before: i64 = app.application.payroll_timesheet_email_repository.connection
+            .query_row("SELECT total_changes()", [], |r| r.get(0)).unwrap();
+        let ctx = egui::Context::default();
+        let frame = |app: &mut DirectPaymentApp, events| {
+            let mut enabled = false;
+            let output = ctx.run(egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(650.0,700.0))),
+                events, ..Default::default()
+            }, |ctx| { egui::CentralPanel::default().show(ctx, |ui| {
+                enabled = app.draw_standalone_test_email(ui).enabled();
+            }); });
+            let mut labels = Vec::new();
+            for shape in &output.shapes { positioned_text(&shape.shape, &mut labels); }
+            (labels,enabled)
+        };
+        let mut labels = Vec::new();
+        for _ in 0..3 { let result=frame(&mut app,vec![]);labels=result.0;assert!(result.1); }
+        let buttons: Vec<_>=labels.iter().filter(|(s,_)|s=="Test Email Configuration").collect();
+        assert_eq!(buttons.len(),1);
+        let payroll=buttons[0].1;
+        let address=labels.iter().find(|(s,_)|s=="payroll@example.invalid").unwrap().1;
+        assert!(address.top()>payroll.bottom());
+        assert!(!labels.iter().any(|(s,_)|s=="Send Payroll Test Email" || s=="Send PA Test Email" || s=="pa@example.invalid"));
+        assert!(!app.smtp_test.pending(),"Rendering a valid button must never send");
+        app.application.context.config.email.pa_test_email_address="invalid".into();
+        assert!(frame(&mut app,vec![]).1,"PA address is not a configuration-test prerequisite");
+        app.application.context.config.email.pa_test_email_address="pa@example.invalid".into();
+        app.application.context.config.email.payroll_test_email_address.clear();
+        assert!(!frame(&mut app,vec![]).1);
+        app.application.context.config.email.payroll_test_email_address="payroll@example.invalid".into();
+        app.application.context.config.email.smtp_password.clear();
+        assert!(!frame(&mut app,vec![]).1);
+        app.application.context.config.email.smtp_password="synthetic password".into();
+        let (release,wait)=std::sync::mpsc::channel();
+        let (wake,completion)=std::sync::mpsc::channel();
+        app.smtp_test.start_mock(move || {wait.recv().unwrap();Ok(())}, move || {wake.send(()).unwrap();}).unwrap();
+        assert!(!frame(&mut app,vec![]).1);
+        for pos in [payroll.center()] {
+            for pressed in [true,false] {
+                frame(&mut app,vec![egui::Event::PointerMoved(pos),egui::Event::PointerButton {
+                    pos,button:egui::PointerButton::Primary,pressed,modifiers:egui::Modifiers::default(),
+                }]);
+            }
+        }
+        release.send(()).unwrap();completion.recv_timeout(std::time::Duration::from_secs(2)).unwrap();
+        app.poll_smtp_test();
+        assert!(app.status_message.contains("SMTP accepted"));
+        assert!(app.status_message.contains("Inbox receipt is not established"));
+        assert!(frame(&mut app,vec![]).1);
+        assert_eq!(app.application.context.config.email.pa_test_email_address,"pa@example.invalid");
+        let after: i64 = app.application.payroll_timesheet_email_repository.connection
+            .query_row("SELECT total_changes()", [], |r| r.get(0)).unwrap();
+        assert_eq!(before,after);
+    }
+    fn page_frame(app: &mut DirectPaymentApp, ctx: &egui::Context, size: egui::Vec2, events: Vec<egui::Event>) -> Vec<(String, egui::Rect)> {
+        let output = ctx.run(egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, size)),
+            events, ..Default::default()
+        }, |ctx| { egui::CentralPanel::default().show(ctx, |ui| { app.draw_email_settings_page(ui); }); });
+        let mut labels = Vec::new();
+        for shape in &output.shapes { positioned_text(&shape.shape, &mut labels); }
+        labels
+    }
+
+    #[test]
+    fn email_page_save_buttons_persist_and_feedback_follows_compact_editors() {
+        let (_directory, application) = crate::payroll_timesheet_screen::tests::test_application();
+        let mut app = DirectPaymentApp::new(application);
+        let ctx = egui::Context::default();
+        let size = egui::vec2(1280.0, 1200.0);
+        for button_index in 0..2 {
+            let body = format!("Saved by email settings button {button_index}");
+            app.application.context.config.payroll.timesheet_email_body = body.clone();
+            let mut labels = Vec::new();
+            for _ in 0..3 { labels = page_frame(&mut app, &ctx, size, vec![]); }
+            let saves: Vec<_> = labels.iter().filter(|(s,_)| s == "Save Email Settings").collect();
+            assert_eq!(saves.len(), 2);
+            let heading = labels.iter().find(|(s,_)| s == "Email Settings").unwrap().1;
+            assert!((heading.center().y - saves[0].1.center().y).abs() < 3.0);
+            assert!(saves[0].1.left() > heading.right());
+            let body_rect = labels.iter().find(|(s,_)| s == &body).unwrap().1;
+            assert!(saves[1].1.top() > body_rect.bottom());
+            assert!(saves[1].1.top() - body_rect.top() < 210.0, "Footer must follow compact editors");
+            assert!(saves[1].1.bottom() < 900.0, "Footer must not be pinned to a tall window bottom");
+            let pos = saves[button_index].1.center();
+            for pressed in [true, false] {
+                page_frame(&mut app, &ctx, size, vec![egui::Event::PointerMoved(pos), egui::Event::PointerButton {
+                    pos, button: egui::PointerButton::Primary, pressed, modifiers: egui::Modifiers::default(),
+                }]);
+            }
+            assert!(app.status_message.starts_with("Email settings and templates saved."));
+            assert_eq!(app.email_saved_fingerprint, email_config_fingerprint(&app.application.context.config));
+            let loaded = crate::config::AppConfig::load(&app.application.context.environment.data_dir.join("config.toml")).unwrap();
+            assert_eq!(loaded.payroll.timesheet_email_body, body);
+        }
+        for size in [egui::vec2(1000.0,800.0),egui::vec2(600.0,500.0),egui::vec2(400.0,400.0)] {
+            let mut labels = Vec::new();
+            for _ in 0..3 { labels = page_frame(&mut app, &ctx, size, vec![]); }
+            for name in [&app.status_message[..], "Dashboard", "Personal Assistant Maintenance", "Exit"] {
+                let rect = labels.iter().find(|(s,_)| s == name).unwrap_or_else(||panic!("Missing {name} at {size:?}")).1;
+                assert!(rect.top() >= 0.0 && rect.bottom() <= size.y && rect.right() <= size.x, "Clipped {name} at {size:?}: {rect:?}");
+            }
+            assert!(!app.smtp_test.pending());
+        }
+    }
+
+    fn positioned_text(shape: &egui::Shape, out: &mut Vec<(String, egui::Rect)>) {
+        match shape {
+            egui::Shape::Text(text) => out.push((text.galley.job.text.clone(),
+                egui::Rect::from_min_size(text.pos, text.galley.size()))),
+            egui::Shape::Vec(shapes) => for shape in shapes { positioned_text(shape, out); },
+            _ => (),
+        }
+    }
+
+    #[test]
+    fn email_rows_align_and_standalone_preview_opens_without_configuration() {
+        let (_directory, application) = crate::payroll_timesheet_screen::tests::test_application();
+        let mut app = DirectPaymentApp::new(application);
+        app.application.context.config.email = crate::config::EmailConfig::default();
+        app.application.context.config.email.select_transport("SMTP Server".into());
+        app.application.context.config.email.smtp_host.clear();
+        let ctx = egui::Context::default();
+        let before: i64 = app.application.payroll_timesheet_email_repository.connection
+            .query_row("SELECT total_changes()", [], |r| r.get(0)).unwrap();
+        let mut preview_button = None;
+        for width in [1000.0, 1360.0] {
+            let mut labels = Vec::new();
+            for _ in 0..3 {
+                let output = ctx.run(egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(width, 1600.0))),
+                    ..Default::default()
+                }, |ctx| { egui::CentralPanel::default().show(ctx, |ui| { app.draw_email_settings(ui); }); });
+                labels.clear();
+                for shape in &output.shapes { positioned_text(&shape.shape, &mut labels); }
+            }
+            for row in [vec!["Host", "Port", "Username", "Password"],
+                vec!["Payroll Test Address", "PA Test Address"]] {
+                let rects: Vec<_> = row.iter().map(|name| labels.iter().find(|(label, _)| label == name)
+                    .unwrap_or_else(|| panic!("Missing label {name} at width {width}")).1).collect();
+                for rect in &rects { assert!((rect.center().y - rects[0].center().y).abs() < 1.0); }
+                for pair in rects.windows(2) { assert!(pair[0].right() < pair[1].left()); }
+            }
+            let send: Vec<_> = labels.iter().filter(|(name, _)| name == "Send Test Email").collect();
+            let preview: Vec<_> = labels.iter().filter(|(name, _)| name == "Preview Email").collect();
+            assert_eq!(send.len(), 1); // Heading; the configuration-test button has its own label.
+            assert_eq!(preview.len(), 2);
+            assert!((send[0].1.top() - preview[0].1.top()).abs() < 1.0);
+            for name in ["Test Email Configuration"] {
+                let button = labels.iter().find(|(label,_)| label==name).unwrap().1;
+                assert!((button.top()-preview[1].1.top()).abs()<1.0);
+            }
+            preview_button = Some(preview[1].1.center());
+        }
+        let pos = preview_button.unwrap();
+        for pressed in [true, false] {
+            let _ = ctx.run(egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1360.0, 1600.0))),
+                events: vec![egui::Event::PointerMoved(pos), egui::Event::PointerButton {
+                    pos, button: egui::PointerButton::Primary, pressed, modifiers: egui::Modifiers::default(),
+                }], ..Default::default()
+            }, |ctx| { egui::CentralPanel::default().show(ctx, |ui| { app.draw_email_settings(ui); }); });
+        }
+        assert!(app.example_preview.is_some());
+        assert!(app.example_preview_open.load(std::sync::atomic::Ordering::Relaxed));
+        assert!(!app.smtp_test.pending());
+        let after: i64 = app.application.payroll_timesheet_email_repository.connection
+            .query_row("SELECT total_changes()", [], |r| r.get(0)).unwrap();
+        assert_eq!(before, after);
+    }
     #[test]
     fn empty_database_screen_and_preview_need_no_payroll_context() {
         let (_directory, application) = crate::payroll_timesheet_screen::tests::test_application();

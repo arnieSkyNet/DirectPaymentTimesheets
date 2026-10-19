@@ -1,0 +1,70 @@
+{
+  "result": "PASS local integration; macOS native unexecuted",
+  "branch": "security/v1.0.7-phase1",
+  "head": "e5811307706d62f8a1613e7ae84e15d0b7b3ed75",
+  "reviewed_commit": "77d3268a5a17b4585371a249135a0cceecfbe00b",
+  "common_parent": "5abca6816b1a74aa6f41304a51fd5e4bb2128b82",
+  "reviewed_tree": "4748f5d329a8d6a029ee2b802240a930d256b21e",
+  "bundle_sha256": "8627108e497d900a074144cdb869966b121aedf8ab5f4b71b7a1c47343af258c",
+  "github_security_tip": "5abca6816b1a74aa6f41304a51fd5e4bb2128b82",
+  "github_main_tip": "71e1a5d89716954926330c618892ef87f263c454",
+  "github_exact_sha_fetch": "PASS via HTTPS into temporary inspection clone",
+  "local_primary_repository_reviewed_commit_object": "absent; verified object exists in bundle and temporary clone; source delta applied without importing objects or creating commits",
+  "smtp_regression": {
+    "sandbox_attempt": {
+      "passed": 7,
+      "failed": 1,
+      "ignored": 1,
+      "failure": "synthetic loopback listener denied EPERM at smtp_credentials.rs:498"
+    },
+    "authorized_unsandboxed_rerun": {
+      "passed": 8,
+      "failed": 0,
+      "ignored": 1,
+      "native_provider_executed": false,
+      "exit_code": 0,
+      "evidence": "Observed exec result chunk 2a4019, exit_code0; receipt transcribed from actual tool result, not a repeated run",
+      "command": "timeout --signal=TERM --kill-after=10s 120s cargo test --locked --offline --bin direct_payment_timesheets smtp_credentials::tests -- --test-threads=1",
+      "summary": "test result: ok. 8 passed; 0 failed; 1 ignored; 0 measured; 925 filtered out; finished in 0.01s"
+    }
+  },
+  "other_focused_results": [
+    {
+      "group": "config::tests",
+      "exit_code": 0,
+      "summary": [
+        "test result: ok. 15 passed; 0 failed; 0 ignored; 0 measured; 919 filtered out; finished in 0.05s"
+      ]
+    },
+    {
+      "group": "backup_service::tests",
+      "exit_code": 0,
+      "summary": [
+        "test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 926 filtered out; finished in 2.71s"
+      ]
+    },
+    {
+      "group": "email_settings::tests",
+      "exit_code": 0,
+      "summary": [
+        "test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 925 filtered out; finished in 0.00s"
+      ]
+    }
+  ],
+  "harness_tests": {
+    "passed": 8,
+    "failed": 0
+  },
+  "workflow_checks": "Ruby Psych YAML parse; trigger/permissions/matrix/action pins/bash syntax PASS; actionlint unavailable",
+  "rust_fixture_format": "rustfmt --edition 2021 --check PASS",
+  "historical_evidence_not_rerun": {
+    "windows_x64": "961 passed, 0 failed, 5 ignored; native migration/restart reported in reviewed commit and docs",
+    "debian_x86_64": "78 unit tests passed, 1 ignored;24 real Secret Service probes PASS"
+  },
+  "no_commit_push_dispatch_vm_or_host_service_changes": true,
+  "other_focused_commands": [
+    "cargo test --locked --offline --bin direct_payment_timesheets config::tests -- --test-threads=1",
+    "cargo test --locked --offline --bin direct_payment_timesheets backup_service::tests -- --test-threads=1",
+    "cargo test --locked --offline --bin direct_payment_timesheets email_settings::tests -- --test-threads=1"
+  ]
+}

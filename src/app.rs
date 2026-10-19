@@ -88,10 +88,11 @@ impl Application {
         })
     }
 
-    pub fn save_config(&self) -> Result<(), Box<dyn std::error::Error>> {
+    pub fn save_config(&mut self) -> Result<(), Box<dyn std::error::Error>> {
         let config_path = self.context.environment.data_dir.join("config.toml");
 
         self.context.config.save(&config_path)?;
+        self.context.config.email = crate::config::AppConfig::load(&config_path)?.email;
 
         Ok(())
     }

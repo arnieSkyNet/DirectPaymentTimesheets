@@ -6,6 +6,75 @@ v1.0.6 downloads and release information are unchanged. No email transport,
 recipient policy, payroll calculation, signature bytes, document content or
 immutable historical evidence is migrated by this phase.
 
+## Approved account-authority boundary (Molly, 15 October 2026)
+
+The operator explicitly excludes malicious or uncooperative processes already
+running with the legitimate user's full account authority. This is a local
+per-user application, not a security boundary between equivalent user tokens.
+It does not defend against such a process changing names, bytes, ACLs, invoking
+the app or modifying its memory. Restricted same-SID tokens can have fewer rights;
+that does not make them representative of full-authority same-user peers.
+
+Other-user protection, strict owners/DACLs, exact verified-root admission,
+reparse/junction/symlink refusal, private creation, held directory identities,
+SQLite containment and no-clobber publication remain required. Shared read
+permissions deliberately retained for business documents are not private data
+grants for application settings/databases. Untrusted destructive publication
+ancestry is refused, not repaired or silently accepted. Administrator/SYSTEM
+and the previously approved exact volume-root owner's authority remain existing
+explicit trust assumptions; this revision grants no new owner/ACL exception.
+
+Windows publishers hold FILE_LIST_DIRECTORY/no-delete-sharing ancestry guards
+and per-user global mutexes keyed by parent FILE_ID_INFO (ordered for two-parent
+operations). Cooperating new-version publishers serialize validation/publication;
+timeouts, abandoned locks and unverifiable mutex policy fail closed. Old versions
+and unrelated full-authority tools that bypass this protocol do not participate.
+Absent-name collisions are refused, and observed identity changes before the
+final check refuse publication. Source-handle rename prevents publishing a
+re-resolved staging-name substitute. Destination identity handles remain held
+using FileRenameInfoEx POSIX replacement; no TxF, copy or permission fallback.
+
+There is still a destination validation-to-native-publication interval. The API
+does NOT compare an expected destination ID atomically: a full-authority actor
+bypassing coordination can substitute a target during that interval. This is
+explicitly outside the approved boundary, whether the actor's behaviour was
+malicious or merely uncooperative. It is not claimed that arbitrary same-user
+file-manager accidents are prevented. Cooperating-writer races, no-clobber races
+and detected stale identities remain covered and tested. A post-publication
+check cannot undo an unsafe overwrite and is not presented as a security fix.
+
+Publication requires verified fixed local NTFS and supported FileRenameInfoEx;
+unsupported conditions fail closed. Staging is flushed before rename; atomic
+namespace publication is not a promise of crash durability across arbitrary
+hardware failures. Windows failure stages are retained when pathname cleanup
+cannot be authorised. The bounded database guard lifetime and remaining sidecar
+limitations documented below are unchanged. SMTP credential storage was deferred
+in that publication pass. The subsequent 16 October implementation and remaining
+native platform validation gates are documented in SMTP-CREDENTIAL-STORAGE.md;
+it does not change the approved publication threat boundary.
+
+The native API contract is Microsoft's
+[FILE_RENAME_INFORMATION flags documentation](https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/ntifs/ns-ntifs-_file_rename_information)
+and [SetFileInformationByHandle](https://learn.microsoft.com/en-us/windows/win32/api/fileapi/nf-fileapi-setfileinformationbyhandle),
+with the Win32 [FILE_RENAME_INFO flags/class contract](https://learn.microsoft.com/en-us/windows/win32/api/winbase/ns-winbase-file_rename_info).
+REPLACE_IF_EXISTS | POSIX_SEMANTICS permits replacement while existing target
+handles remain valid; it does not accept an expected target identity. No
+IGNORE_READONLY_ATTRIBUTE or access-check bypass flag is used. The trusted PDF
+renderer can intentionally replace its reserved stage: its completed private
+file is opened and validated under the same guards/mutex before hashing and
+ledger approval. Publication itself never refreshes an unexpected stage ID.
+The existing destination's owner/DACL is also checked under the writer guard
+before stage allocation and before copying any access policy onto new bytes.
+An unsafe policy cannot be copied first and merely rejected at rename time.
+The mutex coordinates participating publication APIs, not arbitrary filesystem
+operations. The subsequent SMTP storage correction integrates BackupService
+configuration restore: it holds the same Windows mutex/ancestor guards across
+approval validation, preparation, database commit and guarded atomic configuration
+publication, with a pre-commit configuration fingerprint recheck. A competing-save
+regression verifies waiting and rejection of stale approval. Database/configuration
+commit is not a distributed transaction; publication failure still requires restart
+and the verified recovery copy. See SMTP-CREDENTIAL-STORAGE.md.
+
 ## New storage objects
 
 | Object | Creation policy |
@@ -485,3 +554,42 @@ opt in through a separately reviewed change; this candidate does not dispatch it
 API references: [final path by handle](https://learn.microsoft.com/en-us/windows/win32/api/fileapi/nf-fileapi-getfinalpathnamebyhandlew),
 [volume information by handle](https://learn.microsoft.com/en-us/windows/win32/api/fileapi/nf-fileapi-getvolumeinformationbyhandlew),
 [file information by handle](https://learn.microsoft.com/en-us/windows/win32/api/winbase/nf-winbase-getfileinformationbyhandleex).
+
+## Authorized production volume-root owner exception — 15 October 2026
+
+The user explicitly approved the exact TrustedInstaller SID
+`S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464` as owner
+of a verified fixed local NTFS volume root, accepting that owner's implicit
+WRITE_DAC authority. This supersedes earlier statements that this owner could
+never be admitted. It does not make service names, signatures, LocalSystem
+configuration or service-SID classification proofs of trust.
+
+Only an ancestry assessment at depth zero with the volume_root role may use the
+exception, never a private-object or inheritable-parent assessment. The exact
+native SID comparison must match before any root queries execute. Admission
+requires a complete handle-derived GUID root, fixed local NTFS with persistent
+ACLs, no root-query error, no original/independent reparse observation and matching
+independent and repeated FILE_ID_INFO. The existing DACL assessment must still
+pass; no trustee permission exception is added. Query failure/ambiguity, foreign
+owners, network/removable/non-NTFS volumes and identity mismatches fail closed.
+Intermediate owners/ACLs, private parents, sidecar inheritance, reparse checks,
+held-identity rechecks and SQLite/publication containment remain unchanged.
+
+No account lookup, SCM query, executable-signature check or privilege enablement
+is used by admission. Filesystem observations are point-in-time, and synchronous
+volume/file queries have no intrinsic latency bound. The accepted owner authority
+and the pre-existing trust in the current user, SYSTEM and administrators remain
+residual risks; this is not protection from those authorized principals.
+
+Molly's separately approved external ACL repair was completed on 15 October 2026
+and normal Windows x64 startup with existing real data was verified. The app did
+not acquire an automatic repair facility. A later read-only comparison found the
+live configuration file had a different file identity and inherited trusted-only
+grants; the application root and database retained their protected repair policy.
+Mark, SYSTEM and Administrators remain the only allow trustees. Native access
+checks grant the ordinary Mark token FullControl; the restricted Codex token has
+a smaller effective mask, so owner/grant authority must not be confused with the
+effective rights of that tool token. No ACL was changed in the correction pass.
+Existing-policy preservation in configuration saves remains deliberate. The
+replacement's initiating process is unrecorded; timestamps and file identity do
+not prove whether the app, an editor or another actor replaced it.

@@ -37,6 +37,7 @@ pub struct RestorePlan {
     backup_database: String,
     live_config: Option<String>,
     backup_config: Option<String>,
+    staged_config: Option<String>,
 }
 
 #[derive(Clone, Debug)]
@@ -368,19 +369,16 @@ impl BackupService {
                 return Err("Selected backup changed during preparation".into());
             }
             if let Some(expected) = &config_fingerprint {
-                crate::private_storage::copy_new(
+                copy_protected_config(
                     &backup_dir.join(CONFIG_BACKUP_NAME),
                     &temporary.path().join(CONFIG_BACKUP_NAME),
                 )?;
-                if crate::database_recovery::file_fingerprint(
-                    &temporary.path().join(CONFIG_BACKUP_NAME),
-                )?
-                .as_ref()
-                    != Some(expected)
+                if crate::database_recovery::file_fingerprint(&backup_dir.join(CONFIG_BACKUP_NAME))?.as_ref() != Some(expected)
                 {
                     return Err("Selected configuration changed during preparation".into());
                 }
             }
+            let staged_config = crate::database_recovery::file_fingerprint(&temporary.path().join(CONFIG_BACKUP_NAME))?;
             Ok(RestorePlan {
                 backup: backup_dir.canonicalize()?,
                 schema_version: validation.schema_version,
@@ -390,6 +388,7 @@ impl BackupService {
                 staged_directory: std::sync::Arc::new(temporary),
                 live_database: crate::database_recovery::fingerprint(&tx)?,
                 backup_database: source_fingerprint,
+                staged_config,
                 live_config: crate::database_recovery::file_fingerprint(config_path)?,
                 backup_config: config_fingerprint,
             })
@@ -414,6 +413,10 @@ impl BackupService {
             .into());
         }
         let result = (|| -> crate::database_recovery::Result<RestoreResult> {
+            // Serialize the entire approval/configuration commit boundary with
+            // saves and credential migration, not merely the final rename.
+            #[cfg(windows)]
+            let _publication = crate::private_storage::publication_guard(config_path)?;
             let mut live = crate::database::open(database_path)?;
             let _dispatch = crate::timesheet_delivery::production_lock(&live)?;
             live.pragma_update(None, "foreign_keys", false)?;
@@ -462,7 +465,7 @@ impl BackupService {
                 .path()
                 .join(CONFIG_BACKUP_NAME);
             if crate::database_recovery::file_fingerprint(&selected_config)?
-                != approval.plan.backup_config
+                != approval.plan.staged_config
             {
                 return Err("Reviewed isolated configuration changed; restore refused".into());
             }
@@ -471,6 +474,12 @@ impl BackupService {
             } else {
                 None
             };
+            if approval.plan.live_config != crate::database_recovery::file_fingerprint(config_path)? {
+                if let Some(path) = staged_config {
+                    let _ = fs::remove_file(path);
+                }
+                return Err("Restore approval is stale: configuration changed during preparation; restore refused.".into());
+            }
             if let Err(e) = crate::database_recovery::install(&tx, &staged)
                 .and_then(|_| tx.commit().map_err(Into::into))
             {
@@ -480,9 +489,15 @@ impl BackupService {
                 return Err(format!("Restore failed; live database transaction rolled back. Verified recovery: {}. {e}",safety_backup.display()).into());
             }
             if let Some(path) = staged_config {
-                if let Err(e) = fs::rename(&path, config_path) {
+                // Use the same guarded, identity-checked atomic publication as
+                // normal saves. Never replace a file via an unchecked pathname.
+                let publication = read_protected_config(&path).and_then(|bytes| {
+                    crate::private_storage::write_atomic(config_path, &bytes)
+                });
+                if let Err(e) = publication {
                     return Err(format!("DATABASE RESTORED; RESTART REQUIRED: configuration could not be restored: {e}. Verified recovery: {}",safety_backup.display()).into());
                 }
+                fs::remove_file(path).map_err(|e| format!("DATABASE RESTORED; RESTART REQUIRED: configuration published but private stage cleanup failed: {e}. Verified recovery: {}", safety_backup.display()))?;
             }
             Ok(RestoreResult {
                 restored_backup: backup_dir.to_path_buf(),
@@ -543,7 +558,7 @@ impl BackupService {
         let mut backed_up_files = vec![DATABASE_BACKUP_NAME];
         if config_path.exists() {
             let config_backup_path = backup_dir.join(CONFIG_BACKUP_NAME);
-            crate::private_storage::copy_new(config_path, &config_backup_path).map_err(
+            let expected_config = copy_protected_config(config_path, &config_backup_path).map_err(
                 |error| {
                     BackupError(format!(
                         "Could not copy configuration file {} to {}: {error}",
@@ -552,7 +567,7 @@ impl BackupService {
                     ))
                 },
             )?;
-            if fs::read(config_path).map_err(|e| BackupError(e.to_string()))?
+            if expected_config
                 != fs::read(&config_backup_path).map_err(|e| BackupError(e.to_string()))?
             {
                 return Err(BackupError(
@@ -753,6 +768,19 @@ fn open_read_only(path: &Path) -> Result<Connection, BackupError> {
     })
 }
 
+fn read_protected_config(source: &Path) -> std::io::Result<Vec<u8>> {
+    use std::io::Read;
+    let mut raw = zeroize::Zeroizing::new(Vec::new());
+    crate::private_storage::open_read(source)?.read_to_end(&mut raw)?;
+    crate::smtp_credentials::protected_bytes(&raw)
+}
+
+fn copy_protected_config(source: &Path, destination: &Path) -> std::io::Result<Vec<u8>> {
+    let clean = read_protected_config(source)?;
+    crate::private_storage::write_new(destination, &clean)?;
+    Ok(clean)
+}
+
 fn stage_config(source: &Path, destination: &Path) -> Result<PathBuf, BackupError> {
     let parent = destination.parent().ok_or_else(|| {
         BackupError(format!(
@@ -760,11 +788,11 @@ fn stage_config(source: &Path, destination: &Path) -> Result<PathBuf, BackupErro
             destination.display()
         ))
     })?;
-    let mut input =
-        crate::private_storage::open_read(source).map_err(|e| BackupError(e.to_string()))?;
+    let bytes = read_protected_config(source).map_err(|e| BackupError(e.to_string()))?;
     let mut pending =
         crate::private_storage::tempfile_in(parent).map_err(|e| BackupError(e.to_string()))?;
-    std::io::copy(&mut input, &mut pending).map_err(|e| BackupError(e.to_string()))?;
+    use std::io::Write;
+    pending.write_all(&bytes).map_err(|e| BackupError(e.to_string()))?;
     pending
         .as_file()
         .sync_all()
@@ -779,6 +807,17 @@ fn stage_config(source: &Path, destination: &Path) -> Result<PathBuf, BackupErro
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn credential_backup_and_restore_stages_never_copy_plaintext() {
+        let dir=crate::private_storage::tempdir().unwrap();
+        let source=dir.path().join("legacy.toml");let backup=dir.path().join("backup.toml");let live=dir.path().join("live.toml");
+        let raw=b"[email]\nsmtp_password='LEGACY_FIXTURE_SECRET'\n";
+        crate::private_storage::write_new(&source,raw).unwrap();crate::private_storage::write_new(&live,b"marker='live'\n").unwrap();
+        copy_protected_config(&source,&backup).unwrap();let stage=stage_config(&source,&live).unwrap();
+        for path in [&backup,&stage] { let text=fs::read_to_string(path).unwrap();assert!(!text.contains("LEGACY_FIXTURE_SECRET"));assert!(!text.contains("smtp_password"));assert!(text.contains("smtp_credential_ref")); }
+        assert_eq!(fs::read(&source).unwrap(),raw);assert_eq!(fs::read_to_string(&live).unwrap(),"marker='live'\n");
+    }
 
     fn restore_test(
         backup: &Path,
@@ -855,14 +894,15 @@ mod tests {
         use std::os::unix::fs::PermissionsExt;
         let directory = crate::private_storage::tempdir().unwrap();
         let source = directory.path().join("backup-config.toml");
-        fs::write(&source, "smtp_password = 'synthetic-secret'").unwrap();
+        fs::write(&source, "[email]\nsmtp_password = 'synthetic-secret'").unwrap();
         fs::set_permissions(&source, fs::Permissions::from_mode(0o644)).unwrap();
         let staged = stage_config(&source, &directory.path().join("config.toml")).unwrap();
         assert_eq!(
             fs::metadata(&staged).unwrap().permissions().mode() & 0o777,
             0o600
         );
-        assert_eq!(fs::read(&staged).unwrap(), fs::read(&source).unwrap());
+        let clean=fs::read_to_string(&staged).unwrap();
+        assert!(!clean.contains("synthetic-secret"));assert!(clean.contains("smtp_credential_ref"));
     }
 
     #[test]
@@ -937,8 +977,8 @@ mod tests {
         let backups_dir = temp_dir.path().join("backups");
         create_application_database(&live_database, "current live data");
         create_application_database(&selected_database, "selected backup data");
-        fs::write(&live_config, "current config").unwrap();
-        fs::write(&selected_config, "selected config").unwrap();
+        fs::write(&live_config, "marker = 'current config'\n").unwrap();
+        fs::write(&selected_config, "marker = 'selected config'\n").unwrap();
         let selected_backup = create_named_backup(
             &selected_database,
             &selected_config,
@@ -963,12 +1003,50 @@ mod tests {
             "current live data"
         );
         assert_eq!(read_marker(&live_database), "selected backup data");
-        assert_eq!(fs::read_to_string(&live_config).unwrap(), "selected config");
+        assert_eq!(fs::read_to_string(&live_config).unwrap(), "marker = 'selected config'\n");
         assert_eq!(
             fs::read_to_string(result.safety_backup.join(CONFIG_BACKUP_NAME)).unwrap(),
-            "current config"
+            "marker = 'current config'\n"
         );
         assert!(selected_backup.is_dir());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn restore_waits_for_configuration_writer_and_rejects_stale_approval() {
+        let root = crate::private_storage::tempdir().unwrap();
+        let live = root.path().join("live.sqlite");
+        let selected = root.path().join("selected.sqlite");
+        let config = root.path().join("config.toml");
+        let backups = root.path().join("backups");
+        create_application_database(&live, "live marker");
+        create_application_database(&selected, "selected marker");
+        crate::private_storage::write_new(&config, b"marker='before'\n").unwrap();
+        let backup = create_named_backup(&selected, &config, &backups, "20260101-010101");
+        let approval = RestoreAuthorisation {
+            plan: BackupService::preview_restore(&backup, &live, &config, &backups).unwrap(),
+            reason: "Synthetic cooperating writer race".into(),
+            acknowledged: true,
+        };
+        let guard = crate::private_storage::publication_guard(&config).unwrap();
+        let (ready_tx, ready_rx) = std::sync::mpsc::channel();
+        let (done_tx, done_rx) = std::sync::mpsc::channel();
+        let (l, c, b) = (live.clone(), config.clone(), backups.clone());
+        let child = std::thread::spawn(move || {
+            ready_tx.send(()).unwrap();
+            let result = BackupService::restore(&backup, &l, &c, &b, &approval);
+            done_tx.send(result).unwrap();
+        });
+        ready_rx.recv().unwrap();
+        assert!(done_rx.recv_timeout(std::time::Duration::from_millis(150)).is_err());
+        crate::config::publish_config(&config, b"marker='concurrent save'\n", true).unwrap();
+        drop(guard);
+        let error = done_rx.recv_timeout(std::time::Duration::from_secs(20)).unwrap().unwrap_err();
+        child.join().unwrap();
+        assert!(error.to_string().contains("stale"));
+        assert_eq!(read_marker(&live), "live marker");
+        assert_eq!(fs::read(&config).unwrap(), b"marker='concurrent save'\n");
+        assert_eq!(fs::read_dir(&backups).unwrap().count(), 1);
     }
 
     #[test]
@@ -979,7 +1057,7 @@ mod tests {
         let backups_dir = temp_dir.path().join("backups");
         let corrupt_backup = backups_dir.join("20260101-010101");
         create_application_database(&live_database, "current live data");
-        fs::write(&live_config, "current config").unwrap();
+        fs::write(&live_config, "marker = 'current config'\n").unwrap();
         fs::create_dir_all(&corrupt_backup).unwrap();
         fs::write(corrupt_backup.join(DATABASE_BACKUP_NAME), "not sqlite").unwrap();
         fs::write(
@@ -993,7 +1071,7 @@ mod tests {
 
         assert!(error.to_string().contains("integrity_check"));
         assert_eq!(read_marker(&live_database), "current live data");
-        assert_eq!(fs::read_to_string(&live_config).unwrap(), "current config");
+        assert_eq!(fs::read_to_string(&live_config).unwrap(), "marker = 'current config'\n");
         assert_eq!(fs::read_dir(&backups_dir).unwrap().count(), 1);
     }
 
@@ -1007,7 +1085,7 @@ mod tests {
         let backups_dir = temp_dir.path().join("backups");
         create_application_database(&live_database, "current live data");
         create_test_database(&unrelated_database);
-        fs::write(&live_config, "current config").unwrap();
+        fs::write(&live_config, "marker = 'current config'\n").unwrap();
         let unrelated_backup = create_named_backup(
             &unrelated_database,
             &missing_config,
@@ -1025,7 +1103,7 @@ mod tests {
 
         assert!(error.to_string().contains("not recognisable"));
         assert_eq!(read_marker(&live_database), "current live data");
-        assert_eq!(fs::read_to_string(&live_config).unwrap(), "current config");
+        assert_eq!(fs::read_to_string(&live_config).unwrap(), "marker = 'current config'\n");
         assert_eq!(fs::read_dir(&backups_dir).unwrap().count(), 1);
     }
 
@@ -1039,7 +1117,7 @@ mod tests {
         let backups_dir = temp_dir.path().join("backups");
         create_application_database(&live_database, "current live data");
         create_application_database(&selected_database, "selected backup data");
-        fs::write(&live_config, "current config").unwrap();
+        fs::write(&live_config, "marker = 'current config'\n").unwrap();
         let selected_backup = create_named_backup(
             &selected_database,
             &missing_config,
@@ -1052,7 +1130,7 @@ mod tests {
 
         assert!(!result.config_restored);
         assert_eq!(read_marker(&live_database), "selected backup data");
-        assert_eq!(fs::read_to_string(&live_config).unwrap(), "current config");
+        assert_eq!(fs::read_to_string(&live_config).unwrap(), "marker = 'current config'\n");
         assert!(result.safety_backup.join(CONFIG_BACKUP_NAME).is_file());
     }
 }

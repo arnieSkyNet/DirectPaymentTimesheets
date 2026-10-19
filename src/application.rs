@@ -82,7 +82,11 @@ fn launch_gui(app: Application) -> Result<(), Box<dyn Error>> {
     };
 
     eframe::run_native(
-        "Direct Payments Timesheets",
+        if cfg!(all(windows, debug_assertions, feature = "windows-dev-isolation")) {
+            "DEVELOPMENT — Direct Payments Timesheets (isolated profile)"
+        } else {
+            "Direct Payments Timesheets"
+        },
         options,
         Box::new(|cc| {
             crate::theme::apply_theme(&cc.egui_ctx, app.context.config.theme);

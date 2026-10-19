@@ -1,0 +1,50 @@
+name: macOS synthetic SMTP Keychain verification
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: macos-smtp-keychain-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  keychain:
+    timeout-minutes: 55
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-15
+            architecture: arm64
+          - runner: macos-15-intel
+            architecture: x86_64
+    runs-on: ${{ matrix.runner }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          ref: ${{ github.sha }}
+          path: harness
+          persist-credentials: false
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          # Reviewed source used by preserved Debian coverage; never use branch tip.
+          ref: '77d3268a5a17b4585371a249135a0cceecfbe00b'
+          path: source
+          persist-credentials: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: '3.12'
+      - name: Validate harness without accessing Keychain
+        run: python -I -B -m unittest discover -s harness/scripts -p test_macos_smtp_checks.py -v
+      - name: Install pinned Rust
+        run: rustup toolchain install 1.98.1 --profile minimal
+      - name: Run synthetic native Keychain fixture
+        timeout-minutes: 45
+        env:
+          DPT_EXPECTED_ARCH: ${{ matrix.architecture }}
+        run: python -I -B harness/scripts/macos_smtp_checks.py source
+# Harness verifies its integrated build inputs equal this reviewed source before
+# applying its test-only overlay. Drift is a failure, never a branch-tip fallback.
+# Manual only, no repository secrets, cache, artifact uploads, packaging or release.

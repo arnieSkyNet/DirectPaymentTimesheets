@@ -1,0 +1,131 @@
+{
+  "reviewed_commit": "77d3268a5a17b4585371a249135a0cceecfbe00b",
+  "paths": [
+    {
+      "path": ".gitignore",
+      "sha256": "7b7f0db7cf0393d6a367bcd09238e22d0d206234843e08cce8f607021d869417"
+    },
+    {
+      "path": "Cargo.lock",
+      "sha256": "e633f2ca7b76f29a612a44dbd09a40fe96a9c44dcf201bbf6b43e90aabfa509b"
+    },
+    {
+      "path": "Cargo.toml",
+      "sha256": "b11a9aa6725a8cc72bd0d6610a9b8f5fa2fd234ae6e6679f3be65a4a6387b5eb"
+    },
+    {
+      "path": "build.rs",
+      "sha256": "b97c08df01daee8f9340e65a00adf8d8ac1c879422e4d6506f632837825b0ba4"
+    },
+    {
+      "path": "docs/NATIVE-SECURITY-VERIFICATION.md",
+      "sha256": "66e2866e277e4fc911379b9395e9c35d82227af04fa57923e333e107b350be12"
+    },
+    {
+      "path": "docs/SECURITY-HARDENING.md",
+      "sha256": "992410ed4f94645b4a52297bb211bbcde20607d9a75d2ec077215b3bbe6e5a13"
+    },
+    {
+      "path": "docs/SMTP-CREDENTIAL-STORAGE.md",
+      "sha256": "dfa76300b62eaef337ea653422695de87f44cd6a91fba390b75ec2496e5e48f4"
+    },
+    {
+      "path": "docs/V1.0.7-COMMIT-CHECKLIST.md",
+      "sha256": "62af4755c6e02821fc85a73cdcaa37dc19a98ce4a03ebe2948e8538c5be31d07"
+    },
+    {
+      "path": "docs/WINDOWS-DEVELOPMENT-ISOLATION.md",
+      "sha256": "c36e7c443098f467e8fa83ed7d2cae4f606271412554c3cb68dcd606e4a22d13"
+    },
+    {
+      "path": "scripts/run-windows-development.sh",
+      "sha256": "759359b8c80a96b07ef3dde588e9673f25c5b261e743bd1e5262dbb1e11d525f"
+    },
+    {
+      "path": "src/app.rs",
+      "sha256": "c04d18b6f6b9349608be350908dcc81ad144f5666872c4081f137c91542f7819"
+    },
+    {
+      "path": "src/application.rs",
+      "sha256": "09a8114b6835ca5aa4ca4d3a0c99109ac23046fc8da2ec316582c070172616f7"
+    },
+    {
+      "path": "src/application_settings_screen.rs",
+      "sha256": "96038e63716b0716fb449c20172388391aeea16f1947f05d142c50f4e7dc417c"
+    },
+    {
+      "path": "src/backup_service.rs",
+      "sha256": "ee5841b2b86551ab61d1ccc0e22d0ff30cadd90a4d35b0f073eecd60a659b8a5"
+    },
+    {
+      "path": "src/config.rs",
+      "sha256": "e641a9900369873b83823cf08d7ad71aa818bbc36974e7d20ade8fe64dff3088"
+    },
+    {
+      "path": "src/database_recovery.rs",
+      "sha256": "783b921100aae0f0f78a0d14d3cb2c7b14189c4f1d3a32531734e224afae1027"
+    },
+    {
+      "path": "src/development.rs",
+      "sha256": "28a0d7839f0b3403afcc7c1a92910d7d86b4a54f7576d5d7be5e446e14e5c9c2"
+    },
+    {
+      "path": "src/development_build_gate.rs",
+      "sha256": "3804e0cc40405e84fff005f16ade5851be13c4e2f9a22040138d25191c31f8f4"
+    },
+    {
+      "path": "src/email_service.rs",
+      "sha256": "850f7cd167c2045acb088b7147d21633fabea713a1a8738656f1ce0ee2703d5d"
+    },
+    {
+      "path": "src/email_settings.rs",
+      "sha256": "dabde019ee61b5a4417554331096676e210f67b13e5adf97c8fbdf277952ea62"
+    },
+    {
+      "path": "src/environment.rs",
+      "sha256": "47a30a8d6aa81b62475cf0f422c1f9d2b7d0a87a60c1e835896b2af6ceddf299"
+    },
+    {
+      "path": "src/gui.rs",
+      "sha256": "b25d9bc526ee8604cc802f47492bdb70b1c2263e07596724583df9847dd7c136"
+    },
+    {
+      "path": "src/main.rs",
+      "sha256": "e73f38e9e894ba8855ccf94a6557b9165aa600d89b4a27a7aac7f4505913d710"
+    },
+    {
+      "path": "src/payroll_production_tests.rs",
+      "sha256": "d98e2528d0943d23f6a08bf411bcfcd8510d224c83cf45c7c1013a16ecccc9a1"
+    },
+    {
+      "path": "src/payroll_snapshot_service.rs",
+      "sha256": "94b1f5233923221c3bb21db18adaca07be3dd24d436417d58cf951b448f73e31"
+    },
+    {
+      "path": "src/private_storage.rs",
+      "sha256": "02802744cbc0b5bf51399d2449fc32f9f02bf832aee7caebc12aa832e6d0265c"
+    },
+    {
+      "path": "src/private_storage_windows.rs",
+      "sha256": "1b39a885166049bb1402e603dcfe237578580fc8f9384793014e6ca903b8d5aa"
+    },
+    {
+      "path": "src/private_storage_windows_publication.rs",
+      "sha256": "224b164af53f776376005fcaef711716ae63e90dcf5f3bd41a5af4cd9cb9ff61"
+    },
+    {
+      "path": "src/private_storage_windows_tests.rs",
+      "sha256": "18d254ded08554d5e60db71285374885793cd52b99fbf95b800f4224769725b2"
+    },
+    {
+      "path": "src/smtp_credentials.rs",
+      "sha256": "5ff10aa9d5920f88dff2a2988901e17dcfebc480d9cb51bf583c0d994e77e0bc"
+    },
+    {
+      "path": "src/smtp_transport_tests.rs",
+      "sha256": "e54acb9f783a9c20e242a187fca885a257d212550c32c27bcaa90017623e804e"
+    }
+  ],
+  "all_31_match": true,
+  "all_build_inputs_match": true
+}

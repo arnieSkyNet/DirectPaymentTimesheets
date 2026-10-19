@@ -2474,7 +2474,7 @@ fn regional_holiday_refresh_timestamp_does_not_invalidate_email_approval() {
 
 #[test]
 fn regional_holiday_configuration_from_another_instance_requires_fresh_review() {
-    let (_dir, app, schedule) = fixture();
+    let (_dir, mut app, schedule) = fixture();
     app.application.save_config().unwrap();
     let start = crate::date_utils::parse_legacy(&schedule.first_week_commencing).unwrap();
     let binding = crate::public_holidays::for_application(&app.application, start).binding;

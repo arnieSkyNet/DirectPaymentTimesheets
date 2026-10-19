@@ -9,7 +9,17 @@ use std::os::windows::{
 };
 use std::path::Path;
 
+#[path = "private_storage_windows_publication.rs"]
+mod publication;
+pub(super) use publication::{publication_guard, publish, PublicationGuard};
+#[cfg(test)]
+pub(super) use publication::with_publication_interposition;
+
 type Handle = *mut c_void;
+// Metadata-only opens do not participate in delete-share accounting on NTFS.
+// FILE_LIST_DIRECTORY makes share3 a directory rename barrier. Never fall back
+// to metadata-only access when this required right is denied.
+const DIRECTORY_GUARD_ACCESS: u32 = 0x20081; // READ_CONTROL | READ_ATTRIBUTES | LIST_DIRECTORY
 #[repr(C)]
 struct SecurityAttributes {
     length: u32,
@@ -38,6 +48,8 @@ extern "system" {
         size: u32,
         needed: *mut u32,
     ) -> i32;
+    #[cfg(test)]
+    fn GetSecurityDescriptorOwner(descriptor: *const c_void, owner: *mut *mut c_void, defaulted: *mut i32) -> i32;
     #[cfg(test)]
     fn GetSecurityDescriptorDacl(
         descriptor: *const c_void,
@@ -125,7 +137,6 @@ extern "system" {
         size: u32,
     ) -> i32;
     fn GetDriveTypeW(root: *const u16) -> u32;
-    fn MoveFileExW(source: *const u16, destination: *const u16, flags: u32) -> i32;
     fn CreateDirectoryW(path: *const u16, attributes: *const SecurityAttributes) -> i32;
     fn CreateFileW(
         path: *const u16,
@@ -748,7 +759,7 @@ impl RootQueries for NativeRootQueries<'_> {
         let handle = unsafe {
             CreateFileW(
                 terminated.as_ptr(),
-                0x20080,
+                DIRECTORY_GUARD_ACCESS,
                 3,
                 std::ptr::null(),
                 3,
@@ -903,12 +914,14 @@ fn inspection_handle(path: &Path) -> io::Result<File> {
 fn inspection_handle_at(path: &Path, context: Option<(usize, &str)>) -> io::Result<File> {
     let path =
         wide(path).map_err(|error| ancestor_error("windows.security_path", error, context))?;
-    // READ_CONTROL | FILE_READ_ATTRIBUTES, OPEN_EXISTING, do not follow the
-    // final reparse point, support directories, and deny delete sharing while held.
+    // Directory ancestry requires LIST_DIRECTORY for effective no-delete sharing;
+    // ordinary file security inspection still requests metadata access only.
+    let access = if context.is_some() { DIRECTORY_GUARD_ACCESS } else { 0x20080 };
+    // OPEN_EXISTING, do not follow the final reparse point, support directories.
     let handle = unsafe {
         CreateFileW(
             path.as_ptr(),
-            0x20080,
+            access,
             3,
             std::ptr::null(),
             3,
@@ -928,6 +941,26 @@ fn inspection_handle_at(path: &Path, context: Option<(usize, &str)>) -> io::Resu
 pub fn is_private(path: &Path) -> io::Result<bool> {
     crate::private_storage::check_path(path)?;
     is_private_file(&inspection_handle(path)?)
+}
+
+#[cfg(all(debug_assertions, feature = "windows-dev-isolation"))]
+pub(super) fn development_private_object(path: &Path) -> io::Result<bool> {
+    crate::private_storage::check_path(path)?;
+    let file = inspection_handle(path)?;
+    if !is_private_file(&file)? { return Ok(false); }
+    if file.metadata()?.is_file() {
+        // Refuse hard-linked configuration/databases/sidecars, so an isolated
+        // pathname cannot alias an existing file outside the development root.
+        #[repr(C)]
+        struct StandardInfo { allocation: i64, end: i64, links: u32, pending: u8, directory: u8 }
+        let mut info = StandardInfo { allocation: 0, end: 0, links: 0, pending: 0, directory: 0 };
+        if unsafe { GetFileInformationByHandleEx(file.as_raw_handle().cast(), 1,
+            (&mut info as *mut StandardInfo).cast(), std::mem::size_of::<StandardInfo>() as u32) } == 0 {
+            return Err(io::Error::last_os_error());
+        }
+        return Ok(info.links == 1 && info.pending == 0 && info.directory == 0);
+    }
+    Ok(file.metadata()?.is_dir())
 }
 fn refused(classification: &str) -> bool {
     // Never print paths, identities or ACL contents.
@@ -951,6 +984,10 @@ fn assess_access(
     require_inheritance: bool,
     context: Option<(usize, &str)>,
 ) -> io::Result<Option<&'static str>> {
+    assess_access_with_owner_policy(file, ancestor, require_inheritance, context, false)
+}
+fn assess_access_with_owner_policy(file: &File, ancestor: bool, require_inheritance: bool,
+    context: Option<(usize, &str)>, current_owner_only: bool) -> io::Result<Option<&'static str>> {
     use std::os::windows::fs::MetadataExt;
     if let Some((depth, role)) = context {
         eprintln!("windows.ancestor.assessment: depth={depth}; role={role}; ancestor_mode={ancestor}; require_inheritance={require_inheritance}");
@@ -995,18 +1032,26 @@ fn assess_access(
     if let Some((depth, role)) = context {
         eprintln!("windows.ancestor.owner: depth={depth}; role={role}; sid_valid={owner_valid}; owner_category={owner_category}");
     }
-    if owner.is_null()
-        || unsafe { IsValidSid(owner) } == 0
-        || (unsafe { EqualSid(owner, current.0) } == 0
-            && !(ancestor
-                && (unsafe { EqualSid(owner, system.0) } != 0
-                    || unsafe { EqualSid(owner, administrators.0) } != 0)))
+    if !ordinary_owner_allowed(owner, &current, &system, &administrators, ancestor && !current_owner_only)
     {
+        if approved_root_owner_scope(ancestor, require_inheritance, context) && owner_valid {
+            // Explicit production policy authorization, 2026-10-15: only this
+            // exact owner at a proven volume root. Its implicit WRITE_DAC risk
+            // is accepted; no service name, signature or trustee is allowlisted.
+            let candidate = binary_sid(TRUSTED_INSTALLER_ROOT_SID)?;
+            if unsafe { EqualSid(owner, candidate.0) } != 0
+                && trusted_installer_root_proof(owner_valid, owner, candidate.0, query_root(file)) {
+                return assess_dacl(acl, &current, &system, &administrators, ancestor, require_inheritance);
+            }
+        }
         if root_probe_required(owner_valid, owner_category, context) && root_diagnostics_enabled() {
             diagnose_namespace_root(file, acl, &current, &system, &administrators);
             // No account or SCM queries: their latency cannot be bounded here.
         }
         return Ok(Some("owner_mismatch"));
+    }
+    if current_owner_only {
+        return assess_dacl_with_file_sharing(acl, &current, &system, &administrators, false, false, ancestor);
     }
     assess_dacl(
         acl,
@@ -1018,6 +1063,49 @@ fn assess_access(
     )
 }
 
+fn ordinary_owner_allowed(owner: *const c_void, current: &LocalMemory, system: &LocalMemory,
+    administrators: &LocalMemory, ancestor: bool) -> bool {
+    !owner.is_null() && unsafe { IsValidSid(owner) } != 0
+        && (unsafe { EqualSid(owner, current.0) } != 0
+            || ancestor && (unsafe { EqualSid(owner, system.0) } != 0
+                || unsafe { EqualSid(owner, administrators.0) } != 0))
+}
+
+#[cfg(test)]
+pub(super) fn test_owner_rights_cannot_authorize_foreign_owner() {
+    let current = binary_sid(&user_sid().unwrap()).unwrap();
+    let system = binary_sid("S-1-5-18").unwrap();
+    let administrators = binary_sid("S-1-5-32-544").unwrap();
+    // Controlled native descriptor; no unsupported foreign-owner assignment on
+    // disk (normal tokens cannot assign Administrators: ERROR_INVALID_OWNER).
+    let text: Vec<u16> = format!("O:LSD:P(A;OICI;FA;;;OW)(A;OICI;FA;;;{})", user_sid().unwrap())
+        .encode_utf16().chain(Some(0)).collect();
+    let mut raw = std::ptr::null_mut();
+    assert_ne!(unsafe { ConvertStringSecurityDescriptorToSecurityDescriptorW(text.as_ptr(),1,&mut raw,std::ptr::null_mut()) },0);
+    let descriptor = LocalMemory(raw);
+    let mut owner = std::ptr::null_mut(); let mut defaulted=0;
+    assert_ne!(unsafe { GetSecurityDescriptorOwner(descriptor.0,&mut owner,&mut defaulted) },0);
+    let mut acl=std::ptr::null_mut(); let mut present=0;
+    assert_ne!(unsafe { GetSecurityDescriptorDacl(descriptor.0,&mut present,&mut acl,&mut defaulted) },0);
+    assert_ne!(present,0);
+    assert_eq!(assess_dacl(acl,&current,&system,&administrators,false,false).unwrap(),None);
+    assert!(!ordinary_owner_allowed(owner,&current,&system,&administrators,false));
+    assert!(!ordinary_owner_allowed(owner,&current,&system,&administrators,true));
+    assert!(ordinary_owner_allowed(current.0,&current,&system,&administrators,false));
+}
+
+const TRUSTED_INSTALLER_ROOT_SID: &str = "S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464";
+
+fn approved_root_owner_scope(ancestor: bool, require_inheritance: bool, context: Option<(usize, &str)>) -> bool {
+    ancestor && !require_inheritance && context == Some((0, "volume_root"))
+}
+
+fn trusted_installer_root_proof(valid: bool, owner: *const c_void, candidate: *const c_void,
+    facts: Result<RootFacts, QueryError>) -> bool {
+    valid && unsafe { EqualSid(owner, candidate) } != 0
+        && facts.is_ok_and(|facts| facts.query_code.is_none() && root_class(facts) == "verified_local_ntfs_root")
+}
+
 // Shared policy evaluator: diagnostics never bypass or alter admission.
 fn assess_dacl(
     acl: *const c_void,
@@ -1027,6 +1115,11 @@ fn assess_dacl(
     ancestor: bool,
     require_inheritance: bool,
 ) -> io::Result<Option<&'static str>> {
+    assess_dacl_with_file_sharing(acl, current, system, administrators, ancestor, require_inheritance, false)
+}
+fn assess_dacl_with_file_sharing(acl: *const c_void, current: &LocalMemory, system: &LocalMemory,
+    administrators: &LocalMemory, ancestor: bool, require_inheritance: bool, file_read_sharing: bool)
+    -> io::Result<Option<&'static str>> {
     if acl.is_null() || unsafe { IsValidAcl(acl) } == 0 {
         return Ok(Some("null_or_invalid_dacl"));
     }
@@ -1100,6 +1193,12 @@ fn assess_dacl(
         if ancestor && (inherit_only || access & SUBSTITUTION_ACCESS == 0) {
             continue;
         }
+        // FILE_APPEND_DATA has the same bit as directory ADD_SUBDIRECTORY.
+        // Directory additive-access rules must never admit file append access.
+        const FILE_READ_ONLY_ACCESS: u32 = 0xa01200a9;
+        if file_read_sharing && (inherit_only || access & !FILE_READ_ONLY_ACCESS == 0) {
+            continue;
+        }
         if !matches(current)
             && !matches(system)
             && !matches(administrators)
@@ -1117,6 +1216,12 @@ fn assess_dacl(
 /// Hold no-delete-sharing handles while checking the whole existing chain.
 /// No ACL repair, privilege enablement or pathname fallback is permitted.
 pub fn database_ancestor_guard(path: &Path) -> io::Result<Vec<File>> {
+    ancestor_guard(path, true)
+}
+
+fn ancestor_guard(path: &Path, private_parent: bool) -> io::Result<Vec<File>> {
+    #[cfg(all(debug_assertions, feature = "windows-dev-isolation"))]
+    let _development_scope = crate::development::database_scope(path)?;
     let parent = path
         .parent()
         .filter(|p| !p.as_os_str().is_empty())
@@ -1137,7 +1242,7 @@ pub fn database_ancestor_guard(path: &Path) -> io::Result<Vec<File>> {
         } else {
             "existing_ancestor"
         };
-        eprintln!("windows.ancestor.open: depth={depth}; role={role}; access=0x20080; share=3");
+        eprintln!("windows.ancestor.open: depth={depth}; role={role}; access={DIRECTORY_GUARD_ACCESS:#x}; share=3");
         let context = Some((depth, role));
         let file = inspection_handle_at(&prefix, context)?;
         let reason = if !file
@@ -1161,7 +1266,7 @@ pub fn database_ancestor_guard(path: &Path) -> io::Result<Vec<File>> {
             "windows.database_ancestor_guard: code=none; class=missing_parent",
         ));
     };
-    if let Some(reason) = assess_access(
+    if private_parent { if let Some(reason) = assess_access(
         parent,
         false,
         true,
@@ -1170,7 +1275,7 @@ pub fn database_ancestor_guard(path: &Path) -> io::Result<Vec<File>> {
         let message = format!("windows.database_ancestor_guard: code=none; class=unsafe_sidecar_inheritance; reason={reason}; depth={}; role=immediate_parent", held.len() - 1);
         eprintln!("{message}");
         return Err(io::Error::other(message));
-    }
+    } }
     for (depth, (name, file)) in held.iter().enumerate() {
         let role = if depth == 0 {
             "volume_root"
@@ -1199,24 +1304,26 @@ pub fn database_ancestor_guard(path: &Path) -> io::Result<Vec<File>> {
 // Private files are created with FILE_ATTRIBUTE_NORMAL, not TEMPORARY. Rename
 // directly on the same volume; never clear read-only, copy across volumes, or
 // fall back to a permission repair. Native acceptance remains to be verified.
-pub fn publish(source: &Path, destination: &Path, overwrite: bool) -> io::Result<()> {
-    let source = wide(source)?;
-    let destination = wide(destination)?;
-    move_file(&source, &destination, overwrite)
-        .map_err(|error| diagnostic("windows.MoveFileExW", error))
-}
-
 // Test probes use the identical operation but retain the structured OS code.
 #[cfg(test)]
-pub fn publication_probe(source: &Path, destination: &Path, overwrite: bool) -> io::Result<()> {
-    let source = wide(source)?;
-    let destination = wide(destination)?;
-    move_file(&source, &destination, overwrite)
+pub fn publication_probe(file: &File, source: &Path, destination: &Path, overwrite: bool) -> io::Result<()> {
+    publication::publish(file, source, destination, overwrite)
 }
 
 // Opaque snapshots let tests compare policy without rendering identities/ACLs.
 #[cfg(test)]
 pub struct TestSecurityPolicy(String);
+// Snapshot only: retaining an observation handle would itself affect the
+// directory rename regression. Fixtures keep the objects alive until cleanup.
+#[cfg(test)]
+#[derive(PartialEq, Eq)]
+pub struct TestFileIdentity(RootIdentity);
+#[cfg(test)]
+impl TestFileIdentity {
+    pub fn capture(path: &Path) -> io::Result<Self> {
+        Ok(Self(root_identity(&inspection_handle(path)?)?))
+    }
+}
 #[cfg(test)]
 impl TestSecurityPolicy {
     pub fn capture(path: &Path) -> io::Result<Self> {
@@ -1227,20 +1334,9 @@ impl TestSecurityPolicy {
     }
 }
 
-fn move_file(source: &[u16], destination: &[u16], overwrite: bool) -> io::Result<()> {
-    const MOVEFILE_REPLACE_EXISTING: u32 = 1;
-    let flags = if overwrite {
-        MOVEFILE_REPLACE_EXISTING
-    } else {
-        0
-    };
-    if unsafe { MoveFileExW(source.as_ptr(), destination.as_ptr(), flags) } == 0 {
-        return Err(io::Error::last_os_error());
-    }
-    Ok(())
-}
-
 pub fn preserve_access(temporary: &Path, destination: &Path) -> io::Result<()> {
+    // Refuse unsafe destination grants before applying them to new bytes.
+    let _publication = publication_guard(temporary, destination)?;
     let existing = security(destination)?;
     let new = security(temporary)?;
     if sddl(&existing, 3)? != sddl(&new, 3)? {
@@ -1285,6 +1381,64 @@ pub fn preserve_access(temporary: &Path, destination: &Path) -> io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn phase1_windows_approved_root_native_scope_and_policy_preservation() {
+        let path = Path::new(r"C:\");
+        let policy = TestSecurityPolicy::capture(path).unwrap();
+        let file = inspection_handle(path).unwrap();
+        let before = root_identity(&file).unwrap();
+        let mut owner = std::ptr::null_mut();
+        let mut descriptor = std::ptr::null_mut();
+        assert_eq!(unsafe { GetSecurityInfo(file.as_raw_handle().cast(), 1, 1,
+            &mut owner, std::ptr::null_mut(), std::ptr::null_mut(), std::ptr::null_mut(), &mut descriptor) }, 0);
+        let _descriptor = LocalMemory(descriptor);
+        let exact = binary_sid(TRUSTED_INSTALLER_ROOT_SID).unwrap();
+        assert_ne!(unsafe { IsValidSid(owner) }, 0);
+        assert_ne!(unsafe { EqualSid(owner, exact.0) }, 0, "Molly regression requires the observed exact root owner");
+        assert_eq!(root_class(query_root(&file).unwrap()), "verified_local_ntfs_root");
+        assert_eq!(assess_access(&file, true, false, Some((0, "volume_root"))).unwrap(), None);
+        for (ancestor, inheritance, context) in [
+            (true, false, Some((1, "existing_ancestor"))),
+            (true, false, Some((0, "immediate_parent"))),
+            (false, false, Some((0, "volume_root"))),
+            (true, true, Some((0, "volume_root"))),
+            (false, false, None),
+        ] {
+            assert_eq!(assess_access(&file, ancestor, inheritance, context).unwrap(), Some("owner_mismatch"));
+        }
+        assert!(before == root_identity(&file).unwrap());
+        assert!(policy.matches(path).unwrap());
+    }
+    #[test]
+    fn phase1_windows_approved_root_requires_exact_owner_and_complete_proof() {
+        assert!(approved_root_owner_scope(true, false, Some((0, "volume_root"))));
+        for context in [None, Some((1, "volume_root")), Some((0, "existing_ancestor")), Some((1, "immediate_parent"))] {
+            assert!(!approved_root_owner_scope(true, false, context));
+        }
+        assert!(!approved_root_owner_scope(false, false, Some((0, "volume_root"))));
+        assert!(!approved_root_owner_scope(true, true, Some((0, "volume_root"))));
+        let owner = binary_sid(TRUSTED_INSTALLER_ROOT_SID).unwrap();
+        let foreign = binary_sid("S-1-5-19").unwrap();
+        let positive = RootFacts { guid_root: true, local_fixed: true, ntfs: true,
+            persistent_acls: true, identity_matches: true, ..RootFacts::default() };
+        assert!(trusted_installer_root_proof(true, owner.0, owner.0, Ok(positive)));
+        assert!(!trusted_installer_root_proof(false, owner.0, owner.0, Ok(positive)));
+        assert!(!trusted_installer_root_proof(true, foreign.0, owner.0, Ok(positive)));
+        for facts in [
+            RootFacts { query_code: Some(5), ..positive },
+            RootFacts { network_namespace: true, ..positive },
+            RootFacts { reparse: true, ..positive },
+            RootFacts { guid_root: false, ..positive },
+            RootFacts { local_fixed: false, ..positive },
+            RootFacts { ntfs: false, ..positive },
+            RootFacts { persistent_acls: false, ..positive },
+            RootFacts { identity_matches: false, ..positive },
+        ] {
+            assert!(!trusted_installer_root_proof(true, owner.0, owner.0, Ok(facts)));
+        }
+        assert!(!trusted_installer_root_proof(true, owner.0, owner.0,
+            Err(QueryError::new("synthetic", io::Error::from_raw_os_error(5)))));
+    }
     struct SyntheticHeld(std::rc::Rc<std::cell::Cell<usize>>);
     impl Drop for SyntheticHeld {
         fn drop(&mut self) {
@@ -1878,10 +2032,11 @@ mod about_read_only_policy_tests {
             None
         );
         let mut raw = std::ptr::null_mut();
+        let descriptor_text: Vec<u16> = "D:P(A;OICI;FA;;;WD)".encode_utf16().chain(Some(0)).collect();
         assert_ne!(
             unsafe {
                 ConvertStringSecurityDescriptorToSecurityDescriptorW(
-                    wide(Path::new("D:P(A;OICI;FA;;;WD)")).unwrap().as_ptr(),
+                    descriptor_text.as_ptr(),
                     1,
                     &mut raw,
                     std::ptr::null_mut(),

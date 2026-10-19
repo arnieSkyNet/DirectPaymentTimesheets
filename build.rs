@@ -1,6 +1,15 @@
 use std::{env, fs, path::PathBuf, process::Command};
 
 fn main() {
+    println!("cargo:rustc-check-cfg=cfg(dpt_development_build)");
+    if env::var_os("CARGO_FEATURE_WINDOWS_DEV_ISOLATION").is_some() {
+        assert!(
+            env::var("PROFILE").as_deref() == Ok("debug")
+                && env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("windows"),
+            "windows-dev-isolation is forbidden outside Windows debug builds"
+        );
+        println!("cargo:rustc-cfg=dpt_development_build");
+    }
     println!("cargo:rerun-if-changed=src/private_storage_macos.c");
     println!("cargo:rerun-if-env-changed=MACOSX_DEPLOYMENT_TARGET");
     if env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("macos") {

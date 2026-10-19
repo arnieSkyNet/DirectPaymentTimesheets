@@ -9,11 +9,47 @@ pub(crate) enum TestRecipient {
     Pa,
 }
 
+/// Local readiness only: never connects, authenticates, or sends.
+pub(crate) fn validate_standalone_test(
+    config: &EmailConfig,
+    recipient: Option<TestRecipient>,
+) -> Result<(), String> {
+    let recipient = recipient.ok_or("Select Payroll Test Address or PA Test Address.")?;
+    match config.smtp_transport.as_str() {
+        // The local transport deliberately uses localhost:25 without credentials.
+        "Local SMTP Server" => (),
+        "SMTP Server" => {
+            if config.smtp_host.trim().is_empty()
+                || config.smtp_host.trim().chars().any(|c| c.is_whitespace() || c.is_control())
+            {
+                return Err("Enter a valid SMTP host.".into());
+            }
+            if config.smtp_port == 0 {
+                return Err("Enter an SMTP port between 1 and 65535.".into());
+            }
+            // Match dispatch: an empty username selects an unauthenticated
+            // remote relay; a supplied username selects authentication.
+            if !config.smtp_username.trim().is_empty() {
+                if let Some(error) = &config.smtp_credential_error { return Err(error.clone()); }
+            }
+            if !config.smtp_username.trim().is_empty() && config.smtp_password.is_empty() {
+                return Err("Enter the SMTP password for the supplied username.".into());
+            }
+        }
+        _ => return Err("Select a supported SMTP transport.".into()),
+    }
+    crate::email_service::prepare_smtp_test_message(config, recipient)
+        .map(|_| ())
+        .map_err(|error| error.to_string())
+}
+
 #[derive(Default)]
 pub(crate) struct TestEmailTask {
     pending: Option<Receiver<Result<(), ProductionSendError>>>,
     started: Option<std::time::Instant>,
     stalled_reported: bool,
+    #[cfg(test)]
+    forbid_real_start: bool,
 }
 // A watchdog reports uncertainty; it cannot safely cancel a Rust thread or
 // prove non-acceptance. Keep duplicate/close protection until termination.
@@ -43,6 +79,10 @@ impl<F: FnOnce()> Drop for WorkerCompletion<F> {
     }
 }
 impl TestEmailTask {
+    #[cfg(test)]
+    pub(crate) fn forbid_real_start_for_test(&mut self) {
+        self.forbid_real_start = true;
+    }
     pub fn pending(&self) -> bool {
         self.pending.is_some()
     }
@@ -67,6 +107,8 @@ impl TestEmailTask {
         recipient: TestRecipient,
         repaint: impl FnOnce() + Send + 'static,
     ) -> Result<(), ProductionSendError> {
+        #[cfg(test)]
+        assert!(!self.forbid_real_start, "Unexpected real SMTP start in navigation regression test");
         if self.pending() {
             return Err(ProductionSendError::NotSent(
                 "A test email is already in progress.".into(),
@@ -160,6 +202,63 @@ pub(crate) fn example_preview(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn standalone_readiness_validates_only_selected_recipient_and_transport() {
+        let mut config = EmailConfig::default();
+        config.smtp_transport = "SMTP Server".into();
+        config.smtp_host = "smtp.example.invalid".into();
+        config.smtp_port = 587;
+        config.smtp_username = "sender@example.invalid".into();
+        config.smtp_password = "synthetic password".into();
+        config.payroll_test_email_address = "payroll@example.invalid".into();
+        config.pa_test_email_address = "not an address".into();
+        assert!(validate_standalone_test(&config, None).is_err());
+        assert!(validate_standalone_test(&config, Some(TestRecipient::Payroll)).is_ok());
+        assert!(validate_standalone_test(&config, Some(TestRecipient::Pa)).is_err());
+        config.pa_test_email_address = "pa@example.invalid".into();
+        assert!(validate_standalone_test(&config, Some(TestRecipient::Pa)).is_ok());
+        for mutation in 0..7 {
+            let mut bad = config.clone();
+            match mutation {
+                0 => bad.smtp_host.clear(),
+                1 => bad.smtp_host = "invalid host".into(),
+                2 => bad.smtp_port = 0,
+                3 => bad.smtp_username.clear(),
+                4 => bad.smtp_password.clear(),
+                5 => bad.smtp_transport = "unsupported".into(),
+                _ => bad.smtp_username = "login-without-sender".into(),
+            }
+            assert!(validate_standalone_test(&bad, Some(TestRecipient::Payroll)).is_err());
+        }
+        config.smtp_username = "non-email-login".into();
+        config.test_sender_address = "sender@example.invalid".into();
+        assert!(validate_standalone_test(&config, Some(TestRecipient::Payroll)).is_ok());
+        config.smtp_transport = "Local SMTP Server".into();
+        config.smtp_host.clear(); config.smtp_username.clear(); config.smtp_password.clear();
+        assert!(validate_standalone_test(&config, Some(TestRecipient::Pa)).is_ok());
+    }
+    #[test]
+    fn unauthenticated_remote_relay_requires_sender_and_preserves_tls_policy() {
+        let mut config = EmailConfig::default();
+        config.select_transport("SMTP Server".into());
+        config.smtp_host = "relay.example.invalid".into();
+        config.smtp_port = 2525;
+        config.smtp_username.clear();
+        config.smtp_password.clear();
+        config.test_sender_address = "sender@example.invalid".into();
+        config.payroll_test_email_address = "recipient@example.invalid".into();
+        assert_eq!(config.smtp_security, Some(crate::config::SmtpSecurity::RequiredStarttls));
+        for security in [crate::config::SmtpSecurity::RequiredStarttls, crate::config::SmtpSecurity::ImplicitTls] {
+            config.smtp_security = Some(security);
+            assert!(validate_standalone_test(&config, Some(TestRecipient::Payroll)).is_ok());
+            assert_eq!(config.smtp_security, Some(security));
+            assert_eq!(config.smtp_port,2525);
+        }
+        config.test_sender_address.clear();
+        assert!(validate_standalone_test(&config, Some(TestRecipient::Payroll)).is_err());
+        config.smtp_username="sender@example.invalid".into();
+        assert!(validate_standalone_test(&config, Some(TestRecipient::Payroll)).is_err());
+    }
     #[test]
     fn panicking_worker_notifies_repaint_and_reports_uncertainty() {
         let mut task = TestEmailTask::default();

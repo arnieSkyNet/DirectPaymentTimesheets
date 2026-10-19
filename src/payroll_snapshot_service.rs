@@ -107,6 +107,9 @@ where
         .final_pdf_path
         .parent()
         .unwrap_or(Path::new("."));
+    #[cfg(windows)]
+    let publication_guard = crate::private_storage::publication_guard(publication.final_pdf_path)
+        .map_err(|e| SnapshotSafetyError::Operation(e.to_string()))?;
     let temporary = crate::private_storage::tempfile_in(parent)
         .map_err(|e| SnapshotSafetyError::Operation(e.to_string()))?;
     let temporary_path = temporary.path().to_path_buf();
@@ -116,6 +119,9 @@ where
             "Could not generate temporary payroll PDF: {error}"
         )));
     }
+    #[cfg(windows)]
+    let temporary = publication_guard.rendered_stage(temporary)
+        .map_err(|e| SnapshotSafetyError::Operation(e.error.to_string()))?;
     let digest = match sha256_file(&temporary_path) {
         Ok(digest) => digest,
         Err(error) => {

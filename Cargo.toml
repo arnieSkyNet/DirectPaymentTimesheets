@@ -4,8 +4,14 @@ version = "1.0.7"
 edition = "2021"
 license = "GPL-3.0-or-later"
 repository = "https://github.com/ArnieSkyNet/DirectPaymentTimesheets"
+# Local rendering experiments are not Cargo targets or distributable sources.
+autoexamples = false
+exclude = ["examples/windows_email_preview.rs", "tools/windows-email-preview/**"]
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[features]
+windows-dev-isolation = []
 
 [dependencies]
 rusqlite = { version = "0.31", features = ["backup", "bundled", "functions", "hooks"] }
@@ -33,6 +39,18 @@ semver = "1"
 
 tempfile = "3"
 same-file = "1"
+uuid = { version = "1", features = ["v4"] }
+zeroize = "1.8"
+
+[target.'cfg(windows)'.dependencies]
+keyring = { version = "=3.6.3", default-features = false, features = ["windows-native"] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+keyring = { version = "=3.6.3", default-features = false, features = ["sync-secret-service", "crypto-rust", "vendored"] }
+dbus-secret-service = { version = "=4.1.0", default-features = false, features = ["crypto-rust", "vendored"] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+keyring = { version = "=3.6.3", default-features = false, features = ["apple-native"] }
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"

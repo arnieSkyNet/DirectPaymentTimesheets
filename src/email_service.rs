@@ -1003,6 +1003,10 @@ fn dispatch_message(
             ))
         }
     };
+    // Resolve/verify OS credentials before any DNS/socket/TLS operation.
+    let auth_password = if authenticate && !config.smtp_username.trim().is_empty() {
+        Some(crate::smtp_credentials::for_send(config).map_err(ProductionSendError::NotSent)?)
+    } else { None };
     let tls = match security {
         SmtpSecurity::Plaintext => None,
         _ => {
@@ -1052,7 +1056,7 @@ fn dispatch_message(
                 &[Mechanism::Plain, Mechanism::Login],
                 &Credentials::new(
                     config.smtp_username.trim().into(),
-                    config.smtp_password.clone(),
+                    auth_password.as_ref().expect("Authenticated credential resolved").to_string(),
                 ),
             )
             .map_err(|e| {

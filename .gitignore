@@ -1,4 +1,7 @@
 /target
+# Local fictional preview harness; retained on Molly, excluded from commits.
+/examples/windows_email_preview.rs
+/tools/windows-email-preview/
 /dist/
 *.swp
 

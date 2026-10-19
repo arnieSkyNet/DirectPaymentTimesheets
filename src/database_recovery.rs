@@ -1173,7 +1173,10 @@ mod stage5_tests {
         crate::database::create_legacy_schema(&db, 37).unwrap();
         std::fs::write(
             dir.path().join("config.toml"),
-            b"secret='PRIVATE_SECRET'\nbroken=[",
+            // Valid TOML can be backed up without risking a malformed hidden
+            // password; the unsupported enum still fails application loading
+            // AFTER migration, which is the boundary this fixture exercises.
+            b"secret='PRIVATE_SECRET'\ntheme='unsupported_fixture_theme'",
         )
         .unwrap();
         let environment = crate::environment::AppEnvironment::at(dir.path().to_path_buf()).unwrap();

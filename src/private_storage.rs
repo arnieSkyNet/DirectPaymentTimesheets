@@ -14,9 +14,24 @@ mod macos_acl;
 #[path = "private_storage_windows.rs"]
 mod platform;
 
+#[cfg(windows)]
+pub(crate) fn publication_guard(path: &Path) -> io::Result<platform::PublicationGuard> {
+    platform::publication_guard(path, path)
+}
+
 #[cfg(all(test, windows))]
 #[path = "private_storage_windows_tests.rs"]
 mod windows_verification_tests;
+
+#[cfg(all(windows, debug_assertions, feature = "windows-dev-isolation"))]
+pub(crate) fn development_ancestry(path: &Path) -> io::Result<Vec<File>> {
+    platform::database_ancestor_guard(path)
+}
+
+#[cfg(all(windows, debug_assertions, feature = "windows-dev-isolation"))]
+pub(crate) fn development_is_private(path: &Path) -> io::Result<bool> {
+    platform::development_private_object(path)
+}
 
 pub fn check_path(path: &Path) -> io::Result<()> {
     let absolute = if path.is_absolute() {
@@ -376,32 +391,28 @@ pub fn publish_tempfile(
 ) -> Result<File, tempfile::PersistError> {
     #[cfg(windows)]
     {
+        let guard = platform::publication_guard(pending.path(), destination);
+        let _guard = match guard {
+            Ok(guard) => guard,
+            Err(error) => return Err(retain_failed_publication(pending, error)),
+        };
         use std::os::windows::fs::MetadataExt;
         let metadata = match pending.as_file().metadata() {
             Ok(metadata) => metadata,
             Err(error) => {
-                return Err(tempfile::PersistError {
-                    error,
-                    file: pending,
-                })
+                return Err(retain_failed_publication(pending, error))
             }
         };
         if metadata.file_attributes() & 0x100 != 0 {
-            return Err(tempfile::PersistError {
-                error: io::Error::other(
+            return Err(retain_failed_publication(pending, io::Error::other(
                     "windows.publish_private: code=none; class=temporary_attribute_unsupported",
-                ),
-                file: pending,
-            });
+                )));
         }
         if let Err(error) = check_path(pending.path())
             .and_then(|_| check_path(destination))
-            .and_then(|_| platform::publish(pending.path(), destination, overwrite))
+            .and_then(|_| platform::publish(pending.as_file(), pending.path(), destination, overwrite))
         {
-            return Err(tempfile::PersistError {
-                error,
-                file: pending,
-            });
+            return Err(retain_failed_publication(pending, error));
         }
         let (file, mut path) = pending.into_parts();
         path.disable_cleanup(true);
@@ -413,6 +424,14 @@ pub fn publish_tempfile(
     } else {
         pending.persist_noclobber(destination)
     }
+}
+
+#[cfg(windows)]
+fn retain_failed_publication(pending: tempfile::NamedTempFile, error: io::Error) -> tempfile::PersistError {
+    // A failed identity/path check cannot authorise deletion by the stored name.
+    let (file, mut path) = pending.into_parts();
+    path.disable_cleanup(true);
+    tempfile::PersistError { error, file: tempfile::NamedTempFile::from_parts(file, path) }
 }
 
 /// Retain an existing destination's access policy on a NEW replacement inode.
@@ -454,6 +473,8 @@ pub fn preserve_access(temporary: &Path, destination: &Path) -> io::Result<()> {
 
 pub fn write_atomic(path: &Path, bytes: &[u8]) -> io::Result<()> {
     check_path(path)?;
+    #[cfg(windows)]
+    let _publication = platform::publication_guard(path, path)?;
     let parent = path
         .parent()
         .filter(|p| !p.as_os_str().is_empty())

@@ -725,6 +725,14 @@ impl ApplicationSettingsScreen {
     }
 
     fn save(&self, application: &mut Application) -> Result<(), Box<dyn std::error::Error>> {
+        #[cfg(all(windows, debug_assertions, feature = "windows-dev-isolation"))]
+        crate::development::validate_folder_draft(&[
+            std::path::PathBuf::from(self.csv_import.trim()),
+            std::path::PathBuf::from(self.pdf_output.trim()),
+            std::path::PathBuf::from(self.email_archive.trim()),
+            std::path::PathBuf::from(self.payslip_folder.trim()),
+            std::path::PathBuf::from(self.payroll_information_folder.trim()),
+        ])?;
         let week_commencing_font_size = self
             .week_commencing_font_size
             .trim()

@@ -295,6 +295,24 @@ fn trusted_transport(mode: SmtpSecurity) {
         && (line.starts_with("AUTH") || line.starts_with("MAIL") || line.starts_with("DATA"))));
 }
 #[test]
+fn unauthenticated_remote_relay_keeps_starttls_and_implicit_tls() {
+    for mode in [SmtpSecurity::RequiredStarttls, SmtpSecurity::ImplicitTls] {
+        let fixture=Fixture::new(mode,true,true,false);
+        let mut config=config(fixture.port,mode);
+        config.smtp_username.clear();
+        config.smtp_password.clear();
+        config.test_sender_address="sender@example.invalid".into();
+        config.payroll_test_email_address="recipient@example.invalid".into();
+        assert!(crate::email_settings::validate_standalone_test(&config,Some(crate::email_settings::TestRecipient::Payroll)).is_ok());
+        let message=prepare_smtp_test_message(&config,crate::email_settings::TestRecipient::Payroll).unwrap();
+        dispatch_message(&config,&message,Some(trusted("localhost"))).unwrap();
+        let commands=fixture.finish();
+        assert!(!commands.iter().any(|(_,line)|line.starts_with("AUTH")));
+        assert!(commands.iter().any(|(encrypted,line)|*encrypted && line.starts_with("MAIL")));
+        assert!(!commands.iter().any(|(encrypted,line)|!*encrypted && (line.starts_with("MAIL")||line.starts_with("DATA"))));
+    }
+}
+#[test]
 fn untrusted_and_wrong_hostname_fail_without_plaintext_fallback() {
     for mode in [SmtpSecurity::RequiredStarttls, SmtpSecurity::ImplicitTls] {
         for wrong_hostname in [false, true] {

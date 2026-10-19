@@ -1,8 +1,8 @@
 # Development 1.0.7 Phase 1 native verification
 
 The current Windows corrections are uncommitted on `security/v1.0.7-phase1`
-at HEAD `b4e15654f18cb8ca9b20ef1c6017205303edca0e`. Native run 38312225467
-tested that approved committed source; it did not test this root-owner probe. No tag,
+at HEAD `5abca6816b1a74aa6f41304a51fd5e4bb2128b82`. Historical native run 38312225467
+tested its earlier approved committed source; it did not test the later corrections. No tag,
 package or release is prepared. Existing Phase 1 code, GitHub README edits,
 published links and stashes are retained. This is a verification candidate,
 not a declaration that the open security findings have been fixed.
@@ -535,3 +535,170 @@ accounting and handle-release refusal; they are not Windows termination proof.
 Native success, exclusive-handle release and the underlying cause of the previous
 failure remain pending a separately authorized native run. No workflow pin was
 updated and no run was dispatched for this correction.
+
+## Molly: authorized production volume-root policy — 15 October 2026
+
+The user separately authorized the exact TrustedInstaller owner SID at a proven
+fixed local NTFS volume root, including the residual implicit WRITE_DAC risk.
+SECURITY-HARDENING.md records the revised scope. The normal Windows tests verify
+Molly's real root owner and GUID/volume/identity proof without modifying its ACL,
+and reject the same owner when assessed in private-object/intermediate roles.
+Injected SID/root-fact cases cover foreign or invalid owners, wrong depth/role,
+UNC/network/removable/unsupported volumes, query errors, reparse and identity
+mismatch. Production admission performs no account, SCM or signature lookup.
+
+Native regression groups passed: approved root policy (2), existing root queries
+(9), DACL diagnostics (1), diagnostic scoping (1), Email Settings (7), email
+service (10), SMTP transport (14), standalone actions (11), database refusal
+controls (3), junction refusal (1), positive database ancestry (1), inherited
+ACL/private creation (1). Groups overlap and must not be summed as unique tests.
+The layout regression checks both field rows and aligned action headings/buttons
+at 1000/1360 pixels, clicks standalone Preview Email with no SMTP credentials or
+payroll/PA context, and verifies no database changes or send worker. Narrow windows
+use horizontal scrolling to retain each row. No real email was sent.
+
+Tests use a new private synthetic TMP/TEMP beneath Molly's AppData\Local because
+the ordinary Temp directory has an unrelated modify ACE. No production files or
+settings are copied. Three existing negative tests initially failed at PowerShell
+Set-Acl's audit-security privilege requirement; their fixture setters now write
+only a synthetic DACL via .NET, preserving owner/SACL and all assertions. No
+privilege was enabled. Normal and development-feature Cargo checks passed.
+
+Molly's separate ACL-only repair was subsequently authorized and completed on
+15 October 2026. The managed application root and 17 recorded objects were
+verified against the approved owner/group/DACL manifest; all eight file hashes,
+schema 41 and logical row counts remained unchanged. The exact trusted grants
+were retained and CodexSandboxUsers access removed. This was a separate external
+repair, not an application permission-repair feature or a private-parent bypass.
+
+The normal Windows x64 application subsequently launched with Molly's real
+profile, existing employer/PA/settings and no development banner. Local evidence
+is under target/windows-v107-acl-repair and later windows-v107-* reports. Those
+ignored artifacts contain private information and are not release documentation
+or files to commit. Later read-only inspection found config.toml using inherited
+trusted-only grants rather than its recorded protected DACL; that metadata drift
+is a separate observation, not proof of additional access or a diagnosed app bug.
+See the current correction-pass report for the comparison and attribution limits.
+
+The About/native database regressions now require positive read-only schema
+access through admitted ancestry before testing controlled unsafe-ancestor or
+junction refusal. Exact/foreign SID, wrong-role/depth and root-fact negative
+coverage remains in private_storage_windows.rs. A machine's actual root is never
+changed to manufacture a negative owner fixture.
+
+Correction-pass validation on Molly, 15 October 2026: focused executions passed
+15/15, including both replacement About cases, approved-root policy, DACL
+rejection and unauthenticated remote relay readiness/STARTTLS/implicit TLS.
+Normal and development-feature Windows x64 cargo check --bins --tests passed.
+Cargo metadata/package listing includes required development source modules and
+excludes retained temporary preview/generated artifacts. See
+V1.0.7-COMMIT-CHECKLIST.md for the required new-file inventory.
+
+Historical pre-publication-correction Windows x64 cargo test run (superseded by
+the validation below) was NOT green: 899 passed,
+41 failed, zero unit tests ignored (1439.97 seconds). Integration targets ran
+zero tests and retained one pre-existing explicitly unauthorized ignored native
+child fixture. Of the 41 failures, 37 report MoveFileExW access denied during
+atomic replacement/PDF generation. The native publication matrix independently
+fails for an existing writable destination held open with delete sharing. The
+ancestor guard test observes a rename succeed while its handle is held. The
+remaining failures are missing symlink privilege (OS 1314) and an owner-rights
+fixture PowerShell setup failure. No assertions were relaxed or privileges
+enabled. These are outstanding validation/security blockers, not evidence that
+the completed ACL repair or approved root policy should be bypassed.
+
+Both development compile/launch gates, all nine standalone Email Settings UI
+tests and all fifteen SMTP transport tests passed in that full run. No real GUI
+or production SMTP endpoint was used. The ignored local correction-pass report
+and full log retain exact failures; resolve atomic publication, held-ancestor
+rename guarantees and fixture prerequisites before marking native validation
+complete or the branch ready to commit on that historical evidence alone.
+
+## Approved Windows publication correction — 15 October 2026
+
+The operator approved excluding malicious/uncooperative full-authority same-user
+processes. Other-user protection and all unrelated owner, ACL, reparse,
+held-identity and SQLite containment requirements remain. See
+SECURITY-HARDENING.md for the exact boundary, native API contract and residual
+validation-to-rename race; there is no expected-target-ID compare-and-swap claim.
+
+Publication now uses source-handle FileRenameInfoEx POSIX replacement with the
+destination identity handle retained. FILE_LIST_DIRECTORY ancestor guards and
+verified fixed local NTFS remain required. Per-parent-identity, per-user Global
+mutexes serialize cooperating writers; failures never trigger copying, TxF or an
+ACL/attribute bypass. Target owners/ACLs are checked before staging and before
+copying an access policy onto new bytes. Unexpected source/target identities
+refuse publication; an absent target is always published without overwrite.
+The trusted renderer's completed private stage is validated under the same guard
+before hashing/ledger approval, rather than weakening the publication ID check.
+
+The owner-rights fixture's error 1307 was invalid owner assignment to
+Administrators under Molly's filtered token (see local FOLLOWUP.md), not a
+production owner-policy failure. Its replacement checks an actual native
+in-memory foreign-owner descriptor and the production owner predicate, plus a
+real current-owner positive control whose security descriptor is unchanged.
+It does not claim a physical foreign-owner fixture succeeded.
+
+Native symlink coverage remains explicitly unavailable on Molly without
+SeCreateSymbolicLinkPrivilege/Developer Mode. Its ignored test requires an
+independently capable host and is never counted as passed. Junction refusal and
+held-directory rename/substitution checks remain active. The ignored cooperating
+publication child is actually executed by its parent test; the separately ignored
+SQLite terminal child still requires its future harness authorization.
+
+Final focused validation passed 32 test executions (one repeated ancestor test):
+existing/absent destinations, open anchors, read-only/sharing refusal, unchanged
+contents, unsafe ancestry, unsafe destination policy before staging, stage
+substitution, destination ID changes, no-clobber insertion, cross-process writer
+serialization and the explicitly excluded after-check same-user race. Config
+creation and real renderer/snapshot integration regressions also passed.
+Normal and windows-dev-isolation Windows x64 cargo check --bins --tests passed.
+No production ACL repair, GUI launch, settings save or real SMTP send occurred.
+
+Final default-feature Windows x64 cargo test --locked --offline --no-fail-fast
+with --test-threads=1 exited 0: 949 unit tests passed, zero failed, two ignored
+(1448.53 seconds). One ignored entry is the unavailable symlink test; the other
+is the cooperating child explicitly exercised by its passing parent. Integration
+targets ran zero ordinary tests and reported the pre-existing unauthorized
+native_sqlite_terminal_fixtures child as one ignored test. Neither unavailable
+native coverage nor the physical foreign-owner fixture is claimed as passed.
+Interrupted diagnostic attempts are retained separately, not completed runs.
+Evidence: target/windows-v107-diagnostics/PUBLICATION-CORRECTION.md,
+publication-full-cargo-test.log, final-focused-*.log, publication-check.log and
+publication-development-check.log. These local artifacts are ignored; required
+production code includes src/private_storage_windows_publication.rs. Existing
+preview/development files remain retained, with the commit inventory in
+V1.0.7-COMMIT-CHECKLIST.md. SMTP plaintext credential storage is explicitly
+deferred by that publication-only pass. The subsequent 16 October SMTP storage
+implementation is documented in SMTP-CREDENTIAL-STORAGE.md; other-platform
+native validation is still required, not implied by the earlier full test run.
+Proceed to the next security review under the approved boundary, not release
+approval. That publication-only run did not cover restore/config-save coordination.
+The subsequent SMTP storage pass integrates BackupService restore with the same
+mutex, pre-commit fingerprint recheck and guarded atomic writer; a focused Windows
+regression verifies competing-save exclusion and stale-approval rejection. Other
+platforms/architectures and a symlink-capable native host were not validated in
+this pass. git diff --check passed with existing LF/CRLF notices; HEAD and branch
+are unchanged and all earlier untracked preview/development files are retained.
+
+### SMTP credential storage Windows completion, 16 October 2026
+
+The subsequent credential-storage completion run passed the complete Windows x64
+suite: 961 unit tests passed, zero failed, five ignored (1453.78 seconds). The
+guarded-connection integration target has no tests; the native SQLite terminal
+child integration fixture remains explicitly ignored pending separate harness
+authorization, not counted as passed. Native symlink privilege coverage remains
+unexecuted on Molly. The publication child harness runs through its parent test.
+
+Separately invoked synthetic native migration/recovery/restart test: one parent
+passed, including its fresh-process child's success and removal/absence checks
+for only its own test-namespace Credential Manager entries. Ordinary unit tests
+use Memory and cannot silently access real credentials. Native provider denial
+is simulated through Store; the blocked-publication/recovery path uses a real
+disposable read-only file. This is not a native vault ACL/privilege test, nor
+logout/reboot durability evidence. Normal and windows-dev-isolation Windows x64
+cargo check --bins --tests both passed; git diff --check passed with existing
+line-ending notices. Evidence: ignored target/windows-v107-diagnostics/
+credentials-completion-*.log and SMTP-CREDENTIALS.md. Cross-platform native gates
+and recovery limitations are in SMTP-CREDENTIAL-STORAGE.md. No real-profile
+migration, GUI launch, real SMTP send or production data/ACL change was performed.
