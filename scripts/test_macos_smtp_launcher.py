@@ -97,10 +97,52 @@ class LauncherTests(unittest.TestCase):
         self.assertEqual(self.fixture.read_bytes(), original_fixture)
         for name in launcher.OVERLAY_FILES:
             self.assertEqual((self.harness / "scripts" / name).read_bytes(), (self.controller / "scripts" / name).read_bytes())
-        self.assertNotIn(self.controller, self.checked)
-        self.assertEqual(self.identities.call_args_list[0].args, (self.controller, "a" * 40))
-        self.assertEqual(self.identities.call_args_list[1].args, (self.harness, launcher.SOURCE_SHA))
-        self.assertEqual(self.identities.call_args_list[2].args, (self.source, launcher.SOURCE_SHA))
+        self.assertNotIn(self.controller.resolve(), self.checked)
+        self.assertEqual(self.identities.call_args_list[0].args, (self.controller.resolve(), "a" * 40))
+        self.assertEqual(self.identities.call_args_list[1].args, (self.harness.resolve(), launcher.SOURCE_SHA))
+        self.assertEqual(self.identities.call_args_list[2].args, (self.source.resolve(), launcher.SOURCE_SHA))
+
+    def test_macos_var_parent_alias_uses_canonical_identity_paths(self):
+        # Model /var -> /private/var using a real parent symlink, on every OS.
+        # The checkout leaves themselves are directories, not symlink roots.
+        canonical = Path(self.temp.name) / "private" / "var"
+        canonical.mkdir(parents=True)
+        for root in self.roots:
+            root.rename(canonical / root.name)
+        alias = Path(self.temp.name) / "var"
+        alias.symlink_to(canonical, target_is_directory=True)
+        self.roots = tuple(alias / name for name in ("controller", "harness", "source"))
+        self.controller, self.harness, self.source = self.roots
+        self.fixture = self.harness / "scripts/macos_smtp_native_fixture.rs"
+        self.assertNotEqual(self.controller, self.controller.resolve())
+        # Replay the exact failing test, including copy scope and identity checks.
+        self.test_main_controller_only_exact_three_file_overlay()
+
+    def test_parent_alias_cannot_disguise_overlapping_or_nested_roots(self):
+        alias = Path(self.temp.name) / "var"
+        alias.symlink_to(Path(self.temp.name).resolve(), target_is_directory=True)
+        before = self.snapshot(self.harness)
+        for source in (alias / "harness",
+                       alias / "source" / ".." / "harness",
+                       alias / "controller" / "nested-source"):
+            with self.subTest(source=source):
+                with self.assertRaisesRegex(RuntimeError, "roots_not_disjoint"):
+                    launcher.prepare(self.controller, self.harness, source)
+                self.identities.assert_not_called()
+                self.assertEqual(self.snapshot(self.harness), before)
+
+    def test_scripts_symlink_cannot_escape_to_outside_destination(self):
+        outside = Path(self.temp.name) / "outside"
+        outside.mkdir()
+        sentinel = outside / "macos_smtp_checks.py"
+        sentinel.write_bytes(b"must remain unchanged")
+        scripts = self.harness / "scripts"
+        scripts.rename(self.harness / "original-scripts")
+        scripts.symlink_to(outside, target_is_directory=True)
+        before = self.snapshot(outside)
+        with self.assertRaisesRegex(RuntimeError, "scripts_directory_refused"):
+            launcher.prepare(*self.roots)
+        self.assertEqual(self.snapshot(outside), before)
 
     def test_non_main_or_non_manual_event_refused_before_git(self):
         for changes in ({"GITHUB_REF": "refs/heads/security/v1.0.7-phase1"}, {"GITHUB_EVENT_NAME": "push"}, {"GITHUB_SHA": "main"}):
