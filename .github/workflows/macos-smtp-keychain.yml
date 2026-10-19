@@ -22,22 +22,38 @@ jobs:
       run:
         shell: bash
     steps:
+      - name: Require manual dispatch from main
+        env:
+          SELECTED_REF: ${{ github.ref }}
+          SELECTED_EVENT: ${{ github.event_name }}
+        run: |
+          set -euo pipefail
+          test "$SELECTED_EVENT" = workflow_dispatch
+          test "$SELECTED_REF" = refs/heads/main
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
           ref: ${{ github.sha }}
+          path: launcher
+          persist-credentials: false
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          # Native fixture and application context, always immutable published code.
+          ref: 'd3006b7c526042a7ea5a2ab5f108a2f0d393d5dd'
           path: harness
           persist-credentials: false
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
-          # Reviewed source used by preserved Debian coverage; never use branch tip.
-          ref: '77d3268a5a17b4585371a249135a0cceecfbe00b'
+          # Independent pristine source checkout of the same published code.
+          ref: 'd3006b7c526042a7ea5a2ab5f108a2f0d393d5dd'
           path: source
           persist-credentials: false
       - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
         with:
           python-version: '3.12'
       - name: Validate harness without accessing Keychain
-        run: python -I -B -m unittest discover -s harness/scripts -p test_macos_smtp_checks.py -v
+        run: python -I -B -m unittest discover -s launcher/scripts -p 'test_macos_smtp*.py' -v
+      - name: Verify immutable inputs and prepare test support
+        run: python -I -B launcher/scripts/macos_smtp_launcher.py launcher harness source
       - name: Install pinned Rust
         run: rustup toolchain install 1.98.1 --profile minimal
       - name: Run synthetic native Keychain fixture
@@ -47,4 +63,6 @@ jobs:
         run: python -I -B harness/scripts/macos_smtp_checks.py source
 # Harness verifies its integrated build inputs equal this reviewed source before
 # applying its test-only overlay. Drift is a failure, never a branch-tip fallback.
+# Main supplies only the reviewed controller/runner/manifest, never application code.
+# Historical 77d3268 is manifest provenance only and is never fetched.
 # Manual only, no repository secrets, cache, artifact uploads, packaging or release.
