@@ -22,12 +22,12 @@ SHA = 'a' * 40
 class LocalProfile(unittest.TestCase):
     def env(self):
         return dict(EXPECTED_SHA=SHA, DPT_NATIVE_SQLITE_PROFILE='molly-local',
-                    NATIVE_RUNNER='molly-local', DPT_NATIVE_SQLITE_HOST='Molly',
+                    NATIVE_RUNNER='molly-local', DPT_NATIVE_SQLITE_HOST='IMOLLY',
                     DPT_NATIVE_SQLITE_LOCAL_RISK='Molly-disposable-synthetic-terminal-only',
                     DPT_SYNTHETIC_SQLITE_TERMINAL_TESTS='1',
                     DPT_SYNTHETIC_REPORT_RISK='disposable-synthetic-only')
 
-    def check(self, env, system='Windows', machine='AMD64', node='Molly', bits=8):
+    def check(self, env, system='Windows', machine='AMD64', node='IMOLLY', bits=8):
         with patch.object(n.platform, 'node', return_value=node), patch.object(n.struct, 'calcsize', return_value=bits):
             n.prerequisites(env, system, machine, SHA)
 
@@ -43,6 +43,32 @@ class LocalProfile(unittest.TestCase):
             del env[key]
             with self.subTest(key=key), self.assertRaises(n.Refusal):
                 self.check(env)
+
+    def test_imolly_os_name_and_exact_environment_gate(self):
+        for node in ('IMOLLY', 'imolly', 'iMolly'):
+            with self.subTest(node=node):
+                self.check(self.env(), node=node)
+        for node in ('Molly', 'Florence', 'IMOLLY.other', 'IMOLLY ', 'OTHER'):
+            with self.subTest(node=node), self.assertRaisesRegex(n.Refusal, 'unapproved_host'):
+                self.check(self.env(), node=node)
+        for value in ('Molly', 'imolly', 'IMOLLY ', 'OTHER', ''):
+            env = self.env()
+            env['DPT_NATIVE_SQLITE_HOST'] = value
+            with self.subTest(value=value), self.assertRaisesRegex(n.Refusal, 'unapproved_host'):
+                self.check(env, node='IMOLLY')
+
+    def test_spoofed_environment_cannot_replace_os_identity(self):
+        with patch.object(n, 'execute') as execute, patch.object(n, 'terminal_preflight') as controls:
+            with self.assertRaisesRegex(n.Refusal, 'unapproved_host'):
+                self.check(self.env(), node='Molly')
+            execute.assert_not_called()
+            controls.assert_not_called()
+
+    def test_imolly_unsupported_platform_and_bitness_refuse(self):
+        for kwargs in ({'machine': 'ARM64'}, {'machine': 'x86'}, {'machine': 'x86_64'},
+                       {'system': 'Linux'}, {'system': 'Darwin'}, {'bits': 4}):
+            with self.subTest(kwargs=kwargs), self.assertRaisesRegex(n.Refusal, 'unsupported_platform'):
+                self.check(self.env(), **kwargs)
 
     def test_every_github_variable_refuses_local_execution(self):
         for key in ('GITHUB_ACTIONS', 'GITHUB_REF', 'GITHUB_TOKEN'):

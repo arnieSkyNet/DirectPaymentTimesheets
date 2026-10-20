@@ -30,7 +30,7 @@ CASES = ("normal", "retry", "unwind", "terminal", "panic_terminal", "rollback", 
 TERMINAL = {"terminal", "panic_terminal", "rollback", "wal"}
 STATUS = 86
 FIXTURE = "tests/native_sqlite_terminal_fixtures.rs"
-REVIEWED_FIXTURE_SHA256 = "a2fe71e95c11e712f5c58459974e91869b44e1d9b832815a6d60f3a7d18168bc"
+REVIEWED_FIXTURE_SHA256 = "f457d426fb87edfffa62afc6d79be854448380e9955ffddc728dd533486b9727"
 
 
 class Refusal(Exception):
@@ -49,7 +49,7 @@ def prerequisites(env, system, machine, sha):
             raise Refusal("unsupported_platform")
         if any(key.startswith("GITHUB_") for key in env):
             raise Refusal("local_github_environment_refused")
-        if env.get("DPT_NATIVE_SQLITE_HOST") != "Molly" or platform.node().casefold() != "molly":
+        if env.get("DPT_NATIVE_SQLITE_HOST") != "IMOLLY" or platform.node().casefold() != "imolly":
             raise Refusal("unapproved_host")
         if env.get("DPT_NATIVE_SQLITE_LOCAL_RISK") != "Molly-disposable-synthetic-terminal-only":
             raise Refusal("unsupported_privacy")
