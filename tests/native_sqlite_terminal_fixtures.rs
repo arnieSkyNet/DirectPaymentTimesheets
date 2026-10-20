@@ -255,11 +255,77 @@ fn privacy(root: &Path) {
 #[test]
 #[ignore = "requires future explicit native harness authorization"]
 fn native_child() {
+    let profile = std::env::var("DPT_NATIVE_SQLITE_PROFILE").unwrap_or_else(|_| "github".into());
     assert!(
-        std::env::var("GITHUB_ACTIONS").as_deref() == Ok("true")
-            && std::env::var("GITHUB_REF").as_deref() == Ok("refs/heads/main")
-            && std::env::var("DPT_NATIVE_SQLITE_PREFLIGHT").as_deref() == Ok("verified"),
-        "unsupported_cleanup"
+        profile == "github" || profile == "molly-local",
+        "profile refused"
+    );
+    let local = profile == "molly-local";
+    if local {
+        assert!(
+            cfg!(all(windows, target_arch = "x86_64")),
+            "unsupported_platform"
+        );
+        assert!(
+            std::env::vars_os().all(|(key, _)| !key.to_string_lossy().starts_with("GITHUB_")),
+            "local GitHub environment refused"
+        );
+        assert!(
+            std::env::var("DPT_NATIVE_SQLITE_HOST").as_deref() == Ok("Molly"),
+            "host refused"
+        );
+        #[cfg(windows)]
+        unsafe {
+            #[link(name = "kernel32")]
+            extern "system" {
+                fn GetComputerNameW(buffer: *mut u16, size: *mut u32) -> i32;
+                fn GetCurrentProcess() -> *mut std::ffi::c_void;
+                fn IsWow64Process2(
+                    process: *mut std::ffi::c_void,
+                    process_machine: *mut u16,
+                    native_machine: *mut u16,
+                ) -> i32;
+            }
+            let (mut process_machine, mut native_machine) = (0u16, 0u16);
+            assert!(
+                IsWow64Process2(
+                    GetCurrentProcess(),
+                    &mut process_machine,
+                    &mut native_machine
+                ) != 0
+                    && process_machine == 0
+                    && native_machine == 0x8664,
+                "native x64 refused"
+            );
+            let mut buffer = [0u16; 256];
+            let mut length = buffer.len() as u32;
+            assert!(
+                GetComputerNameW(buffer.as_mut_ptr(), &mut length) != 0,
+                "host identity unavailable"
+            );
+            assert!(
+                String::from_utf16(&buffer[..length as usize])
+                    .unwrap()
+                    .eq_ignore_ascii_case("Molly"),
+                "host refused"
+            );
+        }
+        assert!(
+            std::env::var("DPT_NATIVE_SQLITE_LOCAL_RISK").as_deref()
+                == Ok("Molly-disposable-synthetic-terminal-only"),
+            "risk refused"
+        );
+    } else {
+        assert!(
+            std::env::var("GITHUB_ACTIONS").as_deref() == Ok("true")
+                && std::env::var("GITHUB_REF").as_deref() == Ok("refs/heads/main")
+                && std::env::var("DPT_NATIVE_SQLITE_PREFLIGHT").as_deref() == Ok("verified"),
+            "unsupported_cleanup"
+        );
+    }
+    assert!(
+        std::env::var("DPT_NATIVE_SQLITE_PREFLIGHT").as_deref() == Ok("verified"),
+        "preflight refused"
     );
     let sha = std::env::var("EXPECTED_SHA").expect("approved source missing");
     assert!(
@@ -271,7 +337,8 @@ fn native_child() {
     );
     #[cfg(windows)]
     assert!(
-        std::env::var("NATIVE_RUNNER").as_deref() == Ok("windows-2022"),
+        std::env::var("NATIVE_RUNNER").as_deref()
+            == Ok(if local { "molly-local" } else { "windows-2022" }),
         "unsupported_platform"
     );
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
@@ -341,7 +408,12 @@ fn native_child() {
             .unwrap()
             .map(|row| row.unwrap())
             .collect();
-        assert!(integrity == "ok" && rows == [1], "recovery refused");
+        let expected = if mode == "recover_wal" {
+            vec![1, 2]
+        } else {
+            vec![1]
+        };
+        assert!(integrity == "ok" && rows == expected, "recovery refused");
         assert!(db.close().is_ok(), "recovery close refused");
         mark(&root, "recovery_confirmed");
         return;
@@ -366,9 +438,12 @@ fn native_child() {
             }
             assert!(owner.close().is_ok());
         }
-        "stall" => loop {
-            std::thread::sleep(Duration::from_millis(20));
-        },
+        "stall" => {
+            mark(&root, "stall_ready");
+            loop {
+                std::thread::sleep(Duration::from_millis(20));
+            }
+        }
         _ => {
             if mode == "rollback" || mode == "wal" {
                 let sql = if mode == "rollback" {
@@ -392,11 +467,45 @@ fn native_child() {
                     )
                     .is_ok());
                 }
+                if mode == "wal" {
+                    let checkpoint: (i64, i64, i64) = owner
+                        .db()
+                        .query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |row| {
+                            Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+                        })
+                        .unwrap();
+                    assert!(checkpoint == (0, 0, 0), "checkpoint refused");
+                    owner
+                        .db()
+                        .execute_batch("INSERT INTO evidence VALUES(2,zeroblob(8192));")
+                        .unwrap();
+                    // Main-file-only copy MUST still contain row 1, proving row 2
+                    // depends on the committed WAL, not merely rollback of row 3.
+                    let witness = root.join("checkpoint-only.sqlite");
+                    fs::copy(root.join("stage/synthetic.sqlite"), &witness).unwrap();
+                    let main = Connection::open_with_flags(
+                        &witness,
+                        OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NOFOLLOW,
+                    )
+                    .unwrap();
+                    let values: Vec<i64> = main
+                        .prepare("SELECT value FROM evidence ORDER BY value")
+                        .unwrap()
+                        .query_map([], |row| row.get(0))
+                        .unwrap()
+                        .map(|row| row.unwrap())
+                        .collect();
+                    assert!(values == [1], "WAL witness refused");
+                    assert!(main.close().is_ok(), "witness close refused");
+                    mark(&root, "wal_committed_only");
+                }
                 owner
                     .db()
-                    .execute_batch(
-                        "BEGIN IMMEDIATE; INSERT INTO evidence VALUES(2,zeroblob(8192));",
-                    )
+                    .execute_batch(if mode == "wal" {
+                        "BEGIN IMMEDIATE; INSERT INTO evidence VALUES(3,zeroblob(8192));"
+                    } else {
+                        "BEGIN IMMEDIATE; INSERT INTO evidence VALUES(2,zeroblob(8192));"
+                    })
                     .unwrap();
                 // SAFETY: live same-thread connection.
                 assert!(

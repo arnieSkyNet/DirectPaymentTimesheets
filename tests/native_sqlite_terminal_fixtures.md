@@ -9,9 +9,10 @@ opens. Windows volume-root owner rejection is neither tested around nor relaxed.
 
 ## Authorization and default-off controls
 
-No native execution is approved by this implementation. A future independently
-reviewed workflow change and a separately approved single run are required. The
-test harness has no connection to the current workflow. Production activation and
+No native execution is approved by this implementation. A separately approved
+single run and assignment of published reviewed pins are required. The separate
+`sqlite-terminal-native.yml` preparation is default-disabled and unconfigured.
+The existing Phase 1 workflow continues to refuse terminal execution. Production activation and
 acceptance of production privacy/data-loss risk remain separate decisions.
 
 `python -B scripts/native_sqlite_terminal_checks.py` refuses by default. Future
@@ -19,9 +20,11 @@ execution additionally requires `--run` and ALL of:
 
 - `DPT_SYNTHETIC_SQLITE_TERMINAL_TESTS=1`, exactly;
 - `EXPECTED_SHA` equal to clean checkout HEAD, 40 lowercase hex characters;
-- `GITHUB_ACTIONS=true` and `GITHUB_REF=refs/heads/main`;
-- exact runner/architecture: windows-2022/AMD64, macos-15/arm64, or
-  macos-15-intel/x86_64;
+- profile `github`: actual `GITHUB_ACTIONS=true`, `GITHUB_REF=refs/heads/main`,
+  and windows-2022/AMD64, macos-15/arm64, or macos-15-intel/x86_64;
+- alternatively profile `molly-local`: real Windows AMD64, 64-bit Python,
+  actual host name Molly, explicit local host/risk gates and **no** `GITHUB_*`
+  variables (details below);
 - `DPT_SYNTHETIC_REPORT_RISK=disposable-synthetic-only`, recording a separately
   approved disposable synthetic run where OS-controlled reports remain possible;
 - both Windows root-diagnostic variables absent, including values of zero.
@@ -33,8 +36,10 @@ pre/post source-tip and checkout guards, and default-false manual opt-in. The
 future workflow must compile only this target with --no-run and supervise build
 processes independently; this driver never launches Cargo or rustc. It requires
 DPT_NATIVE_SQLITE_MANIFEST naming a target-local JSON manifest with sha matching
-EXPECTED_SHA, target=native_sqlite_terminal_fixtures, and executable naming the
-native test executable extracted from Cargo JSON. Paths must resolve within the
+EXPECTED_SHA, the complete tracked source inventory (hashes/modes),
+target=native_sqlite_terminal_fixtures, and the executable path/SHA-256 extracted
+from Cargo JSON. DPT_NATIVE_SQLITE_MANIFEST_SHA256 binds the manifest itself.
+EXPECTED_CONTROLLER_SHA independently binds the clean controller checkout. Paths must resolve within the
 checkout's target directory. The manifest is a trusted workflow record, not an
 adversarial artifact attestation. The harness launches the executable directly;
 reserved terminal status 86 must not be hidden by Cargo's test-failure status.
@@ -44,7 +49,7 @@ reserved terminal status 86 must not be hidden by Cargo's test-failure status.
 
 Windows runs all three existing native Job fixtures, requiring exact inventory,
 three executions, no skips and no failure/error. Every new child then uses the
-unchanged `run_windows_job`: atomic Job assignment, suspended creation, membership
+shared `run_windows_job`, with terminal-only NUL stdio isolation: atomic Job assignment, suspended creation, membership
 verification before resume, non-inherited Job handle, no breakaway, bounded leader
 wait and zero active processes before owned handle cleanup. This is independent
 of root diagnostics. The suite verifies a separate exclusive fixture handle can
@@ -55,7 +60,8 @@ Prerequisite dispatch now stops at the first failure, error or skip, including
 unconfirmed cleanup. No later control starts after that result. A stopped or
 incomplete suite cannot pass; only all three successful controls permit progress.
 Test-owned teardown still runs as unittest requires; this change does not prove
-native cleanup or change the Job helper. Mock-only regressions exercise actual
+native cleanup. The helper now optionally isolates stdio and supplies a final
+timeout cleanup receipt; Phase 1's default stdio behaviour is preserved. Mock-only regressions exercise actual
 unittest dispatch with synthetic control bodies failing in each position.
 
 macOS requires Python's supported select.kqueue/kevent process filter, NOTE_EXIT
@@ -141,14 +147,18 @@ only after confirmed whole-child cleanup and successful evidence checks.
 Rollback uses DELETE/FULL, a committed baseline, uncommitted blob insert and real
 db_cacheflush. Before reopening, the harness checks retained database, valid
 recorded hot-journal header and database bytes changed from the baseline image.
-WAL uses disabled autocheckpoint and a committed baseline followed by an
-uncommitted insert; retained WAL must be present before a separate recovery child.
-Both recovery children require integrity_check=ok, exactly the committed row,
-successful explicit close and fresh recovery evidence. This is not power-loss
+WAL disables autocheckpoint, commits/checkpoints row 1, commits row 2 only to
+WAL, then leaves row 3 uncommitted. A read-only main-file-only copy must contain
+exactly [1] before the pending transaction. The recovery child requires exactly
+[1,2]; rollback recovery requires [1]. Both require integrity_check=ok, successful
+explicit close and fresh recovery evidence. Raw pre-recovery database/sidecar
+copies and pre/post hashes remain private beside the retained originals. This is not power-loss
 durability, arbitrary-VFS evidence, or the production recovery service.
 
 Cleanup uncertainty prohibits recovery, later cases, automatic retry and teardown.
-Failed fixtures deliberately retain their disposable files without printing paths.
+All terminal-suite fixtures retain their disposable files without printing paths,
+including successes. A case-local receipt records source/binary hashes, phases,
+statuses and pre/post recovery hashes. A failure never permits automatic deletion.
 No production cleanup or anchored Linux cleanup helper is changed.
 
 ## Validation boundary
@@ -271,3 +281,204 @@ Terminal execution is refused by the workflow in every mode. Safe controls recei
 an allowlisted environment and hardcoded containment-only arguments. The normal
 Phase 1 mode remains separate, with an immediate-stop prerequisite runner and only
 the three exact documented macOS Windows-native skips accepted.
+
+
+## Stage 3 test-only corrections (2026-10-20)
+
+This section governs the corrected driver and new separate workflow; the older
+Phase 1 compile-only preparation above remains historical and unchanged.
+No production SQLite path, owning wrapper or emergency policy is enabled.
+
+### Storage and evidence
+
+`native_sqlite_fixture_storage.py` creates fresh unpredictable fixture roots.
+Windows verifies native AMD64 without WOW64/emulation using IsWow64Process2,
+refuses an elevated token, and supplies an explicit protected, inheritable DACL at CreateDirectoryW:
+current token + SYSTEM only. Owner, non-null DACL, protected root and every ACE
+are inspected; unfamiliar ACE types/trustees refuse. Reparse components,
+symlinks, nonregular objects and multiply-linked files refuse. Handles retain
+root and all ancestors without DELETE sharing, through all child/recovery work.
+Existing permissions are never repaired. macOS checks current UID, exact 0700
+for directories / 0600 for files, device/inode identity and empty extended ACLs;
+unknown ACL results refuse. ABI constants and empty-ACL iteration were checked
+against Apple's [sys/acl.h](https://github.com/apple-oss-distributions/Libc/blob/main/include/sys/acl.h)
+and [acl_entry.c](https://github.com/apple-oss-distributions/Libc/blob/main/posix1e/acl_entry.c). Ancestors require root/current ownership, no unsafe
+write modes (trusted sticky roots allowed) and empty ACLs. Creating an empty root
+with inherited ACLs may be refused before any child/data exists; no ACL stripping
+or machine policy change is attempted. Root descriptors stay held until review
+checks complete. These are trusted synthetic fixture admission checks, **not**
+production VFS confinement or resistance to another process of the same user.
+Unix ancestor replacement and SQLite's internal pathname opens remain limitations.
+
+Before terminal execution the parent uses umask 077. Child environments keep only
+SystemRoot/WINDIR where present plus explicit profile/case/source/barrier fields
+and fixture-private temp paths; no PATH, HOME, SMTP values, tokens, loader
+injection or Rust overrides. GitHub identity values are copied from checked
+runner values, never manufactured. Molly gets no GitHub identity at all.
+Windows terminal-profile supervisor controls also receive private temp storage,
+allowlisted environments and NUL handles; existing Phase 1 callers retain defaults.
+
+Every case is checked against the complete source/controller and executable
+inventory before and after running, and again before a recovery child. The
+manifest maker accepts only the one Cargo test artifact from a completed
+`--no-run` JSON build. The manifest must be produced and reviewed after the build
+in a clean checkout; it is a trusted build receipt, not proof against a malicious
+compiler/same-user writer. Clean Git status plus comparison with each committed Git blob, full source hashes,
+and manifest/executable hashes detect subsequent changes, including hidden
+assume-unchanged edits. Checkout must preserve committed bytes (no CRLF rewriting). Build cancellation still uses
+ordinary Actions timeouts; it is never evidence of strict compiler reaping.
+
+Stall requires privacy_ready, handles_ready and stall_ready, absence of terminal,
+close-failure, completion and guard-release markers, plus a final cleanup receipt:
+Windows exit 1 / macOS -9, leader reaped, no remaining owned group/job processes,
+and supervisor handles closed. No receipt is attached until cleanup succeeds;
+any API, wait, handle-close or timeout-cleanup failure stops all later work.
+Windows exclusive handles must reopen after each child, recovery and stall.
+macOS remains a single trusted nonforking-child supervisor: the receipt's
+`descendants_gone` means verified absence of the owned process group and no fork
+observed, not general descendant containment.
+
+Roots `dpt-native-sqlite-*` and their receipts stay private for local review.
+`pre-recovery/` preserves synthetic database/sidecar bytes before recovery changes
+originals; receipts retain SHA-256 and sizes before and after. No raw output,
+artifact upload or raw evidence publication is configured. An Actions runner's
+private disk is ephemeral: this does **not** promise durable raw preservation
+beyond the job. Agree a sanitized durable receipt policy before a hosted run;
+raw retention/export would require separate authorization.
+
+### Local Molly profile (not executed)
+
+Use an isolated clean checkout containing the separately published reviewed
+source/controller revisions, not Florence's dirty working tree. On Molly,
+independently confirm the real computer name, x64 Python and the reviewed hashes.
+Required records, in addition to the common SHA/manifest/synthetic-risk gates:
+
+- DPT_NATIVE_SQLITE_PROFILE=molly-local
+- NATIVE_RUNNER=molly-local
+- DPT_NATIVE_SQLITE_HOST=Molly
+- DPT_NATIVE_SQLITE_LOCAL_RISK=Molly-disposable-synthetic-terminal-only
+- EXPECTED_CONTROLLER_SHA=<reviewed published controller SHA>
+- DPT_NATIVE_SQLITE_MANIFEST_SHA256=<independently retained manifest digest>
+
+No GITHUB_* variable may exist. The Python supervisor checks platform.node and
+pointer width; the Rust child independently calls GetComputerNameW and requires
+Windows x86_64 and native AMD64 using IsWow64Process2. Do not set synthetic GitHub variables or relabel Florence/Molly as
+windows-2022. Source acquisition is by exact approved commit, with clean Git
+status and hashes, never an unpinned branch tip. Build with the existing pinned
+Rust toolchain using only --no-run, inspect the one ignored-test inventory,
+produce the manifest using native_sqlite_terminal_manifest.py, retain its digest
+separately, then use the driver only after separate execution approval. No
+privilege elevation, service/VM change, report-setting change or retry is allowed.
+
+### Separate macOS workflow and decisions
+
+`sqlite-terminal-native.yml` is workflow_dispatch only, main-only, default false,
+contents:read, macos-15 ARM64 / macos-15-intel x86_64. Checkout and setup-python
+use immutable action SHAs. Controller and source use separate immutable checkout
+pins, credential persistence disabled; both pins are zero sentinels and refused
+before checkout. They cannot be assigned honestly while this work is uncommitted.
+Future approval must name published source S and controller W; update both env
+constants and corresponding checkout refs together in a separately reviewed
+change. A controller commit may precede the workflow commit, avoiding a
+self-referential commit pin. The controller is verified again per case.
+
+Execution order: immutable checkouts; build --no-run (30 min); inventory only
+(10 s child); supervisor controls (2 min outer); eight cases (5 min outer).
+Each fixture child has 3 s, barrier 2 s; Windows cleanup 10 s, macOS cleanup 2 s;
+macOS child alarm 10 s. Normal/retry/unwind exit 0; terminal/panic/rollback/WAL
+exit 86; recovery exit 0; stall must have the exact supervisor-kill status above.
+There are eight acceptance cases and two additional recovery invocations.
+
+Before native execution the required decisions are:
+
+1. Which published immutable source S and controller W are independently approved?
+   Evidence: current changes have no commit pin; zero workflow sentinels refuse.
+2. Is one disposable synthetic run on actual Molly and each macOS architecture
+   authorized with the documented residual reporting risk? WerSetFlags(NOHEAP)
+   does not suppress LocalDumps/collectors; RLIMIT_CORE=0 does not suppress every
+   macOS report. No OS reporting settings will be inspected or changed.
+3. What sanitized durable receipt policy is approved for ephemeral hosted runners?
+   Private raw evidence stays local and no raw upload is authorized.
+
+These decisions authorize neither production emergency termination nor acceptance
+of real payroll/credential privacy risk. Native passes would prove only this
+terminal substrate and fixture, not the full Stage 2 owning-connection prototype:
+registration/open cleanup, backup destination ownership, private staging lifetimes,
+Unix namespace races, panic inside close/destructor, and production shutdown
+integration remain conditional/unresolved. Microsoft Outlook.com, Hotmail.com
+and Live.com OAuth2 remains mandatory for v1.0.7 and outside this SQLite stage.
+
+
+## Sanitized receipts and split publication preparation (2026-10-20)
+
+The controller now emits `dpt-native-sqlite-receipt/v1` through
+`scripts/native_sqlite_terminal_receipt.py`. This is a positive schema, not a
+redaction filter: exact keys, enumerated states/cases/roles, booleans/nulls,
+integer exit codes, numeric tool versions/IDs and fixed-length hexadecimal hashes.
+Unknown fields, duplicate JSON keys, paths, usernames, free-form error strings,
+raw logs and database contents are not accepted fields. The exporter never reads
+raw fixture receipts, recursively exports a directory or serializes exceptions.
+Only database/journal/WAL/SHM hashes and sizes are projected from known paths.
+A cryptographic-looking string is not independently authenticated evidence;
+provenance comes from the pinned controller and external run/receipt verification.
+
+Each of the eight primary cases retains its original phases BEFORE recovery
+clears markers. Recovery has its own actual exit, timeout flag, cleanup, fresh
+privacy/confirmation, integrity/row-set outcome and pre/post hashes. The original
+synthetic pre-recovery files still remain privately retained. An uncertain primary
+or recovery cleanup is UNVERIFIED, not a successful timeout; no fixture inspection,
+recovery, guard release, deletion or later case follows uncertainty. Export then
+uses only already recorded in-memory metadata in a separate private metadata root.
+
+PASS is assigned only after final source/controller/executable admission and
+successful fixture-storage handle closure. An exporter metadata-root close failure
+also prevents output. The strict validator refuses missing cases, incomplete final
+checks, wrong exits, absent witnesses, or unconfirmed cleanup being called PASS.
+The local copy is canonical JSON, mode 0600 on Unix, beneath a validated private
+root (Windows uses the private inherited DACL). A separate SHA-256 sidecar is
+created, data/checksum are flushed, and neither is automatically deleted. The
+receipt declares a minimum retention policy of 90 days. This metadata and file
+format are suitable for long-term local retention; temporary directories and
+hosted disks cannot guarantee that period. Preserve an approved private copy of
+only these sanitized files outside ephemeral storage for at least 90 days.
+
+The driver prepares one local receipt/checksum and emits canonical JSON to the job
+log plus a GitHub job summary. This repository is public: future execution needs
+explicit approval for publication of these sanitized fields. There is no raw
+artifact upload, repository write permission, secret input or production action.
+The workflow records actual `github.workflow_sha` as L, separately from source S
+and controller W. Summary delivery/readback and actual process/job exit remain
+independent acceptance checks; a PASS payload alone is insufficient, including
+when export/output fails or a runner is cancelled. Missing/truncated receipts are
+UNVERIFIED and do not authorize a retry. Summary upload success is not proved by
+writing the runner's summary control file.
+
+Offline verification after an authorized run uses the retained JSON plus sidecar:
+`python -I -B scripts/native_sqlite_terminal_receipt.py --verify <receipt.json>`.
+This verifies schema, canonical bytes and checksum only, not authenticity.
+`--retain <input.json> <new-output.json>` verifies the input/sidecar, then writes
+only canonical metadata and a checksum into an existing approved private directory
+with no overwrite or permission repair. Use this to retain the sanitized files in
+persistent private storage for >=90 days; it never copies raw fixture directories.
+Compare with the independently read-back canonical JSON/digest and approved S/W/L, actual
+run ID/attempt, architecture and job/driver exits. Never copy raw fixture roots,
+crash reports, build logs or environment dumps alongside the retained receipt.
+
+The S checkout MUST contain fixture SHA-256
+`a2fe71e95c11e712f5c58459974e91869b44e1d9b832815a6d60f3a7d18168bc`.
+The manifest producer and driver verify the clean committed S inventory and this
+fixture independently of controller-local files. Old HEAD's fixture is refused.
+W is verified from the controller script's own checkout; no Rust fixture needs to
+be copied into main (main lacks its Unix libc dependency). The configured launcher
+L is a later commit that checks out literal S/W; W cannot pin its own commit.
+The workflow remains default-disabled with zero S/W sentinels until separately
+reviewed publication. Workflow tests now accept either both zero pins or both
+configured pins and require matching source/controller checkout refs. Split-layout
+regressions use synthetic files with mocked immutable Git metadata; they prove
+admission/layout control flow, not remote acquisition or native execution.
+
+This preparation changes only the controller/receipt/test contract. Stage 1,
+Stage 2, the native Rust fixture, application inputs, Phase 1 workflow and unrelated
+user edits remain preserved. Before publication, approve exact S/W/L trees and the
+public sanitized receipt policy/90-day retention process. Native execution and
+residual reporting risk acceptance remain separate approvals.
