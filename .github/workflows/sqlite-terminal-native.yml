@@ -24,8 +24,8 @@ jobs:
     env:
       # Deliberately unconfigured. Assign independently reviewed published commits
       # only after separate approval; current uncommitted work has no valid pin.
-      EXPECTED_SHA: '0000000000000000000000000000000000000000'
-      EXPECTED_CONTROLLER_SHA: '0000000000000000000000000000000000000000'
+      EXPECTED_SHA: '0df2019b45a77995b869685621ea8420501f7956'
+      EXPECTED_CONTROLLER_SHA: 'a549e852c88dda3774ba073d8291ce1adc9f5014'
       NATIVE_RUNNER: ${{ matrix.runner }}
       DPT_NATIVE_SQLITE_LAUNCHER_SHA: ${{ github.workflow_sha }}
       RUSTUP_TOOLCHAIN: '1.98.1'
@@ -48,14 +48,14 @@ jobs:
           test "$EXPECTED_CONTROLLER_SHA" != 0000000000000000000000000000000000000000
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
-          ref: '0000000000000000000000000000000000000000' # must equal EXPECTED_CONTROLLER_SHA
+          ref: 'a549e852c88dda3774ba073d8291ce1adc9f5014' # must equal EXPECTED_CONTROLLER_SHA
           path: controller
           persist-credentials: false
           fetch-depth: 1
           fetch-tags: false
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
-          ref: '0000000000000000000000000000000000000000' # must equal EXPECTED_SHA
+          ref: '0df2019b45a77995b869685621ea8420501f7956' # must equal EXPECTED_SHA
           path: source
           persist-credentials: false
           fetch-depth: 1
