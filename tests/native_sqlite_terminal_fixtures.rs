@@ -271,7 +271,7 @@ fn native_child() {
             "local GitHub environment refused"
         );
         assert!(
-            std::env::var("DPT_NATIVE_SQLITE_HOST").as_deref() == Ok("Molly"),
+            std::env::var("DPT_NATIVE_SQLITE_HOST").as_deref() == Ok("IMOLLY"),
             "host refused"
         );
         #[cfg(windows)]
@@ -306,7 +306,7 @@ fn native_child() {
             assert!(
                 String::from_utf16(&buffer[..length as usize])
                     .unwrap()
-                    .eq_ignore_ascii_case("Molly"),
+                    .eq_ignore_ascii_case("IMOLLY"),
                 "host refused"
             );
         }

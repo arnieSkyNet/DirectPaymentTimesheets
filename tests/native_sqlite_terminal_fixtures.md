@@ -23,7 +23,7 @@ execution additionally requires `--run` and ALL of:
 - profile `github`: actual `GITHUB_ACTIONS=true`, `GITHUB_REF=refs/heads/main`,
   and windows-2022/AMD64, macos-15/arm64, or macos-15-intel/x86_64;
 - alternatively profile `molly-local`: real Windows AMD64, 64-bit Python,
-  actual host name Molly, explicit local host/risk gates and **no** `GITHUB_*`
+  actual host name IMOLLY, explicit local host/risk gates and **no** `GITHUB_*`
   variables (details below);
 - `DPT_SYNTHETIC_REPORT_RISK=disposable-synthetic-only`, recording a separately
   approved disposable synthetic run where OS-controlled reports remain possible;
@@ -355,7 +355,7 @@ Required records, in addition to the common SHA/manifest/synthetic-risk gates:
 
 - DPT_NATIVE_SQLITE_PROFILE=molly-local
 - NATIVE_RUNNER=molly-local
-- DPT_NATIVE_SQLITE_HOST=Molly
+- DPT_NATIVE_SQLITE_HOST=IMOLLY
 - DPT_NATIVE_SQLITE_LOCAL_RISK=Molly-disposable-synthetic-terminal-only
 - EXPECTED_CONTROLLER_SHA=<reviewed published controller SHA>
 - DPT_NATIVE_SQLITE_MANIFEST_SHA256=<independently retained manifest digest>
@@ -393,7 +393,7 @@ Before native execution the required decisions are:
 
 1. Which published immutable source S and controller W are independently approved?
    Evidence: current changes have no commit pin; zero workflow sentinels refuse.
-2. Is one disposable synthetic run on actual Molly and each macOS architecture
+2. Is one disposable synthetic run on actual IMOLLY and each macOS architecture
    authorized with the documented residual reporting risk? WerSetFlags(NOHEAP)
    does not suppress LocalDumps/collectors; RLIMIT_CORE=0 does not suppress every
    macOS report. No OS reporting settings will be inspected or changed.
@@ -465,7 +465,7 @@ run ID/attempt, architecture and job/driver exits. Never copy raw fixture roots,
 crash reports, build logs or environment dumps alongside the retained receipt.
 
 The S checkout MUST contain fixture SHA-256
-`a2fe71e95c11e712f5c58459974e91869b44e1d9b832815a6d60f3a7d18168bc`.
+`f457d426fb87edfffa62afc6d79be854448380e9955ffddc728dd533486b9727`.
 The manifest producer and driver verify the clean committed S inventory and this
 fixture independently of controller-local files. Old HEAD's fixture is refused.
 W is verified from the controller script's own checkout; no Rust fixture needs to
@@ -482,3 +482,15 @@ Stage 2, the native Rust fixture, application inputs, Phase 1 workflow and unrel
 user edits remain preserved. Before publication, approve exact S/W/L trees and the
 public sanitized receipt policy/90-day retention process. Native execution and
 residual reporting risk acceptance remain separate approvals.
+
+## Proposed iMolly hostname correction
+
+The only admitted local computer name is IMOLLY (case-insensitive OS name;
+DPT_NATIVE_SQLITE_HOST must be exactly IMOLLY). The Rust child still queries
+GetComputerNameW and IsWow64Process2; Python still checks platform.node and
+64-bit Windows AMD64. Molly and environment-only impersonations are refused.
+The historical profile/risk identifiers molly-local and
+Molly-disposable-synthetic-terminal-only are unchanged identifiers, not hostname
+aliases. Native token, isolation, cleanup and synthetic-risk policies are unchanged.
+The new fixture fingerprint requires newly reviewed immutable source/controller
+commits and launcher pins. No current S/W/L pin names this proposed fixture.
