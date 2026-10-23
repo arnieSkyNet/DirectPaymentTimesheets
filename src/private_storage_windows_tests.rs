@@ -780,3 +780,46 @@ fn about_windows_verified_root_and_unsafe_ancestor_preserve_fixture() {
     assert_eq!(fs::read(&database).unwrap(), before);
     assert!(policy.matches(&database).unwrap());
 }
+
+#[test]
+fn backup_and_restore_sources_refuse_unsafe_windows_ancestor_without_repair() {
+    let root = tempdir().unwrap();
+    require_ntfs(root.path());
+    let ancestor = root.path().join("controlled-ancestor");
+    let parent = ancestor.join("private-parent");
+    create_private_dir(&ancestor).unwrap();
+    create_private_dir(&parent).unwrap();
+    let database = parent.join("database.sqlite");
+    let db = crate::database::open(&database).unwrap();
+    crate::database::create_schema(&db).unwrap();
+    db.close().unwrap();
+    let before = fs::read(&database).unwrap();
+    let policy = platform::TestSecurityPolicy::capture(&database).unwrap();
+    let backups = root.path().join("backups");
+    let config = root.path().join("absent-config.toml");
+    crate::backup_service::BackupService::create_verified(&database, &config, &backups).unwrap();
+    let (stage, staged) = crate::database_recovery::staged_backup(&parent).unwrap();
+    staged.close().unwrap();
+    drop(stage);
+    let backup_count = fs::read_dir(&backups).unwrap().count();
+
+    // Change only a disposable synthetic ancestor, keeping the database policy.
+    broad_fixture(&ancestor);
+    let unsafe_policy = platform::TestSecurityPolicy::capture(&ancestor).unwrap();
+    let backup_error =
+        crate::backup_service::BackupService::create_verified(&database, &config, &backups)
+            .unwrap_err();
+    let stage_error = crate::database_recovery::staged_backup(&parent)
+        .err()
+        .expect("Unsafe restore source must be refused");
+    for error in [backup_error.to_string(), stage_error.to_string()] {
+        assert!(error.contains("class=unsafe_ancestor; reason=untrusted_allow_ace"));
+        assert!(error.contains("role=existing_ancestor"));
+    }
+    assert_eq!(fs::read(&database).unwrap(), before);
+    assert!(policy.matches(&database).unwrap());
+    assert!(unsafe_policy.matches(&ancestor).unwrap());
+    assert_eq!(fs::read_dir(&backups).unwrap().count(), backup_count);
+    assert_eq!(fs::read_dir(&parent).unwrap().count(), 1);
+    assert!(!config.exists());
+}

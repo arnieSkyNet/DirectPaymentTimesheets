@@ -424,10 +424,7 @@ pub(crate) fn staged_backup(
     let dir = crate::private_storage::tempdir()?;
     // Reserve the database privately before SQLite creates its snapshot.
     let path = dir.path().join("restore.sqlite");
-    let source = Connection::open_with_flags(
-        backup.join("database.sqlite"),
-        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NOFOLLOW,
-    )?;
+    let source = crate::database::open_read_only(&backup.join("database.sqlite"))?;
     crate::private_storage::prepare_database(&path)?;
     source.backup(rusqlite::DatabaseName::Main, &path, None)?;
     let db = crate::database::open(path)?;

@@ -4,7 +4,7 @@ use std::fs::OpenOptions;
 use std::path::{Path, PathBuf};
 
 use chrono::Local;
-use rusqlite::{Connection, DatabaseName, OpenFlags};
+use rusqlite::{Connection, DatabaseName};
 
 const DATABASE_BACKUP_NAME: &str = "database.sqlite";
 const CONFIG_BACKUP_NAME: &str = "config.toml";
@@ -755,12 +755,7 @@ fn reject_symlink(path: &Path, description: &str) -> Result<(), BackupError> {
 }
 
 fn open_read_only(path: &Path) -> Result<Connection, BackupError> {
-    crate::private_storage::check_path(path).map_err(|e| BackupError(e.to_string()))?;
-    Connection::open_with_flags(
-        path,
-        OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NOFOLLOW,
-    )
-    .map_err(|error| {
+    crate::database::open_read_only(path).map_err(|error| {
         BackupError(format!(
             "Could not open backup database {} read-only: {error}",
             path.display()
@@ -807,6 +802,146 @@ fn stage_config(source: &Path, destination: &Path) -> Result<PathBuf, BackupErro
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn source_reader_errors(backup: &Path) -> [String; 2] {
+        [
+            open_read_only(&backup.join(DATABASE_BACKUP_NAME))
+                .err()
+                .expect("Backup source must be refused")
+                .to_string(),
+            crate::database_recovery::staged_backup(backup)
+                .err()
+                .expect("Restore source must be refused")
+                .to_string(),
+        ]
+    }
+
+    #[test]
+    fn checked_source_readers_do_not_create_missing_databases() {
+        let root = crate::private_storage::tempdir().unwrap();
+        source_reader_errors(root.path());
+        assert_eq!(fs::read_dir(root.path()).unwrap().count(), 0);
+    }
+
+    #[test]
+    fn checked_source_readers_refuse_non_regular_database_without_changes() {
+        let root = crate::private_storage::tempdir().unwrap();
+        let source = root.path().join(DATABASE_BACKUP_NAME);
+        crate::private_storage::create_private_dir(&source).unwrap();
+        let marker = source.join("marker");
+        crate::private_storage::write_new(&marker, b"retained source directory").unwrap();
+        let permissions = fs::metadata(&source).unwrap().permissions();
+
+        for error in source_reader_errors(root.path()) {
+            assert!(error.contains("Database is not a regular file"));
+        }
+
+        assert_eq!(fs::read(&marker).unwrap(), b"retained source directory");
+        assert_eq!(fs::metadata(&source).unwrap().permissions(), permissions);
+        assert_eq!(fs::read_dir(&source).unwrap().count(), 1);
+        assert_eq!(fs::read_dir(root.path()).unwrap().count(), 1);
+    }
+
+    #[test]
+    fn checked_source_readers_refuse_parent_traversal_without_changes() {
+        let root = crate::private_storage::tempdir().unwrap();
+        let source = root.path().join(DATABASE_BACKUP_NAME);
+        create_application_database(&source, "source retained");
+        let before = fs::read(&source).unwrap();
+        let permissions = fs::metadata(&source).unwrap().permissions();
+        let child = root.path().join("child");
+        crate::private_storage::create_private_dir(&child).unwrap();
+
+        for error in source_reader_errors(&child.join("..")) {
+            assert!(error.contains("Parent traversal in managed storage path"));
+        }
+
+        assert_eq!(fs::read(&source).unwrap(), before);
+        assert_eq!(fs::metadata(&source).unwrap().permissions(), permissions);
+        assert_eq!(fs::read_dir(root.path()).unwrap().count(), 2);
+        assert_eq!(fs::read_dir(&child).unwrap().count(), 0);
+    }
+
+    #[test]
+    fn checked_source_readers_preserve_valid_backup_and_stage_an_isolated_copy() {
+        let root = crate::private_storage::tempdir().unwrap();
+        let source = root.path().join(DATABASE_BACKUP_NAME);
+        create_application_database(&source, "source retained");
+        let before = fs::read(&source).unwrap();
+        let permissions = fs::metadata(&source).unwrap().permissions();
+        let reader = open_read_only(&source).unwrap();
+        assert!(reader.is_readonly(DatabaseName::Main).unwrap());
+        assert!(reader
+            .execute("DELETE FROM restore_test_marker", [])
+            .is_err());
+        // A read-only source must not register application functions or migrate.
+        assert!(reader
+            .query_row("SELECT dpt_schema_version()", [], |row| row
+                .get::<_, i64>(0))
+            .is_err());
+        reader.close().unwrap();
+        let (stage, staged) = crate::database_recovery::staged_backup(root.path()).unwrap();
+        assert_ne!(stage.path(), root.path());
+        assert_eq!(
+            staged
+                .query_row("SELECT value FROM restore_test_marker", [], |row| row
+                    .get::<_, String>(0))
+                .unwrap(),
+            "source retained"
+        );
+        staged
+            .execute("DELETE FROM restore_test_marker", [])
+            .unwrap();
+        staged.close().unwrap();
+        assert_eq!(fs::read(&source).unwrap(), before);
+        assert_eq!(fs::metadata(&source).unwrap().permissions(), permissions);
+        assert_eq!(fs::read_dir(root.path()).unwrap().count(), 1);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn checked_source_readers_refuse_database_ancestor_and_sidecar_symlinks() {
+        use std::os::unix::fs::symlink;
+        let root = crate::private_storage::tempdir().unwrap();
+        let backup = root.path().join("backup");
+        crate::private_storage::create_private_dir(&backup).unwrap();
+        let source = backup.join(DATABASE_BACKUP_NAME);
+        create_application_database(&source, "source retained");
+        let before = fs::read(&source).unwrap();
+        let permissions = fs::metadata(&source).unwrap().permissions();
+        let alias = root.path().join("ancestor-alias");
+        symlink(&backup, &alias).unwrap();
+        let refused = |path: &Path| {
+            for error in source_reader_errors(path) {
+                assert!(error.contains("Symlink in managed storage path"));
+            }
+        };
+        refused(&alias);
+
+        let linked_backup = root.path().join("linked-backup");
+        crate::private_storage::create_private_dir(&linked_backup).unwrap();
+        let linked_source = linked_backup.join(DATABASE_BACKUP_NAME);
+        symlink(&source, &linked_source).unwrap();
+        refused(&linked_backup);
+        assert!(fs::symlink_metadata(&linked_source)
+            .unwrap()
+            .file_type()
+            .is_symlink());
+
+        for suffix in ["-journal", "-wal", "-shm"] {
+            let sidecar = backup.join(format!("{DATABASE_BACKUP_NAME}{suffix}"));
+            symlink(&source, &sidecar).unwrap();
+            refused(&backup);
+            assert!(fs::symlink_metadata(&sidecar)
+                .unwrap()
+                .file_type()
+                .is_symlink());
+            fs::remove_file(sidecar).unwrap();
+        }
+        assert_eq!(fs::read(&source).unwrap(), before);
+        assert_eq!(fs::metadata(&source).unwrap().permissions(), permissions);
+        assert_eq!(fs::read_dir(&backup).unwrap().count(), 1);
+    }
 
     #[test]
     fn credential_backup_and_restore_stages_never_copy_plaintext() {

@@ -765,16 +765,29 @@ impl DirectPaymentApp {
         if let Some(ids) = ids {
             ui.separator();
             ui.label("Additional notes by Personal Assistant");
-            let assistants = if self
-                .pending_email_batch
-                .as_ref()
-                .is_some_and(|b| matches!(b.kind, PayrollEmailKind::Timesheet))
-            {
-                crate::payroll_evidence::open(&self.application).ok().map(|db| ids.iter()
-                    .filter_map(|id| crate::personal_assistant_repository::PersonalAssistantRepository::get_by_id_on(&db,*id).ok()).collect::<Vec<_>>()).unwrap_or_default()
-            } else {
-                self.email_assistants(PayrollEmailKind::Payslip)
-                    .unwrap_or_default()
+            let assistants = (|| -> Result<Vec<crate::models::PersonalAssistant>, Box<dyn std::error::Error>> {
+                if self.pending_email_batch.as_ref()
+                    .is_some_and(|b| matches!(b.kind, PayrollEmailKind::Timesheet))
+                {
+                    let db = crate::payroll_evidence::open(&self.application)?;
+                    ids.iter().map(|id| {
+                        crate::personal_assistant_repository::PersonalAssistantRepository::get_by_id_on(&db, *id)
+                            .map_err(Into::into)
+                    }).collect()
+                } else {
+                    self.email_assistants(PayrollEmailKind::Payslip)
+                }
+            })();
+            let assistants = match assistants {
+                Ok(assistants) => assistants,
+                Err(_) => {
+                    self.status_message = "Could not load Personal Assistants for additional notes. Cancel and try again. If this continues, check the database or restore a known-good backup.".into();
+                    ui.label(&self.status_message);
+                    if ui.button("Cancel").clicked() {
+                        self.clear_pending_email_batch();
+                    }
+                    return;
+                }
             };
             for assistant in assistants
                 .into_iter()
@@ -7819,5 +7832,87 @@ mod standalone_email_ui_tests {
         let before = email_config_fingerprint(&config);
         config.payroll.timesheet_email_body.push_str("draft");
         assert_ne!(before, email_config_fingerprint(&config));
+    }
+}
+
+#[cfg(test)]
+mod additional_note_database_error_tests {
+    use super::*;
+
+    fn draw(app: &mut DirectPaymentApp) -> String {
+        let ctx = egui::Context::default();
+        let output = ctx.run(Default::default(), |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| app.draw_additional_note_prompt(ui));
+        });
+        format!("{:?}", output.shapes)
+    }
+
+    fn batch(kind: PayrollEmailKind, ids: Vec<i64>) -> PendingEmailBatch {
+        PendingEmailBatch {
+            kind, stage: EmailBatchNoteStage::EditAdditionalNotes,
+            selected_personal_assistant_ids: ids, choices: vec![], payroll_period: None,
+            operational_selection_revision: 0, approved: Default::default(),
+            approved_selection: vec![], approved_bundles: Default::default(),
+            approved_settings: String::new(), approved_holidays: None, resend_acknowledged: false,
+        }
+    }
+
+    #[test]
+    fn database_open_failure_blocks_notes_without_losing_drafts() {
+        let (dir, application) = crate::payroll_timesheet_screen::tests::test_application();
+        let mut app = DirectPaymentApp::new(application);
+        // An existing directory cannot be opened as a SQLite database.
+        app.application.context.environment.database_path = dir.path().to_path_buf();
+        app.pending_email_batch = Some(batch(PayrollEmailKind::Timesheet, vec![1]));
+        app.additional_notes_by_personal_assistant.insert(1, "Draft".into());
+        let labels = draw(&mut app);
+        assert!(app.status_message.starts_with("Could not load Personal Assistants"));
+        assert!(labels.contains("Cancel"));
+        assert!(!labels.contains("Continue"));
+        assert_eq!(app.pending_email_batch.as_ref().unwrap().stage, EmailBatchNoteStage::EditAdditionalNotes);
+        assert_eq!(app.additional_notes_by_personal_assistant[&1], "Draft");
+    }
+
+    #[test]
+    fn failed_selected_assistant_does_not_render_a_partial_list() {
+        let (_dir, application, _, _) = crate::payroll_timesheet_screen::tests::employment_period_fixture();
+        let id = application.personal_assistant_repository.get_all().unwrap()[0].id;
+        let mut app = DirectPaymentApp::new(application);
+        app.pending_email_batch = Some(batch(PayrollEmailKind::Timesheet, vec![id]));
+        let status = app.status_message.clone();
+        let labels = draw(&mut app);
+        assert!(labels.contains("Add note"));
+        assert!(labels.contains("Continue"));
+        assert_eq!(app.status_message, status);
+        app.pending_email_batch.as_mut().unwrap().selected_personal_assistant_ids.push(i64::MAX);
+        let labels = draw(&mut app);
+        assert!(app.status_message.starts_with("Could not load Personal Assistants"));
+        assert!(!labels.contains("Continue"));
+        assert!(!labels.contains("Add note"));
+    }
+
+    #[test]
+    fn legitimate_empty_notes_list_remains_successful() {
+        let (_dir, application) = crate::payroll_timesheet_screen::tests::test_application();
+        let mut app = DirectPaymentApp::new(application);
+        app.pending_email_batch = Some(batch(PayrollEmailKind::Timesheet, vec![]));
+        let status = app.status_message.clone();
+        let labels = draw(&mut app);
+        assert_eq!(app.status_message, status);
+        assert!(labels.contains("Continue"));
+    }
+
+    #[test]
+    fn payslip_database_failure_is_reported_in_notes_editor() {
+        let (_dir, application) = crate::payroll_timesheet_screen::tests::test_application();
+        let mut app = DirectPaymentApp::new(application);
+        // Only the disposable fixture database is changed.
+        app.application.personal_assistant_repository.connection.execute_batch(
+            "ALTER TABLE personal_assistants RENAME TO unavailable_personal_assistants"
+        ).unwrap();
+        app.pending_email_batch = Some(batch(PayrollEmailKind::Payslip, vec![]));
+        let labels = draw(&mut app);
+        assert!(app.status_message.starts_with("Could not load Personal Assistants"));
+        assert!(!labels.contains("Continue"));
     }
 }
