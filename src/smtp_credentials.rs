@@ -19,7 +19,7 @@ pub(crate) fn runtime_change_tag(email: &EmailConfig) -> u64 {
         .hash_one(&email.smtp_password)
 }
 
-trait Store {
+pub(crate) trait Store {
     fn get(&self, id: &str) -> Result<Option<String>, String>;
     fn put(&self, id: &str, value: &str) -> Result<(), String>;
 }
@@ -103,7 +103,7 @@ impl Store for Memory {
         Ok(())
     }
 }
-fn store() -> &'static dyn Store {
+pub(crate) fn store() -> &'static dyn Store {
     #[cfg(not(test))]
     {
         &Native
@@ -174,6 +174,11 @@ fn write_verified(
 }
 
 fn prepare_with(store: &dyn Store, email: &EmailConfig) -> Result<Option<String>, String> {
+    if email.smtp_authentication == crate::config::SmtpAuthentication::MicrosoftOAuth2 {
+        // Switching authentication retains dormant password references without
+        // requiring their retrieval or writing an OAuth secret into config.
+        return Ok(email.smtp_credential_ref.clone());
+    }
     if let Some(error) = &email.smtp_credential_error {
         if email.smtp_password.is_empty() {
             return Err(error.clone());
@@ -213,6 +218,23 @@ pub(crate) fn set_reference(value: &mut toml::Value, id: Option<String>) {
     }
 }
 
+// Reject token-shaped config input rather than silently preserving unknown
+// secret fields in backup copies. Diagnostics never include names or values.
+pub(crate) fn reject_oauth_secrets(value: &toml::Value) -> Result<(), String> {
+    fn contains(value: &toml::Value) -> bool {
+        match value {
+            toml::Value::Table(table) => table.iter().any(|(key, value)| {
+                (matches!(key.to_ascii_lowercase().as_str(), "access_token" | "refresh_token" | "device_code" | "user_code" | "authorization_code" | "auth_code" | "code_verifier" | "verification_uri_complete" | "client_secret" | "id_token")
+                    && value.as_str() != Some("")) || contains(value)
+            }),
+            toml::Value::Array(values) => values.iter().any(contains),
+            _ => false,
+        }
+    }
+    if contains(value) { Err("OAuth secrets are forbidden in configuration and backups. Remove them securely and reconnect using the OS credential store.".into()) }
+    else { Ok(()) }
+}
+
 fn has_plaintext(value: &toml::Value) -> bool {
     match value {
         toml::Value::Table(t) => t
@@ -233,6 +255,7 @@ fn protected_with(store: &dyn Store, bytes: &[u8]) -> Result<Vec<u8>, String> {
         .map_err(|_| "Configuration is not UTF-8; secret-safe copy refused.")?;
     let mut value: toml::Value =
         toml::from_str(text).map_err(|_| "Malformed configuration; secret-safe copy refused.")?;
+    reject_oauth_secrets(&value)?;
     if !has_plaintext(&value) {
         return Ok(bytes.to_vec());
     }
@@ -298,6 +321,12 @@ fn load_with(store: &dyn Store, email: &mut EmailConfig, path: &Path, original: 
                 .and_then(|e| e.get("smtp_credential_ref"))
                 .and_then(toml::Value::as_str)
                 .map(str::to_owned);
+        }
+        if email.smtp_authentication == crate::config::SmtpAuthentication::MicrosoftOAuth2 {
+            use zeroize::Zeroize;
+            email.smtp_password.zeroize();
+            email.smtp_password_baseline.zeroize();
+            return Ok(());
         }
         if let Some(id) = &email.smtp_credential_ref {
             email.smtp_password = read(store, email, id)?.to_string();

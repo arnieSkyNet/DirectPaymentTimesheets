@@ -12,6 +12,7 @@ mod archive;
 mod backup_service;
 mod config;
 mod smtp_credentials;
+mod microsoft_oauth;
 mod context;
 mod contracted_hours_repository;
 mod csv_import;

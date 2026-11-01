@@ -1003,8 +1003,12 @@ fn dispatch_message(
             ))
         }
     };
+    crate::microsoft_oauth::validate(config).map_err(ProductionSendError::NotSent)?;
+    let microsoft = authenticate && config.smtp_authentication == crate::config::SmtpAuthentication::MicrosoftOAuth2;
     // Resolve/verify OS credentials before any DNS/socket/TLS operation.
-    let auth_password = if authenticate && !config.smtp_username.trim().is_empty() {
+    let auth_password = if microsoft {
+        Some(crate::microsoft_oauth::for_send(config).map_err(ProductionSendError::NotSent)?)
+    } else if authenticate && !config.smtp_username.trim().is_empty() {
         Some(crate::smtp_credentials::for_send(config).map_err(ProductionSendError::NotSent)?)
     } else { None };
     let tls = match security {
@@ -1051,17 +1055,8 @@ fn dispatch_message(
             })?;
     }
     if authenticate && !config.smtp_username.trim().is_empty() {
-        connection
-            .auth(
-                &[Mechanism::Plain, Mechanism::Login],
-                &Credentials::new(
-                    config.smtp_username.trim().into(),
-                    auth_password.as_ref().expect("Authenticated credential resolved").to_string(),
-                ),
-            )
-            .map_err(|e| {
-                ProductionSendError::NotSent(safe_smtp_diagnostic("authentication", &e))
-            })?;
+        authenticate_smtp(&mut connection, config.smtp_username.trim(),
+            auth_password.as_ref().expect("Authenticated credential resolved"), microsoft)?;
     }
     // Success is the final DATA acceptance, not a later QUIT or inbox receipt.
     connection
@@ -1075,6 +1070,20 @@ fn dispatch_message(
                 ProductionSendError::Uncertain(detail)
             }
         })
+}
+
+// Keep mechanism selection and the TLS invariant together, including if this
+// helper is reused by another SMTP entry point later.
+fn authenticate_smtp(connection: &mut SmtpConnection, username: &str, secret: &str, microsoft: bool) -> Result<(), ProductionSendError> {
+    if microsoft && !connection.is_encrypted() {
+        return Err(ProductionSendError::NotSent("Microsoft OAuth2 requires an encrypted SMTP connection; authentication blocked.".into()));
+    }
+    connection.auth(
+        if microsoft { &[Mechanism::Xoauth2] } else { &[Mechanism::Plain, Mechanism::Login] },
+        &Credentials::new(username.into(), secret.into()),
+    ).map(|_| ()).map_err(|error| ProductionSendError::NotSent(if microsoft {
+        format!("{}. Microsoft SMTP authentication rejected. Check mailbox identity, delegated SMTP.Send consent and whether SMTP AUTH is enabled; sign in / reconnect if needed. No password fallback or automatic resend.", safe_smtp_diagnostic("authentication", &error))
+    } else { safe_smtp_diagnostic("authentication", &error) }))
 }
 
 // Only synthetic TLS-injection tests enable this. Before AUTH/DATA there are

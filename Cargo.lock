@@ -1273,6 +1273,7 @@ dependencies = [
  "keyring",
  "lettre",
  "libc",
+ "log",
  "lopdf 0.35.0",
  "native-tls",
  "pdf-extract",

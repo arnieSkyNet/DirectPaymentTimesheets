@@ -271,6 +271,14 @@ impl SmtpSecurity {
     }
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SmtpAuthentication {
+    #[default]
+    Password,
+    MicrosoftOAuth2,
+}
+
 #[derive(Clone, Serialize, Deserialize)]
 pub struct EmailConfig {
     #[serde(default = "default_timesheet_employer_cc")]
@@ -291,6 +299,14 @@ pub struct EmailConfig {
 
     #[serde(default)]
     pub smtp_username: String,
+
+    #[serde(default)]
+    pub smtp_authentication: SmtpAuthentication,
+    // Public application identifier and opaque OS-vault reference only.
+    #[serde(default)]
+    pub microsoft_client_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub microsoft_credential_ref: Option<String>,
 
     #[serde(default, skip_serializing)]
     pub smtp_password: String,
@@ -371,6 +387,9 @@ impl Default for EmailConfig {
             smtp_host: default_smtp_host(),
             smtp_port: default_smtp_port(),
             smtp_username: String::new(),
+            smtp_authentication: SmtpAuthentication::Password,
+            microsoft_client_id: String::new(),
+            microsoft_credential_ref: None,
             smtp_password: String::new(),
             smtp_credential_ref: None,
             smtp_credential_error: None,
@@ -477,6 +496,8 @@ impl AppConfig {
         };
         let source: toml::Value =
             toml::from_str(&contents).map_err(|e: toml::de::Error| invalid(e.span()))?;
+        crate::smtp_credentials::reject_oauth_secrets(&source)
+            .map_err(|error| StartupError::new(Stage::Configuration, Some(path), error, "Do not copy or share raw configuration contents."))?;
         validate_default_location(
             Some(&source),
             cfg!(windows),

@@ -118,9 +118,9 @@ impl Fixture {
                 }
                 let response: &[u8] = if line.starts_with("EHLO") {
                     if advertise_tls && !encrypted {
-                        b"250-synthetic\r\n250-STARTTLS\r\n250 AUTH PLAIN LOGIN\r\n"
+                        b"250-synthetic\r\n250-STARTTLS\r\n250 AUTH PLAIN LOGIN XOAUTH2\r\n"
                     } else {
-                        b"250-synthetic\r\n250 AUTH PLAIN LOGIN\r\n"
+                        b"250-synthetic\r\n250 AUTH PLAIN LOGIN XOAUTH2\r\n"
                     }
                 } else if line.starts_with("STARTTLS") {
                     trace
@@ -227,6 +227,7 @@ impl Drop for Fixture {
 }
 // Never retain AUTH payloads, addresses, headers or DATA contents.
 fn command_phase(line: &str) -> &'static str {
+    if line.starts_with("AUTH XOAUTH2 ") { return "AUTH XOAUTH2"; }
     for phase in ["EHLO", "STARTTLS", "AUTH", "MAIL", "RCPT", "DATA", "QUIT"] {
         if line.starts_with(phase) {
             return phase;
@@ -549,4 +550,49 @@ fn standalone_message_reuses_required_tls_authentication_and_custom_ports() {
         assert!(!commands.iter().any(|(encrypted, line)| !encrypted
             && (line.starts_with("AUTH") || line.starts_with("MAIL") || line.starts_with("DATA"))));
     }
+}
+
+#[test]
+fn microsoft_configuration_failures_stop_before_socket_or_authentication() {
+    use crate::config::SmtpAuthentication;
+    let fixture = Fixture::new(SmtpSecurity::RequiredStarttls, true, false, false);
+    let mut config = config(fixture.port, SmtpSecurity::RequiredStarttls);
+    config.smtp_username = "fixture@outlook.com".into();
+    let error = dispatch_message(&config, &message(), Some(trusted("localhost"))).unwrap_err();
+    assert!(matches!(error, ProductionSendError::NotSent(ref detail) if detail.contains("requires OAuth2")));
+    config.smtp_authentication = SmtpAuthentication::MicrosoftOAuth2;
+    let error = dispatch_message(&config, &message(), Some(trusted("localhost"))).unwrap_err();
+    assert!(matches!(error, ProductionSendError::NotSent(ref detail) if detail.contains("requires smtp-mail.outlook.com")));
+    assert!(fixture.commands.lock().unwrap().is_empty());
+}
+
+#[test]
+fn microsoft_xoauth2_uses_tls_only_and_authentication_rejection_never_submits_mail() {
+    for reject in [false, true] {
+        let fixture = Fixture::new(SmtpSecurity::RequiredStarttls, true, reject, false);
+        let hello = ClientId::default();
+        let mut connection = SmtpConnection::connect(("localhost", fixture.port), Some(std::time::Duration::from_secs(5)), &hello, None, None).unwrap();
+        connection.starttls(&trusted("localhost"), &hello).unwrap();
+        let result = authenticate_smtp(&mut connection, "fixture@outlook.com", "SYNTHETIC_ACCESS_TOKEN", true);
+        if reject {
+            assert!(matches!(result, Err(ProductionSendError::NotSent(ref detail)) if detail.contains("SMTP AUTH") && !detail.contains("SECRET")));
+        } else {
+            result.unwrap(); connection.send(message().envelope(), &message().formatted()).unwrap();
+        }
+        drop(connection);
+        let commands = fixture.finish();
+        assert_eq!(commands.iter().filter(|(_,line)| line.starts_with("AUTH")).count(), 1);
+        assert!(commands.iter().any(|(encrypted,line)| *encrypted && line == "AUTH XOAUTH2"));
+        assert!(!commands.iter().any(|(encrypted,line)| !encrypted && line.starts_with("AUTH")));
+        if reject { assert!(!commands.iter().any(|(_,line)| line == "MAIL" || line == "DATA")); }
+    }
+}
+
+#[test]
+fn microsoft_bearer_authentication_is_blocked_on_an_unencrypted_connection() {
+    let fixture = Fixture::new(SmtpSecurity::Plaintext, false, false, false);
+    let mut connection = SmtpConnection::connect(("localhost", fixture.port), Some(std::time::Duration::from_secs(5)), &ClientId::default(), None, None).unwrap();
+    assert!(matches!(authenticate_smtp(&mut connection, "fixture@outlook.com", "SYNTHETIC_ACCESS_TOKEN", true), Err(ProductionSendError::NotSent(_))));
+    drop(connection);
+    assert!(!fixture.finish().iter().any(|(_,line)| line.starts_with("AUTH") || line == "MAIL"));
 }

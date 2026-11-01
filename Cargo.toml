@@ -35,6 +35,9 @@ zip = "2.2"
 sha2 = "0.10"
 
 ureq = { version = "3", features = ["json"] }
+# ureq-proto traces raw response bodies. Compile out debug/trace in every
+# profile so OAuth tokens/codes cannot enter dependency wire diagnostics.
+log = { version = "0.4", features = ["max_level_info", "release_max_level_info"] }
 semver = "1"
 
 tempfile = "3"

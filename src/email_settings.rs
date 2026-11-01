@@ -14,6 +14,7 @@ pub(crate) fn validate_standalone_test(
     config: &EmailConfig,
     recipient: Option<TestRecipient>,
 ) -> Result<(), String> {
+    crate::microsoft_oauth::validate(config)?;
     let recipient = recipient.ok_or("Select Payroll Test Address or PA Test Address.")?;
     match config.smtp_transport.as_str() {
         // The local transport deliberately uses localhost:25 without credentials.
@@ -29,10 +30,10 @@ pub(crate) fn validate_standalone_test(
             }
             // Match dispatch: an empty username selects an unauthenticated
             // remote relay; a supplied username selects authentication.
-            if !config.smtp_username.trim().is_empty() {
+            if config.smtp_authentication == crate::config::SmtpAuthentication::Password && !config.smtp_username.trim().is_empty() {
                 if let Some(error) = &config.smtp_credential_error { return Err(error.clone()); }
             }
-            if !config.smtp_username.trim().is_empty() && config.smtp_password.is_empty() {
+            if config.smtp_authentication == crate::config::SmtpAuthentication::Password && !config.smtp_username.trim().is_empty() && config.smtp_password.is_empty() {
                 return Err("Enter the SMTP password for the supplied username.".into());
             }
         }

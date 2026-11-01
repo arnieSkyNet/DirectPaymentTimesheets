@@ -228,6 +228,7 @@ pub struct DirectPaymentApp {
     email_preview: Option<PayrollEmailPreview>,
     test_personal_assistant_id: Option<i64>,
     smtp_test: crate::email_settings::TestEmailTask,
+    microsoft_sign_in: crate::microsoft_oauth::SignInTask,
     email_saved_fingerprint: u64,
     email_signature_saved: Option<String>,
     email_provider_saved: Option<String>,
@@ -304,6 +305,7 @@ impl DirectPaymentApp {
             email_preview: None,
             test_personal_assistant_id: None,
             smtp_test: Default::default(),
+            microsoft_sign_in: Default::default(),
             email_saved_fingerprint,
             email_signature_saved: None,
             email_provider_saved: None,
@@ -347,7 +349,8 @@ impl eframe::App for DirectPaymentApp {
             });
         }
         self.poll_smtp_test();
-        if self.smtp_test.pending() {
+        self.microsoft_sign_in.poll(&mut self.application.context.config.email);
+        if self.smtp_test.pending() || self.microsoft_sign_in.pending() {
             ctx.request_repaint_after(std::time::Duration::from_millis(250));
         }
         self.apply_database_failure(crate::database_failure::current());
@@ -1200,6 +1203,24 @@ impl DirectPaymentApp {
             });
         });
         if email.smtp_transport == "SMTP Server" {
+            ui.horizontal(|ui| {
+                ui.label("Authentication");
+                let old = email.smtp_authentication;
+                crate::gui_controls::combo_box("smtp_authentication")
+                    .selected_text(match old { crate::config::SmtpAuthentication::Password => "Password / relay", crate::config::SmtpAuthentication::MicrosoftOAuth2 => "Microsoft OAuth2" })
+                    .show_ui(ui, |ui| {
+                        ui.selectable_value(&mut email.smtp_authentication, crate::config::SmtpAuthentication::Password, "Password / relay (GMX, Gmail, other providers)");
+                        ui.selectable_value(&mut email.smtp_authentication, crate::config::SmtpAuthentication::MicrosoftOAuth2, "Microsoft OAuth2 (Outlook.com, Hotmail.com, Live.com)");
+                    });
+                if old != email.smtp_authentication {
+                    self.microsoft_sign_in.cancel();
+                    if email.smtp_authentication == crate::config::SmtpAuthentication::MicrosoftOAuth2 {
+                        email.smtp_host = "smtp-mail.outlook.com".into();
+                        email.smtp_port = 587;
+                        email.smtp_security = Some(crate::config::SmtpSecurity::RequiredStarttls);
+                    }
+                }
+            });
             email_settings_row(ui, "smtp_fields", |ui, row_width| {
                 let width = (row_width - 320.0) / 3.0;
                 ui.label("Host");
@@ -1208,13 +1229,37 @@ impl DirectPaymentApp {
                 ui.add(egui::DragValue::new(&mut email.smtp_port).range(1..=65535));
                 ui.label("Username");
                 ui.add(egui::TextEdit::singleline(&mut email.smtp_username).desired_width(width));
-                ui.label("Password");
-                ui.add(
-                    egui::TextEdit::singleline(&mut email.smtp_password)
-                        .password(true)
-                        .desired_width(width),
-                );
+                if email.smtp_authentication == crate::config::SmtpAuthentication::Password {
+                    ui.label("Password");
+                    ui.add(egui::TextEdit::singleline(&mut email.smtp_password).password(true).desired_width(width));
+                }
             });
+            if email.smtp_authentication == crate::config::SmtpAuthentication::MicrosoftOAuth2 {
+                ui.horizontal(|ui| {
+                    ui.label("Microsoft public-client application ID");
+                    ui.text_edit_singleline(&mut email.microsoft_client_id);
+                });
+                ui.small("Personal Microsoft accounts: smtp-mail.outlook.com:587, required STARTTLS. A registered public-client app with delegated SMTP.Send and offline_access is required. No client secret. Tokens stay in your OS credential store.");
+                ui.horizontal(|ui| {
+                    if ui.add_enabled(!self.microsoft_sign_in.pending() && !self.smtp_test.pending(), egui::Button::new("Sign in / reconnect with Microsoft")).clicked() {
+                        if let Err(error) = self.microsoft_sign_in.start(email) { self.microsoft_sign_in.status = error; }
+                    }
+                    if self.microsoft_sign_in.pending() && ui.button("Cancel sign-in").clicked() { self.microsoft_sign_in.cancel(); }
+                    if ui.add_enabled(!self.smtp_test.pending(), egui::Button::new("Disconnect Microsoft account")).clicked() {
+                        self.microsoft_sign_in.cancel();
+                        email.microsoft_credential_ref = None;
+                        self.microsoft_sign_in.status = "Account disconnected from these settings. Retained vault entries and Microsoft consent were not deleted; Save Email Settings to persist.".into();
+                    }
+                });
+                if let Some(challenge) = &self.microsoft_sign_in.challenge {
+                    ui.hyperlink_to("Open Microsoft sign-in", &challenge.verification_uri);
+                    ui.label(format!("Your one-time sign-in code: {}", challenge.user_code));
+                    ui.small("Only enter a code you requested here. Sign in as the configured SMTP mailbox; a different account will fail SMTP authentication.");
+                }
+                ui.label(&self.microsoft_sign_in.status);
+                if email.microsoft_credential_ref.is_some() { ui.small("Stored authorization is configured. Sending verifies vault access, refreshes expired tokens and checks SMTP AUTH."); }
+            }
+            if let Err(error) = crate::microsoft_oauth::validate(email) { ui.colored_label(egui::Color32::YELLOW, error); }
             ui.small("Suggested ports: STARTTLS 587; implicit TLS 465; plaintext 25. Security never changes your custom port.");
             if email.smtp_security.is_none()
                 || email.smtp_security == Some(crate::config::SmtpSecurity::Plaintext)
@@ -1225,8 +1270,8 @@ impl DirectPaymentApp {
         } else {
             ui.label("Uses unencrypted localhost:25 with no credentials. The relay must secure onward delivery.");
         }
-        if let Some(error) = &email.smtp_credential_error {
-            ui.colored_label(egui::Color32::RED, error);
+        if email.smtp_authentication == crate::config::SmtpAuthentication::Password {
+            if let Some(error) = &email.smtp_credential_error { ui.colored_label(egui::Color32::RED, error); }
         }
         email_settings_row(ui, "test_addresses", |ui, row_width| {
             let width = (row_width - 260.0) / 2.0;
@@ -1457,6 +1502,12 @@ impl DirectPaymentApp {
     }
 
     fn guard_smtp_test_close(&mut self, ctx: &egui::Context, requested_close: &mut bool) {
+        if *requested_close && self.microsoft_sign_in.pending() {
+            self.microsoft_sign_in.cancel();
+            ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+            self.status_message = "Cancelling Microsoft sign-in. Wait for the authorization worker to stop before closing.".into();
+            *requested_close = false;
+        }
         if *requested_close && self.smtp_test.pending() {
             ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
             self.status_message = if self.smtp_test.stalled() {
@@ -1637,7 +1688,7 @@ impl DirectPaymentApp {
             Some(recipient),
         );
         let send_button = ui.add_enabled(
-            !self.smtp_test.pending() && readiness.is_ok(),
+            !self.smtp_test.pending() && !self.microsoft_sign_in.pending() && readiness.is_ok(),
             egui::Button::new(egui::RichText::new(label).strong()),
         );
         if send_button.clicked() {
