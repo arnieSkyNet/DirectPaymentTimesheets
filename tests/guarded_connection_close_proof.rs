@@ -3,204 +3,12 @@
 #![cfg(target_os = "linux")]
 
 use rusqlite::{ffi, Connection, Error, ErrorCode, OpenFlags};
-use std::fs::File;
-use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
-use std::{cell::Cell, path::PathBuf, rc::Rc};
+use std::os::unix::fs::PermissionsExt;
+use std::path::PathBuf;
 
-// Compile the existing helper into this integration-test crate only.
-#[allow(dead_code)]
-#[path = "../src/private_storage_linux.rs"]
-mod linux_cleanup;
-
-struct Staging {
-    path: PathBuf,
-    cleanup: linux_cleanup::DirectoryCleanup,
-    marker: PathBuf,
-    require_closed_sidecars: Cell<bool>,
-}
-impl Staging {
-    fn new(root: &std::path::Path) -> Rc<Self> {
-        let temporary = tempfile::Builder::new()
-            .permissions(std::fs::Permissions::from_mode(0o700))
-            .tempdir_in(root)
-            .expect("staging creation failed");
-        let cleanup = linux_cleanup::DirectoryCleanup::capture(temporary.path())
-            .expect("anchored cleanup acquisition failed");
-        Rc::new(Self {
-            path: temporary.keep(),
-            cleanup,
-            marker: root.join("staging-drop"),
-            require_closed_sidecars: Cell::new(false),
-        })
-    }
-}
-impl Drop for Staging {
-    fn drop(&mut self) {
-        if self.require_closed_sidecars.get() {
-            // Observe SQLite's final-close removal BEFORE anchored cleanup.
-            assert!(!self.path.join("synthetic.sqlite-wal").exists());
-            assert!(!self.path.join("synthetic.sqlite-shm").exists());
-        }
-        let classification = if self.cleanup.remove().is_ok() {
-            "removed"
-        } else {
-            "refused"
-        };
-        assert!(
-            std::fs::write(&self.marker, classification).is_ok(),
-            "cleanup marker failed"
-        );
-    }
-}
-
-struct Sentinel {
-    path: PathBuf,
-    closed: Rc<Cell<bool>>,
-    _handles: Vec<File>,
-}
-
-impl Drop for Sentinel {
-    fn drop(&mut self) {
-        let value = if self.closed.get() {
-            "closed"
-        } else {
-            "premature"
-        };
-        assert!(
-            std::fs::write(&self.path, value).is_ok(),
-            "sentinel write failed"
-        );
-    }
-}
-
-struct ProofConnection {
-    connection: Option<Connection>,
-    closed: Rc<Cell<bool>>,
-    _guard: Sentinel,
-    staging: Rc<Staging>,
-}
-
-impl ProofConnection {
-    fn open(root: &std::path::Path) -> Self {
-        let staging = Staging::new(root);
-        Self::open_staged(root, staging, false)
-            .unwrap_or_else(|_| panic!("synthetic SQLite open failed"))
-    }
-
-    fn open_staged(
-        root: &std::path::Path,
-        staging: Rc<Staging>,
-        invalid_flags: bool,
-    ) -> Result<Self, Error> {
-        // Real synthetic handles; NOT a Unix pathname confinement mechanism.
-        let directory = |path: &std::path::Path| {
-            std::fs::OpenOptions::new()
-                .read(true)
-                .custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC)
-                .open(path)
-                .expect("synthetic directory handle failed")
-        };
-        let path = staging.path.join("synthetic.sqlite");
-        let database = std::fs::OpenOptions::new()
-            .read(true)
-            .write(true)
-            .create(true)
-            .truncate(false)
-            .mode(0o600)
-            .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
-            .open(&path)
-            .expect("synthetic database handle failed");
-        // Closed=true means no live SQLite yet. Guard precedes SQLite open.
-        let closed = Rc::new(Cell::new(true));
-        let guard = Sentinel {
-            path: root.join("guard-drop"),
-            closed: closed.clone(),
-            _handles: vec![directory(root), directory(&staging.path), database],
-        };
-        let flags = if invalid_flags {
-            OpenFlags::empty()
-        } else {
-            OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_NOFOLLOW
-        };
-        let connection = Connection::open_with_flags(&path, flags)?;
-        closed.set(false);
-        Ok(Self {
-            connection: Some(connection),
-            closed,
-            _guard: guard,
-            staging,
-        })
-    }
-
-    fn db(&self) -> &Connection {
-        self.connection.as_ref().unwrap()
-    }
-    fn db_mut(&mut self) -> &mut Connection {
-        self.connection.as_mut().unwrap()
-    }
-
-    fn registration(self) -> Result<Self, (Self, Error)> {
-        // A real SQL failure after successful synthetic registration/open.
-        let result = self
-            .db()
-            .busy_timeout(std::time::Duration::from_millis(50))
-            .and_then(|_| self.db().execute_batch("INVALID SYNTHETIC REGISTRATION"));
-        match result {
-            Ok(()) => Ok(self),
-            Err(error) => Err((self, error)),
-        }
-    }
-
-    fn close(mut self) -> Result<(), (Self, Error)> {
-        let connection = self.connection.take().expect("proof connection missing");
-        match connection.close() {
-            Ok(()) => {
-                self.closed.set(true);
-                Ok(())
-            }
-            Err((connection, error)) => {
-                self.connection = Some(connection);
-                Err((self, error))
-            }
-        }
-    }
-
-    // Deliberately use a real FFI statement, as in rusqlite 0.31.0 test_close_retry.
-    // A normal borrowed Statement would prevent moving its Connection into close.
-    fn outstanding_statement(&self) -> *mut ffi::sqlite3_stmt {
-        let mut statement = std::ptr::null_mut();
-        // SAFETY: same-thread owned, live connection; valid static NUL-terminated
-        // SQL; writable out pointer. The statement is finalized before successful
-        // close, or retained until the aborting child's process terminates.
-        let code = unsafe {
-            ffi::sqlite3_prepare_v2(
-                self.connection.as_ref().unwrap().handle(),
-                b"SELECT 1\0".as_ptr().cast(),
-                -1,
-                &mut statement,
-                std::ptr::null_mut(),
-            )
-        };
-        assert_eq!(code, ffi::SQLITE_OK, "synthetic prepare failed");
-        assert!(!statement.is_null());
-        statement
-    }
-}
-
-impl Drop for ProofConnection {
-    fn drop(&mut self) {
-        if let Some(connection) = self.connection.take() {
-            match connection.close() {
-                Ok(()) => self.closed.set(true),
-                Err((connection, _)) => {
-                    self.connection = Some(connection);
-                    // No retry, guard drop, unwind or staging deletion on failure.
-                    std::process::abort();
-                }
-            }
-        }
-    }
-}
+#[path = "support/sqlite_owner_prototype.rs"]
+mod prototype;
+use prototype::{ProofConnection, Staging};
 
 fn suppress_dumps() {
     let limit = libc::rlimit {
@@ -292,6 +100,7 @@ fn child_entry() {
         return;
     }
     let owner = ProofConnection::open(&root);
+    assert!(owner.verify_namespace().is_ok());
     assert!(!root.join("guard-drop").exists());
     match mode {
         "close" => assert!(owner.close().is_ok(), "ordinary close failed"),
@@ -304,8 +113,8 @@ fn child_entry() {
             assert!(
                 matches!(error, Error::SqliteFailure(code, _) if code.code == ErrorCode::DatabaseBusy)
             );
-            assert!(!owner.closed.get());
-            assert!(owner.staging.path.is_dir());
+            assert!(!owner.is_closed());
+            assert!(owner.staging().path.is_dir());
             assert!(!root.join("staging-drop").exists());
             assert!(!root.join("guard-drop").exists());
             // SAFETY: the failed close returned the live owner; statement is
@@ -332,15 +141,60 @@ fn child_entry() {
             );
             assert!(owner.close().is_ok());
         }
+        "repeated_retry" | "registration_retry" | "shared_retry" => {
+            let retained_stage = std::rc::Rc::downgrade(&owner.staging());
+            let path = owner.staging().path.clone();
+            let second = if mode == "shared_retry" {
+                Some(ProofConnection::open_staged(&root, owner.staging().clone(), false).unwrap())
+            } else {
+                None
+            };
+            let statement = owner.outstanding_statement();
+            let owner = if mode == "registration_retry" {
+                owner
+                    .registration()
+                    .err()
+                    .expect("registration failure missing")
+                    .0
+            } else {
+                owner
+            };
+            let (owner, first_error) = owner.close().err().expect("busy close missing");
+            let (owner, second_error) = owner.close().err().expect("second busy close missing");
+            // Finalize before assertions so unexpected assertion unwind cannot
+            // accidentally enter the historical terminal destructor fixture.
+            unsafe {
+                assert_eq!(ffi::sqlite3_finalize(statement), ffi::SQLITE_OK);
+            }
+            for error in [first_error, second_error] {
+                assert!(
+                    matches!(error, Error::SqliteFailure(code, _) if code.code == ErrorCode::DatabaseBusy)
+                );
+            }
+            assert!(owner.verify_namespace().is_ok());
+            assert!(owner.guard_handles_live());
+            assert!(retained_stage.upgrade().is_some());
+            assert!(!root.join("guard-drop").exists());
+            assert!(!root.join("staging-drop").exists());
+            if let Some(second) = second {
+                assert!(second.close().is_ok());
+                assert!(path.exists());
+                assert!(owner.verify_namespace().is_ok());
+                assert!(!root.join("staging-drop").exists());
+            }
+            assert!(owner.close().is_ok());
+            assert!(retained_stage.upgrade().is_none());
+            assert!(!path.exists());
+        }
         "rollback" | "rollback_unwind" => {
-            let path = owner.staging.path.join("synthetic.sqlite-journal");
+            let path = owner.staging().path.join("synthetic.sqlite-journal");
             owner
                 .db()
                 .execute_batch("PRAGMA journal_mode=DELETE; CREATE TABLE evidence(value INTEGER);")
                 .unwrap();
             let mut owner = owner;
             if mode == "rollback" {
-                let transaction = owner.db_mut().transaction().unwrap();
+                let transaction = owner.transaction().unwrap();
                 transaction
                     .execute("INSERT INTO evidence VALUES(1)", [])
                     .unwrap();
@@ -348,7 +202,7 @@ fn child_entry() {
                 transaction.rollback().unwrap();
             } else {
                 let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                    let transaction = owner.db_mut().transaction().unwrap();
+                    let transaction = owner.transaction().unwrap();
                     transaction
                         .execute("INSERT INTO evidence VALUES(1)", [])
                         .unwrap();
@@ -369,10 +223,10 @@ fn child_entry() {
             assert!(owner.close().is_ok());
         }
         "wal" => {
-            owner.staging.require_closed_sidecars.set(true);
+            owner.staging().require_closed_sidecars.set(true);
             owner.db().execute_batch("PRAGMA journal_mode=WAL; PRAGMA wal_autocheckpoint=0; CREATE TABLE evidence(value INTEGER); INSERT INTO evidence VALUES(1);").unwrap();
-            let stage = owner.staging.path.clone();
-            let second = ProofConnection::open_staged(&root, owner.staging.clone(), false)
+            let stage = owner.staging().path.clone();
+            let second = ProofConnection::open_staged(&root, owner.staging().clone(), false)
                 .unwrap_or_else(|_| panic!("second open failed"));
             assert_eq!(
                 second
@@ -393,11 +247,7 @@ fn child_entry() {
             assert!(owner.close().is_ok());
             assert!(stage.is_dir());
             assert!(!root.join("staging-drop").exists());
-            assert!(second
-                ._guard
-                ._handles
-                .iter()
-                .all(|file| file.metadata().is_ok()));
+            assert!(second.guard_handles_live());
             assert_eq!(
                 second
                     .db()
@@ -408,18 +258,20 @@ fn child_entry() {
             assert!(second.close().is_ok());
             assert!(!stage.exists());
         }
-        "backup" => {
+        "backup" | "backup_retry" => {
             owner
                 .db()
                 .execute_batch(
                     "CREATE TABLE evidence(value INTEGER); INSERT INTO evidence VALUES(1);",
                 )
                 .unwrap();
-            let destination_root = tempfile::tempdir_in(&root).unwrap();
+            let destination_root = tempfile::Builder::new()
+                .permissions(std::fs::Permissions::from_mode(0o700))
+                .tempdir_in(&root)
+                .unwrap();
             let mut destination = ProofConnection::open(destination_root.path());
             {
-                let backup =
-                    rusqlite::backup::Backup::new(owner.db(), destination.db_mut()).unwrap();
+                let backup = owner.backup_into(&mut destination).unwrap();
                 assert_eq!(backup.step(-1).unwrap(), rusqlite::backup::StepResult::Done);
                 assert!(!root.join("guard-drop").exists());
                 assert!(!destination_root.path().join("guard-drop").exists());
@@ -431,15 +283,53 @@ fn child_entry() {
                     .unwrap(),
                 1
             );
+            let (owner, destination) = if mode == "backup_retry" {
+                let source_statement = owner.outstanding_statement();
+                let destination_statement = destination.outstanding_statement();
+                let (owner, source_error) = owner.close().err().expect("source busy close missing");
+                let (destination, destination_error) = destination
+                    .close()
+                    .err()
+                    .expect("destination busy close missing");
+                unsafe {
+                    assert_eq!(ffi::sqlite3_finalize(source_statement), ffi::SQLITE_OK);
+                    assert_eq!(ffi::sqlite3_finalize(destination_statement), ffi::SQLITE_OK);
+                }
+                for error in [source_error, destination_error] {
+                    assert!(
+                        matches!(error, Error::SqliteFailure(code, _) if code.code == ErrorCode::DatabaseBusy)
+                    );
+                }
+                assert!(owner.verify_namespace().is_ok());
+                assert!(destination.verify_namespace().is_ok());
+                assert!(!root.join("staging-drop").exists());
+                assert!(!destination_root.path().join("staging-drop").exists());
+                (owner, destination)
+            } else {
+                (owner, destination)
+            };
             assert!(destination.close().is_ok());
+            assert!(owner.verify_namespace().is_ok());
+            assert!(owner.staging().path.exists());
+            assert!(owner.close().is_ok());
+        }
+        "database_substitution" => {
+            let path = owner.staging().path.join("synthetic.sqlite");
+            std::fs::rename(&path, owner.staging().path.join("retained.sqlite")).unwrap();
+            std::fs::write(&path, b"synthetic replacement").unwrap();
+            assert!(owner.verify_namespace().is_err());
+            assert!(owner.guard_handles_live());
+            // Observe identity only; never issue SQL against a substituted name.
             assert!(owner.close().is_ok());
         }
         "substitution" => {
-            let original = owner.staging.path.clone();
+            let original = owner.staging().path.clone();
             let retained = root.join("original-staging");
             std::fs::rename(&original, &retained).unwrap();
             std::fs::create_dir(&original).unwrap();
             std::fs::write(original.join("replacement"), "keep").unwrap();
+            assert!(owner.verify_namespace().is_err());
+            assert!(owner.guard_handles_live());
             assert!(owner.close().is_ok());
             assert!(retained.join("synthetic.sqlite").is_file());
             assert_eq!(
@@ -472,7 +362,7 @@ fn child_entry() {
                 .query_row("PRAGMA journal_mode", [], |r| r.get(0))
                 .unwrap();
             assert!(journal_mode == "delete", "rollback mode unconfirmed");
-            let database = owner.staging.path.join("synthetic.sqlite");
+            let database = owner.staging().path.join("synthetic.sqlite");
             assert!(std::fs::write(
                 root.join("baseline-image"),
                 std::fs::read(&database).unwrap()
@@ -492,15 +382,8 @@ fn child_entry() {
                 !owner.db().is_autocommit(),
                 "busy close lost pending transaction"
             );
-            assert!(owner.staging.path.is_dir(), "busy close lost staging");
-            assert!(
-                owner
-                    ._guard
-                    ._handles
-                    .iter()
-                    .all(|file| file.metadata().is_ok()),
-                "busy close lost handles"
-            );
+            assert!(owner.staging().path.is_dir(), "busy close lost staging");
+            assert!(owner.guard_handles_live(), "busy close lost handles");
             assert!(
                 !root.join("staging-drop").exists(),
                 "busy close cleaned staging"
@@ -529,7 +412,7 @@ fn confirm_busy(owner: ProofConnection, root: &std::path::Path) -> ProofConnecti
         Ok(()) => panic!("terminal fixture did not reach busy close"),
     };
     assert!(matches!(error, Error::SqliteFailure(code, _) if code.code == ErrorCode::DatabaseBusy));
-    assert!(!owner.closed.get());
+    assert!(!owner.is_closed());
     assert!(!root.join("guard-drop").exists());
     assert!(std::fs::write(root.join("busy-confirmed"), "busy").is_ok());
     owner
@@ -548,7 +431,10 @@ fn parent_dump_state() -> (libc::rlim_t, libc::rlim_t, libc::c_int) {
 }
 
 fn run_child(mode: &str, abort: bool) {
-    let root = tempfile::tempdir().expect("synthetic fixture creation failed");
+    let root = tempfile::Builder::new()
+        .permissions(std::fs::Permissions::from_mode(0o700))
+        .tempdir()
+        .expect("synthetic fixture creation failed");
     run_child_at(mode, abort, root.path());
 }
 
@@ -760,6 +646,55 @@ fn registration_failure_retains_owner() {
     run_child("registration", false);
 }
 #[test]
+fn repeated_busy_close_retains_verified_guards_and_last_staging_owner() {
+    run_child("repeated_retry", false);
+}
+#[test]
+fn registration_failure_then_busy_close_returns_complete_owner() {
+    run_child("registration_retry", false);
+}
+#[test]
+fn another_connection_closing_cannot_clean_a_failed_close_owner() {
+    run_child("shared_retry", false);
+}
+#[test]
+fn backup_source_and_destination_retain_owners_on_busy_close() {
+    run_child("backup_retry", false);
+}
+#[test]
+fn prototype_refuses_broad_private_staging_before_sqlite_open() {
+    let root = tempfile::Builder::new()
+        .permissions(std::fs::Permissions::from_mode(0o700))
+        .tempdir()
+        .unwrap();
+    let staging = Staging::new(root.path());
+    let path = staging.path.clone();
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o770)).unwrap();
+    assert!(ProofConnection::open_staged(root.path(), staging, false).is_err());
+    assert!(!path.join("synthetic.sqlite").exists());
+    assert_eq!(
+        std::fs::read(root.path().join("staging-drop")).unwrap(),
+        b"refused"
+    );
+}
+#[test]
+fn prototype_refuses_symlink_database_without_touching_target() {
+    let root = tempfile::Builder::new()
+        .permissions(std::fs::Permissions::from_mode(0o700))
+        .tempdir()
+        .unwrap();
+    let staging = Staging::new(root.path());
+    let target = root.path().join("target");
+    std::fs::write(&target, b"synthetic retained target").unwrap();
+    std::os::unix::fs::symlink(&target, staging.path.join("synthetic.sqlite")).unwrap();
+    assert!(ProofConnection::open_staged(root.path(), staging, false).is_err());
+    assert_eq!(std::fs::read(target).unwrap(), b"synthetic retained target");
+}
+#[test]
+fn database_identity_substitution_is_detected_while_original_handle_survives() {
+    run_child("database_substitution", false);
+}
+#[test]
 fn open_failure_releases_unopened_resources() {
     run_child("open_failure", false);
 }
@@ -770,7 +705,10 @@ fn substituted_namespace_cleanup_is_refused() {
 
 #[test]
 fn pending_write_abort_preserves_journal_and_recovers() {
-    let root = tempfile::tempdir().expect("synthetic recovery fixture failed");
+    let root = tempfile::Builder::new()
+        .permissions(std::fs::Permissions::from_mode(0o700))
+        .tempdir()
+        .expect("synthetic recovery fixture failed");
     run_child_at("pending_abort", true, root.path());
     assert!(
         root.path().join("pending-abort-ready").exists(),

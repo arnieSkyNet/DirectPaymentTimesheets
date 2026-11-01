@@ -13,32 +13,62 @@ import subprocess
 import sys
 import tempfile
 
-SOURCE_SHA = "77d3268a5a17b4585371a249135a0cceecfbe00b"
+SOURCE_SHA = "d3006b7c526042a7ea5a2ab5f108a2f0d393d5dd"
+REVIEWED_SHA = "77d3268a5a17b4585371a249135a0cceecfbe00b"
+REVIEWED_TREE = "4748f5d329a8d6a029ee2b802240a930d256b21e"
+MANIFEST_SHA256 = "8972066d653ef483a161aabb8f0ba5c5a596f6a87b65ea690437b5afff17142c"
+BUILD_INPUTS = ("src", "assets", "Cargo.toml", "Cargo.lock", "build.rs",
+                "packaging/windows/application.rc")
 MODULE_SHA256 = "5ff10aa9d5920f88dff2a2988901e17dcfebc480d9cb51bf583c0d994e77e0bc"
 TEST = "smtp_credentials::tests::macos_ci::migration_restart_missing_and_denied"
 CANARIES = (b"SYNTHETIC_SECRET", b"SYNTHETIC_NATIVE_SECRET")
 
 
+def inventory(root):
+    result = {}
+    for name in BUILD_INPUTS:
+        path = root / name
+        if path.is_symlink():
+            raise RuntimeError("integrated_source_symlink_refused")
+        paths = path.rglob("*") if path.is_dir() else [path]
+        for item in paths:
+            if item.is_symlink():
+                raise RuntimeError("integrated_source_symlink_refused")
+            if item.is_file():
+                result[item.relative_to(root).as_posix()] = {
+                    "sha256": hashlib.sha256(item.read_bytes()).hexdigest(),
+                    "git_mode": "100755" if item.stat().st_mode & 0o111 else "100644",
+                }
+            elif not item.is_dir():
+                raise RuntimeError("integrated_source_missing_or_special")
+    return result
+
+
+def load_reviewed_manifest():
+    path = Path(__file__).with_name("macos_smtp_reviewed_source.json")
+    if path.is_symlink():
+        raise RuntimeError("reviewed_manifest_symlink_refused")
+    raw = path.read_bytes()
+    if hashlib.sha256(raw).hexdigest() != MANIFEST_SHA256:
+        raise RuntimeError("reviewed_manifest_hash_mismatch")
+    data = json.loads(raw)
+    if (data.get("schema") != "dpts-reviewed-build-inputs/v1"
+            or data.get("reviewed_commit") != REVIEWED_SHA
+            or data.get("reviewed_tree") != REVIEWED_TREE
+            or data.get("acquired_commit") != SOURCE_SHA
+            or data.get("roots") != list(BUILD_INPUTS)):
+        raise RuntimeError("reviewed_manifest_identity_mismatch")
+    return data["files"]
+
+
+def verify_reviewed_source(root):
+    # Compare to the independently preserved original, not two matching clones.
+    if inventory(root) != load_reviewed_manifest():
+        raise RuntimeError("build_inputs_differ_from_original_reviewed_source")
+
+
 def verify_integration(source, integrated):
     """Do not claim the integrated branch is tested if any build input differs."""
-    roots = ("src", "assets", "Cargo.toml", "Cargo.lock", "build.rs",
-             "packaging/windows/application.rc")
-
-    def inventory(root):
-        result = {}
-        for name in roots:
-            path = root / name
-            if path.is_symlink():
-                raise RuntimeError("integrated_source_symlink_refused")
-            paths = path.rglob("*") if path.is_dir() else [path]
-            for item in paths:
-                if item.is_symlink():
-                    raise RuntimeError("integrated_source_symlink_refused")
-                if item.is_file():
-                    result[item.relative_to(root).as_posix()] = hashlib.sha256(item.read_bytes()).hexdigest()
-                elif not item.is_dir():
-                    raise RuntimeError("integrated_source_missing_or_special")
-        return result
 
     if inventory(source) != inventory(integrated):
         raise RuntimeError("integrated_build_inputs_differ_from_reviewed_source")
@@ -94,7 +124,10 @@ def main():
         raise RuntimeError("source_commit_mismatch")
     if run(["git", "status", "--porcelain=v1", "--untracked-files=all"], source, env, 10, logs).strip():
         raise RuntimeError("source_checkout_not_clean")
-    verify_integration(source, Path(__file__).resolve().parents[1])
+    integrated = Path(__file__).resolve().parents[1]
+    verify_reviewed_source(source)
+    verify_reviewed_source(integrated)
+    verify_integration(source, integrated)
     original = overlay(source, fixture)
     try:
         build = run(["cargo", "test", "--locked", "--bin", "direct_payment_timesheets",

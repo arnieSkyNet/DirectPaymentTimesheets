@@ -1,0 +1,460 @@
+{
+  "schema": "dpts-reviewed-build-inputs/v1",
+  "reviewed_commit": "77d3268a5a17b4585371a249135a0cceecfbe00b",
+  "reviewed_tree": "4748f5d329a8d6a029ee2b802240a930d256b21e",
+  "acquired_commit": "d3006b7c526042a7ea5a2ab5f108a2f0d393d5dd",
+  "roots": [
+    "src",
+    "assets",
+    "Cargo.toml",
+    "Cargo.lock",
+    "build.rs",
+    "packaging/windows/application.rc"
+  ],
+  "files": {
+    "Cargo.lock": {
+      "sha256": "e633f2ca7b76f29a612a44dbd09a40fe96a9c44dcf201bbf6b43e90aabfa509b",
+      "git_mode": "100644"
+    },
+    "Cargo.toml": {
+      "sha256": "b11a9aa6725a8cc72bd0d6610a9b8f5fa2fd234ae6e6679f3be65a4a6387b5eb",
+      "git_mode": "100644"
+    },
+    "assets/direct-payment-timesheets.ico": {
+      "sha256": "92b08a061f025a02dfdb4b34d8ab03a6462fab55bef47ebaeb187fdb0352565f",
+      "git_mode": "100644"
+    },
+    "assets/direct-payment-timesheets.png": {
+      "sha256": "fa71c56e639de75f8e42ebfe6601f3156fe6febe3c3b69afb130968cded4a0e4",
+      "git_mode": "100644"
+    },
+    "assets/fonts/DejaVu-LICENSE.txt": {
+      "sha256": "d1e6d5054104b9c9dddf4248db5fe75de9a2c4692c0932935f672046197758cb",
+      "git_mode": "100644"
+    },
+    "assets/fonts/DejaVuSans-Bold.ttf": {
+      "sha256": "a4c5bc453ca281d90ea079e596da7ae0dfeb5777497c29ec254e76d97ff6f890",
+      "git_mode": "100644"
+    },
+    "assets/fonts/DejaVuSans.ttf": {
+      "sha256": "57f73e11f51999432bf7ab22ce55b6f945d5eca1bf824404cfa9ec2e3718c84e",
+      "git_mode": "100644"
+    },
+    "build.rs": {
+      "sha256": "b97c08df01daee8f9340e65a00adf8d8ac1c879422e4d6506f632837825b0ba4",
+      "git_mode": "100644"
+    },
+    "packaging/windows/application.rc": {
+      "sha256": "7c672f00ba436de9e7ffc5b491c8a19a74b1af89f081649b4b8a355271bd11ce",
+      "git_mode": "100644"
+    },
+    "src/annual_leave_settings_repository.rs": {
+      "sha256": "e8e130431c059b23ccf5d76723172b1228ed20d567adfac66dc824fc997f3e61",
+      "git_mode": "100644"
+    },
+    "src/annual_leave_summary.rs": {
+      "sha256": "4265599ee29330cddaadf2e71244a88904c4e5c5fd63196bf0bc7cebd4101b51",
+      "git_mode": "100644"
+    },
+    "src/annual_leave_summary/tests.rs": {
+      "sha256": "f81a20bb8473d6d41041a541db9f73aefd47b1059357fc03fa92ebbfd6c1813c",
+      "git_mode": "100644"
+    },
+    "src/app.rs": {
+      "sha256": "c04d18b6f6b9349608be350908dcc81ad144f5666872c4081f137c91542f7819",
+      "git_mode": "100644"
+    },
+    "src/application.rs": {
+      "sha256": "09a8114b6835ca5aa4ca4d3a0c99109ac23046fc8da2ec316582c070172616f7",
+      "git_mode": "100644"
+    },
+    "src/application_settings_screen.rs": {
+      "sha256": "96038e63716b0716fb449c20172388391aeea16f1947f05d142c50f4e7dc417c",
+      "git_mode": "100644"
+    },
+    "src/archive.rs": {
+      "sha256": "7fdb0e448fda9b272128429b79d98a570d81128e82465ddad3c76c5a0435ea77",
+      "git_mode": "100644"
+    },
+    "src/backup_service.rs": {
+      "sha256": "ee5841b2b86551ab61d1ccc0e22d0ff30cadd90a4d35b0f073eecd60a659b8a5",
+      "git_mode": "100644"
+    },
+    "src/config.rs": {
+      "sha256": "e641a9900369873b83823cf08d7ad71aa818bbc36974e7d20ade8fe64dff3088",
+      "git_mode": "100644"
+    },
+    "src/context.rs": {
+      "sha256": "8939adb4638a97d23ce3e9b78bbd36ed35f950f8feb23c151510ee83a0b01a68",
+      "git_mode": "100644"
+    },
+    "src/contracted_hours_repository.rs": {
+      "sha256": "f7c62b9dccb0804b027987313d5ab2c7b756d859ca2cddf7a09bea372d247c84",
+      "git_mode": "100644"
+    },
+    "src/csv_import.rs": {
+      "sha256": "277df1d4c82cddfca77a0ae1bd2dc2368a5d95ef010b67dbb6807b384b12df24",
+      "git_mode": "100644"
+    },
+    "src/database.rs": {
+      "sha256": "abd5a1d102bc800b4d053df81fd1e580d0261fd099fc5ed0b51d3c9efec168bb",
+      "git_mode": "100644"
+    },
+    "src/database_recovery.rs": {
+      "sha256": "783b921100aae0f0f78a0d14d3cb2c7b14189c4f1d3a32531734e224afae1027",
+      "git_mode": "100644"
+    },
+    "src/date_utils.rs": {
+      "sha256": "7c0507ab91d85e06fb6eedd85945befb74d3a069c11dd49345979d9d6a13f77f",
+      "git_mode": "100644"
+    },
+    "src/development.rs": {
+      "sha256": "28a0d7839f0b3403afcc7c1a92910d7d86b4a54f7576d5d7be5e446e14e5c9c2",
+      "git_mode": "100644"
+    },
+    "src/development_build_gate.rs": {
+      "sha256": "3804e0cc40405e84fff005f16ade5851be13c4e2f9a22040138d25191c31f8f4",
+      "git_mode": "100644"
+    },
+    "src/direct_shift_repository.rs": {
+      "sha256": "69fbf03ab176d05c5073e1ea3406d5d3728244cfdda7f06ced464656d71e8a5b",
+      "git_mode": "100644"
+    },
+    "src/email_service.rs": {
+      "sha256": "850f7cd167c2045acb088b7147d21633fabea713a1a8738656f1ce0ee2703d5d",
+      "git_mode": "100644"
+    },
+    "src/email_settings.rs": {
+      "sha256": "dabde019ee61b5a4417554331096676e210f67b13e5adf97c8fbdf277952ea62",
+      "git_mode": "100644"
+    },
+    "src/employer_repository.rs": {
+      "sha256": "9324c47300ce9abc7000c178b8996831282674f1a9aab50cb8849ef995aba5e1",
+      "git_mode": "100644"
+    },
+    "src/employer_screen.rs": {
+      "sha256": "06576caad4f4015c50d4518a61754575b0f42b293f573a2a2de170e270f1c293",
+      "git_mode": "100644"
+    },
+    "src/enter_hours_screen.rs": {
+      "sha256": "927550d3e8913b1f0c07778ca8c970f531cf5b2f8795d6539b043edf56a3014a",
+      "git_mode": "100644"
+    },
+    "src/environment.rs": {
+      "sha256": "47a30a8d6aa81b62475cf0f422c1f9d2b7d0a87a60c1e835896b2af6ceddf299",
+      "git_mode": "100644"
+    },
+    "src/error.rs": {
+      "sha256": "ed5bd9f813abdfe5dd9c3de728798770b2a04ddb8f47546148c28282209cd0cd",
+      "git_mode": "100644"
+    },
+    "src/folder_opener.rs": {
+      "sha256": "53170abaa8c682df6107f0c9c562bc75468e70711f24b8e125886b3449ce1c93",
+      "git_mode": "100644"
+    },
+    "src/gui.rs": {
+      "sha256": "b25d9bc526ee8604cc802f47492bdb70b1c2263e07596724583df9847dd7c136",
+      "git_mode": "100644"
+    },
+    "src/gui_controls.rs": {
+      "sha256": "70b01cf6e5b0cd9f6a67724af06def8274d06134c0bdcafc625d810507234f7b",
+      "git_mode": "100644"
+    },
+    "src/historical_adjustment_compatibility.rs": {
+      "sha256": "287b8aee6f307014a9baa50763e51249d08c83d44fd8be5246ee6a1799c4b28b",
+      "git_mode": "100644"
+    },
+    "src/import_service.rs": {
+      "sha256": "018be3a26d68e4c82a3381efe5e0641c39f27640eaf34973da4b6857bdbd6199",
+      "git_mode": "100644"
+    },
+    "src/imported_hours.rs": {
+      "sha256": "c6aaa408b28b06b2529405b041701336efc1e4f70f0c086388083f79284ef8a7",
+      "git_mode": "100644"
+    },
+    "src/imported_hours_tests.rs": {
+      "sha256": "a490af428e994b5fdd42ceecad2e9b3f623e048e4e93c1044d5869a2bb08ec79",
+      "git_mode": "100644"
+    },
+    "src/imported_hours_ui.rs": {
+      "sha256": "5a1477632697ce33eb91fe32c4a54f3ec7f079ffdc41ed2ddb566ad9446cb1cb",
+      "git_mode": "100644"
+    },
+    "src/main.rs": {
+      "sha256": "e73f38e9e894ba8855ccf94a6557b9165aa600d89b4a27a7aac7f4505913d710",
+      "git_mode": "100644"
+    },
+    "src/main.rs.before_application_refactor": {
+      "sha256": "be6e4f0ad6d7c0b211814dba51f8b971ded3fda11839a0318d30f735f62fd2aa",
+      "git_mode": "100644"
+    },
+    "src/models.rs": {
+      "sha256": "996f1490d2905c90af7e92669c0a9e5844490ce6394d7e010a9009bf1b3131e1",
+      "git_mode": "100644"
+    },
+    "src/paths.rs": {
+      "sha256": "9492350feab60b7af0d438c188e408d9453af758310f35aadb56cd9e4f7c8b8d",
+      "git_mode": "100644"
+    },
+    "src/pay_rate_allocation.rs": {
+      "sha256": "be1b016f06ec6d19d4f9e642e410ad8b97078659b14152bda9982a4d772b5168",
+      "git_mode": "100644"
+    },
+    "src/pay_rate_repository.rs": {
+      "sha256": "b91b610125a6c5107f794217bf790046e585a716e248b3e3fd552e1d1fff4c67",
+      "git_mode": "100644"
+    },
+    "src/payroll_archive_service.rs": {
+      "sha256": "1a6788491a44bd72ba63f2febec7a4947a6931129832ec94ec5756bdf4382da6",
+      "git_mode": "100644"
+    },
+    "src/payroll_archive_tests.rs": {
+      "sha256": "ed0409d9261e12374b6812f1a1e3d2843b2256f3d046f2cde03a893147f5a687",
+      "git_mode": "100644"
+    },
+    "src/payroll_delivery.rs": {
+      "sha256": "ea95b1e6cd4fb541cc85a5132fe84fb446479ff7bb0cef79a522eff09bd2853d",
+      "git_mode": "100644"
+    },
+    "src/payroll_document_import_tests.rs": {
+      "sha256": "0a4e962d89bf046642bb512db4f551c5063c0229f1f99de9af8e2f1703a5888d",
+      "git_mode": "100644"
+    },
+    "src/payroll_document_repository.rs": {
+      "sha256": "538041bab730d158d18cb9fb56265d8dc2f32d1717d0dac9223c1cf5ca591fda",
+      "git_mode": "100644"
+    },
+    "src/payroll_evidence.rs": {
+      "sha256": "3cef1cb900f7d6ee75de79fe8558b16b838a96893c652a08a8837a4d2adeb8fc",
+      "git_mode": "100644"
+    },
+    "src/payroll_evidence/duplicate_ui.rs": {
+      "sha256": "312acf822f9314202d4f0c1a8691bde51ba3e989613935f853ccd0510a783525",
+      "git_mode": "100644"
+    },
+    "src/payroll_evidence/legacy_baseline.rs": {
+      "sha256": "19f528cd697109bb083faf9cc377fead7070d3594c5f121aefa10c3cbca713a8",
+      "git_mode": "100644"
+    },
+    "src/payroll_evidence/lifecycle.rs": {
+      "sha256": "e1e799eaa49eedbe9dfc076f9f4f21251eac8513d8044b08f003809456cdef91",
+      "git_mode": "100644"
+    },
+    "src/payroll_evidence/reconciliation.rs": {
+      "sha256": "3b9c76e01f9a454e08e125f29358b9d865c32075fbedff7704050eeddf679dcb",
+      "git_mode": "100644"
+    },
+    "src/payroll_evidence/review_ui.rs": {
+      "sha256": "4c57876a8f8f224df8df3ba86d6c4b44f28916cd3552edcfe8d937be1c046f05",
+      "git_mode": "100644"
+    },
+    "src/payroll_evidence/schema.sql": {
+      "sha256": "fd403b5dba45a6d2298894390e0720c519dca2c3d9ade7371975087a0a5ac853",
+      "git_mode": "100644"
+    },
+    "src/payroll_evidence/stage4_tests.rs": {
+      "sha256": "d43edd4f89da27c4c0ef1d5dad11f40413308acacec712dcf1a417239fe39b2a",
+      "git_mode": "100644"
+    },
+    "src/payroll_evidence/stage7_tests.rs": {
+      "sha256": "fda12954624c58c97565adbb35320d68f489faee783e4785324f56bcd2adc9a7",
+      "git_mode": "100644"
+    },
+    "src/payroll_evidence/tests.rs": {
+      "sha256": "f71fa5986e37db673e3103db4b9c34220b18ad546d302f562c20f3aa1e1a6686",
+      "git_mode": "100644"
+    },
+    "src/payroll_file_naming.rs": {
+      "sha256": "776142932a2f3caeac952da87f0c61ed9c2cc1acf110683ceff53d1dd18a6cf0",
+      "git_mode": "100644"
+    },
+    "src/payroll_filing.rs": {
+      "sha256": "40491853f6f930f0eeca1773473cf2e16c38d63c0583cc86e07b2e61ae565217",
+      "git_mode": "100644"
+    },
+    "src/payroll_filing_tests.rs": {
+      "sha256": "85f60cef6cfae1a02c6227f5fa1928e851c1d4e6b8e5ef6fcaf0df2cd1608939",
+      "git_mode": "100644"
+    },
+    "src/payroll_leaving_note_tests.rs": {
+      "sha256": "fc37eb1f74161a12d54ca1483b7f566f04d8ab79268432c9ad1821ebd6fe5aea",
+      "git_mode": "100644"
+    },
+    "src/payroll_mileage_editor.rs": {
+      "sha256": "79bcfc4443eebb1ea8a35e4a79bcdd386a444deac70d29ac2b7edc1557fa332c",
+      "git_mode": "100644"
+    },
+    "src/payroll_notes_pdf_tests.rs": {
+      "sha256": "e6b71a4b381012024181805f364092e399a58ebd76acb8264f31734d47fd97d9",
+      "git_mode": "100644"
+    },
+    "src/payroll_notes_return_tests.rs": {
+      "sha256": "61d7ecc9da632c6dd2c994d06a0dd9978c2a86e7694eb44866e886b39e96cabd",
+      "git_mode": "100644"
+    },
+    "src/payroll_prep_sheet_import_service.rs": {
+      "sha256": "5670f7c0b47fa1645c3f4718acf57573c91b77e2faae00d025f5db4afe544e24",
+      "git_mode": "100644"
+    },
+    "src/payroll_preparation_tests.rs": {
+      "sha256": "3b3fe42ffba849aff51c626b07560896c6ca8979c4e883d193c8ad5e995a5b17",
+      "git_mode": "100644"
+    },
+    "src/payroll_production_tests.rs": {
+      "sha256": "d98e2528d0943d23f6a08bf411bcfcd8510d224c83cf45c7c1013a16ecccc9a1",
+      "git_mode": "100644"
+    },
+    "src/payroll_production_workflow.rs": {
+      "sha256": "d7bbe02e892cd32fbc1c4bfbca0de8fbc16cafcf464ec4c9b135e60b1d0003d3",
+      "git_mode": "100644"
+    },
+    "src/payroll_provider_repository.rs": {
+      "sha256": "42e3dd72fc3b86103728be8a5fc6e8859acd96ef2dabc01a9eca8a10cb91c3ad",
+      "git_mode": "100644"
+    },
+    "src/payroll_replacement.rs": {
+      "sha256": "51f146261d82730c0d5b2e13b4afa5b57cb10123f4717a617844f488f6d77ac6",
+      "git_mode": "100644"
+    },
+    "src/payroll_schedule_repository.rs": {
+      "sha256": "9771d7be14838830390515132c8eda1cd72c5ae7377c62e8723b1fafdc7aef00",
+      "git_mode": "100644"
+    },
+    "src/payroll_settings_screen.rs": {
+      "sha256": "4181164fbe5cbb58c248355ab9b3908875758575bc36e04bcd51dbad6936c6e9",
+      "git_mode": "100644"
+    },
+    "src/payroll_sickness_editor.rs": {
+      "sha256": "6218545794070f087202d041f921e45dc59e657e383a3581fa8cbca06d750e7e",
+      "git_mode": "100644"
+    },
+    "src/payroll_snapshot_service.rs": {
+      "sha256": "94b1f5233923221c3bb21db18adaca07be3dd24d436417d58cf951b448f73e31",
+      "git_mode": "100644"
+    },
+    "src/payroll_timesheet_email_repository.rs": {
+      "sha256": "fc8216b914f3e05989b331ab988c282be81854fb0a871da0cc2a8eba7496dccf",
+      "git_mode": "100644"
+    },
+    "src/payroll_timesheet_repository.rs": {
+      "sha256": "f3bdeab70b4e436e4b542399cbb9aca6c0ed2c986f9fab46074f2f32bc0f1565",
+      "git_mode": "100644"
+    },
+    "src/payroll_timesheet_screen.rs": {
+      "sha256": "a8c6239a586de1443a80b0f98b2a9f499331d614643bfe0b3beca1b61d119cf7",
+      "git_mode": "100644"
+    },
+    "src/payroll_worked_item_repository.rs": {
+      "sha256": "ab0a76b4858fcb93bb6699e177ea9da2ebda19b61372873d79a770838aff2f6d",
+      "git_mode": "100644"
+    },
+    "src/payslip_delivery_service.rs": {
+      "sha256": "e5fe36147626df6a5093763dfa49d072786197361ddf22cb7c8694a966df371f",
+      "git_mode": "100644"
+    },
+    "src/pdf_generator.rs": {
+      "sha256": "57276c16b29566009d2442f2ea313b40f796186bd9e447b636412690db791ae4",
+      "git_mode": "100644"
+    },
+    "src/personal_assistant_repository.rs": {
+      "sha256": "cba176cd40ff8179b4d6eb3bee9614a8cfa9911d6fcbb53216f6695cd3eab488",
+      "git_mode": "100644"
+    },
+    "src/personal_assistant_screen.rs": {
+      "sha256": "f14ebda8aabf8a6181e09fb87c9350996c69cd71fd9db6b09a6afaab47369696",
+      "git_mode": "100644"
+    },
+    "src/personal_assistant_status_tests.rs": {
+      "sha256": "bc6e6d078462bbc0f5ee1325770eff56961e6b893006813951af78aee1a3081b",
+      "git_mode": "100644"
+    },
+    "src/private_storage.rs": {
+      "sha256": "02802744cbc0b5bf51399d2449fc32f9f02bf832aee7caebc12aa832e6d0265c",
+      "git_mode": "100644"
+    },
+    "src/private_storage_linux.rs": {
+      "sha256": "ed7a0b1eab4d29cf5cfcf6d697d1a9d783ec8fbf88c811999a202755f60038c1",
+      "git_mode": "100644"
+    },
+    "src/private_storage_macos.c": {
+      "sha256": "c28617e98333be0132fbdad9d146a7b69e8f6013b730e9b189b1ea488d2987d0",
+      "git_mode": "100644"
+    },
+    "src/private_storage_macos.rs": {
+      "sha256": "402f55d32a5177cfb6e4c76b3a4f7a36cf7a5c6bc79191b78e25cb1503fd8e67",
+      "git_mode": "100644"
+    },
+    "src/private_storage_windows.rs": {
+      "sha256": "1b39a885166049bb1402e603dcfe237578580fc8f9384793014e6ca903b8d5aa",
+      "git_mode": "100644"
+    },
+    "src/private_storage_windows_publication.rs": {
+      "sha256": "224b164af53f776376005fcaef711716ae63e90dcf5f3bd41a5af4cd9cb9ff61",
+      "git_mode": "100644"
+    },
+    "src/private_storage_windows_tests.rs": {
+      "sha256": "18d254ded08554d5e60db71285374885793cd52b99fbf95b800f4224769725b2",
+      "git_mode": "100644"
+    },
+    "src/public_holidays.rs": {
+      "sha256": "588b2a3e303de317d454c6712bff09f43d3b729414673761a074ed3618c080df",
+      "git_mode": "100644"
+    },
+    "src/repository.rs": {
+      "sha256": "3fae4d086adff3bd388618cba3c71aad06b468dde0fffa5cdb73e99a16d34701",
+      "git_mode": "100644"
+    },
+    "src/shift_changes.rs": {
+      "sha256": "49f8df4ba080b2414c0e91309c04bf086d02ab9dbba7f10479d2eb9a81900ef1",
+      "git_mode": "100644"
+    },
+    "src/sickness_period_repository.rs": {
+      "sha256": "8daf310bf7c0ed22e79394217df284c801e885f511dd6f848fa47afc494cd8d2",
+      "git_mode": "100644"
+    },
+    "src/sickness_service.rs": {
+      "sha256": "4038451b88750abe933838ea9ece647fd8667a46e68e0c8ac3d510dba426c965",
+      "git_mode": "100644"
+    },
+    "src/sickness_service_tests.rs": {
+      "sha256": "61fb219f707f633b5b87cd0676cd5ebed2bae466a631295d366d0e1ba8a68716",
+      "git_mode": "100644"
+    },
+    "src/signature.rs": {
+      "sha256": "a51abe63c91ab73ebdec03b8202e1cf5e5f7d7b679292908deb679ea5f9316e3",
+      "git_mode": "100644"
+    },
+    "src/smtp_credentials.rs": {
+      "sha256": "5ff10aa9d5920f88dff2a2988901e17dcfebc480d9cb51bf583c0d994e77e0bc",
+      "git_mode": "100644"
+    },
+    "src/smtp_transport_tests.rs": {
+      "sha256": "e54acb9f783a9c20e242a187fca885a257d212550c32c27bcaa90017623e804e",
+      "git_mode": "100644"
+    },
+    "src/startup.rs": {
+      "sha256": "dea3ceb7d006605d54c9afe99ab213736caecbecbc0b891106e34400af50ea42",
+      "git_mode": "100644"
+    },
+    "src/test_fixtures/signature-grayscale.jpg": {
+      "sha256": "383ded9954d46aa4e72024ed89371f51062683fe289665cce3d80146dc591516",
+      "git_mode": "100644"
+    },
+    "src/test_fixtures/signature-progressive.jpg": {
+      "sha256": "06c33ff9b0ec11b93066ec115159227232c90bfc226b84574e4c8a64261f6c7e",
+      "git_mode": "100644"
+    },
+    "src/theme.rs": {
+      "sha256": "7350c47218b9812cf5f7890c05985fd4ec26864320599f16496c1e08bb218f5c",
+      "git_mode": "100644"
+    },
+    "src/timesheet_delivery.rs": {
+      "sha256": "b7812a6d358912c9be8fc753664c4fe1c551970d879f870959f4e4a7a911cf39",
+      "git_mode": "100644"
+    },
+    "src/update_check.rs": {
+      "sha256": "71bbdffefce5d1eeb37a2ba8e4d0543e072c6e8262a16a0c23771c55bf114b49",
+      "git_mode": "100644"
+    }
+  }
+}

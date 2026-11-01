@@ -1,0 +1,122 @@
+name: Opt-in synthetic SQLite terminal verification
+on:
+  workflow_dispatch:
+    inputs:
+      controlled_sqlite_terminal_tests:
+        description: Separate approval required for disposable synthetic termination and residual reporting risk
+        required: true
+        default: false
+        type: boolean
+permissions:
+  contents: read
+concurrency:
+  group: sqlite-terminal-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  native:
+    if: ${{ github.ref == 'refs/heads/main' && inputs.controlled_sqlite_terminal_tests }}
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [macos-15, macos-15-intel]
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 40
+    env:
+      # Deliberately unconfigured. Assign independently reviewed published commits
+      # only after separate approval; current uncommitted work has no valid pin.
+      EXPECTED_SHA: '0000000000000000000000000000000000000000'
+      EXPECTED_CONTROLLER_SHA: '0000000000000000000000000000000000000000'
+      NATIVE_RUNNER: ${{ matrix.runner }}
+      DPT_NATIVE_SQLITE_LAUNCHER_SHA: ${{ github.workflow_sha }}
+      RUSTUP_TOOLCHAIN: '1.98.1'
+      GIT_TERMINAL_PROMPT: '0'
+      CARGO_INCREMENTAL: '0'
+      CARGO_BUILD_JOBS: '2'
+      CARGO_PROFILE_TEST_DEBUG: '0'
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Refuse missing immutable approvals
+        env:
+          SELECTED_REF: ${{ github.ref }}
+        run: |
+          set -euo pipefail
+          test "$SELECTED_REF" = refs/heads/main
+          [[ "$EXPECTED_SHA" =~ ^[0-9a-f]{40}$ && "$EXPECTED_CONTROLLER_SHA" =~ ^[0-9a-f]{40}$ ]]
+          test "$EXPECTED_SHA" != 0000000000000000000000000000000000000000
+          test "$EXPECTED_CONTROLLER_SHA" != 0000000000000000000000000000000000000000
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          ref: '0000000000000000000000000000000000000000' # must equal EXPECTED_CONTROLLER_SHA
+          path: controller
+          persist-credentials: false
+          fetch-depth: 1
+          fetch-tags: false
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          ref: '0000000000000000000000000000000000000000' # must equal EXPECTED_SHA
+          path: source
+          persist-credentials: false
+          fetch-depth: 1
+          fetch-tags: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: '3.12'
+      - name: Verify immutable checkouts
+        run: |
+          set -euo pipefail
+          test "$(git -C source rev-parse HEAD)" = "$EXPECTED_SHA"
+          test "$(git -C controller rev-parse HEAD)" = "$EXPECTED_CONTROLLER_SHA"
+          test -z "$(git -C source status --porcelain=v1 --untracked-files=all)"
+          test -z "$(git -C controller status --porcelain=v1 --untracked-files=all)"
+          rustup toolchain install 1.98.1 --profile minimal
+      - name: Compile without executing fixtures
+        working-directory: source
+        timeout-minutes: 30
+        run: |
+          set -euo pipefail
+          umask 077
+          mkdir -p target
+          env -u RUSTC_WRAPPER -u RUSTC_WORKSPACE_WRAPPER -u RUSTFLAGS -u CARGO_ENCODED_RUSTFLAGS -u DPT_SYNTHETIC_SQLITE_TERMINAL_TESTS cargo test --locked --test native_sqlite_terminal_fixtures --no-run --message-format=json > target/native-sqlite-build.jsonl
+          python -I -B ../controller/scripts/native_sqlite_terminal_manifest.py target/native-sqlite-build.jsonl > target/native-sqlite-manifest.sha256
+      - name: Verify ignored inventory only
+        working-directory: source
+        timeout-minutes: 1
+        run: |
+          python -I -B - <<'PYTHON'
+          import os, pathlib, sys, subprocess
+          sys.path.insert(0, str(pathlib.Path('../controller/scripts').resolve()))
+          import native_sqlite_terminal_checks as n
+          os.environ['DPT_NATIVE_SQLITE_MANIFEST'] = str(pathlib.Path('target/native-sqlite-manifest.json').resolve())
+          os.environ['DPT_NATIVE_SQLITE_MANIFEST_SHA256'] = pathlib.Path('target/native-sqlite-manifest.sha256').read_text().strip()
+          exe = n.approved_executable(os.environ['EXPECTED_SHA'])
+          env = {k: os.environ[k] for k in ('SystemRoot', 'WINDIR') if k in os.environ}
+          r = subprocess.run([str(exe), '--list', '--ignored'], env=env, capture_output=True, text=True, timeout=10)
+          if r.returncode or r.stderr or [s.strip() for s in r.stdout.splitlines() if s.strip()] != ['native_child: test', '1 test, 0 benchmarks']:
+              raise SystemExit('fixture_inventory_mismatch')
+          PYTHON
+      - name: Require nonterminal native supervisor controls
+        working-directory: source
+        timeout-minutes: 2
+        env:
+          DPT_NATIVE_SQLITE_SAFE_CONTAINMENT: '1'
+          DPT_SYNTHETIC_REPORT_RISK: disposable-synthetic-only
+        run: python -I -B ../controller/scripts/native_sqlite_terminal_checks.py --containment-only
+      - name: Execute eight synthetic cases only after all prerequisites
+        working-directory: source
+        timeout-minutes: 5
+        env:
+          DPT_NATIVE_SQLITE_PROFILE: github
+          DPT_SYNTHETIC_SQLITE_TERMINAL_TESTS: '1'
+          DPT_SYNTHETIC_REPORT_RISK: disposable-synthetic-only
+        run: |
+          set -euo pipefail
+          export DPT_NATIVE_SQLITE_MANIFEST="$PWD/target/native-sqlite-manifest.json"
+          export DPT_NATIVE_SQLITE_MANIFEST_SHA256="$(cat target/native-sqlite-manifest.sha256)"
+          python -I -B ../controller/scripts/native_sqlite_terminal_checks.py --run
+# No secrets, artifacts, cache, packaging, production invocation or automatic retry.
+# The driver emits only versioned sanitized JSON and a job summary.
+# A private canonical receipt/checksum is retained locally; independent readback
+# and a retained sanitized copy for >=90 days are acceptance requirements.
+# Raw fixture evidence remains private and ephemeral on hosted runners.

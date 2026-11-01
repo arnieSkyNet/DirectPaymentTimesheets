@@ -29,8 +29,9 @@ jobs:
           persist-credentials: false
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
-          # Reviewed source used by preserved Debian coverage; never use branch tip.
-          ref: '77d3268a5a17b4585371a249135a0cceecfbe00b'
+          # Reachable integration; original Debian build inputs are hash-verified.
+          # Never use a branch tip or silently substitute another revision.
+          ref: 'd3006b7c526042a7ea5a2ab5f108a2f0d393d5dd'
           path: source
           persist-credentials: false
       - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
@@ -45,6 +46,6 @@ jobs:
         env:
           DPT_EXPECTED_ARCH: ${{ matrix.architecture }}
         run: python -I -B harness/scripts/macos_smtp_checks.py source
-# Harness verifies its integrated build inputs equal this reviewed source before
-# applying its test-only overlay. Drift is a failure, never a branch-tip fallback.
+# Harness verifies both checkouts against original reviewed build-input hashes
+# before its test-only overlay. Drift is a failure, never a branch-tip fallback.
 # Manual only, no repository secrets, cache, artifact uploads, packaging or release.

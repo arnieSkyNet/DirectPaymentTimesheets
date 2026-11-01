@@ -1,13 +1,15 @@
 # Prepared macOS SMTP verification — 19 October 2026
 
-Status: locally validated preparation; **no macOS native result yet**. No commit,
-push or workflow dispatch was performed. Existing Windows and Debian coverage
-was inspected/reused, not rerun. No VM, host service or host credential store was
-accessed.
+Status: **no macOS native test result yet**. Published integration `d3006b7` and
+main registration `ef4ffcd` enabled run 39332360502, but both jobs failed at
+historical-source checkout before testing. See
+`../macos-smtp-actions-v107-20261019-2/REPORT.md` for actual results.
 
-Update: the reviewed source delta has now been integrated locally without a
-commit. See `../macos-smtp-source-integration-v107-20261019-1/REPORT.md` for
-provenance, GitHub availability, regression results and independent review.
+The source-acquisition correction described below is locally prepared and
+unpublished. It makes no new commit, push or workflow request. See
+`../macos-smtp-source-acquisition-fix-v107-20261019-1/REPORT.md` for fresh-fetch
+evidence, checks and independent review. Existing Windows/Debian native evidence
+is preserved; no VM, host service or host credential store is accessed.
 
 ## Source finding and execution boundary
 
@@ -24,21 +26,30 @@ this preparation makes no new Windows acceptance claim.
 The new, separate `macos-smtp-keychain.yml` workflow preserves existing workflows.
 It is manual only, contents-read only, with pinned actions and no secret inputs,
 caches, artifact uploads, packaging or release. Its harness comes from the
-dispatch commit; application source is pinned to the reviewed bundle commit.
-The runner verifies that commit and SHA-256
+dispatch commit; corrected application acquisition is pinned to the published
+integration commit `d3006b7c526042a7ea5a2ab5f108a2f0d393d5dd`, never a branch tip.
+The runner verifies that exact commit and SHA-256
 `5ff10aa9d5920f88dff2a2988901e17dcfebc480d9cb51bf583c0d994e77e0bc`
 of the credential module before injecting test-only code inside its existing
 test module. Production credential code is unchanged. The module is restored
 after execution; interrupted jobs rely on disposal of the hosted runner.
 
-GitHub availability was subsequently verified by a successful exact-SHA HTTPS
-fetch into the temporary inspection clone. GitHub's security branch still
-advertises the common parent `5abca681`; local HEAD remains `e581130`, with the
-reviewed delta now present as uncommitted files. The workflow also compares the
-integrated harness checkout's complete `src`, assets, manifests, lockfile, build
-script and Windows resource inputs against the immutable reviewed checkout.
-Extra/missing/changed build inputs fail closed; no branch-tip or plaintext-source
-fallback is allowed.
+An earlier successful fetch into an already populated inspection clone was
+insufficient proof of fresh remote availability. Both Actions runners, and a
+fresh local fetch, reject the historical bundle SHA `77d3268` with `not our ref`.
+It is outside the published development commit's ancestry. GitHub's commit API
+reports no commit for that SHA; no server-retention explanation is assumed.
+
+The correction retains `77d3268` and its original Git tree as provenance, backed
+by a hash-pinned `scripts/macos_smtp_reviewed_source.json` generated from its
+Git objects. All 111 original build-input paths, contents and executable modes
+must match in both the fetched source and dispatch harness before their existing
+mutual equivalence check and the test overlay. The manifest covers complete
+`src`, assets, Cargo manifests/lock, build script and Windows resource input.
+Extra/missing/changed files, symlinks, changed manifest bytes or provenance,
+wrong acquisition SHA and dirty source checkouts are refused. Matching drift in
+both checkouts cannot replace the independent original hashes. A fresh remote
+checkout of `d3006b7` and all these local checks passed.
 
 ## What the GitHub jobs test
 
@@ -89,7 +100,7 @@ deadline and 180-second native fixture deadline. Captured diagnostics are
 withheld to avoid assertion/provider disclosure; jobs report fixed failure
 categories rather than raw logs. This reduces build-failure diagnostic detail.
 
-Fresh-process persistence is covered; reboot/login persistence, GUI prompts,
+Fresh-process persistence is planned by the fixture; reboot/login persistence, GUI prompts,
 actual locked/denied Keychain behaviour, code-signing/update ACL changes and
 interactive app behaviour are not. Headless runners may fail because a user
 Keychain cannot be accessed without interaction; no unlock workaround or mock
@@ -97,10 +108,12 @@ fallback hides that failure. Full filesystem, crash/core-dump and OS Keychain
 internal audits are outside this focused fixture. ARMv7/Linux and Windows ARM64
 coverage are not established by these macOS jobs.
 
-The integration follow-up adds an eighth test for build-input equivalence and
-drift/duplicate-module refusal. Next approval: publication of the reviewed local
-integration and workflow. Workflow execution still requires separate explicit
-approval. No approval is inferred from preparation.
+The acquisition correction has 13 passing local harness tests, including
+manifest and matching-drift adversarial cases. The original native fixture and
+application source are unchanged. This is not a macOS native PASS.
+Next approval: publish the reviewed acquisition correction. Any main workflow
+synchronisation should remain workflow-only. A new execution requires separate
+explicit approval; no approval is inferred from preparation.
 
 Runner references checked against official GitHub documentation:
 https://docs.github.com/en/actions/reference/runners/github-hosted-runners

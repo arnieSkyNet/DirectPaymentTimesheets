@@ -47,7 +47,7 @@ def confirm_job_cleanup(leader, wait, active_processes):
         time.sleep(0.02)
 
 
-def run_windows_job(args, env, timeout=600):
+def run_windows_job(args, env, timeout=600, *, isolate_stdio=False):
     """Windows 10+ atomic job assignment; no uncontained launch fallback.
 
     Intended for trusted CreateProcess-based synthetic tests, not hostile code or
@@ -111,6 +111,8 @@ def run_windows_job(args, env, timeout=600):
     def require(ok):
         if not ok:
             raise ContainmentError(f"windows.job: class=api_failure; code={ctypes.get_last_error()}")
+    open_null = api("CreateFileW", w.HANDLE, [w.LPCWSTR, w.DWORD, w.DWORD, ptr, w.DWORD, w.DWORD, w.HANDLE])
+    timed_out, final_status = None, None
     job = create_job(None, None)
     require(job)
     handles, attributes, initialized = [], None, False
@@ -130,9 +132,16 @@ def run_windows_job(args, env, timeout=600):
         require(update(attributes, 0, 0x2000D, jobs, ctypes.sizeof(jobs), None, None))
         for selector in [-10, -11, -12]:
             handle = w.HANDLE()
-            require(duplicate(current(), std(selector & 0xffffffff), current(),
-                              ctypes.byref(handle), 0, True, 2))
-            handles.append(handle.value)
+            source = std(selector & 0xffffffff) if not isolate_stdio else open_null(
+                "NUL", 0x80000000 if selector == -10 else 0x40000000, 3, None, 3, 0x80, None)
+            require(source and source != ptr(-1).value)
+            try:
+                require(duplicate(current(), source, current(), ctypes.byref(handle), 0, True, 2))
+                # Register before closing source, so failure still closes duplicate.
+                handles.append(handle.value)
+            finally:
+                if isolate_stdio:
+                    require(close(source))
         inherited = (w.HANDLE * 3)(*handles)
         require(update(attributes, 0, 0x20002, inherited, ctypes.sizeof(inherited), None, None))
         startup = StartupEx()
@@ -158,7 +167,8 @@ def run_windows_job(args, env, timeout=600):
         outcome = wait(process.process, int(timeout * 1000))
         if outcome == 258:
             # Exception escapes only after finally confirms whole-job cleanup.
-            raise subprocess.TimeoutExpired("controlled_synthetic_group", timeout)
+            timed_out = subprocess.TimeoutExpired("controlled_synthetic_group", timeout)
+            raise timed_out
         if outcome != 0:
             raise ContainmentError("windows.job: class=wait_failure")
         code = w.DWORD()
@@ -174,6 +184,10 @@ def run_windows_job(args, env, timeout=600):
                 require(query(job, 1, ctypes.byref(accounting), ctypes.sizeof(accounting), None))
                 return accounting.active
             confirm_job_cleanup(process.process, wait, active_processes)
+            if process.process:
+                code = w.DWORD()
+                require(exit_code(process.process, ctypes.byref(code)))
+                final_status = code.value
         finally:
             if initialized:
                 delete(attributes)
@@ -184,6 +198,9 @@ def run_windows_job(args, env, timeout=600):
                     failed = True
             if failed:
                 raise ContainmentError("windows.job: class=handle_close_failure")
+        if timed_out is not None:
+            timed_out.cleanup_receipt = dict(final_status=final_status, reaped=True,
+                                            descendants_gone=True, handles_closed=True)
 
 
 def main():
