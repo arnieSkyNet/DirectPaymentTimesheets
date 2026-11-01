@@ -617,12 +617,12 @@ fn paid_duplicate_replacement_reconciles_only_the_difference() {
     settle(&app, &r);
     let replacement = direct(&app, "2026-04-02T09:00", "2026-04-02T11:00");
     let all = load(&app).unwrap();
-    let g = preflight(&open(&app).unwrap(), &all)
+    let g = preflight(&*open(&app).unwrap(), &all)
         .unwrap()
         .unresolved
         .remove(0);
     approve_group(
-        &open(&app).unwrap(),
+        &*open(&app).unwrap(),
         &all,
         &[(g.fingerprint, format!("direct:{replacement}"))],
     )
@@ -664,12 +664,12 @@ fn mixed_imported_and_direct_selected_evidence_is_paid_once_with_historical_rate
     );
     direct(&app, "2026-04-02T09:30", "2026-04-02T10:30");
     let all = load(&app).unwrap();
-    let group = preflight(&open(&app).unwrap(), &all)
+    let group = preflight(&*open(&app).unwrap(), &all)
         .unwrap()
         .unresolved
         .remove(0);
     approve_group(
-        &open(&app).unwrap(),
+        &*open(&app).unwrap(),
         &all,
         &[(
             group.fingerprint,
@@ -801,7 +801,7 @@ fn indeterminate_payslip_is_not_settled_and_refuses_reconciliation() {
         .protect_payslip_for_send(1, "2026/27", 1, "attempt")
         .unwrap();
     assert_eq!(
-        lifecycle::stage(&open(&app).unwrap(), &r).unwrap(),
+        lifecycle::stage(&*open(&app).unwrap(), &r).unwrap(),
         Stage::Indeterminate
     );
     assert!(reconciliation::calculate(&app, &r, &w, None).is_err());
@@ -930,7 +930,7 @@ fn write_cutover(
         settled,
     };
     std::fs::write(
-        legacy_baseline::inventory_path(&open(app).unwrap())
+        legacy_baseline::inventory_path(&*open(app).unwrap())
             .unwrap()
             .unwrap(),
         toml::to_string(&inventory).unwrap(),

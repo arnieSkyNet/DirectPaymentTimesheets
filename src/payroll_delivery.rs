@@ -171,7 +171,7 @@ fn transition(
 /// Caller refreshes addresses, eligibility, settings and reads all attachment bytes
 /// inside the immediate claim transaction. Transport receives those verified bytes.
 pub fn dispatch<V, S>(
-    db: &mut Connection,
+    db: &mut crate::database::DatabaseConnection,
     pa: i64,
     identity: Option<PayslipDeliveryIdentity<'_>>,
     approved: &Approval,
@@ -377,7 +377,7 @@ pub fn history(db: &Connection) -> Result<Vec<ReviewTarget>> {
 }
 
 pub fn review(
-    db: &mut Connection,
+    db: &mut crate::database::DatabaseConnection,
     key: &str,
     expected_evidence: &str,
     decision: &str,
@@ -481,7 +481,7 @@ mod tests {
     use crate::payroll_timesheet_email_repository::PayrollTimesheetEmailRepository;
     struct Fixture {
         dir: tempfile::TempDir,
-        db: Connection,
+        db: crate::database::DatabaseConnection,
     }
     impl Fixture {
         fn new() -> Self {

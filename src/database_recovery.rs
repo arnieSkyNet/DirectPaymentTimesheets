@@ -243,6 +243,7 @@ pub fn initialise(path: &Path) -> Result<()> {
         Some(crate::database::CURRENT_SCHEMA_VERSION) => {
             validate_current(&tx)?;
             tx.commit()?;
+            live.close_or_retain()?;
             return Ok(());
         }
         None => {
@@ -259,12 +260,14 @@ pub fn initialise(path: &Path) -> Result<()> {
                 .parent()
                 .filter(|p| !p.as_os_str().is_empty())
                 .unwrap_or(Path::new("."));
-            let pending = crate::private_storage::tempdir_in(parent)?;
-            let staged = crate::database::open(pending.path().join("fresh.sqlite"))?;
+            let pending = std::sync::Arc::new(crate::private_storage::tempdir_in(parent)?);
+            let staged = crate::database::open_owned(&pending.path().join("fresh.sqlite"), Some(pending.clone()))?;
             crate::database::create_schema(&staged)?;
             integrity(&staged)?;
             install(&tx, &staged)?;
+            staged.close_or_retain()?;
             tx.commit()?;
+            live.close_or_retain().map_err(|error| format!("Database initialized; restart required because closure could not be confirmed: {error}"))?;
             return Ok(());
         }
         Some(_) => {}
@@ -273,18 +276,20 @@ pub fn initialise(path: &Path) -> Result<()> {
     let recovery = BackupService::create_verified(path, &parent.join("config.toml"), &parent.join("backups"))
         .map_err(|e| format!("Upgrade refused before changing the database: {e}. Free backup storage/check permissions and retry; never delete the original database."))?;
     let upgrade = (|| -> Result<()> {
-        let staged = crate::private_storage::tempdir_in(parent)?;
+        let staged = std::sync::Arc::new(crate::private_storage::tempdir_in(parent)?);
         let staged_path = staged.path().join("upgrade.sqlite");
         crate::private_storage::copy_new(&recovery.join("database.sqlite"), &staged_path)?;
-        let migrated = crate::database::open(&staged_path)?;
+        let migrated = crate::database::open_owned(&staged_path, Some(staged.clone()))?;
         crate::database::create_schema(&migrated)?;
         integrity(&migrated)?;
         // The existing writer reservation excludes concurrent edits during installation.
         install(&tx, &migrated)?;
+        migrated.close_or_retain()?;
         tx.commit()?;
         Ok(())
     })();
     upgrade.map_err(|e| format!("Isolated upgrade/install failed: {e}. Uncommitted installation changes are rolled back; verified original recovery is {}. Close all instances, retain this recovery copy, and seek help before retrying or sending payroll.",recovery.display()))?;
+    live.close_or_retain().map_err(|error| format!("Database upgraded; restart required because closure could not be confirmed: {error}. Verified original recovery: {}", recovery.display()))?;
     println!("Database upgraded to schema {}. Verified database/config recovery: {}. External business files are not copied; see its recovery manifest.",crate::database::CURRENT_SCHEMA_VERSION,recovery.display());
     Ok(())
 }
@@ -420,14 +425,14 @@ pub(crate) fn losses(live: &Connection, staged: &Connection) -> Result<Vec<(Stri
 
 pub(crate) fn staged_backup(
     backup: &Path,
-) -> Result<(crate::private_storage::PrivateTempDir, Connection)> {
-    let dir = crate::private_storage::tempdir()?;
+) -> Result<(std::sync::Arc<crate::private_storage::PrivateTempDir>, crate::database::DatabaseConnection)> {
+    let dir = std::sync::Arc::new(crate::private_storage::tempdir()?);
     // Reserve the database privately before SQLite creates its snapshot.
     let path = dir.path().join("restore.sqlite");
     let source = crate::database::open_read_only(&backup.join("database.sqlite"))?;
-    crate::private_storage::prepare_database(&path)?;
-    source.backup(rusqlite::DatabaseName::Main, &path, None)?;
-    let db = crate::database::open(path)?;
+    let mut db = crate::database::open_owned(&path, Some(dir.clone()))?;
+    source.copy_into(&mut db)?;
+    source.close_or_retain()?;
     crate::database::create_schema(&db)?;
     integrity(&db)?;
     Ok((dir, db))
@@ -440,7 +445,7 @@ mod tests {
     use crate::payroll_snapshot_service::{publish_candidate, CandidatePublication};
     use crate::payroll_worked_item_repository::PayrollWorkedItemRepository;
 
-    fn fixture() -> (crate::private_storage::PrivateTempDir, Connection) {
+    fn fixture() -> (crate::private_storage::PrivateTempDir, crate::database::DatabaseConnection) {
         let dir = crate::private_storage::tempdir().unwrap();
         let db = crate::database::open(dir.path().join("database.sqlite")).unwrap();
         crate::database::create_schema(&db).unwrap();
@@ -568,12 +573,12 @@ mod tests {
         let before = fingerprint(&db).unwrap();
         assert!(initialise(&dir.path().join("database.sqlite")).is_err());
         assert_eq!(fingerprint(&db).unwrap(), before);
-        assert_eq!(
-            std::fs::read_dir(dir.path().join("backups"))
-                .unwrap()
-                .count(),
-            0
-        );
+        let backups = dir.path().join("backups");
+        let incomplete: Vec<_> = std::fs::read_dir(&backups).unwrap().map(|entry| entry.unwrap().path()).collect();
+        assert_eq!(incomplete.len(), 1);
+        assert!(incomplete[0].join(".incomplete").is_file());
+        assert!(BackupService::discover(&backups).unwrap().is_empty());
+        assert!(BackupService::validate(&incomplete[0], &backups).unwrap_err().to_string().contains("incomplete"));
     }
     #[test]
     fn verified_backup_includes_wal_and_does_not_checkpoint_original() {
@@ -1143,7 +1148,7 @@ mod stage5_tests {
         .unwrap();
         initialise(&path).unwrap();
         assert_eq!(
-            version(&crate::database::open(&path).unwrap()).unwrap(),
+            version(&*crate::database::open(&path).unwrap()).unwrap(),
             Some(crate::database::CURRENT_SCHEMA_VERSION)
         );
         let unknown = dir.path().join("unknown.sqlite");
@@ -1191,7 +1196,7 @@ mod stage5_tests {
             crate::backup_service::BackupService::discover(&dir.path().join("backups")).unwrap();
         assert_eq!(saved.len(), 1);
         assert_eq!(
-            version(&crate::database::open(saved[0].path.join("database.sqlite")).unwrap())
+            version(&*crate::database::open(saved[0].path.join("database.sqlite")).unwrap())
                 .unwrap(),
             Some(37)
         );

@@ -1,5 +1,5 @@
 use super::*;
-use rusqlite::{params, Connection};
+use rusqlite::params;
 use std::sync::{
     atomic::{AtomicBool, AtomicUsize, Ordering},
     Arc, Mutex,
@@ -53,7 +53,7 @@ fn fixture() -> (
     gui.operational_payroll_period.select(&schedule, None);
     (dir, gui, schedule)
 }
-fn db(app: &DirectPaymentApp) -> Connection {
+fn db(app: &DirectPaymentApp) -> crate::database::DatabaseConnection {
     crate::payroll_evidence::open(&app.application).unwrap()
 }
 fn generate(app: &mut DirectPaymentApp, ids: &[i64]) -> ProductionReport {

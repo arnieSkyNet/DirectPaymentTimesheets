@@ -196,7 +196,7 @@ fn cycle_periods(
     let start = crate::date_utils::parse_legacy(week)?;
     let end = start + chrono::Duration::days(6);
     Ok(
-        crate::sickness_service::evidence(&crate::payroll_evidence::open(app)?, record.id)?
+        crate::sickness_service::evidence(&*crate::payroll_evidence::open(app)?, record.id)?
             .periods
             .into_iter()
             .filter(|p| {

@@ -110,12 +110,14 @@ impl From<rusqlite::Error> for TimesheetCorrectionError {
 }
 
 pub struct TimesheetRepository {
-    connection: Connection,
+    connection: crate::database::DatabaseConnection,
 }
 
 impl TimesheetRepository {
-    pub fn new(connection: Connection) -> Self {
-        Self { connection }
+    pub fn new(connection: impl Into<crate::database::DatabaseConnection>) -> Self {
+        Self {
+            connection: connection.into(),
+        }
     }
 
     pub(crate) fn connection(&self) -> &Connection {

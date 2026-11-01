@@ -1,4 +1,4 @@
-use rusqlite::{params, Connection, Result};
+use rusqlite::{params, Result};
 
 use crate::payroll_worked_item_repository::ManualHoursAdjustment;
 
@@ -136,12 +136,14 @@ pub fn derive_annual_leave(
 }
 
 pub struct PayrollTimesheetRepository {
-    connection: Connection,
+    connection: crate::database::DatabaseConnection,
 }
 
 impl PayrollTimesheetRepository {
-    pub fn new(connection: Connection) -> Self {
-        Self { connection }
+    pub fn new(connection: impl Into<crate::database::DatabaseConnection>) -> Self {
+        Self {
+            connection: connection.into(),
+        }
     }
 
     pub fn get_for_cycle_and_pa(

@@ -16,6 +16,8 @@ mod context;
 mod contracted_hours_repository;
 mod csv_import;
 mod database;
+mod database_connection;
+mod database_failure;
 mod database_recovery;
 mod date_utils;
 include!("development_build_gate.rs");

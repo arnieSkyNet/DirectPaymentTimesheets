@@ -1,5 +1,5 @@
 use chrono::NaiveDate;
-use rusqlite::{params, Connection, Result};
+use rusqlite::{params, Result};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum HoursBasis {
@@ -69,12 +69,14 @@ impl ContractedHoursEntry {
 }
 
 pub struct ContractedHoursRepository {
-    connection: Connection,
+    connection: crate::database::DatabaseConnection,
 }
 
 impl ContractedHoursRepository {
-    pub fn new(connection: Connection) -> Self {
-        Self { connection }
+    pub fn new(connection: impl Into<crate::database::DatabaseConnection>) -> Self {
+        Self {
+            connection: connection.into(),
+        }
     }
 
     pub fn insert(&self, entry: &ContractedHoursEntry) -> Result<()> {

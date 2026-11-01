@@ -2,6 +2,23 @@ use std::path::Path;
 
 use rusqlite::{Connection, Result};
 
+pub(crate) use crate::database_connection::{DatabaseConnection, DatabaseOpenError};
+
+/// Owning open with an optional shared staging lifetime.
+pub(crate) fn open_owned(
+    path: &Path,
+    staging: Option<std::sync::Arc<crate::private_storage::PrivateTempDir>>,
+) -> std::result::Result<DatabaseConnection, DatabaseOpenError> {
+    DatabaseConnection::open_registered(path, staging, register_connection)
+}
+
+pub(crate) fn open_read_only_owned(
+    path: &Path,
+    staging: Option<std::sync::Arc<crate::private_storage::PrivateTempDir>>,
+) -> std::result::Result<DatabaseConnection, DatabaseOpenError> {
+    DatabaseConnection::open_read_only(path, staging)
+}
+
 pub const CURRENT_SCHEMA_VERSION: i64 = 41;
 
 pub fn initialise_database(database_path: &Path) -> crate::database_recovery::Result<()> {
@@ -21,26 +38,12 @@ pub fn register_connection(connection: &Connection) -> Result<()> {
 
 /// Existing database only; no registration, migration or permission repair.
 /// SQLite may coordinate WAL/SHM normally. Static checks do not confine races.
-pub(crate) fn open_read_only(path: &Path) -> Result<Connection> {
-    let _guard = crate::private_storage::read_only_database_guard(path)
-        .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
-    Connection::open_with_flags(
-        path,
-        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NOFOLLOW,
-    )
+pub(crate) fn open_read_only(path: &Path) -> Result<DatabaseConnection> {
+    open_read_only_owned(path, None).map_err(DatabaseOpenError::into_error)
 }
 
-pub fn open(path: impl AsRef<Path>) -> Result<Connection> {
-    crate::private_storage::prepare_database(path.as_ref())
-        .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
-    let connection = Connection::open_with_flags(
-        path,
-        rusqlite::OpenFlags::SQLITE_OPEN_READ_WRITE
-            | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX
-            | rusqlite::OpenFlags::SQLITE_OPEN_NOFOLLOW,
-    )?;
-    register_connection(&connection)?;
-    Ok(connection)
+pub fn open(path: impl AsRef<Path>) -> Result<DatabaseConnection> {
+    open_owned(path.as_ref(), None).map_err(DatabaseOpenError::into_error)
 }
 
 #[cfg(test)]

@@ -519,8 +519,8 @@ pub fn write_atomic(path: &Path, bytes: &[u8]) -> io::Result<()> {
     Ok(())
 }
 
-/// Static checks only. Returned Windows handles cover the subsequent open,
-/// not the connection's lifetime or SQLite's internal pathname operations.
+/// Static checks plus Windows ancestor handles. The caller determines their
+/// lifetime; even retained handles do not confine SQLite's internal pathname I/O.
 pub(crate) fn read_only_database_guard(path: &Path) -> io::Result<Vec<File>> {
     check_path(path)?;
     for suffix in ["-journal", "-wal", "-shm"] {
@@ -542,6 +542,12 @@ pub(crate) fn read_only_database_guard(path: &Path) -> io::Result<Vec<File>> {
 }
 
 pub fn prepare_database(path: &Path) -> io::Result<()> {
+    writable_database_guard(path).map(drop)
+}
+
+/// Preserve the existing admission policy, returning guards for an owning caller.
+/// Legacy callers of prepare_database still retain guards only during preparation.
+pub(crate) fn writable_database_guard(path: &Path) -> io::Result<Vec<File>> {
     check_path(path)?;
     for suffix in ["-journal", "-wal", "-shm"] {
         let mut sidecar = path.as_os_str().to_os_string();
@@ -549,7 +555,7 @@ pub fn prepare_database(path: &Path) -> io::Result<()> {
         check_path(Path::new(&sidecar))?;
     }
     #[cfg(windows)]
-    let _ancestors = platform::database_ancestor_guard(path)?;
+    let ancestors = platform::database_ancestor_guard(path)?;
     #[cfg(windows)]
     {
         // SQLite creates sidecars using the parent DACL, not the database DACL.
@@ -566,7 +572,14 @@ pub fn prepare_database(path: &Path) -> io::Result<()> {
         }
         Err(e) => return Err(e),
     }
-    Ok(())
+    #[cfg(windows)]
+    {
+        Ok(ancestors)
+    }
+    #[cfg(not(windows))]
+    {
+        Ok(Vec::new())
+    }
 }
 
 /// Bounded, metadata-only assessment. No file contents or permissions are changed.

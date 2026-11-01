@@ -3,7 +3,7 @@ use crate::payroll_snapshot_service::{publish_candidate, CandidatePublication};
 use crate::payroll_worked_item_repository::PayrollWorkedItemRepository;
 use crate::timesheet_delivery as delivery;
 
-fn fixture() -> (tempfile::TempDir, Connection) {
+fn fixture() -> (tempfile::TempDir, crate::database::DatabaseConnection) {
     let dir = tempfile::tempdir().unwrap();
     let db = crate::database::open(dir.path().join("payroll.sqlite")).unwrap();
     crate::database::create_schema(&db).unwrap();
@@ -965,7 +965,7 @@ fn failed_settled_correction_publication_remains_retryable_without_reopening_set
     assert!(!correction_open(&db, 10).unwrap());
 }
 
-fn retained_fixture() -> (tempfile::TempDir, Connection, SicknessPeriod) {
+fn retained_fixture() -> (tempfile::TempDir, crate::database::DatabaseConnection, SicknessPeriod) {
     let (dir, db) = fixture();
     let p = change(
         &db,
@@ -1173,7 +1173,7 @@ fn historical_financial_payload_changes_are_refused_even_when_worked_totals_matc
     }
 }
 
-fn genuine_legacy(version: i64) -> (tempfile::TempDir, Connection) {
+fn genuine_legacy(version: i64) -> (tempfile::TempDir, crate::database::DatabaseConnection) {
     let dir = tempfile::tempdir().unwrap();
     let db = crate::database::open(dir.path().join("payroll.sqlite")).unwrap();
     crate::database::create_legacy_schema(&db, version).unwrap();
@@ -1269,7 +1269,7 @@ fn genuinely_populated_schema35_and36_upgrade_and_restore_preserve_original_data
         .unwrap();
         assert_eq!(
             crate::database_recovery::fingerprint(
-                &crate::database::open(restored.safety_backup.join("database.sqlite")).unwrap()
+                &*crate::database::open(restored.safety_backup.join("database.sqlite")).unwrap()
             )
             .unwrap(),
             live
@@ -1297,7 +1297,7 @@ fn genuine_schema35_failure_after_committed_schema36_keeps_original_and_verified
     assert_eq!(backups.len(), 1);
     assert_eq!(
         crate::database_recovery::fingerprint(
-            &crate::database::open(backups[0].path.join("database.sqlite")).unwrap()
+            &*crate::database::open(backups[0].path.join("database.sqlite")).unwrap()
         )
         .unwrap(),
         before

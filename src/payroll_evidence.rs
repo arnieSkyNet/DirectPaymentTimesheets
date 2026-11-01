@@ -10,7 +10,7 @@ pub type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
 pub fn now() -> String {
     chrono::Local::now().to_rfc3339()
 }
-pub fn open(app: &Application) -> Result<Connection> {
+pub fn open(app: &Application) -> Result<crate::database::DatabaseConnection> {
     Ok(crate::database::open(
         &app.context.environment.database_path,
     )?)
@@ -109,7 +109,7 @@ fn hash(s: &str) -> String {
     format!("{:x}", Sha256::digest(s.as_bytes()))
 }
 pub fn load(app: &Application) -> Result<Vec<WorkEvidence>> {
-    load_connection(&open(app)?)
+    load_connection(&*open(app)?)
 }
 pub fn load_connection(db: &Connection) -> Result<Vec<WorkEvidence>> {
     load_scoped(db, None)

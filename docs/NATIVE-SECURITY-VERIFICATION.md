@@ -702,3 +702,68 @@ line-ending notices. Evidence: ignored target/windows-v107-diagnostics/
 credentials-completion-*.log and SMTP-CREDENTIALS.md. Cross-platform native gates
 and recovery limitations are in SMTP-CREDENTIAL-STORAGE.md. No real-profile
 migration, GUI launch, real SMTP send or production data/ACL change was performed.
+
+
+## SQLite ownership verification boundary — 31 October 2026
+
+> Historical checkpoint. Its pending/blocker statements are superseded by the
+> 1 November SQLite Stage 6 reconciliation below; its original observations remain.
+
+The current uncommitted ownership candidate has Linux nonterminal verification for repository migration and explicit owned backup/staging connections. It retains the existing Windows ancestor guard vector for connection lifetime without changing owner, ACL, inheritance or reparse policy. Native compilation and safe Windows ownership/refusal/handle-release acceptance have not been performed for this candidate. Florence has only a Linux target; Stage 4 is blocked and Stages 5–6 are not complete. Historical native results and ignored terminal fixtures must not be relabelled as current acceptance. No workflow dispatch, target installation, native failure injection or terminal execution is authorized by these local results. See [ownership status](SQLITE-CONNECTION-OWNERSHIP.md).
+
+
+## Molly access discovery and independent Stage 5 work — 31 October 2026
+
+> Historical checkpoint. Its pending/blocker statements are superseded by the
+> 1 November SQLite Stage 6 reconciliation below; its original observations remain.
+
+No user SSH configuration, Molly-specific system SSH route/trusted host-key match, WinRM/PowerShell remoting setup or connected remote executor was found on Florence. No authentication, transfer or remote command occurred. Molly source identity is UNVERIFIED; no source mismatch or native test pass is asserted. A complete private snapshot of the uncommitted candidate was preserved locally. Native ownership, refusal, handle release and Windows compilation remain blocked until a configured secure route and independently checked source identity are available. Independent Stage 5 normal-shutdown/restart and in-memory quarantine work has safe Linux/policy/headless verification; it does not activate emergency termination or replace native evidence. Stages 4/6 platform and release gates remain open.
+
+## SQLite Stage 6 current disposition — 1 November 2026
+
+> Earlier 1 November checkpoint. Networking and macOS pending-status statements
+> below are superseded by the later macOS acceptance update following this section;
+> the original observations and remaining limitations are preserved.
+
+The earlier "Molly inaccessible", "no Windows candidate tests" and "Stage 5
+unimplemented" checkpoints are historical, not current blockers. Reused Florence
+evidence covers 239 distinct runtime tests plus nine compiler borrowing checks.
+Molly's resumed Stage 4 passed 10 exact-name unit tests and four supplemental
+native handle-release probe cases against the unchanged verified snapshot.
+The correct Projects-ancestry refusal was preserved; a new admitted private
+profile fixture resolved the test-location blocker without permission repair.
+
+The existing owner implementation and conservative normal-close policy are
+retained. Failed native cleanup/close uncertainty, in-flight work and unconfined
+SQLite pathname/sidecar operations are explicitly accepted limitations of this
+bounded ownership change. Native Windows busy-close, broader refusal coverage,
+interactive GUI shutdown and current-candidate macOS compilation/safe native
+acceptance remain unverified. No new native pass is asserted in this continuation:
+SSH socket creation was sandbox-denied and GitHub API access failed. No Mac runner
+was established, and no workflow or terminal machinery was activated.
+
+Stage 6 documentation is reconciled; full cross-platform v1.0.7 SQLite security
+sign-off remains pending. The authoritative scope, historical-report provenance
+and remaining checks are in [SQLite ownership status](SQLITE-CONNECTION-OWNERSHIP.md).
+
+## SQLite macOS acceptance update — 1 November 2026
+
+[Actions run 41305531150](https://github.com/arnieSkyNet/DirectPaymentTimesheets/actions/runs/41305531150)
+completed successfully using controller
+`1afde972f46f0f66438952bbd56e6e8ec0aa1d6c` and immutable candidate
+`d9b046bed1739843f854e57968ab5ce9947b26ce`. Native Intel
+(`macos-15-intel`, `x86_64-apple-darwin`) and Apple Silicon
+(`macos-15`, `aarch64-apple-darwin`) each compiled the application and passed all
+43 exact selected tests: 86 test executions, zero selected failures. Both receipts
+bind the source, harness, allowlist, lockfile and effective workspace; all 117
+candidate source/support files match the development working tree in bytes,
+size and executable mode.
+
+This satisfies the previously pending current-candidate macOS compilation/safe
+headless gate. The application was not launched, and no real SMTP/Keychain,
+integration/terminal fixture or production data was used. Interactive native GUI,
+native cleanup/close panic, crash durability and universal pathname confinement
+are not certified. Remaining Windows busy-close/refusal scope and the existing
+accepted limitations are unchanged. Experimental terminal machinery remains
+inactive. See [ownership status](SQLITE-CONNECTION-OWNERSHIP.md) for the full scope;
+this is not full cross-platform security or release sign-off.

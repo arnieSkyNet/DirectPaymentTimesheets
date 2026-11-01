@@ -720,14 +720,14 @@ pub fn calculate_for_generation(
     weeks: &[NaiveDate; 4],
     legacy: Option<&crate::pay_rate_allocation::PreviousCycleContext>,
 ) -> Result<crate::pay_rate_allocation::ReconciledPayrollHours> {
-    if let Some(hours) = crate::sickness_service::historical_hours(&open(app)?, record.id)? {
-        lifecycle::ensure_generatable(&open(app)?, record.id)?;
+    if let Some(hours) = crate::sickness_service::historical_hours(&*open(app)?, record.id)? {
+        lifecycle::ensure_generatable(&*open(app)?, record.id)?;
         return Ok(hours);
     }
-    if lifecycle::stage(&open(app)?, record)? == Stage::Editable {
+    if lifecycle::stage(&*open(app)?, record)? == Stage::Editable {
         return calculate(app, record, weeks, legacy);
     }
-    lifecycle::ensure_generatable(&open(app)?, record.id)?;
+    lifecycle::ensure_generatable(&*open(app)?, record.id)?;
     sync_settled_corrections(app, record.personal_assistant_id)?;
     let plan = plan(app, record)?;
     calculate_plan(app, record, weeks, legacy, &plan)

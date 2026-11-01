@@ -1,5 +1,5 @@
 use chrono::NaiveDate;
-use rusqlite::{params, Connection, Result};
+use rusqlite::{params, Result};
 use std::error::Error;
 use std::fmt;
 
@@ -16,7 +16,7 @@ pub struct PayrollSchedule {
 }
 
 pub struct PayrollScheduleRepository {
-    connection: Connection,
+    connection: crate::database::DatabaseConnection,
 }
 
 #[derive(Debug)]
@@ -88,8 +88,10 @@ impl From<rusqlite::Error> for PayrollScheduleResolutionError {
 }
 
 impl PayrollScheduleRepository {
-    pub fn new(connection: Connection) -> Self {
-        Self { connection }
+    pub fn new(connection: impl Into<crate::database::DatabaseConnection>) -> Self {
+        Self {
+            connection: connection.into(),
+        }
     }
 
     pub fn get_all_for_year(&self, payroll_year: &str) -> Result<Vec<PayrollSchedule>> {

@@ -250,12 +250,14 @@ pub struct DirectPaymentApp {
     payroll_settings_screen: PayrollSettingsScreen,
     payroll_timesheet_screen: PayrollTimesheetScreen,
     pending_preparation_navigation: Option<(ActiveScreen, OperationalPayrollPeriodState, bool)>,
-    preparation_close_allowed: bool,
     enter_hours_screen: EnterHoursScreen,
     application_settings_screen: ApplicationSettingsScreen,
     active_screen: ActiveScreen,
     restart_required_message: Option<String>,
     restart_required_paths: Vec<std::path::PathBuf>,
+    restart_close_confirmation: bool,
+    restart_close_authorized: bool,
+    database_failure_reported: bool,
 }
 
 impl DirectPaymentApp {
@@ -324,12 +326,14 @@ impl DirectPaymentApp {
             payroll_settings_screen: PayrollSettingsScreen::new(),
             payroll_timesheet_screen: PayrollTimesheetScreen::new(),
             pending_preparation_navigation: None,
-            preparation_close_allowed: false,
             enter_hours_screen: EnterHoursScreen::new(),
             application_settings_screen: ApplicationSettingsScreen::new(),
             active_screen: ActiveScreen::Dashboard,
             restart_required_message: None,
             restart_required_paths: Vec::new(),
+            restart_close_confirmation: false,
+            restart_close_authorized: false,
+            database_failure_reported: false,
         }
     }
 }
@@ -345,6 +349,10 @@ impl eframe::App for DirectPaymentApp {
         self.poll_smtp_test();
         if self.smtp_test.pending() {
             ctx.request_repaint_after(std::time::Duration::from_millis(250));
+        }
+        self.apply_database_failure(crate::database_failure::current());
+        if self.show_restart_required(ctx, ctx.input(|input| input.viewport().close_requested())) {
+            return;
         }
         self.draw_example_preview(ctx);
         self.payroll_settings_screen
@@ -367,31 +375,12 @@ impl eframe::App for DirectPaymentApp {
         }
         let was_preparation = self.active_screen == ActiveScreen::PayrollTimesheet;
         let mut requested_close = ctx.input(|i| i.viewport().close_requested());
-        if was_preparation
-            && !self.preparation_close_allowed
-            && self.payroll_timesheet_screen.has_unsaved_changes()
+        if self.payroll_timesheet_screen.has_unsaved_changes()
             && requested_close
         {
             ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
         }
         self.draw_about(ctx);
-        if let Some(message) = &self.restart_required_message {
-            egui::CentralPanel::default().show(ctx, |ui| {
-                ui.heading("Restart Required");
-                ui.horizontal_wrapped(|ui| {
-                    ui.label(message);
-                    for path in &self.restart_required_paths {
-                        let _ = crate::folder_opener::button(ui, path);
-                    }
-                });
-                ui.separator();
-                if ui.button("Close DirectPaymentTimesheets").clicked() {
-                    ctx.send_viewport_cmd(egui::ViewportCommand::Close);
-                }
-            });
-            return;
-        }
-
         self.startup_folders.poll(&self.application.context.config);
         if self.startup_folders.checking() {ctx.request_repaint_after(std::time::Duration::from_millis(250));}
         if !self.startup_folders.warnings.is_empty() {
@@ -541,9 +530,15 @@ impl eframe::App for DirectPaymentApp {
                 requested_close |= self.draw_email_settings_page(ui);
             }
         });
+        self.apply_database_failure(crate::database_failure::current());
+        if self.restart_required_message.is_some() {
+            self.request_restart_close(ctx, requested_close, false);
+            ctx.request_repaint();
+            return;
+        }
         self.guard_smtp_test_close(ctx, &mut requested_close);
         if !self.defer_preparation_navigation(was_preparation, requested_close) && requested_close {
-            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+            self.complete_close_request(ctx, true);
         }
         if self.pending_preparation_navigation.is_some() {
             if let Some(proceed) = self
@@ -551,7 +546,7 @@ impl eframe::App for DirectPaymentApp {
                 .unsaved_dialog(ctx, &self.application)
             {
                 if self.finish_preparation_navigation(proceed) {
-                    ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                    self.complete_close_request(ctx, true);
                 }
             }
         }
@@ -559,8 +554,108 @@ impl eframe::App for DirectPaymentApp {
 }
 
 impl DirectPaymentApp {
+    fn apply_database_failure(&mut self, failure: Option<crate::database_failure::Failure>) {
+        if let Some(failure) = failure.filter(|_| !self.database_failure_reported) {
+            self.database_failure_reported = true;
+            self.restart_required_message = Some(match self.restart_required_message.take() {
+                Some(message) => format!("{message}\n\n{}", failure.message()),
+                None => failure.message().into(),
+            });
+            self.pending_preparation_navigation = None;
+        }
+    }
+
+    /// Every normal close path, including a completed save/discard dialog,
+    /// must still respect an active worker. This never terminates a process.
+    fn complete_close_request(&mut self, ctx: &egui::Context, requested: bool) -> bool {
+        self.complete_close(ctx, requested, false)
+    }
+
+    fn complete_close(&mut self, ctx: &egui::Context, mut requested: bool, discard_confirmed: bool) -> bool {
+        let was_requested = requested;
+        self.guard_smtp_test_close(ctx, &mut requested);
+        if was_requested && !requested {
+            self.restart_close_authorized = false;
+        }
+        if requested && self.payroll_timesheet_screen.has_unsaved_changes() && !discard_confirmed {
+            ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+            if self.restart_required_message.is_some() {
+                self.restart_close_confirmation = true;
+            } else {
+                self.defer_preparation_navigation(false, true);
+            }
+            return false;
+        }
+        if requested {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+        }
+        requested
+    }
+
+    fn request_restart_close(
+        &mut self,
+        ctx: &egui::Context,
+        requested: bool,
+        discard_confirmed: bool,
+    ) -> bool {
+        let accepted = self.complete_close(ctx, requested, discard_confirmed);
+        if accepted {
+            self.restart_close_confirmation = false;
+        }
+        accepted
+    }
+
+    fn confirm_restart_close(&mut self, ctx: &egui::Context) -> bool {
+        let accepted = self.request_restart_close(ctx, true, true);
+        // egui-winit queues Close as an input event for the following frame.
+        // Consent covers that one event for the frozen draft, never a worker-
+        // blocked attempt or a later editable preparation screen.
+        self.restart_close_authorized = accepted;
+        accepted
+    }
+
+    fn show_restart_required(&mut self, ctx: &egui::Context, os_close: bool) -> bool {
+        let Some(message) = self.restart_required_message.as_ref() else { return false; };
+        // Pending preparation actions refer to the old database. Never offer a
+        // Save action after restore or an ownership failure; retain draft memory
+        // until the user explicitly confirms closing/discarding it.
+        self.pending_preparation_navigation = None;
+        let discard_for_event = os_close && std::mem::take(&mut self.restart_close_authorized);
+        let mut close = os_close;
+        egui::CentralPanel::default().show(ctx, |ui| {
+            ui.heading("Restart Required");
+            ui.label(message);
+            for path in &self.restart_required_paths {
+                let _ = crate::folder_opener::button(ui, path);
+            }
+            if self.payroll_timesheet_screen.has_unsaved_changes() {
+                ui.label("Unsaved preparation remains in memory. It cannot be saved after a restore or database safety failure. Closing will discard it.");
+            }
+            if self.smtp_test.pending() {
+                ui.spinner();
+                ui.label("Wait for the active email test to finish before closing.");
+            }
+            ui.label(&self.status_message);
+            close |= ui.add_enabled(!self.smtp_test.pending(), egui::Button::new("Close DirectPaymentTimesheets")).clicked();
+        });
+        self.request_restart_close(ctx, close, discard_for_event);
+        if self.restart_close_confirmation {
+            let mut discard = false;
+            let mut cancel = false;
+            egui::Modal::new(egui::Id::new("restart_discard_preparation")).show(ctx, |ui| {
+                ui.heading("Unsaved preparation");
+                ui.label("Further database work is disabled. Discard the unsaved preparation and close?");
+                discard = ui.add_enabled(!self.smtp_test.pending(), egui::Button::new("Discard unsaved changes and close")).clicked();
+                cancel = ui.button("Keep open").clicked();
+            });
+            if cancel { self.restart_close_confirmation = false; }
+            if discard { self.confirm_restart_close(ctx); }
+        }
+        true
+    }
+
     fn defer_preparation_navigation(&mut self, was_preparation: bool, close: bool) -> bool {
-        if was_preparation
+        if (was_preparation || close)
             && self.payroll_timesheet_screen.has_unsaved_changes()
             && (self.active_screen != ActiveScreen::PayrollTimesheet || close)
         {
@@ -596,7 +691,6 @@ impl DirectPaymentApp {
         if proceed {
             self.active_screen = screen;
             self.operational_payroll_period = period;
-            self.preparation_close_allowed = close;
             close
         } else {
             false
@@ -3597,7 +3691,7 @@ impl DirectPaymentApp {
             })?;
 
         crate::payroll_evidence::lifecycle::ensure_generatable(
-            &crate::payroll_evidence::open(&self.application)?,
+            &*crate::payroll_evidence::open(&self.application)?,
             payroll_timesheet.id,
         )?;
         let payroll_weeks = self
@@ -7916,3 +8010,7 @@ mod additional_note_database_error_tests {
         assert!(!labels.contains("Continue"));
     }
 }
+
+#[cfg(test)]
+#[path = "gui_shutdown_tests.rs"]
+mod shutdown_tests;

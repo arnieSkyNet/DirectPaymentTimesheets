@@ -3,7 +3,7 @@ use rusqlite::{params, Connection, Result};
 use crate::models::PersonalAssistant;
 
 pub struct PersonalAssistantRepository {
-    pub(crate) connection: Connection,
+    pub(crate) connection: crate::database::DatabaseConnection,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -14,8 +14,10 @@ pub enum PersonalAssistantDeleteResult {
 }
 
 impl PersonalAssistantRepository {
-    pub fn new(connection: Connection) -> Self {
-        Self { connection }
+    pub fn new(connection: impl Into<crate::database::DatabaseConnection>) -> Self {
+        Self {
+            connection: connection.into(),
+        }
     }
 
     pub fn insert(&self, assistant: &PersonalAssistant) -> Result<()> {

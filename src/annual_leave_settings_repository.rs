@@ -1,5 +1,5 @@
 use chrono::NaiveDate;
-use rusqlite::{params, Connection, OptionalExtension, Result};
+use rusqlite::{params, OptionalExtension, Result};
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct AnnualLeaveSettings {
@@ -61,11 +61,13 @@ impl AnnualLeaveSettings {
 }
 
 pub struct AnnualLeaveSettingsRepository {
-    connection: Connection,
+    connection: crate::database::DatabaseConnection,
 }
 impl AnnualLeaveSettingsRepository {
-    pub fn new(connection: Connection) -> Self {
-        Self { connection }
+    pub fn new(connection: impl Into<crate::database::DatabaseConnection>) -> Self {
+        Self {
+            connection: connection.into(),
+        }
     }
     pub fn get(&self) -> Result<AnnualLeaveSettings> {
         self.connection.query_row("SELECT contracted_effective_from, statutory_weeks, variable_effective_from, accrual_percentage FROM annual_leave_settings WHERE id=1", [], |row| Ok(AnnualLeaveSettings {

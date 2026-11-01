@@ -58,7 +58,32 @@ pub fn run() -> Result<(), crate::startup::StartupError> {
 
     launch_gui(app).map_err(|_| crate::startup::StartupError::new(crate::startup::Stage::Graphics,None,"The application window could not be opened.","Check your desktop/display session and graphics driver. Try launching from a terminal for platform diagnostics; do not reset payroll data.").after_database())?;
 
-    Ok(())
+    shutdown_result(crate::database_failure::current())
+}
+
+fn shutdown_result(failure: Option<crate::database_failure::Failure>) -> Result<(), crate::startup::StartupError> {
+    match failure {
+        None => Ok(()),
+        Some(failure) => Err(crate::startup::StartupError::new(
+            crate::startup::Stage::Shutdown,
+            None,
+            failure.message(),
+            "Normal window closure completed, but database closure was not fully confirmed. Preserve the application data, WAL/SHM files, backups and external business files. Restart before further work; use a known-good backup if damaged data cannot be validated. No rollback or emergency termination was performed.",
+        )),
+    }
+}
+
+#[cfg(test)]
+mod shutdown_tests {
+    #[test]
+    fn shutdown_status_is_success_only_without_an_ownership_failure() {
+        assert!(super::shutdown_result(None).is_ok());
+        let error = super::shutdown_result(Some(crate::database_failure::Failure::BoundaryCloseUnconfirmed)).unwrap_err();
+        assert_eq!(error.stage, crate::startup::Stage::Shutdown);
+        assert!(error.to_string().contains("known-good backup"));
+        assert!(!error.to_string().contains("could not start"));
+        assert_eq!(crate::startup::exit_code(true), 1);
+    }
 }
 
 #[cfg(test)]

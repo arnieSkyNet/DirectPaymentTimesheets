@@ -593,3 +593,66 @@ effective rights of that tool token. No ACL was changed in the correction pass.
 Existing-policy preservation in configuration saves remains deliberate. The
 replacement's initiating process is unrecorded; timestamps and file identity do
 not prove whether the app, an editor or another actor replaced it.
+
+
+## SQLite ownership candidate — 31 October 2026
+
+> Historical checkpoint. Its pending/blocker statements are superseded by the
+> 1 November SQLite Stage 6 reconciliation below; its original observations remain.
+
+The unreleased Stages 2–3 candidate migrates repositories to owning connections, removes hidden pathname backup destinations, and shares staging lifetime across approvals and connections. Existing Windows guard policy is retained for the full owned lifetime. Failed/uncertain close and native-open resources are retained; failed backup roots are retained and marked incomplete rather than recursively deleted. This supersedes historical preparation-only lifetime descriptions for the candidate, not their recorded test results. Native Stage 4 acceptance is blocked on this Linux host; fail-stop/shutdown Stage 5 is unimplemented. No production or release acceptance is claimed. See [current ownership status](SQLITE-CONNECTION-OWNERSHIP.md).
+
+
+## Independent shutdown protections — 31 October 2026
+
+> Historical checkpoint. Its pending/blocker statements are superseded by the
+> 1 November SQLite Stage 6 reconciliation below; its original observations remain.
+
+Stage 5 safe work now latches ownership uncertainty in memory, rejects new owning opens and gates the GUI into Restart Required before further screen/background work. Existing active-worker close protection applies to all final close paths; stale preparation is never saved after restart becomes required. Shutdown uncertainty reports failure on normal return. No emergency termination, journal, automatic salvage or permission repair was introduced. Molly access and source identity remain unverified because no configured secure remote executor was found. Native release acceptance is still pending. See [failure policy](SQLITE-FAILURE-POLICY.md) and [offline backup recovery](OFFLINE-RECOVERY.md).
+
+## SQLite Stage 6 current disposition — 1 November 2026
+
+> Earlier 1 November checkpoint. Networking and macOS pending-status statements
+> below are superseded by the later macOS acceptance update following this section;
+> the original observations and remaining limitations are preserved.
+
+The earlier "Molly inaccessible", "no Windows candidate tests" and "Stage 5
+unimplemented" checkpoints are historical, not current blockers. Reused Florence
+evidence covers 239 distinct runtime tests plus nine compiler borrowing checks.
+Molly's resumed Stage 4 passed 10 exact-name unit tests and four supplemental
+native handle-release probe cases against the unchanged verified snapshot.
+The correct Projects-ancestry refusal was preserved; a new admitted private
+profile fixture resolved the test-location blocker without permission repair.
+
+The existing owner implementation and conservative normal-close policy are
+retained. Failed native cleanup/close uncertainty, in-flight work and unconfined
+SQLite pathname/sidecar operations are explicitly accepted limitations of this
+bounded ownership change. Native Windows busy-close, broader refusal coverage,
+interactive GUI shutdown and current-candidate macOS compilation/safe native
+acceptance remain unverified. No new native pass is asserted in this continuation:
+SSH socket creation was sandbox-denied and GitHub API access failed. No Mac runner
+was established, and no workflow or terminal machinery was activated.
+
+Stage 6 documentation is reconciled; full cross-platform v1.0.7 SQLite security
+sign-off remains pending. The authoritative scope, historical-report provenance
+and remaining checks are in [SQLite ownership status](SQLITE-CONNECTION-OWNERSHIP.md).
+
+## SQLite macOS acceptance update — 1 November 2026
+
+[Actions run 41305531150](https://github.com/arnieSkyNet/DirectPaymentTimesheets/actions/runs/41305531150)
+compiled the application and passed 43 exact safe tests on native Intel and 43 on
+native Apple Silicon for candidate `d9b046bed1739843f854e57968ab5ce9947b26ce`,
+using controller `1afde972f46f0f66438952bbd56e6e8ec0aa1d6c`. Both completion
+receipts bind the candidate workspace and source/harness/allowlist/lock hashes.
+All 117 candidate source/support files match the development working tree in
+bytes, size and executable mode. The current-candidate macOS compilation/safe
+headless acceptance gate is therefore satisfied.
+
+The selection covers ownership, failure admission, headless normal shutdown,
+backup/recovery and macOS/private-storage cases. It does not exercise production
+data, real SMTP/Keychain, interactive GUI, terminal fixtures or native-close panic.
+The account-authority boundary, native failed-open/close uncertainty, retained
+resources, in-flight work, crash-durability and pathname/sidecar limitations remain
+unchanged. Remaining Windows busy-close/refusal scope and interactive native GUI
+acceptance still need disposition; these results are not full cross-platform or
+release sign-off. See [ownership status](SQLITE-CONNECTION-OWNERSHIP.md).

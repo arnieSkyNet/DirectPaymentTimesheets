@@ -110,12 +110,14 @@ impl From<rusqlite::Error> for DirectShiftError {
 }
 
 pub struct DirectShiftRepository {
-    connection: Connection,
+    connection: crate::database::DatabaseConnection,
 }
 
 impl DirectShiftRepository {
-    pub fn new(connection: Connection) -> Self {
-        Self { connection }
+    pub fn new(connection: impl Into<crate::database::DatabaseConnection>) -> Self {
+        Self {
+            connection: connection.into(),
+        }
     }
 
     pub fn clock_in(

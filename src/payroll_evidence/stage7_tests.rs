@@ -228,7 +228,7 @@ fn stage7_edit_exclusion_and_restore_invalidate_candidates_but_preserve_pdf_byte
         let pdf = candidate(&app, &r, &w);
         let bytes = std::fs::read(&pdf).unwrap();
         change(&app, 1, &c, false).unwrap();
-        assert!(crate::timesheet_delivery::capture(&open(&app).unwrap(), r.id).is_err());
+        assert!(crate::timesheet_delivery::capture(&*open(&app).unwrap(), r.id).is_err());
         assert_eq!(std::fs::read(pdf).unwrap(), bytes);
         assert!(app
             .payroll_worked_item_repository

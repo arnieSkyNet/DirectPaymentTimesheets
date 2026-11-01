@@ -298,7 +298,7 @@ pub fn finish(db: &Connection, attempt: i64, outcome: &str, detail: &str) -> Res
     tx.commit()?;
     Ok(())
 }
-pub fn review(db: &mut Connection, attempt: i64, decision: &str, reason: &str) -> Result<()> {
+pub fn review(db: &mut crate::database::DatabaseConnection, attempt: i64, decision: &str, reason: &str) -> Result<()> {
     let _transport_guard = production_lock(db)?;
     if reason.trim().is_empty() {
         return Err("Document review evidence and reason before resolving".into());
@@ -393,7 +393,7 @@ where
 }
 
 /// Legacy uncertainty has no attempt to invent. Retain the old marker in review evidence.
-pub fn review_legacy(db: &mut Connection, record: i64, decision: &str, reason: &str) -> Result<()> {
+pub fn review_legacy(db: &mut crate::database::DatabaseConnection, record: i64, decision: &str, reason: &str) -> Result<()> {
     let _transport_guard = production_lock(db)?;
     if reason.trim().is_empty() || !["accepted", "confirmed_not_sent", "uncertain"].contains(&decision) {
         return Err("Document a valid review decision and supporting evidence".into());
@@ -447,7 +447,7 @@ mod tests {
     use super::*;
     use crate::payroll_snapshot_service::{publish_candidate, CandidatePublication};
     use crate::payroll_worked_item_repository::PayrollWorkedItemRepository;
-    fn fixture() -> (tempfile::TempDir, Connection, Intent, Vec<u8>) {
+    fn fixture() -> (tempfile::TempDir, crate::database::DatabaseConnection, Intent, Vec<u8>) {
         let dir = tempfile::tempdir().unwrap();
         let db = crate::database::open(dir.path().join("delivery.sqlite")).unwrap();
         crate::database::create_schema(&db).unwrap();

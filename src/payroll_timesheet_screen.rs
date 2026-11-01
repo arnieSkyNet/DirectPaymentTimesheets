@@ -759,7 +759,7 @@ impl PayrollTimesheetScreen {
                 .snapshot_metadata(record.id)?
                 .map(|m| m.state);
             let stage = crate::payroll_evidence::lifecycle::stage(
-                &crate::payroll_evidence::open(application)?,
+                &*crate::payroll_evidence::open(application)?,
                 record,
             )?;
             let state = match stage {
@@ -1262,7 +1262,7 @@ impl PayrollTimesheetScreen {
                 .snapshot_metadata(record.id)?
                 .map(|metadata| metadata.state);
             let stage = crate::payroll_evidence::lifecycle::stage(
-                &crate::payroll_evidence::open(application)?,
+                &*crate::payroll_evidence::open(application)?,
                 &record,
             )?;
             let snapshot_state = match stage {
@@ -1674,7 +1674,7 @@ fn save_preparation_record(
     }
 
     if crate::payroll_evidence::lifecycle::stage(
-        &crate::payroll_evidence::open(application)?,
+        &*crate::payroll_evidence::open(application)?,
         record,
     )? != crate::payroll_evidence::lifecycle::Stage::Editable
     {
@@ -2244,7 +2244,7 @@ pub(crate) mod tests {
     include!("payroll_notes_return_tests.rs");
     include!("payroll_leaving_note_tests.rs");
 
-    fn setup_connection(application: &Application) -> Connection {
+    fn setup_connection(application: &Application) -> crate::database::DatabaseConnection {
         crate::database::open(&application.context.environment.database_path).unwrap()
     }
 

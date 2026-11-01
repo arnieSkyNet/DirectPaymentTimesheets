@@ -1,4 +1,4 @@
-use rusqlite::{params, Connection, Result};
+use rusqlite::{params, Result};
 
 #[derive(Debug, Clone)]
 pub struct PayrollProvider {
@@ -11,12 +11,14 @@ pub struct PayrollProvider {
 }
 
 pub struct PayrollProviderRepository {
-    connection: Connection,
+    connection: crate::database::DatabaseConnection,
 }
 
 impl PayrollProviderRepository {
-    pub fn new(connection: Connection) -> Self {
-        Self { connection }
+    pub fn new(connection: impl Into<crate::database::DatabaseConnection>) -> Self {
+        Self {
+            connection: connection.into(),
+        }
     }
 
     pub fn get(&self) -> Result<Option<PayrollProvider>> {
