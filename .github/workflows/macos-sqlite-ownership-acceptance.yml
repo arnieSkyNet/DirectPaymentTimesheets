@@ -1,0 +1,93 @@
+name: Proposed native macOS SQLite ownership acceptance
+run-name: SQLite ownership acceptance · ${{ inputs.candidate_sha }}
+on:
+  workflow_dispatch:
+    inputs:
+      candidate_sha:
+        description: Approved full 40-character published packet commit; local HEAD is not the candidate
+        required: true
+        type: string
+      execute_acceptance:
+        description: Explicit approval for the 43 reviewed synthetic cases on each native architecture
+        required: true
+        default: false
+        type: boolean
+permissions:
+  contents: read
+concurrency:
+  group: sqlite-ownership-macos-${{ inputs.candidate_sha }}
+  cancel-in-progress: false
+jobs:
+  native:
+    if: ${{ inputs.execute_acceptance == true }}
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-15-intel
+            target: x86_64-apple-darwin
+          - runner: macos-15
+            target: aarch64-apple-darwin
+    runs-on: ${{ matrix.runner }}
+    defaults:
+      run:
+        shell: bash
+    env:
+      DPT_EXPECTED_RUNNER: ${{ matrix.runner }}
+      DPT_TARGET: ${{ matrix.target }}
+      DPT_ACCEPTANCE_APPROVED: ${{ inputs.execute_acceptance }}
+      DPT_CONTROLLER_SHA: ${{ github.workflow_sha }}
+      DPT_CANDIDATE_SHA: ${{ inputs.candidate_sha }}
+    steps:
+      - name: Require reviewed manual main dispatch and immutable source
+        env:
+          REQUESTED_SHA: ${{ inputs.candidate_sha }}
+          SELECTED_EVENT: ${{ github.event_name }}
+          SELECTED_REF: ${{ github.ref }}
+        run: |
+          set -euo pipefail
+          test "$SELECTED_EVENT" = workflow_dispatch
+          test "$SELECTED_REF" = refs/heads/main
+          [[ "$REQUESTED_SHA" =~ ^[0-9a-f]{40}$ ]]
+          test "$REQUESTED_SHA" != 0000000000000000000000000000000000000000
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          ref: ${{ inputs.candidate_sha }}
+          path: packet
+          persist-credentials: false
+          fetch-depth: 1
+          fetch-tags: false
+          submodules: false
+          lfs: false
+      - name: Authenticate staged payload before running any packet code
+        env:
+          REQUESTED_SHA: ${{ inputs.candidate_sha }}
+        run: |
+          set -euo pipefail
+          test "$(git -C packet rev-parse HEAD)" = "$REQUESTED_SHA"
+          test -z "$(git -C packet status --porcelain=v1 --untracked-files=all)"
+          python3 -I -B - <<'PYTHON'
+          import hashlib
+          from pathlib import Path
+          root = Path('packet').resolve()
+          expected = {'LICENSE': '3972dc9744f6499f0f9b2dbf76696f2ae7ad8af9b23dde66d6af86c9dfb36986', 'acceptance/source-manifest.json': '5455d0d50684da1e0b45d183e947db60ed3c9b059890634243dfa8786a74c619', 'acceptance/prior-114-build-inputs.json': '02793d9cb6402e62ee41ec194cf1d3ce2d909fe152866e358b8e7fe639d9757b', 'acceptance/allowlist.json': '8e4edacfb4ca3cf668e7eb2d70caa5ab6aecd6fa561ca9c9533a62382a782593', 'acceptance/exact-tests.txt': 'dc32e90550e19f68ec567c0df7bca50af7c69e7770b03f53efac7c2d32abf87d', 'acceptance/run_acceptance.py': '850be53f3a733759b5265763f381b1139e441aa78d184848ca28892ba13d96de', 'acceptance/publication-manifest.json': '1ece83f775dfd50e3c28304a608a1e954b330686694d1781f39be3a1f9e75e10'}
+          for name, sha in expected.items():
+              path = root / name
+              if path.is_symlink() or not path.is_file() or hashlib.sha256(path.read_bytes()).hexdigest() != sha:
+                  raise SystemExit('Reviewed payload integrity mismatch')
+          # The pinned verifier below enforces the complete published file and
+          # directory tree, Git tree/index/blobs, and every candidate source hash.
+          print('Reviewed harness hashes verified')
+          PYTHON
+          python3 -I -B packet/acceptance/run_acceptance.py --verify-only --expected-commit "$DPT_CANDIDATE_SHA"
+      - name: Verify native architecture and Apple SDK before installation/build
+        run: python3 -I -B packet/acceptance/run_acceptance.py --preflight --target "$DPT_TARGET" --expected-commit "$DPT_CANDIDATE_SHA"
+      - name: Select pinned native Rust toolchain on disposable hosted runner
+        run: rustup toolchain install 1.98.1 --profile minimal --target "$DPT_TARGET"
+      - name: Compile application and unit tests; execute only exact reviewed cases
+        run: python3 -I -B packet/acceptance/run_acceptance.py --execute --target "$DPT_TARGET" --expected-commit "$DPT_CANDIDATE_SHA"
+# No pull_request/push/schedule/workflow_run/reusable execution. No secrets,
+# cache, artifact upload, integration target, terminal controller, process-kill
+# harness, Keychain/SMTP fixture, package, signing, release, sudo or settings edits.
+# GitHub's ordinary job timeout is a platform limit, not a watchdog test.
