@@ -1,0 +1,620 @@
+{
+  "files": {
+    "LICENSE": {
+      "executable": false,
+      "sha256": "3972dc9744f6499f0f9b2dbf76696f2ae7ad8af9b23dde66d6af86c9dfb36986",
+      "size": 35149
+    },
+    "acceptance/allowlist.json": {
+      "executable": false,
+      "sha256": "8e4edacfb4ca3cf668e7eb2d70caa5ab6aecd6fa561ca9c9533a62382a782593",
+      "size": 18439
+    },
+    "acceptance/exact-tests.txt": {
+      "executable": false,
+      "sha256": "dc32e90550e19f68ec567c0df7bca50af7c69e7770b03f53efac7c2d32abf87d",
+      "size": 3737
+    },
+    "acceptance/prior-114-build-inputs.json": {
+      "executable": false,
+      "sha256": "02793d9cb6402e62ee41ec194cf1d3ce2d909fe152866e358b8e7fe639d9757b",
+      "size": 11481
+    },
+    "acceptance/run_acceptance.py": {
+      "executable": false,
+      "sha256": "850be53f3a733759b5265763f381b1139e441aa78d184848ca28892ba13d96de",
+      "size": 20419
+    },
+    "acceptance/source-manifest.json": {
+      "executable": false,
+      "sha256": "5455d0d50684da1e0b45d183e947db60ed3c9b059890634243dfa8786a74c619",
+      "size": 23669
+    },
+    "candidate/Cargo.lock": {
+      "executable": false,
+      "sha256": "e633f2ca7b76f29a612a44dbd09a40fe96a9c44dcf201bbf6b43e90aabfa509b",
+      "size": 178012
+    },
+    "candidate/Cargo.toml": {
+      "executable": false,
+      "sha256": "b11a9aa6725a8cc72bd0d6610a9b8f5fa2fd234ae6e6679f3be65a4a6387b5eb",
+      "size": 2006
+    },
+    "candidate/assets/direct-payment-timesheets.ico": {
+      "executable": false,
+      "sha256": "92b08a061f025a02dfdb4b34d8ab03a6462fab55bef47ebaeb187fdb0352565f",
+      "size": 372526
+    },
+    "candidate/assets/direct-payment-timesheets.png": {
+      "executable": false,
+      "sha256": "fa71c56e639de75f8e42ebfe6601f3156fe6febe3c3b69afb130968cded4a0e4",
+      "size": 208372
+    },
+    "candidate/assets/fonts/DejaVu-LICENSE.txt": {
+      "executable": false,
+      "sha256": "d1e6d5054104b9c9dddf4248db5fe75de9a2c4692c0932935f672046197758cb",
+      "size": 2954
+    },
+    "candidate/assets/fonts/DejaVuSans-Bold.ttf": {
+      "executable": false,
+      "sha256": "a4c5bc453ca281d90ea079e596da7ae0dfeb5777497c29ec254e76d97ff6f890",
+      "size": 708920
+    },
+    "candidate/assets/fonts/DejaVuSans.ttf": {
+      "executable": false,
+      "sha256": "57f73e11f51999432bf7ab22ce55b6f945d5eca1bf824404cfa9ec2e3718c84e",
+      "size": 759720
+    },
+    "candidate/build.rs": {
+      "executable": false,
+      "sha256": "b97c08df01daee8f9340e65a00adf8d8ac1c879422e4d6506f632837825b0ba4",
+      "size": 4710
+    },
+    "candidate/packaging/windows/application.rc": {
+      "executable": false,
+      "sha256": "7c672f00ba436de9e7ffc5b491c8a19a74b1af89f081649b4b8a355271bd11ce",
+      "size": 853
+    },
+    "candidate/src/annual_leave_settings_repository.rs": {
+      "executable": false,
+      "sha256": "d743ab9c695b79640bfedb0bdd8f41e801090d3a2b5274ab018a29e1ac2c8d12",
+      "size": 7844
+    },
+    "candidate/src/annual_leave_summary.rs": {
+      "executable": false,
+      "sha256": "4265599ee29330cddaadf2e71244a88904c4e5c5fd63196bf0bc7cebd4101b51",
+      "size": 36336
+    },
+    "candidate/src/annual_leave_summary/tests.rs": {
+      "executable": false,
+      "sha256": "f81a20bb8473d6d41041a541db9f73aefd47b1059357fc03fa92ebbfd6c1813c",
+      "size": 36336
+    },
+    "candidate/src/app.rs": {
+      "executable": false,
+      "sha256": "c04d18b6f6b9349608be350908dcc81ad144f5666872c4081f137c91542f7819",
+      "size": 22834
+    },
+    "candidate/src/application.rs": {
+      "executable": false,
+      "sha256": "961d23ba5f2e4001e8dff1b88f94d103475748f483132bf7b58cd74d2da18aed",
+      "size": 9129
+    },
+    "candidate/src/application_settings_screen.rs": {
+      "executable": false,
+      "sha256": "96038e63716b0716fb449c20172388391aeea16f1947f05d142c50f4e7dc417c",
+      "size": 31175
+    },
+    "candidate/src/archive.rs": {
+      "executable": false,
+      "sha256": "7fdb0e448fda9b272128429b79d98a570d81128e82465ddad3c76c5a0435ea77",
+      "size": 89965
+    },
+    "candidate/src/backup_service.rs": {
+      "executable": false,
+      "sha256": "28a9eff270c500003f9369f3fd215a2e395601be9efaa0cec62106ac0b6f6b7d",
+      "size": 58123
+    },
+    "candidate/src/config.rs": {
+      "executable": false,
+      "sha256": "e641a9900369873b83823cf08d7ad71aa818bbc36974e7d20ade8fe64dff3088",
+      "size": 39182
+    },
+    "candidate/src/context.rs": {
+      "executable": false,
+      "sha256": "8939adb4638a97d23ce3e9b78bbd36ed35f950f8feb23c151510ee83a0b01a68",
+      "size": 1099
+    },
+    "candidate/src/contracted_hours_repository.rs": {
+      "executable": false,
+      "sha256": "f07bd2e5054c0b6c0b69295443ebf0f086947773b808ed396291950dee49dd8c",
+      "size": 14325
+    },
+    "candidate/src/csv_import.rs": {
+      "executable": false,
+      "sha256": "277df1d4c82cddfca77a0ae1bd2dc2368a5d95ef010b67dbb6807b384b12df24",
+      "size": 11563
+    },
+    "candidate/src/database.rs": {
+      "executable": false,
+      "sha256": "fdfe11ccbf059cdd8fb6ec97c2845ece37a6c70d7dc535d36a3e1430d490f1a1",
+      "size": 92411
+    },
+    "candidate/src/database_connection.rs": {
+      "executable": false,
+      "sha256": "46c9755008e5e300e44c8c2aecbe454a4c8182487ef1ab4a7d54afd863ebae2e",
+      "size": 11397
+    },
+    "candidate/src/database_connection_tests.rs": {
+      "executable": false,
+      "sha256": "cd33a3a24ada1ad6d45c044943ac30558195130bc54d5c95bbb2b2760acdd050",
+      "size": 9069
+    },
+    "candidate/src/database_failure.rs": {
+      "executable": false,
+      "sha256": "2d9e53cbf4bee2885d96cbaea5402b86e9ddd349fffd593c2eb5de774b026175",
+      "size": 4348
+    },
+    "candidate/src/database_recovery.rs": {
+      "executable": false,
+      "sha256": "34a9352fb5fb71169a7c32d25b0c3600be3279e0230b446ac7f04272dacffeac",
+      "size": 51915
+    },
+    "candidate/src/date_utils.rs": {
+      "executable": false,
+      "sha256": "7c0507ab91d85e06fb6eedd85945befb74d3a069c11dd49345979d9d6a13f77f",
+      "size": 9647
+    },
+    "candidate/src/development.rs": {
+      "executable": false,
+      "sha256": "28a0d7839f0b3403afcc7c1a92910d7d86b4a54f7576d5d7be5e446e14e5c9c2",
+      "size": 21863
+    },
+    "candidate/src/development_build_gate.rs": {
+      "executable": false,
+      "sha256": "3804e0cc40405e84fff005f16ade5851be13c4e2f9a22040138d25191c31f8f4",
+      "size": 313
+    },
+    "candidate/src/direct_shift_repository.rs": {
+      "executable": false,
+      "sha256": "bcd7e34147c761f3e89dd3f24c8fba1351ad981abc08c475eb70447f0165fdaa",
+      "size": 29289
+    },
+    "candidate/src/email_service.rs": {
+      "executable": false,
+      "sha256": "850f7cd167c2045acb088b7147d21633fabea713a1a8738656f1ce0ee2703d5d",
+      "size": 40235
+    },
+    "candidate/src/email_settings.rs": {
+      "executable": false,
+      "sha256": "dabde019ee61b5a4417554331096676e210f67b13e5adf97c8fbdf277952ea62",
+      "size": 18670
+    },
+    "candidate/src/employer_repository.rs": {
+      "executable": false,
+      "sha256": "5acafe2463bc0e1d1c60c56d7833223b8392efe54f901bb7b402a24c5f23353c",
+      "size": 6251
+    },
+    "candidate/src/employer_screen.rs": {
+      "executable": false,
+      "sha256": "06576caad4f4015c50d4518a61754575b0f42b293f573a2a2de170e270f1c293",
+      "size": 16053
+    },
+    "candidate/src/enter_hours_screen.rs": {
+      "executable": false,
+      "sha256": "927550d3e8913b1f0c07778ca8c970f531cf5b2f8795d6539b043edf56a3014a",
+      "size": 60031
+    },
+    "candidate/src/environment.rs": {
+      "executable": false,
+      "sha256": "47a30a8d6aa81b62475cf0f422c1f9d2b7d0a87a60c1e835896b2af6ceddf299",
+      "size": 5836
+    },
+    "candidate/src/error.rs": {
+      "executable": false,
+      "sha256": "ed5bd9f813abdfe5dd9c3de728798770b2a04ddb8f47546148c28282209cd0cd",
+      "size": 130
+    },
+    "candidate/src/folder_opener.rs": {
+      "executable": false,
+      "sha256": "53170abaa8c682df6107f0c9c562bc75468e70711f24b8e125886b3449ce1c93",
+      "size": 2901
+    },
+    "candidate/src/gui.rs": {
+      "executable": false,
+      "sha256": "e997e81db2b5b26ce963f367c37247ddf7897e355ccbfe65368f579461e9f075",
+      "size": 340783
+    },
+    "candidate/src/gui_controls.rs": {
+      "executable": false,
+      "sha256": "70b01cf6e5b0cd9f6a67724af06def8274d06134c0bdcafc625d810507234f7b",
+      "size": 631
+    },
+    "candidate/src/gui_shutdown_tests.rs": {
+      "executable": false,
+      "sha256": "db86a7533b4c800e8b6973f0e69edc23d9f644a30ada893476876ca18a883eb8",
+      "size": 9073
+    },
+    "candidate/src/historical_adjustment_compatibility.rs": {
+      "executable": false,
+      "sha256": "287b8aee6f307014a9baa50763e51249d08c83d44fd8be5246ee6a1799c4b28b",
+      "size": 1354
+    },
+    "candidate/src/import_service.rs": {
+      "executable": false,
+      "sha256": "018be3a26d68e4c82a3381efe5e0641c39f27640eaf34973da4b6857bdbd6199",
+      "size": 30516
+    },
+    "candidate/src/imported_hours.rs": {
+      "executable": false,
+      "sha256": "c6aaa408b28b06b2529405b041701336efc1e4f70f0c086388083f79284ef8a7",
+      "size": 15288
+    },
+    "candidate/src/imported_hours_tests.rs": {
+      "executable": false,
+      "sha256": "a490af428e994b5fdd42ceecad2e9b3f623e048e4e93c1044d5869a2bb08ec79",
+      "size": 3474
+    },
+    "candidate/src/imported_hours_ui.rs": {
+      "executable": false,
+      "sha256": "5a1477632697ce33eb91fe32c4a54f3ec7f079ffdc41ed2ddb566ad9446cb1cb",
+      "size": 17269
+    },
+    "candidate/src/main.rs": {
+      "executable": false,
+      "sha256": "ffb70189d90beb55e076457d9d7243f9df31a1243386c23a804f5cce661b7604",
+      "size": 6076
+    },
+    "candidate/src/main.rs.before_application_refactor": {
+      "executable": false,
+      "sha256": "be6e4f0ad6d7c0b211814dba51f8b971ded3fda11839a0318d30f735f62fd2aa",
+      "size": 1854
+    },
+    "candidate/src/models.rs": {
+      "executable": false,
+      "sha256": "996f1490d2905c90af7e92669c0a9e5844490ce6394d7e010a9009bf1b3131e1",
+      "size": 3867
+    },
+    "candidate/src/paths.rs": {
+      "executable": false,
+      "sha256": "9492350feab60b7af0d438c188e408d9453af758310f35aadb56cd9e4f7c8b8d",
+      "size": 9272
+    },
+    "candidate/src/pay_rate_allocation.rs": {
+      "executable": false,
+      "sha256": "be1b016f06ec6d19d4f9e642e410ad8b97078659b14152bda9982a4d772b5168",
+      "size": 44553
+    },
+    "candidate/src/pay_rate_repository.rs": {
+      "executable": false,
+      "sha256": "95832340c6c5e6bde1cfaf860c636fcd014448f1a23bb577ba649d18268185d4",
+      "size": 11558
+    },
+    "candidate/src/payroll_archive_service.rs": {
+      "executable": false,
+      "sha256": "1a6788491a44bd72ba63f2febec7a4947a6931129832ec94ec5756bdf4382da6",
+      "size": 53061
+    },
+    "candidate/src/payroll_archive_tests.rs": {
+      "executable": false,
+      "sha256": "ed0409d9261e12374b6812f1a1e3d2843b2256f3d046f2cde03a893147f5a687",
+      "size": 47511
+    },
+    "candidate/src/payroll_delivery.rs": {
+      "executable": false,
+      "sha256": "8e59e1dcae0756e842fa9673a3badf23a7626aa809aa8b61538455f731e955ee",
+      "size": 57388
+    },
+    "candidate/src/payroll_document_import_tests.rs": {
+      "executable": false,
+      "sha256": "0a4e962d89bf046642bb512db4f551c5063c0229f1f99de9af8e2f1703a5888d",
+      "size": 39419
+    },
+    "candidate/src/payroll_document_repository.rs": {
+      "executable": false,
+      "sha256": "538041bab730d158d18cb9fb56265d8dc2f32d1717d0dac9223c1cf5ca591fda",
+      "size": 21017
+    },
+    "candidate/src/payroll_evidence.rs": {
+      "executable": false,
+      "sha256": "b67df6189c8b0a165f821d7969939c1ba7fbef22be13f1557beaa962972cd28b",
+      "size": 17767
+    },
+    "candidate/src/payroll_evidence/duplicate_ui.rs": {
+      "executable": false,
+      "sha256": "b46ccee3fe1f331e59df30c1c2ddb2c1765c02e978772328b2f743a4eb016df0",
+      "size": 9408
+    },
+    "candidate/src/payroll_evidence/legacy_baseline.rs": {
+      "executable": false,
+      "sha256": "19f528cd697109bb083faf9cc377fead7070d3594c5f121aefa10c3cbca713a8",
+      "size": 4711
+    },
+    "candidate/src/payroll_evidence/lifecycle.rs": {
+      "executable": false,
+      "sha256": "e1e799eaa49eedbe9dfc076f9f4f21251eac8513d8044b08f003809456cdef91",
+      "size": 23471
+    },
+    "candidate/src/payroll_evidence/reconciliation.rs": {
+      "executable": false,
+      "sha256": "e48f42646472b211e02fd8f3d6a934b824bae0c5280b8d65d56597897f9b65f2",
+      "size": 41615
+    },
+    "candidate/src/payroll_evidence/review_ui.rs": {
+      "executable": false,
+      "sha256": "4c57876a8f8f224df8df3ba86d6c4b44f28916cd3552edcfe8d937be1c046f05",
+      "size": 8982
+    },
+    "candidate/src/payroll_evidence/schema.sql": {
+      "executable": false,
+      "sha256": "fd403b5dba45a6d2298894390e0720c519dca2c3d9ade7371975087a0a5ac853",
+      "size": 2864
+    },
+    "candidate/src/payroll_evidence/stage4_tests.rs": {
+      "executable": false,
+      "sha256": "576ddc96dde1c6845e382984c5ce92915294ebb723b2a58311e5160c139bef2b",
+      "size": 23951
+    },
+    "candidate/src/payroll_evidence/stage7_tests.rs": {
+      "executable": false,
+      "sha256": "efa1e3726800ad06b1af18bd02f3f712a84fd54c5530a689d7a0d8fa63f1f0b8",
+      "size": 20374
+    },
+    "candidate/src/payroll_evidence/tests.rs": {
+      "executable": false,
+      "sha256": "c77f16962ca51ac1f97284d2886098f5b0d1b8e729045006cf52576b26b35a07",
+      "size": 47287
+    },
+    "candidate/src/payroll_file_naming.rs": {
+      "executable": false,
+      "sha256": "776142932a2f3caeac952da87f0c61ed9c2cc1acf110683ceff53d1dd18a6cf0",
+      "size": 20918
+    },
+    "candidate/src/payroll_filing.rs": {
+      "executable": false,
+      "sha256": "40491853f6f930f0eeca1773473cf2e16c38d63c0583cc86e07b2e61ae565217",
+      "size": 28022
+    },
+    "candidate/src/payroll_filing_tests.rs": {
+      "executable": false,
+      "sha256": "85f60cef6cfae1a02c6227f5fa1928e851c1d4e6b8e5ef6fcaf0df2cd1608939",
+      "size": 32013
+    },
+    "candidate/src/payroll_leaving_note_tests.rs": {
+      "executable": false,
+      "sha256": "fc37eb1f74161a12d54ca1483b7f566f04d8ab79268432c9ad1821ebd6fe5aea",
+      "size": 9111
+    },
+    "candidate/src/payroll_mileage_editor.rs": {
+      "executable": false,
+      "sha256": "79bcfc4443eebb1ea8a35e4a79bcdd386a444deac70d29ac2b7edc1557fa332c",
+      "size": 5570
+    },
+    "candidate/src/payroll_notes_pdf_tests.rs": {
+      "executable": false,
+      "sha256": "e6b71a4b381012024181805f364092e399a58ebd76acb8264f31734d47fd97d9",
+      "size": 14989
+    },
+    "candidate/src/payroll_notes_return_tests.rs": {
+      "executable": false,
+      "sha256": "61d7ecc9da632c6dd2c994d06a0dd9978c2a86e7694eb44866e886b39e96cabd",
+      "size": 19684
+    },
+    "candidate/src/payroll_prep_sheet_import_service.rs": {
+      "executable": false,
+      "sha256": "5670f7c0b47fa1645c3f4718acf57573c91b77e2faae00d025f5db4afe544e24",
+      "size": 21455
+    },
+    "candidate/src/payroll_preparation_tests.rs": {
+      "executable": false,
+      "sha256": "3b3fe42ffba849aff51c626b07560896c6ca8979c4e883d193c8ad5e995a5b17",
+      "size": 55495
+    },
+    "candidate/src/payroll_production_tests.rs": {
+      "executable": false,
+      "sha256": "18b4cce3ad64da8055857f68e8088e43d45964fcbfdc1420adf72585be5527b2",
+      "size": 100023
+    },
+    "candidate/src/payroll_production_workflow.rs": {
+      "executable": false,
+      "sha256": "d7bbe02e892cd32fbc1c4bfbca0de8fbc16cafcf464ec4c9b135e60b1d0003d3",
+      "size": 39731
+    },
+    "candidate/src/payroll_provider_repository.rs": {
+      "executable": false,
+      "sha256": "81b90fc89ebc8af1fa26cdc434989edfd2e12c2e2934c74f7551576afa15c1ff",
+      "size": 3208
+    },
+    "candidate/src/payroll_replacement.rs": {
+      "executable": false,
+      "sha256": "51f146261d82730c0d5b2e13b4afa5b57cb10123f4717a617844f488f6d77ac6",
+      "size": 52094
+    },
+    "candidate/src/payroll_schedule_repository.rs": {
+      "executable": false,
+      "sha256": "cc4ac4d702bcac96723324fec4e8ac5535620b58df9dd656271556f209bae9c4",
+      "size": 24404
+    },
+    "candidate/src/payroll_settings_screen.rs": {
+      "executable": false,
+      "sha256": "4181164fbe5cbb58c248355ab9b3908875758575bc36e04bcd51dbad6936c6e9",
+      "size": 28964
+    },
+    "candidate/src/payroll_sickness_editor.rs": {
+      "executable": false,
+      "sha256": "976f1a8bb8e113f52a6933cedb2d4da7d28b38a08e9248750098f6512ec6d1e7",
+      "size": 31150
+    },
+    "candidate/src/payroll_snapshot_service.rs": {
+      "executable": false,
+      "sha256": "94b1f5233923221c3bb21db18adaca07be3dd24d436417d58cf951b448f73e31",
+      "size": 28965
+    },
+    "candidate/src/payroll_timesheet_email_repository.rs": {
+      "executable": false,
+      "sha256": "a51e1c3f6ea7e22858593f058d380b65b556e77ebb224d3ff04b1c73197ba02f",
+      "size": 8097
+    },
+    "candidate/src/payroll_timesheet_repository.rs": {
+      "executable": false,
+      "sha256": "89258b096e49ddfc43621bae462af272cc5eb9d723a5fbd74291e5132b67d09c",
+      "size": 31982
+    },
+    "candidate/src/payroll_timesheet_screen.rs": {
+      "executable": false,
+      "sha256": "c6cbdfd16ab9b7ea12b3e583d17f58280f8cb1dd73f56f58b01d6ab3893818e3",
+      "size": 145612
+    },
+    "candidate/src/payroll_worked_item_repository.rs": {
+      "executable": false,
+      "sha256": "93457de335fecc66e0c99ed160daf56af1df5256d3659772ca04ce1fb13b838c",
+      "size": 18747
+    },
+    "candidate/src/payslip_delivery_service.rs": {
+      "executable": false,
+      "sha256": "e5fe36147626df6a5093763dfa49d072786197361ddf22cb7c8694a966df371f",
+      "size": 33308
+    },
+    "candidate/src/pdf_generator.rs": {
+      "executable": false,
+      "sha256": "57276c16b29566009d2442f2ea313b40f796186bd9e447b636412690db791ae4",
+      "size": 68133
+    },
+    "candidate/src/personal_assistant_repository.rs": {
+      "executable": false,
+      "sha256": "1d368bdc7ecd5caceb5264ff563c643b83553c9cd5d6e3178b20cb45e5fae456",
+      "size": 25629
+    },
+    "candidate/src/personal_assistant_screen.rs": {
+      "executable": false,
+      "sha256": "f14ebda8aabf8a6181e09fb87c9350996c69cd71fd9db6b09a6afaab47369696",
+      "size": 55829
+    },
+    "candidate/src/personal_assistant_status_tests.rs": {
+      "executable": false,
+      "sha256": "bc6e6d078462bbc0f5ee1325770eff56961e6b893006813951af78aee1a3081b",
+      "size": 16534
+    },
+    "candidate/src/private_storage.rs": {
+      "executable": false,
+      "sha256": "c9766e11d9deb94121d8a6eb1cc67d06baebe64ed84b31077c82a47643ff70b5",
+      "size": 43276
+    },
+    "candidate/src/private_storage_linux.rs": {
+      "executable": false,
+      "sha256": "ed7a0b1eab4d29cf5cfcf6d697d1a9d783ec8fbf88c811999a202755f60038c1",
+      "size": 6828
+    },
+    "candidate/src/private_storage_macos.c": {
+      "executable": false,
+      "sha256": "c28617e98333be0132fbdad9d146a7b69e8f6013b730e9b189b1ea488d2987d0",
+      "size": 2953
+    },
+    "candidate/src/private_storage_macos.rs": {
+      "executable": false,
+      "sha256": "402f55d32a5177cfb6e4c76b3a4f7a36cf7a5c6bc79191b78e25cb1503fd8e67",
+      "size": 4990
+    },
+    "candidate/src/private_storage_windows.rs": {
+      "executable": false,
+      "sha256": "1b39a885166049bb1402e603dcfe237578580fc8f9384793014e6ca903b8d5aa",
+      "size": 77407
+    },
+    "candidate/src/private_storage_windows_publication.rs": {
+      "executable": false,
+      "sha256": "224b164af53f776376005fcaef711716ae63e90dcf5f3bd41a5af4cd9cb9ff61",
+      "size": 15157
+    },
+    "candidate/src/private_storage_windows_tests.rs": {
+      "executable": false,
+      "sha256": "dc87ab897c4fce16d91c95b69fcaca059e27e163bc6bcfa15283afe980112d35",
+      "size": 38417
+    },
+    "candidate/src/public_holidays.rs": {
+      "executable": false,
+      "sha256": "588b2a3e303de317d454c6712bff09f43d3b729414673761a074ed3618c080df",
+      "size": 37519
+    },
+    "candidate/src/repository.rs": {
+      "executable": false,
+      "sha256": "2f68477a4ea02ebc9f13e600a3d4072dde3653edf9536be798cd6db993e7a8cb",
+      "size": 34032
+    },
+    "candidate/src/shift_changes.rs": {
+      "executable": false,
+      "sha256": "f2ef75d9540f364e05410af8c26dbd26b6906613d922821ba0d5771656d747ac",
+      "size": 28787
+    },
+    "candidate/src/sickness_period_repository.rs": {
+      "executable": false,
+      "sha256": "c6c7977a607f3d72c8ae55b86765c1c43f4065f342760c717c19adb67d24b6ff",
+      "size": 10378
+    },
+    "candidate/src/sickness_service.rs": {
+      "executable": false,
+      "sha256": "4038451b88750abe933838ea9ece647fd8667a46e68e0c8ac3d510dba426c965",
+      "size": 38751
+    },
+    "candidate/src/sickness_service_tests.rs": {
+      "executable": false,
+      "sha256": "79a731aa4022f3c4151c821c6dfd2dd39b64313e02b97f544283f604f5b938d3",
+      "size": 54557
+    },
+    "candidate/src/signature.rs": {
+      "executable": false,
+      "sha256": "14b3cc7404b8c4f8eecc80bd29355961813e2722818942e87136dbef660f1743",
+      "size": 38138
+    },
+    "candidate/src/smtp_credentials.rs": {
+      "executable": false,
+      "sha256": "5ff10aa9d5920f88dff2a2988901e17dcfebc480d9cb51bf583c0d994e77e0bc",
+      "size": 29140
+    },
+    "candidate/src/smtp_transport_tests.rs": {
+      "executable": false,
+      "sha256": "e54acb9f783a9c20e242a187fca885a257d212550c32c27bcaa90017623e804e",
+      "size": 20870
+    },
+    "candidate/src/startup.rs": {
+      "executable": false,
+      "sha256": "ed9d47a2b863fbe4125cf295e5823ccf4d3763bd4f4346ca4aa136a9f306ec73",
+      "size": 14285
+    },
+    "candidate/src/test_fixtures/signature-grayscale.jpg": {
+      "executable": false,
+      "sha256": "383ded9954d46aa4e72024ed89371f51062683fe289665cce3d80146dc591516",
+      "size": 267
+    },
+    "candidate/src/test_fixtures/signature-progressive.jpg": {
+      "executable": false,
+      "sha256": "06c33ff9b0ec11b93066ec115159227232c90bfc226b84574e4c8a64261f6c7e",
+      "size": 402
+    },
+    "candidate/src/theme.rs": {
+      "executable": false,
+      "sha256": "7350c47218b9812cf5f7890c05985fd4ec26864320599f16496c1e08bb218f5c",
+      "size": 8100
+    },
+    "candidate/src/timesheet_delivery.rs": {
+      "executable": false,
+      "sha256": "b38b670e226bdadf3ee106ea366638acb98418f588f7b828502ecdc22c1c53b8",
+      "size": 58245
+    },
+    "candidate/src/update_check.rs": {
+      "executable": false,
+      "sha256": "71bbdffefce5d1eeb37a2ba8e4d0543e072c6e8262a16a0c23771c55bf114b49",
+      "size": 7437
+    },
+    "candidate/tests/fixtures/smtp/ca.pem": {
+      "executable": false,
+      "sha256": "83f00d193671b4848363eaa0b560b7a549ac3ed3a668b8c129279c3fcbc0b343",
+      "size": 1180
+    },
+    "candidate/tests/fixtures/smtp/server.p12": {
+      "executable": false,
+      "sha256": "6a57b2dd5f8ca8f7f1ca7dfdca97e94389e987c5f368f0f02bf1bdac067850aa",
+      "size": 3644
+    }
+  },
+  "format": 1
+}

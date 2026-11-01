@@ -1,0 +1,303 @@
+[
+  {
+    "function": "writable_open_registers_and_supports_borrowed_statements_and_transactions",
+    "group": "ownership",
+    "name": "database_connection::tests::writable_open_registers_and_supports_borrowed_statements_and_transactions",
+    "rationale": "Production owner; synthetic SQLite; busy close is ordinary SQLITE_BUSY from a live prepared statement, then explicit finalization and successful retry. No forced destructor failure.",
+    "source": "src/database_connection_tests.rs"
+  },
+  {
+    "function": "read_only_open_does_not_register_or_migrate",
+    "group": "ownership",
+    "name": "database_connection::tests::read_only_open_does_not_register_or_migrate",
+    "rationale": "Production owner; synthetic SQLite; busy close is ordinary SQLITE_BUSY from a live prepared statement, then explicit finalization and successful retry. No forced destructor failure.",
+    "source": "src/database_connection_tests.rs"
+  },
+  {
+    "function": "read_only_missing_database_does_not_create_it",
+    "group": "ownership",
+    "name": "database_connection::tests::read_only_missing_database_does_not_create_it",
+    "rationale": "Production owner; synthetic SQLite; busy close is ordinary SQLITE_BUSY from a live prepared statement, then explicit finalization and successful retry. No forced destructor failure.",
+    "source": "src/database_connection_tests.rs"
+  },
+  {
+    "function": "registration_failure_returns_live_owner_and_staging",
+    "group": "ownership",
+    "name": "database_connection::tests::registration_failure_returns_live_owner_and_staging",
+    "rationale": "Production owner; synthetic SQLite; busy close is ordinary SQLITE_BUSY from a live prepared statement, then explicit finalization and successful retry. No forced destructor failure.",
+    "source": "src/database_connection_tests.rs"
+  },
+  {
+    "function": "repeated_busy_close_returns_complete_owner_until_retry_succeeds",
+    "group": "ownership",
+    "name": "database_connection::tests::repeated_busy_close_returns_complete_owner_until_retry_succeeds",
+    "rationale": "Production owner; synthetic SQLite; busy close is ordinary SQLITE_BUSY from a live prepared statement, then explicit finalization and successful retry. No forced destructor failure.",
+    "source": "src/database_connection_tests.rs"
+  },
+  {
+    "function": "shared_staging_survives_another_connection_closing",
+    "group": "ownership",
+    "name": "database_connection::tests::shared_staging_survives_another_connection_closing",
+    "rationale": "Production owner; synthetic SQLite; busy close is ordinary SQLITE_BUSY from a live prepared statement, then explicit finalization and successful retry. No forced destructor failure.",
+    "source": "src/database_connection_tests.rs"
+  },
+  {
+    "function": "borrowed_backup_includes_committed_wal_and_retains_both_stages",
+    "group": "ownership",
+    "name": "database_connection::tests::borrowed_backup_includes_committed_wal_and_retains_both_stages",
+    "rationale": "Production owner; synthetic SQLite; busy close is ordinary SQLITE_BUSY from a live prepared statement, then explicit finalization and successful retry. No forced destructor failure.",
+    "source": "src/database_connection_tests.rs"
+  },
+  {
+    "function": "ordinary_unwind_rolls_back_and_closes_before_last_staging_release",
+    "group": "ownership",
+    "name": "database_connection::tests::ordinary_unwind_rolls_back_and_closes_before_last_staging_release",
+    "rationale": "Production owner; synthetic SQLite; busy close is ordinary SQLITE_BUSY from a live prepared statement, then explicit finalization and successful retry. No forced destructor failure.",
+    "source": "src/database_connection_tests.rs"
+  },
+  {
+    "function": "first_failure_is_monotonic_and_shared_across_threads",
+    "group": "failure-policy",
+    "name": "database_failure::tests::first_failure_is_monotonic_and_shared_across_threads",
+    "rationale": "Local in-memory latch state, messages and caught ordinary Rust unwind; no native close fault injection.",
+    "source": "src/database_failure.rs"
+  },
+  {
+    "function": "completed_close_attempt_does_not_latch_failure",
+    "group": "failure-policy",
+    "name": "database_failure::tests::completed_close_attempt_does_not_latch_failure",
+    "rationale": "Local in-memory latch state, messages and caught ordinary Rust unwind; no native close fault injection.",
+    "source": "src/database_failure.rs"
+  },
+  {
+    "function": "ordinary_rust_unwind_latches_without_native_execution",
+    "group": "failure-policy",
+    "name": "database_failure::tests::ordinary_rust_unwind_latches_without_native_execution",
+    "rationale": "Local in-memory latch state, messages and caught ordinary Rust unwind; no native close fault injection.",
+    "source": "src/database_failure.rs"
+  },
+  {
+    "function": "messages_contain_no_runtime_error_payload",
+    "group": "failure-policy",
+    "name": "database_failure::tests::messages_contain_no_runtime_error_payload",
+    "rationale": "Local in-memory latch state, messages and caught ordinary Rust unwind; no native close fault injection.",
+    "source": "src/database_failure.rs"
+  },
+  {
+    "function": "restart_close_requires_explicit_discard_on_every_screen_without_saving",
+    "group": "headless-shutdown",
+    "name": "gui::shutdown_tests::restart_close_requires_explicit_discard_on_every_screen_without_saving",
+    "rationale": "Headless egui contexts, synthetic application fixtures and mock worker channels; no GUI window, network or native credential access.",
+    "source": "src/gui_shutdown_tests.rs"
+  },
+  {
+    "function": "restart_panel_cancels_old_navigation_and_never_writes_the_database",
+    "group": "headless-shutdown",
+    "name": "gui::shutdown_tests::restart_panel_cancels_old_navigation_and_never_writes_the_database",
+    "rationale": "Headless egui contexts, synthetic application fixtures and mock worker channels; no GUI window, network or native credential access.",
+    "source": "src/gui_shutdown_tests.rs"
+  },
+  {
+    "function": "database_failure_preserves_recovery_guidance_and_latches_only_once",
+    "group": "headless-shutdown",
+    "name": "gui::shutdown_tests::database_failure_preserves_recovery_guidance_and_latches_only_once",
+    "rationale": "Headless egui contexts, synthetic application fixtures and mock worker channels; no GUI window, network or native credential access.",
+    "source": "src/gui_shutdown_tests.rs"
+  },
+  {
+    "function": "restart_and_final_normal_close_wait_for_the_existing_synthetic_worker",
+    "group": "headless-shutdown",
+    "name": "gui::shutdown_tests::restart_and_final_normal_close_wait_for_the_existing_synthetic_worker",
+    "rationale": "Headless egui contexts, synthetic application fixtures and mock worker channels; no GUI window, network or native credential access.",
+    "source": "src/gui_shutdown_tests.rs"
+  },
+  {
+    "function": "normal_close_request_has_no_effect_without_a_request",
+    "group": "headless-shutdown",
+    "name": "gui::shutdown_tests::normal_close_request_has_no_effect_without_a_request",
+    "rationale": "Headless egui contexts, synthetic application fixtures and mock worker channels; no GUI window, network or native credential access.",
+    "source": "src/gui_shutdown_tests.rs"
+  },
+  {
+    "function": "normal_close_from_another_screen_defers_to_unsaved_preparation",
+    "group": "headless-shutdown",
+    "name": "gui::shutdown_tests::normal_close_from_another_screen_defers_to_unsaved_preparation",
+    "rationale": "Headless egui contexts, synthetic application fixtures and mock worker channels; no GUI window, network or native credential access.",
+    "source": "src/gui_shutdown_tests.rs"
+  },
+  {
+    "function": "blocked_discard_close_does_not_leave_reusable_close_authorisation",
+    "group": "headless-shutdown",
+    "name": "gui::shutdown_tests::blocked_discard_close_does_not_leave_reusable_close_authorisation",
+    "rationale": "Headless egui contexts, synthetic application fixtures and mock worker channels; no GUI window, network or native credential access.",
+    "source": "src/gui_shutdown_tests.rs"
+  },
+  {
+    "function": "confirmed_restart_close_allows_exactly_the_following_egui_close_event",
+    "group": "headless-shutdown",
+    "name": "gui::shutdown_tests::confirmed_restart_close_allows_exactly_the_following_egui_close_event",
+    "rationale": "Headless egui contexts, synthetic application fixtures and mock worker channels; no GUI window, network or native credential access.",
+    "source": "src/gui_shutdown_tests.rs"
+  },
+  {
+    "function": "checked_source_readers_do_not_create_missing_databases",
+    "group": "backup",
+    "name": "backup_service::tests::checked_source_readers_do_not_create_missing_databases",
+    "rationale": "New synthetic fixtures only; read-only refusal, unchanged source, staged lifetime and ordinary backup; configuration is absent or theme-only, no credential migration.",
+    "source": "src/backup_service.rs"
+  },
+  {
+    "function": "checked_source_readers_refuse_non_regular_database_without_changes",
+    "group": "backup",
+    "name": "backup_service::tests::checked_source_readers_refuse_non_regular_database_without_changes",
+    "rationale": "New synthetic fixtures only; read-only refusal, unchanged source, staged lifetime and ordinary backup; configuration is absent or theme-only, no credential migration.",
+    "source": "src/backup_service.rs"
+  },
+  {
+    "function": "checked_source_readers_refuse_parent_traversal_without_changes",
+    "group": "backup",
+    "name": "backup_service::tests::checked_source_readers_refuse_parent_traversal_without_changes",
+    "rationale": "New synthetic fixtures only; read-only refusal, unchanged source, staged lifetime and ordinary backup; configuration is absent or theme-only, no credential migration.",
+    "source": "src/backup_service.rs"
+  },
+  {
+    "function": "checked_source_readers_preserve_valid_backup_and_stage_an_isolated_copy",
+    "group": "backup",
+    "name": "backup_service::tests::checked_source_readers_preserve_valid_backup_and_stage_an_isolated_copy",
+    "rationale": "New synthetic fixtures only; read-only refusal, unchanged source, staged lifetime and ordinary backup; configuration is absent or theme-only, no credential migration.",
+    "source": "src/backup_service.rs"
+  },
+  {
+    "function": "staged_connection_retains_directory_after_returned_stage_is_released",
+    "group": "backup",
+    "name": "backup_service::tests::staged_connection_retains_directory_after_returned_stage_is_released",
+    "rationale": "New synthetic fixtures only; read-only refusal, unchanged source, staged lifetime and ordinary backup; configuration is absent or theme-only, no credential migration.",
+    "source": "src/backup_service.rs"
+  },
+  {
+    "function": "checked_source_readers_refuse_database_ancestor_and_sidecar_symlinks",
+    "group": "backup",
+    "name": "backup_service::tests::checked_source_readers_refuse_database_ancestor_and_sidecar_symlinks",
+    "rationale": "New synthetic fixtures only; read-only refusal, unchanged source, staged lifetime and ordinary backup; configuration is absent or theme-only, no credential migration.",
+    "source": "src/backup_service.rs"
+  },
+  {
+    "function": "creates_openable_database_backup_with_expected_data_and_copies_config",
+    "group": "backup",
+    "name": "backup_service::tests::creates_openable_database_backup_with_expected_data_and_copies_config",
+    "rationale": "New synthetic fixtures only; read-only refusal, unchanged source, staged lifetime and ordinary backup; configuration is absent or theme-only, no credential migration.",
+    "source": "src/backup_service.rs"
+  },
+  {
+    "function": "succeeds_without_a_config_file_and_omits_it_from_the_manifest",
+    "group": "backup",
+    "name": "backup_service::tests::succeeds_without_a_config_file_and_omits_it_from_the_manifest",
+    "rationale": "New synthetic fixtures only; read-only refusal, unchanged source, staged lifetime and ordinary backup; configuration is absent or theme-only, no credential migration.",
+    "source": "src/backup_service.rs"
+  },
+  {
+    "function": "backup_failure_precedes_any_live_schema_change",
+    "group": "recovery",
+    "name": "database_recovery::tests::backup_failure_precedes_any_live_schema_change",
+    "rationale": "Synthetic schema/WAL/restore fixtures; ordinary refusal or dropped SQL transaction. The word aborts means returning an error, not process abort. No kill/child/process-exit cases.",
+    "source": "src/database_recovery.rs"
+  },
+  {
+    "function": "configuration_copy_failure_aborts_upgrade_and_keeps_original",
+    "group": "recovery",
+    "name": "database_recovery::tests::configuration_copy_failure_aborts_upgrade_and_keeps_original",
+    "rationale": "Synthetic schema/WAL/restore fixtures; ordinary refusal or dropped SQL transaction. The word aborts means returning an error, not process abort. No kill/child/process-exit cases.",
+    "source": "src/database_recovery.rs"
+  },
+  {
+    "function": "verified_backup_includes_wal_and_does_not_checkpoint_original",
+    "group": "recovery",
+    "name": "database_recovery::tests::verified_backup_includes_wal_and_does_not_checkpoint_original",
+    "rationale": "Synthetic schema/WAL/restore fixtures; ordinary refusal or dropped SQL transaction. The word aborts means returning an error, not process abort. No kill/child/process-exit cases.",
+    "source": "src/database_recovery.rs"
+  },
+  {
+    "function": "schema35_restore_is_isolated_and_original_backup_unchanged",
+    "group": "recovery",
+    "name": "database_recovery::tests::schema35_restore_is_isolated_and_original_backup_unchanged",
+    "rationale": "Synthetic schema/WAL/restore fixtures; ordinary refusal or dropped SQL transaction. The word aborts means returning an error, not process abort. No kill/child/process-exit cases.",
+    "source": "src/database_recovery.rs"
+  },
+  {
+    "function": "writer_reservation_prevents_restore_installation_and_partial_edits",
+    "group": "recovery",
+    "name": "database_recovery::tests::writer_reservation_prevents_restore_installation_and_partial_edits",
+    "rationale": "Synthetic schema/WAL/restore fixtures; ordinary refusal or dropped SQL transaction. The word aborts means returning an error, not process abort. No kill/child/process-exit cases.",
+    "source": "src/database_recovery.rs"
+  },
+  {
+    "function": "install_failure_rolls_back_schema_data_and_high_water_marks",
+    "group": "recovery",
+    "name": "database_recovery::tests::install_failure_rolls_back_schema_data_and_high_water_marks",
+    "rationale": "Synthetic schema/WAL/restore fixtures; ordinary refusal or dropped SQL transaction. The word aborts means returning an error, not process abort. No kill/child/process-exit cases.",
+    "source": "src/database_recovery.rs"
+  },
+  {
+    "function": "current_schema_validation_preserves_bytes_and_rejects_missing_critical_schema",
+    "group": "recovery",
+    "name": "database_recovery::stage5_tests::current_schema_validation_preserves_bytes_and_rejects_missing_critical_schema",
+    "rationale": "Synthetic schema validation and restored integrity-query budget; no corrupt-page/native fault injection.",
+    "source": "src/database_recovery.rs"
+  },
+  {
+    "function": "bounded_integrity_budget_is_cleared_before_later_database_operations",
+    "group": "recovery",
+    "name": "database_recovery::stage5_tests::bounded_integrity_budget_is_cleared_before_later_database_operations",
+    "rationale": "Synthetic schema validation and restored integrity-query budget; no corrupt-page/native fault injection.",
+    "source": "src/database_recovery.rs"
+  },
+  {
+    "function": "phase1_macos_bad_handle_is_not_treated_as_absent_acl",
+    "group": "macos-permissions",
+    "name": "private_storage::macos_acl::tests::phase1_macos_bad_handle_is_not_treated_as_absent_acl",
+    "rationale": "Native ACL helper bad-fd/absent-ACL handling on synthetic objects; no SQLite native failure injection.",
+    "source": "src/private_storage_macos.rs"
+  },
+  {
+    "function": "phase1_macos_absent_acl_is_not_a_missing_object",
+    "group": "macos-permissions",
+    "name": "private_storage::macos_acl::tests::phase1_macos_absent_acl_is_not_a_missing_object",
+    "rationale": "Native ACL helper bad-fd/absent-ACL handling on synthetic objects; no SQLite native failure injection.",
+    "source": "src/private_storage_macos.rs"
+  },
+  {
+    "function": "phase1_macos_assessment_detects_comma_separated_inherited_allow",
+    "group": "macos-permissions",
+    "name": "private_storage::macos_acl_tests::phase1_macos_assessment_detects_comma_separated_inherited_allow",
+    "rationale": "ACL mutations restricted to newly created synthetic fixtures, preservation of existing fixture sharing; no host ACL repair.",
+    "source": "src/private_storage.rs"
+  },
+  {
+    "function": "phase1_macos_private_creation_under_inheritable_acl",
+    "group": "macos-permissions",
+    "name": "private_storage::macos_acl_tests::phase1_macos_private_creation_under_inheritable_acl",
+    "rationale": "ACL mutations restricted to newly created synthetic fixtures, preservation of existing fixture sharing; no host ACL repair.",
+    "source": "src/private_storage.rs"
+  },
+  {
+    "function": "phase1_macos_creation_excludes_inherited_acl_and_retains_existing_sharing",
+    "group": "macos-permissions",
+    "name": "private_storage::macos_acl_tests::phase1_macos_creation_excludes_inherited_acl_and_retains_existing_sharing",
+    "rationale": "ACL mutations restricted to newly created synthetic fixtures, preservation of existing fixture sharing; no host ACL repair.",
+    "source": "src/private_storage.rs"
+  },
+  {
+    "function": "phase1_private_copies_and_publication_do_not_overwrite_inputs",
+    "group": "macos-permissions",
+    "name": "private_storage::tests::phase1_private_copies_and_publication_do_not_overwrite_inputs",
+    "rationale": "Ordinary synthetic copy/no-clobber and static symlink refusal; no concurrent race or destructive test.",
+    "source": "src/private_storage.rs"
+  },
+  {
+    "function": "phase1_symlinks_are_refused_without_touching_targets",
+    "group": "macos-permissions",
+    "name": "private_storage::tests::phase1_symlinks_are_refused_without_touching_targets",
+    "rationale": "Ordinary synthetic copy/no-clobber and static symlink refusal; no concurrent race or destructive test.",
+    "source": "src/private_storage.rs"
+  }
+]

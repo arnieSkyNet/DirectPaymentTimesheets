@@ -1,0 +1,190 @@
+#![cfg_attr(
+    all(windows, windows_release, not(test)),
+    windows_subsystem = "windows"
+)]
+
+mod annual_leave_settings_repository;
+mod annual_leave_summary;
+mod app;
+mod application;
+mod application_settings_screen;
+mod archive;
+mod backup_service;
+mod config;
+mod smtp_credentials;
+mod context;
+mod contracted_hours_repository;
+mod csv_import;
+mod database;
+mod database_connection;
+mod database_failure;
+mod database_recovery;
+mod date_utils;
+include!("development_build_gate.rs");
+#[cfg(all(windows, debug_assertions, feature = "windows-dev-isolation"))]
+mod development;
+mod direct_shift_repository;
+mod email_service;
+mod email_settings;
+mod employer_repository;
+mod employer_screen;
+mod enter_hours_screen;
+mod environment;
+mod error;
+mod folder_opener;
+mod gui;
+mod gui_controls;
+mod historical_adjustment_compatibility;
+mod import_service;
+mod imported_hours;
+mod imported_hours_ui;
+mod models;
+mod paths;
+mod pay_rate_allocation;
+mod pay_rate_repository;
+mod payroll_archive_service;
+mod payroll_delivery;
+#[cfg(test)]
+mod payroll_document_import_tests;
+mod payroll_document_repository;
+mod payroll_evidence;
+mod payroll_file_naming;
+mod payroll_prep_sheet_import_service;
+mod payroll_provider_repository;
+mod payroll_replacement;
+mod payroll_schedule_repository;
+mod payroll_settings_screen;
+mod payroll_snapshot_service;
+mod payroll_timesheet_email_repository;
+mod payroll_timesheet_repository;
+mod payroll_timesheet_screen;
+mod payroll_worked_item_repository;
+mod payslip_delivery_service;
+mod pdf_generator;
+mod personal_assistant_repository;
+mod personal_assistant_screen;
+mod private_storage;
+mod public_holidays;
+mod repository;
+mod shift_changes;
+mod sickness_period_repository;
+mod sickness_service;
+mod signature;
+mod startup;
+mod theme;
+mod timesheet_delivery;
+mod update_check;
+
+fn main() -> std::process::ExitCode {
+    if let Err(message) = development_launch_gate() {
+        eprintln!("{message}");
+        return std::process::ExitCode::FAILURE;
+    }
+    // Set Mesa's default before application initialisation can start any threads
+    // or initialise graphics. An explicit user setting remains authoritative.
+    if application::use_packaged_arm_software_rendering(
+        std::env::consts::OS,
+        std::env::consts::ARCH,
+        option_env!("DPT_INSTALLATION_KIND"),
+        std::env::var_os("LIBGL_ALWAYS_SOFTWARE").is_some(),
+    ) {
+        std::env::set_var("LIBGL_ALWAYS_SOFTWARE", "1");
+    }
+    if let Err(error) = application::run() {
+        startup::report(&error);
+        return std::process::ExitCode::from(startup::exit_code(true));
+    }
+    std::process::ExitCode::from(startup::exit_code(false))
+}
+
+fn development_launch_gate() -> Result<(), &'static str> {
+    validate_development_request(
+        cfg!(all(
+            windows,
+            debug_assertions,
+            feature = "windows-dev-isolation"
+        )),
+        &std::env::args_os().skip(1).collect::<Vec<_>>(),
+        std::env::var_os("DIRECTPAYMENTTIMESHEETS_HOME").is_some(),
+    )
+}
+
+fn validate_development_request(
+    available: bool,
+    args: &[std::ffi::OsString],
+    home_override: bool,
+) -> Result<(), &'static str> {
+    let requested = args
+        .iter()
+        .any(|arg| arg == "--isolated-windows-development");
+    if available {
+        if !requested || args.len() != 1 {
+            return Err("Development executable requires exactly --isolated-windows-development; no production fallback.");
+        }
+        if home_override {
+            return Err("Remove DIRECTPAYMENTTIMESHEETS_HOME: development storage is fixed, never overridden.");
+        }
+    } else if requested {
+        return Err("Isolated Windows development mode is unavailable in this executable.");
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod development_gate_tests {
+    #[test]
+    fn development_launch_requires_exact_opt_in_and_never_falls_back() {
+        use std::ffi::OsString;
+        let flag = OsString::from("--isolated-windows-development");
+        assert!(super::validate_development_request(true, &[flag.clone()], false).is_ok());
+        for args in [
+            vec![],
+            vec![flag.clone(), OsString::from("--other")],
+            vec![OsString::from("--other")],
+        ] {
+            assert!(super::validate_development_request(true, &args, false).is_err());
+        }
+        assert!(super::validate_development_request(true, &[flag.clone()], true).is_err());
+        assert!(super::validate_development_request(false, &[flag], false).is_err());
+        assert!(super::validate_development_request(false, &[], true).is_ok());
+    }
+
+    #[test]
+    fn development_feature_cannot_compile_without_debug_or_development_profile() {
+        let dir = tempfile::tempdir().unwrap();
+        for (feature, debug, profile, expected) in [
+            (false, false, false, true),
+            (true, false, false, false),
+            (true, true, false, false),
+            (true, true, true, cfg!(windows)),
+        ] {
+            let mut command = std::process::Command::new("rustc");
+            command
+                .arg(
+                    std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                        .join("src/development_build_gate.rs"),
+                )
+                .args(["--crate-type", "lib", "--emit", "metadata", "-C"])
+                .arg(format!("debug-assertions={debug}"))
+                .arg("-o")
+                .arg(dir.path().join("gate.rmeta"));
+            if feature {
+                command.args(["--cfg", "feature=\"windows-dev-isolation\""]);
+            }
+            if profile {
+                command.args(["--cfg", "dpt_development_build"]);
+            }
+            let output = command.output().unwrap();
+            assert_eq!(
+                output.status.success(),
+                expected,
+                "{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            if !expected {
+                assert!(String::from_utf8_lossy(&output.stderr)
+                    .contains("release builds are forbidden"));
+            }
+        }
+    }
+}
