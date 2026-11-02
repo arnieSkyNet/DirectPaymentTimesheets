@@ -16,6 +16,7 @@ mod microsoft_oauth;
 mod context;
 mod contracted_hours_repository;
 mod csv_import;
+mod clipboard_csv_import;
 mod database;
 mod database_connection;
 mod database_failure;

@@ -422,7 +422,10 @@ For work happening now, **Clock in now** and **Clock out now** use the current t
 1. In Hours Keeper, export the relevant recorded hours as **CSV**. Transfer or download that file to this computer. Keep the original export.
 2. Click **Settings** and find **CSV Import Folder**. Note the full folder location. Use **Browse...** if you need to choose a folder you can find, then **Save Application Settings**.
 3. In your file manager, copy the `.csv` export into that exact folder. Keep only the CSV files you intend to import there: the button scans the folder, rather than opening a file chooser for a single CSV.
-4. Return to **Dashboard** and click **Import Hours CSV**.
+4. Return to **Dashboard** and click **Import Hours CSV**. Files already in the folder are processed first.
+   If any active PAs are still outstanding, a **Yes/No** prompt lists them, even when some folder files succeeded. Choose **No** to keep just the folder results, or **Yes** to enter the remaining CSV exports from the clipboard.
+   Select an outstanding PA and click **Paste CSV from clipboard** (or paste with the keyboard). Include the complete supported description line, headers and rows. Every row must belong to that selected PA. Each valid paste is saved immediately in the configured CSV Import Folder, with its date range, full PA name and **Clipboard** marker, and that PA leaves the list. Malformed or wrong-PA content is refused without saving or advancing.
+   When the list is complete, the existing importer automatically processes the saved clipboard CSVs. **Cancel remaining — import saved CSVs** finishes early without discarding earlier folder imports or saved pastes. No preview or simulation step is involved.
 5. Read **Import Summary**. Check **Files succeeded**, **Rows imported**, **Rows skipped**, **Files refused**, **Files failed** and any error messages.
 6. Click **View Imported Hours**. Check the PA, dates, breaks and worked hours against the export. Resolve any duplicate or overlap review before preparing payroll.
 
