@@ -248,6 +248,7 @@ pub struct DirectPaymentApp {
     additional_notes_by_personal_assistant: HashMap<i64, String>,
     note_enabled_personal_assistant_ids: HashSet<i64>,
     pending_email_batch: Option<PendingEmailBatch>,
+    include_departed_email_pas: bool,
     signature_drawing: crate::signature::DrawingUi,
     pending_generation: Option<PendingGeneration>,
     production_report: Option<ProductionReport>,
@@ -334,6 +335,7 @@ impl DirectPaymentApp {
             additional_notes_by_personal_assistant: HashMap::new(),
             note_enabled_personal_assistant_ids: HashSet::new(),
             pending_email_batch: None,
+            include_departed_email_pas: false,
             signature_drawing: Default::default(),
             pending_generation: None,
             production_report: None,
@@ -802,10 +804,19 @@ impl DirectPaymentApp {
                 return;
             }
         };
+        let assistants = match self.application.personal_assistant_repository.get_all() {
+            Ok(assistants) => assistants,
+            Err(error) => {
+                self.status_message = format!("Could not load email recipients: {error}");
+                return;
+            }
+        };
+        let current_ids: HashSet<_> = assistants.iter()
+            .filter(|pa| Self::current_email_pa(pa)).map(|pa| pa.id).collect();
         let selected_personal_assistant_ids = choices
             .iter()
             .filter(|choice| {
-                choice.available
+                choice.available && current_ids.contains(&choice.id)
                     && (!matches!(kind, PayrollEmailKind::Timesheet)
                         || !choice.intent.as_ref().is_some_and(|i| i.resend))
             })
@@ -2276,6 +2287,29 @@ impl DirectPaymentApp {
         }
     }
 
+    // Sending visibility is separate from historical preparation eligibility.
+    fn current_email_pa(pa: &crate::models::PersonalAssistant) -> bool {
+        let today = chrono::Local::now().date_naive();
+        pa.employment_status.as_deref() == Some("Active")
+            && pa.employment_overlaps(today, today).unwrap_or(false)
+    }
+
+    fn email_pa_visible(&self, pa: &crate::models::PersonalAssistant) -> bool {
+        self.include_departed_email_pas || Self::current_email_pa(pa)
+    }
+
+    fn draw_email_pa_scope(&mut self, ui: &mut egui::Ui) {
+        if ui.checkbox(&mut self.include_departed_email_pas,
+            "Include inactive/departed PAs for final or outstanding documents").changed() {
+            self.clear_pending_email_batch();
+            self.email_preview = None;
+            self.preview_personal_assistant_id = None;
+        }
+        if self.include_departed_email_pas {
+            ui.label("Departed PAs must be selected deliberately. Existing document and delivery checks still apply.");
+        }
+    }
+
     fn payslip_email_assistants(
         &self,
     ) -> Result<Vec<crate::models::PersonalAssistant>, Box<dyn std::error::Error>> {
@@ -2307,6 +2341,7 @@ impl DirectPaymentApp {
                 assistants.push(assistant);
             }
         }
+        assistants.retain(|pa| self.email_pa_visible(pa));
         Ok(assistants)
     }
 
@@ -2316,7 +2351,7 @@ impl DirectPaymentApp {
     ) -> Result<Vec<crate::models::PersonalAssistant>, Box<dyn std::error::Error>> {
         match kind {
             PayrollEmailKind::Payslip => self.payslip_email_assistants(),
-            PayrollEmailKind::Timesheet => self.selected_period_assistants(),
+            PayrollEmailKind::Timesheet => Ok(self.selected_period_assistants()?.into_iter().filter(|pa| self.email_pa_visible(pa)).collect()),
         }
     }
 
@@ -2863,6 +2898,7 @@ impl DirectPaymentApp {
 
             ui.separator();
 
+            self.draw_email_pa_scope(ui);
             let actions = draw_dashboard_workflow_actions(ui);
 
                 if actions.enter_hours {
@@ -3016,6 +3052,7 @@ impl DirectPaymentApp {
     }
 
     fn draw_email_preview_controls(&mut self, ui: &mut egui::Ui) {
+        self.draw_email_pa_scope(ui);
         ui.heading("Document previews");
         let assistants = match self.payslip_email_assistants() {
             Ok(assistants) => assistants.into_iter().collect::<Vec<_>>(),
@@ -3261,7 +3298,7 @@ impl DirectPaymentApp {
         Box<dyn std::error::Error>,
     > {
         let mut unknown = Vec::new();
-        for pa in self.application.personal_assistant_repository.get_all()? {
+        for pa in self.application.personal_assistant_repository.get_all()?.into_iter().filter(|pa| self.email_pa_visible(pa)) {
             for doc in self
                 .application
                 .payroll_timesheet_email_repository
@@ -3287,10 +3324,12 @@ impl DirectPaymentApp {
             .ok_or("No pending email batch")?;
         let schedule = self.validated_schedule_for_email_batch(batch)?;
         let choices = self.payslip_recipient_choices(schedule.as_ref())?;
+        let current_ids: HashSet<_> = self.application.personal_assistant_repository.get_all()?
+            .iter().filter(|pa| Self::current_email_pa(pa)).map(|pa| pa.id).collect();
         let batch = self.pending_email_batch.as_mut().unwrap();
         batch.selected_personal_assistant_ids = choices
             .iter()
-            .filter(|c| c.available)
+            .filter(|c| c.available && current_ids.contains(&c.id))
             .map(|c| c.id)
             .collect();
         batch.choices = choices;
@@ -3773,6 +3812,7 @@ impl DirectPaymentApp {
                 crate::personal_assistant_repository::PersonalAssistantRepository::get_by_id_on(
                     &db, *id,
                 )?;
+            if !self.email_pa_visible(&pa) { return Err("PA status changed; review the recipient selection".into()); }
             if batch.approved.get(id) != Some(&self.timesheet_preview(&schedule, &pa)?) {
                 return Err("Email contents or actual recipients changed".into());
             }
@@ -3785,6 +3825,7 @@ impl DirectPaymentApp {
         assistant: &crate::models::PersonalAssistant,
         batch: &PendingEmailBatch,
     ) -> Result<bool, Box<dyn std::error::Error>> {
+        if !self.email_pa_visible(assistant) { return Err("PA status changed; review the recipient selection".into()); }
         let intent = batch
             .choices
             .iter()
@@ -3826,6 +3867,7 @@ impl DirectPaymentApp {
                         .ok_or("Holiday calendar approval missing")?,
                 )?;
                 let fresh=crate::personal_assistant_repository::PersonalAssistantRepository::get_by_id_on(locked,assistant.id)?;
+                if !self.email_pa_visible(&fresh) { return Err("PA status changed during claim; review the recipient selection".into()); }
                 let current_schedule = self
                     .validated_schedule_for_email_batch(batch)?
                     .ok_or("Period missing")?;
@@ -6884,6 +6926,7 @@ mod payroll_period_eligibility_tests {
                 "test-payroll@example.com".into();
             reconcile_test_supplements(&application);
             let mut app = DirectPaymentApp::new(application);
+            app.include_departed_email_pas = true; // Explicit historical/final-document access.
             if has_schedule {
                 app.operational_payroll_period.select(&current, None);
             } else {
@@ -7151,6 +7194,7 @@ mod payroll_period_eligibility_tests {
         application.import_payroll_documents(&path, None).unwrap();
         reconcile_test_supplements(&application);
         let mut app = DirectPaymentApp::new(application);
+        app.include_departed_email_pas = true; // Explicit historical/final-document access.
         app.operational_payroll_period.selected = None;
         app.preview_personal_assistant_id = Some(pa.id);
         app.load_email_preview(PayrollEmailKind::Payslip);
@@ -7241,6 +7285,7 @@ mod payroll_period_eligibility_tests {
                 assert_eq!(imported.payslips_imported, 0);
                 reconcile_test_supplements(&application);
                 let mut app = DirectPaymentApp::new(application);
+                app.include_departed_email_pas = true; // Explicit historical/final-document access.
                 app.operational_payroll_period.select(&current, None);
                 app.preview_personal_assistant_id = Some(pa.id);
                 app.load_email_preview(PayrollEmailKind::Payslip);
@@ -7335,6 +7380,7 @@ mod payroll_period_eligibility_tests {
                 .unwrap();
             reconcile_test_supplements(&application);
             let mut app = DirectPaymentApp::new(application);
+            app.include_departed_email_pas = true; // Explicit historical/final-document access.
             app.operational_payroll_period.select(&current, None);
             app.preview_personal_assistant_id = Some(1);
             app.load_email_preview(PayrollEmailKind::Payslip);
@@ -7481,6 +7527,7 @@ mod payroll_period_eligibility_tests {
             .import_payroll_return(&zip_path, &current)
             .unwrap();
         let mut app = DirectPaymentApp::new(application);
+        app.include_departed_email_pas = true; // Explicit historical/final-document access.
         app.operational_payroll_period.select(&current, None);
         assert!(!app
             .selected_period_assistants()
@@ -7539,6 +7586,85 @@ mod payroll_period_eligibility_tests {
     }
 
     #[test]
+    fn feature3_current_lists_hide_departed_but_retain_historical_timesheet_sending() {
+        let (_dir, application, historical, _) = employment_period_fixture();
+        application.payroll_timesheet_email_repository.connection.execute_batch(
+            "UPDATE personal_assistants SET email='assistant@example.test'; UPDATE employers SET email='employer@example.test';").unwrap();
+        let mut app = DirectPaymentApp::new(application);
+        app.operational_payroll_period.select(&historical, None);
+        app.payroll_timesheet_screen = load_period_for_eligibility_test(&app.application, &historical);
+        assert_eq!(app.generate_payroll_timesheets().unwrap(), 4);
+        let count = app.application.payroll_timesheet_repository.get_all_for_cycle(&historical.payroll_year, historical.cycle_number).unwrap().len();
+        assert_eq!(app.email_assistants(PayrollEmailKind::Timesheet).unwrap().iter().map(|pa|pa.id).collect::<Vec<_>>(), vec![5]);
+        app.begin_email_batch(PayrollEmailKind::Timesheet);
+        assert_eq!(app.pending_email_batch.as_ref().unwrap().choices.iter().map(|c|c.id).collect::<Vec<_>>(), vec![5]);
+        assert_eq!(app.pending_email_batch.as_ref().unwrap().selected_personal_assistant_ids, vec![5]);
+        app.include_departed_email_pas = true;
+        app.begin_email_batch(PayrollEmailKind::Timesheet);
+        let batch = app.pending_email_batch.as_mut().unwrap();
+        assert_eq!(batch.choices.iter().map(|c|c.id).collect::<Vec<_>>(), vec![1,3,5,8]);
+        assert!(batch.choices.iter().all(|c|c.available && c.intent.is_some()));
+        assert_eq!(batch.selected_personal_assistant_ids, vec![5]);
+        // The employer can deliberately select a departed PA's retained PDF.
+        batch.selected_personal_assistant_ids = vec![1];
+        batch.confirm_selection();
+        assert_eq!(batch.selected_personal_assistant_ids, vec![1]);
+        let db = crate::payroll_evidence::open(&app.application).unwrap();
+        assert_eq!(db.query_row("SELECT COUNT(*) FROM timesheet_delivery_attempts",[],|r|r.get::<_,i64>(0)).unwrap(),0);
+        assert_eq!(db.query_row("SELECT COUNT(*) FROM payroll_submissions",[],|r|r.get::<_,i64>(0)).unwrap(),0);
+        assert_eq!(app.application.payroll_timesheet_repository.get_all_for_cycle(&historical.payroll_year, historical.cycle_number).unwrap().len(), count);
+        app.include_departed_email_pas = false;
+        app.begin_email_batch(PayrollEmailKind::Timesheet);
+        assert!(app.pending_email_batch.as_ref().unwrap().choices.iter().all(|c|c.id==5));
+        // A status change after selection is rejected before a send attempt.
+        db.execute("UPDATE personal_assistants SET employment_status='Inactive' WHERE id=5",[]).unwrap();
+        let fresh = crate::personal_assistant_repository::PersonalAssistantRepository::get_by_id_on(&db,5).unwrap();
+        let error = app.email_timesheet_intent(&historical,&fresh,app.pending_email_batch.as_ref().unwrap()).unwrap_err();
+        assert!(error.to_string().contains("PA status changed"));
+        assert_eq!(db.query_row("SELECT COUNT(*) FROM timesheet_delivery_attempts",[],|r|r.get::<_,i64>(0)).unwrap(),0);
+    }
+
+    #[test]
+    fn feature3_final_p45_is_deliberate_and_does_not_restore_departed_recipients() {
+        let (dir, mut application, _, _) = employment_period_fixture();
+        application.context.config.folders.payroll_information_folder = dir.path().join("info");
+        application.payroll_timesheet_email_repository.connection.execute_batch(
+            "UPDATE personal_assistants SET email='assistant@example.test'; UPDATE employers SET email='employer@example.test';").unwrap();
+        let pa = application.personal_assistant_repository.get_all().unwrap().remove(0);
+        let path = dir.path().join(format!("P45 for {} {}.pdf",pa.first_name,pa.surname));
+        std::fs::write(&path,b"%PDF-1.4 synthetic final document").unwrap();
+        application.import_payroll_documents(&path,None).unwrap();
+        let mut app = DirectPaymentApp::new(application);
+        app.operational_payroll_period.selected = None;
+        assert!(app.payslip_email_assistants().unwrap().is_empty());
+        assert!(app.unknown_supplements().unwrap().is_empty());
+        app.include_departed_email_pas = true;
+        assert_eq!(app.unknown_supplements().unwrap().len(),1);
+        reconcile_test_supplements(&app.application);
+        app.begin_email_batch(PayrollEmailKind::Payslip);
+        assert!(app.pending_email_batch.as_ref().unwrap().selected_personal_assistant_ids.is_empty());
+        assert!(app.pending_email_batch.as_ref().unwrap().choices.iter().any(|c|c.id==pa.id && c.available));
+        let approval = app.payslip_approval(pa.id,None).unwrap();
+        assert_eq!(approval.bundle.document_ids.len(),1);
+        assert_eq!(approval.bundle.email_types,vec!["p45"]);
+        assert_eq!(app.application.payroll_timesheet_email_repository.connection.query_row("SELECT COUNT(*) FROM payroll_bundle_attempts",[],|r|r.get::<_,i64>(0)).unwrap(),0);
+        app.include_departed_email_pas = false;
+        assert!(app.payslip_email_assistants().unwrap().is_empty());
+        assert!(app.payslip_approval(pa.id,None).is_err());
+        assert_eq!(app.application.payroll_timesheet_email_repository.documents_for_pa(pa.id).unwrap().len(),1);
+        assert_eq!(app.application.personal_assistant_repository.get_all().unwrap()[0].employment_status.as_deref(),Some("Inactive"));
+        // Active status with an elapsed leaving date is still departed.
+        let mut past_leaver = pa.clone();
+        past_leaver.employment_status = Some("Active".into());
+        past_leaver.leaving_date = Some("01/01/2000".into());
+        assert!(!DirectPaymentApp::current_email_pa(&past_leaver));
+        past_leaver.leaving_date = None;
+        assert!(DirectPaymentApp::current_email_pa(&past_leaver));
+        past_leaver.employment_status = None;
+        assert!(!DirectPaymentApp::current_email_pa(&past_leaver));
+    }
+
+    #[test]
     fn dashboard_email_batches_and_generation_share_period_eligibility() {
         let (_dir, application, historical, current) = employment_period_fixture();
         application
@@ -7547,6 +7673,7 @@ mod payroll_period_eligibility_tests {
             .execute_batch("UPDATE personal_assistants SET email='pa@example.test'")
             .unwrap();
         let mut app = DirectPaymentApp::new(application);
+        app.include_departed_email_pas = true; // Explicit historical/final-document access.
         for (schedule, expected) in [(&historical, vec![1, 3, 5, 8]), (&current, vec![2, 4, 5])] {
             app.operational_payroll_period.select(schedule, None);
             let selected = app.selected_period_assistants().unwrap();
@@ -7593,7 +7720,7 @@ mod payroll_period_eligibility_tests {
                     .as_ref()
                     .unwrap()
                     .selected_personal_assistant_ids,
-                expected
+                selected.iter().filter(|pa| DirectPaymentApp::current_email_pa(pa)).map(|pa| pa.id).collect::<Vec<_>>()
             );
             app.clear_pending_email_batch();
             let records = app
@@ -7622,6 +7749,7 @@ mod payroll_period_eligibility_tests {
     {
         let (_dir, application, historical, _) = employment_period_fixture();
         let mut app = DirectPaymentApp::new(application);
+        app.include_departed_email_pas = true; // Explicit historical timesheet access.
         app.operational_payroll_period.select(&historical, None);
         app.payroll_timesheet_screen =
             load_period_for_eligibility_test(&app.application, &historical);

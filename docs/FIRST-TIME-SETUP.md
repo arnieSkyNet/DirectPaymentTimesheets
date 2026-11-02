@@ -559,6 +559,8 @@ The timesheet test uses the Payroll test address as **To**, optional PA test add
 
 1. Confirm the reviewed PDF is final, any required signing is complete, and you are ready to submit by the provider's deadline.
 2. On **Dashboard**, confirm the period and click **Email Payroll Timesheets**.
+
+   Current email lists show Active PAs whose employment dates include today. For a departed PA’s final timesheet, payslip, P45 or other outstanding payroll document, explicitly enable **Include inactive/departed PAs for final or outstanding documents** on Dashboard (also available beside email previews). Select that PA deliberately and follow the usual document review and send confirmation. Departed PAs are never automatically selected. Turn the option off to return to current recipients; changing it cancels any pending email selection and preview. The option starts off each time the application opens. Historical records, retained PDFs and delivery history remain available, and normal integrity and duplicate-send checks still apply.
 3. In **Email payroll timesheets — select PAs**, check the selected PAs. Current unsent PDFs are selected by default; previously sent versions can be listed for a deliberate resend. Avoid selecting a resend for a first submission.
 4. Click **Continue to email notes**. Choose **No Additional Note**, or **Add Additional Note**, enter any needed note for each selected PA and click **Continue**.
 5. In **Confirm email batch**, check the period, PA list, first-send/resend counts, document details and **To / CC / BCC** addresses. Cancel if anything is wrong.

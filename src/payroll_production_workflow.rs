@@ -117,6 +117,7 @@ impl DirectPaymentApp {
         let start = crate::date_utils::parse_legacy(&schedule.first_week_commencing)?;
         let mut choices = Vec::new();
         for pa in self.application.personal_assistant_repository.get_all()? {
+            if sending && !self.email_pa_visible(&pa) { continue; }
             let has_record: bool = db.query_row("SELECT EXISTS(SELECT 1 FROM payroll_timesheets WHERE personal_assistant_id=?1 AND payroll_year=?2 AND cycle_number=?3)", rusqlite::params![pa.id,schedule.payroll_year,schedule.cycle_number], |r|r.get(0))?;
             let eligibility =
                 pa.eligible_for_period(start, start + chrono::Duration::days(27), has_record);

@@ -16,7 +16,7 @@ fn fixture() -> (
         INSERT INTO payroll_provider(id,name,payroll_department_email) VALUES (1,'Payroll','payroll@example.test');
         INSERT INTO payroll_schedules(id,payroll_year,cycle_number,first_week_commencing,latest_posting_date,pay_date,created_at) VALUES (1,'2026/27',1,'01/04/2026','20/04/2026','30/04/2026','created');").unwrap();
     for pa in 1..=5 {
-        db.execute("INSERT INTO personal_assistants(id,first_name,surname,email,start_date) VALUES (?1,?2,'Test',?3,'01/01/2026')",params![pa,format!("PA{pa}"),format!("pa{pa}@example.test")]).unwrap();
+        db.execute("INSERT INTO personal_assistants(id,first_name,surname,email,start_date,employment_status) VALUES (?1,?2,'Test',?3,'01/01/2026','Active')",params![pa,format!("PA{pa}"),format!("pa{pa}@example.test")]).unwrap();
         db.execute("INSERT INTO personal_assistant_pay_rates(personal_assistant_id,effective_date,base_hourly_rate,employer_top_up_rate,created_at) VALUES (?1,'01/01/2026',12,0,'created')",[pa]).unwrap();
         db.execute("INSERT INTO timesheets(id,personal_assistant_id,pa_name,start_time,end_time,break_minutes,worked_minutes,hourly_rate,amount,notes) VALUES (?1,?1,'Test','2026-04-02T09:00:00','2026-04-02T11:00:00',0,120,12,24,'source note')",[pa]).unwrap();
         let record = app
@@ -671,6 +671,7 @@ fn historical_departed_and_retained_preparation_eligibility_use_existing_rules()
     assert!(pending.selected_ids.contains(&2));
     assert!(!pending.choices.iter().any(|c| c.id == 3));
     assert_eq!(generate(&mut app, &[1, 2]).completed(), 2);
+    app.include_departed_email_pas = true; // Explicit final/historical timesheet send.
     let smtp = Smtp::new(&mut app);
     let batch = email_batch(&mut app, &[1, 2]);
     assert_eq!(
