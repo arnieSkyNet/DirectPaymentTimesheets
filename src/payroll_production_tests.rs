@@ -2664,8 +2664,10 @@ fn feature2_ingest_actuals(app:&mut DirectPaymentApp, mode:Feature2Ingest, days:
             assert_eq!(session.outstanding.iter().map(|pa|pa.id).collect::<Vec<_>>(),vec![1]);
             session.accepting=true;
             let ctx=egui::Context::default();
-            let _=ctx.run(Default::default(),|ctx|app.draw_clipboard_import(ctx));
-            let _=ctx.run(egui::RawInput{events:vec![egui::Event::Paste(feature2_source_csv(days))],..Default::default()},|ctx|app.draw_clipboard_import(ctx));
+            super::clipboard_hours_ui_tests::click(&ctx,app,"Import from Clipboard");
+            super::clipboard_hours_ui_tests::draw(&ctx,app,vec![]);
+            super::clipboard_hours_ui_tests::draw(&ctx,app,vec![egui::Event::Paste(feature2_source_csv(days))]);
+            super::clipboard_hours_ui_tests::click(&ctx,app,"Import");
             assert!(app.clipboard_import.is_none());
             let summary=app.last_import.as_ref().unwrap();assert!(!summary.has_failures(),"{:?}",summary.failure_messages);
             assert_eq!(summary.rows_imported,days.len() as i64);

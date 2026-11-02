@@ -2837,43 +2837,99 @@ impl DirectPaymentApp {
     fn draw_clipboard_import(&mut self, ctx: &egui::Context) {
         let Some(mut session) = self.clipboard_import.take() else { return; };
         let mut finish = false;
-        egui::Modal::new(egui::Id::new("clipboard_hours_csv")).show(ctx, |ui| {
-            ui.heading("Outstanding active Personal Assistants");
-            egui::ScrollArea::vertical().max_height(180.0).show(ui, |ui| {
-                for pa in &session.outstanding {
-                    ui.label(format!("{} {}", pa.first_name, pa.surname));
+        let mut import = false;
+        let mut cancel_editor = false;
+        if let Some(text) = session.paste_text.as_mut() {
+            egui::Modal::new(egui::Id::new("clipboard_csv_editor")).show(ctx, |ui| {
+                ui.set_width(700.0_f32.min(ctx.content_rect().width() - 40.0).max(240.0));
+                ui.heading("Import Hours Keeper CSV");
+                if let Some(pa) = session.outstanding.iter().find(|pa| pa.id == session.selected) {
+                    ui.label(format!("Personal Assistant: {} {}", pa.first_name, pa.surname));
                 }
-            });
-            if !session.accepting {
-                ui.label("Import CSV from the clipboard for the remaining PAs?");
-                ui.horizontal(|ui| {
-                    if ui.button("Yes").clicked() { session.accepting = true; }
-                    if ui.button("No").clicked() { finish = true; }
-                });
-            } else {
-                crate::gui_controls::combo_box("clipboard_pa").selected_text(
-                    session.outstanding.iter().find(|p|p.id==session.selected).map(|p|format!("{} {}",p.first_name,p.surname)).unwrap_or_default()
-                ).show_ui(ui, |ui| {
-                    for pa in &session.outstanding {
-                        ui.selectable_value(&mut session.selected, pa.id, format!("{} {}",pa.first_name,pa.surname));
+                ui.label("Paste the complete CSV export below using Ctrl+V. You can edit it before importing. Include the description line, eight-column header and shift rows.");
+                ui.label("Header: Client Name,Start Time,End Time,Break Time,Worked Hours,Rate/H,Amount,Note");
+                egui::ScrollArea::vertical().max_height(340.0).show(ui, |ui| {
+                    let response = ui.add(egui::TextEdit::multiline(text)
+                        .id(egui::Id::new("clipboard_csv_text"))
+                        .desired_width(f32::INFINITY).desired_rows(16).code_editor());
+                    if session.paste_focus {
+                        response.request_focus();
+                        session.paste_focus = false;
                     }
                 });
-                ui.label("Copy the complete supported CSV export, including its description and headers. Paste once for the selected PA; valid CSV is saved immediately.");
-                if ui.button("Paste CSV from clipboard").clicked() {
-                    ctx.send_viewport_cmd(egui::ViewportCommand::RequestPaste);
+                if !session.error.is_empty() {
+                    ui.colored_label(ui.visuals().error_fg_color, &session.error);
                 }
-                let pasted = ctx.input_mut(|i| {
-                    let index = i.events.iter().position(|e| matches!(e, egui::Event::Paste(_)))?;
-                    if let egui::Event::Paste(text) = i.events.remove(index) { Some(text) } else { None }
+                ui.horizontal(|ui| {
+                    import = ui.add_enabled(!text.trim().is_empty(), egui::Button::new("Import")).clicked();
+                    cancel_editor = ui.button("Cancel").clicked();
                 });
-                if let Some(text) = pasted {
-                    if let Err(e) = session.save_paste(&self.application, &text) { session.error = e.to_string(); }
-                    if session.outstanding.is_empty() { finish = true; }
+            });
+        } else {
+            egui::Modal::new(egui::Id::new("clipboard_hours_csv")).show(ctx, |ui| {
+                ui.heading("Outstanding active Personal Assistants");
+                egui::ScrollArea::vertical().max_height(180.0).show(ui, |ui| {
+                    for pa in &session.outstanding {
+                        ui.label(format!("{} {}", pa.first_name, pa.surname));
+                    }
+                });
+                if !session.accepting {
+                    ui.label("Import CSV from the clipboard for the remaining PAs?");
+                    ui.horizontal(|ui| {
+                        if ui.button("Yes").clicked() { session.accepting = true; }
+                        if ui.button("No").clicked() { finish = true; }
+                    });
+                } else {
+                    crate::gui_controls::combo_box("clipboard_pa").selected_text(
+                        session.outstanding.iter().find(|p|p.id==session.selected).map(|p|format!("{} {}",p.first_name,p.surname)).unwrap_or_default()
+                    ).show_ui(ui, |ui| {
+                        for pa in &session.outstanding {
+                            ui.selectable_value(&mut session.selected, pa.id, format!("{} {}",pa.first_name,pa.surname));
+                        }
+                    });
+                    if ui.button("Import from Clipboard").clicked() {
+                        session.paste_text = Some(String::new());
+                        session.error.clear();
+                        session.paste_focus = true;
+                    }
+                    if ui.button("Cancel remaining — import saved CSVs").clicked() { finish = true; }
                 }
-                if ui.button("Cancel remaining — import saved CSVs").clicked() { finish = true; }
+                if !session.error.is_empty() { ui.colored_label(ui.visuals().error_fg_color, &session.error); }
+            });
+        }
+        if cancel_editor {
+            session.paste_text = None;
+            session.error.clear();
+        }
+        if import {
+            let text = session.paste_text.as_deref().unwrap_or_default().to_owned();
+            let outstanding = session.outstanding.clone();
+            let selected = session.selected;
+            match session.save_paste(&self.application, &text) {
+                Err(error) => session.error = error.to_string(),
+                Ok(()) => match session.finish(&self.application) {
+                    Ok(summary) => {
+                        session.paths.clear(); // Already processed; never count these paths twice.
+                        if summary.has_failures() {
+                            session.outstanding = outstanding;
+                            session.selected = selected;
+                            session.error = format!("CSV saved, but import failed: {}. Review the Import Summary. The saved CSV remains available.", summary.failure_messages.join("; "));
+                        } else {
+                            session.paste_text = None;
+                            finish = session.outstanding.is_empty();
+                        }
+                        let first = self.last_import.take().unwrap_or_default();
+                        self.record_hours_import(crate::clipboard_csv_import::combine(first, summary));
+                    }
+                    Err(error) => {
+                        session.paths.clear(); // Failed CSVs stay on disk for a deliberate retry.
+                        session.outstanding = outstanding;
+                        session.selected = selected;
+                        session.error = format!("CSV saved, but import failed: {error}. The saved CSV remains available.");
+                    }
+                },
             }
-            if !session.error.is_empty() { ui.colored_label(ui.visuals().error_fg_color, &session.error); }
-        });
+        }
         if finish {
             if !session.paths.is_empty() {
                 match session.finish(&self.application) {
@@ -8860,18 +8916,19 @@ mod clipboard_hours_ui_tests {
     fn csv(pa: &str) -> String {
         format!("Fictional export\nPA,Start,End,Break,Worked,Rate,Amount,Note\n{pa},27/07/2026 at 09:00,27/07/2026 at 10:00,0h 00m,1h 00m,12,12,\n")
     }
-    fn draw(ctx: &egui::Context, app: &mut DirectPaymentApp, events: Vec<egui::Event>) -> String {
+    pub(super) fn draw(ctx: &egui::Context, app: &mut DirectPaymentApp, events: Vec<egui::Event>) -> String {
         let out=ctx.run(egui::RawInput{screen_rect:Some(egui::Rect::from_min_size(egui::Pos2::ZERO,egui::vec2(1600.,4000.))),events,..Default::default()},|ctx|app.draw_clipboard_import(ctx));
+        assert!(out.viewport_output.values().all(|v| !v.commands.iter().any(|c| matches!(c, egui::ViewportCommand::RequestPaste))), "opening the editor must never read the system clipboard");
         format!("{:?}",out.shapes)
     }
-    fn click(ctx: &egui::Context, app: &mut DirectPaymentApp, label: &str) {
+    pub(super) fn click(ctx: &egui::Context, app: &mut DirectPaymentApp, label: &str) {
         let (pos,_)=crate::gui_controls::acceptance::frame(ctx,vec![],|ui|app.draw_clipboard_import(ui.ctx()),label);
         for pressed in [true,false] {
             draw(ctx,app,vec![egui::Event::PointerMoved(pos),egui::Event::PointerButton{pos,button:egui::PointerButton::Primary,pressed,modifiers:Default::default()}]);
         }
     }
     #[test]
-    fn mixed_folder_import_offers_yes_no_then_paste_automatically_finishes_with_summary() {
+    fn mixed_folder_import_requires_explicit_import_then_finishes_with_summary() {
         let (_dir,mut app)=fixture();
         crate::private_storage::write_new(&app.application.context.config.folders.csv_import.join("folder.csv"),csv("First Example").as_bytes()).unwrap();
         app.begin_hours_csv_import();
@@ -8881,10 +8938,22 @@ mod clipboard_hours_ui_tests {
         for _ in 0..2 { draw(&ctx,&mut app,vec![]); }
         let labels=draw(&ctx,&mut app,vec![]);assert!(labels.contains("Second Example") && labels.contains("Yes") && labels.contains("No"));assert!(!labels.contains("Dormant Example"));
         click(&ctx,&mut app,"Yes");assert!(app.clipboard_import.as_ref().unwrap().accepting);
+        click(&ctx,&mut app,"Import from Clipboard");
+        assert_eq!(app.clipboard_import.as_ref().unwrap().paste_text.as_deref(),Some(""));
+        draw(&ctx,&mut app,vec![]);
         draw(&ctx,&mut app,vec![egui::Event::Paste(csv("Second Example"))]);
+        assert_eq!(app.clipboard_import.as_ref().unwrap().paste_text.as_deref(),Some(csv("Second Example").as_str()));
+        assert_eq!(app.application.get_timesheets().unwrap().len(),1,"pasting is editing, not importing");
+        click(&ctx,&mut app,"Import");
         assert!(app.clipboard_import.is_none());assert_eq!(app.last_import.as_ref().unwrap().files_succeeded,2);
         assert_eq!(app.application.get_timesheets().unwrap().len(),2);
         assert!(app.status_message.contains("2 file(s) succeeded"));
+        let saved=app.application.context.config.folders.csv_import.join("27-07-2026 to 27-07-2026 - Second Example - Clipboard.csv");
+        assert_eq!(std::fs::read_to_string(saved).unwrap(),csv("Second Example"));
+        app.begin_hours_csv_import();
+        assert!(app.clipboard_import.is_none());
+        assert_eq!(app.last_import.as_ref().unwrap().files_already_imported,2);
+        assert_eq!(app.application.get_timesheets().unwrap().len(),2);
     }
     #[test]
     fn no_closes_prompt_without_changing_folder_import_or_touching_clipboard() {
@@ -8896,9 +8965,72 @@ mod clipboard_hours_ui_tests {
     #[test]
     fn malformed_paste_stays_open_and_cancel_keeps_the_existing_summary() {
         let (_dir,mut app)=fixture();app.begin_hours_csv_import();let ctx=egui::Context::default();
-        click(&ctx,&mut app,"Yes");draw(&ctx,&mut app,vec![egui::Event::Paste("malformed".into())]);
+        click(&ctx,&mut app,"Yes");click(&ctx,&mut app,"Import from Clipboard");
+        draw(&ctx,&mut app,vec![]);
+        draw(&ctx,&mut app,vec![egui::Event::Paste("malformed".into())]);
+        click(&ctx,&mut app,"Import");
         let session=app.clipboard_import.as_ref().unwrap();assert_eq!(session.outstanding.len(),2);assert!(!session.error.is_empty());
+        assert_eq!(session.paste_text.as_deref(),Some("malformed"));assert!(session.paths.is_empty());
+        assert!(app.application.get_timesheets().unwrap().is_empty());
+        click(&ctx,&mut app,"Cancel");
+        assert!(app.clipboard_import.as_ref().unwrap().paste_text.is_none());
+        assert_eq!(app.clipboard_import.as_ref().unwrap().outstanding.len(),2);
         click(&ctx,&mut app,"Cancel remaining — import saved CSVs");assert!(app.clipboard_import.is_none());
         assert_eq!(app.last_import.as_ref().unwrap().files_succeeded,0);
     }
+    #[test]
+    fn parent_ignores_paste_and_editor_cancel_discards_only_unsaved_text() {
+        let (_dir,mut app)=fixture();app.begin_hours_csv_import();let ctx=egui::Context::default();
+        click(&ctx,&mut app,"Yes");
+        draw(&ctx,&mut app,vec![egui::Event::Paste(csv("First Example"))]);
+        assert!(app.application.get_timesheets().unwrap().is_empty());
+        assert!(app.clipboard_import.as_ref().unwrap().paste_text.is_none());
+        click(&ctx,&mut app,"Import from Clipboard");draw(&ctx,&mut app,vec![]);
+        draw(&ctx,&mut app,vec![egui::Event::Paste(csv("First Example"))]);
+        click(&ctx,&mut app,"Cancel");
+        let session=app.clipboard_import.as_ref().unwrap();
+        assert_eq!(session.outstanding.len(),2);assert!(session.paths.is_empty());assert!(session.paste_text.is_none());
+        assert!(app.application.get_timesheets().unwrap().is_empty());
+        click(&ctx,&mut app,"Import from Clipboard");
+        assert_eq!(app.clipboard_import.as_ref().unwrap().paste_text.as_deref(),Some(""));
+    }
+
+    #[test]
+    fn editable_error_can_be_corrected_and_first_pa_imports_before_remaining_cancel() {
+        let (_dir,mut app)=fixture();app.begin_hours_csv_import();let ctx=egui::Context::default();
+        click(&ctx,&mut app,"Yes");click(&ctx,&mut app,"Import from Clipboard");draw(&ctx,&mut app,vec![]);
+        draw(&ctx,&mut app,vec![egui::Event::Paste("Description\nwrong header\n".into())]);
+        click(&ctx,&mut app,"Import");
+        assert!(app.clipboard_import.as_ref().unwrap().error.contains("expected 8 columns"));
+        ctx.memory_mut(|m|m.request_focus(egui::Id::new("clipboard_csv_text")));
+        draw(&ctx,&mut app,vec![egui::Event::Key{key:egui::Key::A,physical_key:None,pressed:true,repeat:false,modifiers:egui::Modifiers{ctrl:true,command:true,..Default::default()}},egui::Event::Paste(csv("First Example"))]);
+        assert_eq!(app.clipboard_import.as_ref().unwrap().paste_text.as_deref(),Some(csv("First Example").as_str()));
+        click(&ctx,&mut app,"Import");
+        let session=app.clipboard_import.as_ref().unwrap();
+        assert_eq!(session.outstanding.iter().map(|pa|pa.id).collect::<Vec<_>>(),vec![2]);
+        assert!(session.paste_text.is_none());assert!(session.paths.is_empty());
+        assert_eq!(app.application.get_timesheets().unwrap().len(),1);
+        assert_eq!(app.last_import.as_ref().unwrap().files_succeeded,1);
+        click(&ctx,&mut app,"Cancel remaining — import saved CSVs");
+        assert!(app.clipboard_import.is_none());
+        assert_eq!(app.last_import.as_ref().unwrap().files_succeeded,1,"cancel must not import/count a successful CSV twice");
+        assert_eq!(app.application.get_timesheets().unwrap().len(),1);
+    }
+
+    #[test]
+    fn importer_failure_keeps_editor_text_and_outstanding_pa_with_saved_csv() {
+        let (dir,mut app)=fixture();
+        let blocked=dir.path().join("blocked-archive");std::fs::write(&blocked,b"synthetic obstruction").unwrap();
+        app.application.context.environment.archive_dir=blocked;
+        app.begin_hours_csv_import();let ctx=egui::Context::default();
+        click(&ctx,&mut app,"Yes");click(&ctx,&mut app,"Import from Clipboard");draw(&ctx,&mut app,vec![]);
+        draw(&ctx,&mut app,vec![egui::Event::Paste(csv("First Example"))]);click(&ctx,&mut app,"Import");
+        let session=app.clipboard_import.as_ref().unwrap();
+        assert_eq!(session.outstanding.len(),2);assert_eq!(session.selected,1);
+        assert_eq!(session.paste_text.as_deref(),Some(csv("First Example").as_str()));
+        assert!(session.error.contains("import failed"));assert!(app.last_import.as_ref().unwrap().has_failures());
+        assert!(app.application.get_timesheets().unwrap().is_empty());
+        assert!(app.application.context.config.folders.csv_import.join("27-07-2026 to 27-07-2026 - First Example - Clipboard.csv").exists());
+    }
+
 }

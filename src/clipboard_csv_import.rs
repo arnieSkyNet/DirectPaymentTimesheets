@@ -8,6 +8,8 @@ pub(crate) struct Session {
     pub selected: i64,
     pub error: String,
     pub paths: Vec<PathBuf>,
+    pub paste_text: Option<String>,
+    pub paste_focus: bool,
     import_dir: PathBuf,
 }
 impl Session {
@@ -37,6 +39,8 @@ impl Session {
             accepting: false,
             error: String::new(),
             paths: Vec::new(),
+            paste_text: None,
+            paste_focus: false,
             import_dir: crate::paths::expand_path(&app.context.config.folders.csv_import),
         })
     }
