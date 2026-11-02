@@ -2793,3 +2793,134 @@ fn feature2_last_two_estimated_weeks_reconcile_new_csv_actuals_in_next_cycle() {
 
     assert_eq!(crate::timesheet_amendments::latest(&conn,record.id).unwrap().unwrap().document,version.document);
 }
+
+mod recipient_layout_tests {
+    use super::*;
+
+    fn choices(detail: &str) -> Vec<ProductionChoice> {
+        vec![
+            ProductionChoice { id: 1, name: "Active Example".into(), available: true, detail: detail.into(), intent: None },
+            ProductionChoice { id: 2, name: "Unavailable Example".into(), available: false, detail: "No current document".into(), intent: None },
+        ]
+    }
+
+    fn frame(
+        ctx: &egui::Context,
+        app: &mut DirectPaymentApp,
+        width: f32,
+        events: Vec<egui::Event>,
+    ) -> egui::FullOutput {
+        ctx.run(egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(width, 720.0))),
+            events,
+            ..Default::default()
+        }, |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| app.draw_recipient_selection(ui));
+        })
+    }
+
+    fn text_shapes<'a>(shape: &'a egui::Shape, found: &mut Vec<&'a egui::epaint::TextShape>) {
+        match shape {
+            egui::Shape::Text(text) => found.push(text),
+            egui::Shape::Vec(shapes) => for shape in shapes { text_shapes(shape, found); },
+            _ => {}
+        }
+    }
+
+    fn text<'a>(out: &'a egui::FullOutput, value: &str) -> &'a egui::epaint::TextShape {
+        let mut shapes = Vec::new();
+        for clipped in &out.shapes { text_shapes(&clipped.shape, &mut shapes); }
+        shapes.into_iter().find(|shape| shape.galley.job.text == value)
+            .unwrap_or_else(|| panic!("Missing visible UI text: {value}"))
+    }
+
+    fn assert_fits(out: &egui::FullOutput, value: &str, width: f32) {
+        let shape = text(out, value);
+        assert!(!shape.galley.elided, "Full detail must remain available, not ellipsized");
+        assert!(shape.pos.x + shape.galley.rect.left() >= -1.0);
+        assert!(shape.pos.x + shape.galley.rect.right() <= width + 1.0,
+            "Text extends beyond viewport: {:?}, width {width}", shape.visual_bounding_rect());
+    }
+
+    #[test]
+    fn long_paths_wrap_in_both_recipient_dialogues_without_elision() {
+        let details = [
+            format!("Candidate ready: /managed/{}/Final timesheet Example.pdf", "long-directory/".repeat(35)),
+            format!("Candidate ready: C:\\Managed\\{}\\Example.pdf", "unbroken".repeat(110)),
+            format!("Attachments: /managed/Ångström Example/{}/P45 Example.pdf\n/managed/previous/P60 Example.pdf", "nested/".repeat(45)),
+        ];
+        for kind in [PayrollEmailKind::Timesheet, PayrollEmailKind::Payslip] {
+            for width in [280.0, 400.0, 800.0] {
+                for detail in &details {
+                    let (_dir, mut app, _) = fixture();
+                    app.begin_email_batch(kind);
+                    let batch = app.pending_email_batch.as_mut().unwrap();
+                    batch.stage = EmailBatchNoteStage::SelectRecipients;
+                    batch.choices = choices(detail);
+                    batch.selected_personal_assistant_ids = vec![1];
+                    let ctx = egui::Context::default();
+                    ctx.style_mut(|style| style.animation_time = 0.0);
+                    let mut out = frame(&ctx, &mut app, width, vec![]);
+                    for _ in 0..3 { out = frame(&ctx, &mut app, width, vec![]); }
+                    assert_fits(&out, detail, width);
+                    assert!(text(&out, detail).galley.rows.len() > 1);
+                    assert_fits(&out, "Active Example", width);
+                    assert_fits(&out, "Cancel", width);
+                    let proceed = if matches!(kind, PayrollEmailKind::Payslip) { "Review selected recipients" } else { "Continue to email notes" };
+                    assert_fits(&out, proceed, width);
+                    assert!(text(&out, proceed).visual_bounding_rect().bottom() <= 720.0);
+                    assert_eq!(app.pending_email_batch.as_ref().unwrap().selected_personal_assistant_ids, vec![1]);
+                    assert_eq!(db(&app).query_row("SELECT COUNT(*) FROM timesheet_delivery_attempts", [], |r| r.get::<_,i64>(0)).unwrap(), 0);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn recipient_dialogue_rewraps_after_viewport_shrinks() {
+        let (_dir, mut app, _) = fixture();
+        app.begin_email_batch(PayrollEmailKind::Timesheet);
+        let detail = format!("Candidate ready: /managed/{}/Example.pdf", "long-segment/".repeat(50));
+        let batch = app.pending_email_batch.as_mut().unwrap();
+        batch.choices = choices(&detail);
+        batch.selected_personal_assistant_ids = vec![1];
+        let ctx = egui::Context::default();
+        ctx.style_mut(|style| style.animation_time = 0.0);
+        for width in [1000.0, 320.0, 640.0] {
+            let mut out = frame(&ctx, &mut app, width, vec![]);
+            for _ in 0..4 { out = frame(&ctx, &mut app, width, vec![]); }
+            assert_fits(&out, &detail, width);
+            assert_fits(&out, "Cancel", width);
+            assert_eq!(app.pending_email_batch.as_ref().unwrap().selected_personal_assistant_ids, vec![1]);
+        }
+    }
+
+    #[test]
+    fn wrapped_choices_keep_selection_and_unavailable_recipient_safeguards() {
+        let (_dir, mut app, _) = fixture();
+        app.begin_email_batch(PayrollEmailKind::Timesheet);
+        let batch = app.pending_email_batch.as_mut().unwrap();
+        batch.choices = choices("Candidate: /managed/payroll-year/Archived/Full Example timesheet path.pdf");
+        batch.selected_personal_assistant_ids = vec![1];
+        batch.resend_acknowledged = true;
+        batch.approved_selection = vec![1];
+        let ctx = egui::Context::default();
+        ctx.style_mut(|style| style.animation_time = 0.0);
+        let mut out = frame(&ctx, &mut app, 400.0, vec![]);
+        for _ in 0..3 { out = frame(&ctx, &mut app, 400.0, vec![]); }
+        for (label, expected) in [("Unavailable Example", vec![1]), ("Active Example", vec![])] {
+            let label_shape = text(&out, label);
+            let pos = label_shape.pos + label_shape.galley.size() / 2.0;
+            for pressed in [true, false] {
+                out = frame(&ctx, &mut app, 400.0, vec![egui::Event::PointerMoved(pos), egui::Event::PointerButton {
+                    pos, button: egui::PointerButton::Primary, pressed, modifiers: Default::default(),
+                }]);
+            }
+            assert_eq!(app.pending_email_batch.as_ref().unwrap().selected_personal_assistant_ids, expected);
+        }
+        let batch = app.pending_email_batch.as_ref().unwrap();
+        assert!(!batch.resend_acknowledged && batch.approved_selection.is_empty());
+        assert_eq!(batch.stage, EmailBatchNoteStage::SelectRecipients);
+        assert_eq!(db(&app).query_row("SELECT COUNT(*) FROM timesheet_delivery_attempts", [], |r| r.get::<_,i64>(0)).unwrap(), 0);
+    }
+}

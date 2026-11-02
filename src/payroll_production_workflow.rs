@@ -59,7 +59,7 @@ fn draw_production_choices(
     ids: &mut Vec<i64>,
     unsent_only: bool,
 ) {
-    ui.horizontal(|ui| {
+    ui.horizontal_wrapped(|ui| {
         if ui
             .button(if unsent_only {
                 "Select all unsent"
@@ -85,7 +85,10 @@ fn draw_production_choices(
         .show(ui, |ui| {
             for choice in choices {
                 let mut checked = ids.contains(&choice.id);
-                ui.horizontal(|ui| {
+                // Keep the selectable PA separate from potentially very long
+                // paths/diagnostics, so neither can force the dialog wider.
+                ui.vertical(|ui| {
+                    ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Wrap);
                     if ui
                         .add_enabled(
                             choice.available,
@@ -98,7 +101,7 @@ fn draw_production_choices(
                             ids.push(choice.id);
                         }
                     }
-                    ui.label(&choice.detail);
+                    ui.add(egui::Label::new(&choice.detail).wrap().selectable(true));
                 });
             }
         });
@@ -517,9 +520,13 @@ impl DirectPaymentApp {
         };
         let mut cancel = false;
         let payslips = matches!(batch.kind, PayrollEmailKind::Payslip);
+        let max_width = (ui.ctx().content_rect().width() - 32.0).clamp(120.0, 720.0);
         egui::Window::new(if payslips { "Email payslips — select PAs" } else { "Email payroll timesheets — select PAs" })
             .collapsible(false)
+            .default_width(640.0)
+            .max_width(max_width)
             .show(ui.ctx(), |ui| {
+                ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Wrap);
                 if let Some(period) = &batch.payroll_period {
                     ui.label(&period.display_label);
                 }
@@ -534,7 +541,7 @@ impl DirectPaymentApp {
                     !payslips,
                 );
                 if previous_selection!=batch.selected_personal_assistant_ids {batch.resend_acknowledged=false;batch.approved.clear();batch.approved_selection.clear();}
-                ui.horizontal(|ui| {
+                ui.horizontal_wrapped(|ui| {
                     if ui
                         .add_enabled(
                             !batch.selected_personal_assistant_ids.is_empty(),
