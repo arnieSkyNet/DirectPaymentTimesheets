@@ -2760,7 +2760,13 @@ impl DirectPaymentApp {
     fn begin_hours_csv_import(&mut self) {
         match self.application.import_csv() {
             Ok(summary) => {
-                let session = crate::clipboard_csv_import::Session::new(&self.application, &summary);
+                let period=self.selected_operational_payroll_schedule().ok()
+                    .and_then(|s|crate::date_utils::parse_legacy(&s.first_week_commencing).ok())
+                    .map(|start|(start,start+chrono::Duration::days(27)));
+                let session=match period {
+                    Some(period)=>crate::clipboard_csv_import::Session::for_period(&self.application,&summary,Some(period)),
+                    None=>crate::clipboard_csv_import::Session::new(&self.application,&summary),
+                };
                 self.record_hours_import(summary);
                 match session {
                     Ok(session) if !session.outstanding.is_empty() => self.clipboard_import = Some(session),

@@ -62,3 +62,39 @@ expectations were revised for this behaviour/schema change; the final full run
 was isolated from concurrent test-binary rebuilds so subprocess fixtures could
 execute their own binary reliably. Evidence is retained locally under
 `/tmp/dpt-feature2-6_gs8ofj/`.
+
+## Subsequent cycles and new actual hours
+
+An amended/regenerated timesheet does not close later payroll cycles to new
+Hours Keeper CSVs, clipboard CSVs or completed internal shifts. Source audit events
+are retained as provenance; their presence is not a veto on reconciling new actual
+hours against the latest corrected authoritative timesheet. Unchanged original
+facts retain the employer's saved downward correction when additional separate
+shifts arrive, rather than resurrecting the old export's larger figure.
+
+Import Hours CSV still processes the configured folder first. With a working
+payroll period selected, clipboard outstanding-PA coverage is scoped to that
+period. Previously imported files left in the folder do not suppress clipboard
+entry in subsequent cycles. This affects the outstanding list, not acceptance of
+CSV rows: valid files containing earlier actuals and current-cycle hours still
+use the ordinary importer, audit, duplicate and reconciliation paths.
+
+Regressions exercise real CSV import, the clipboard paste handler and the internal
+clock-in/complete API across subsequent cycles, including positive and negative
+carry, settled history, saved downward corrections and repeat preparation. They
+also cover correcting the prior timesheet after a next-cycle PDF already exists:
+the stale PDF must be regenerated, but next-cycle preparation and generation stay
+available. The corrected baseline replaces older values; applied carry and source
+hours must not be paid twice. Original submissions/PDF bytes and version history
+remain retained. No acquisition or regeneration sends email automatically.
+
+Cross-cycle validation on Florence (2 November 2026): full application regression
+**1,051 passed, zero failed, three intentionally ignored native tests**, zero
+filtered out (348.03 seconds). The related Feature 2/clipboard/import/logger
+selection passed **54 tests** (45.40 seconds), including a strengthened negative
+carry-capacity case: zero-payable preparation/generation remains available, only
+the remaining deduction reaches the following cycle, and new actual hours are
+still accepted. Production code was unchanged between the full suite and that
+strengthened test rerun. Cargo check and diff checks passed; test counts overlap.
+Evidence: `/tmp/dpt-feature2-cycles-gckbl__m/`. All fixtures are synthetic; no live
+payroll, credentials or real email submission was used. Schema remains 42.

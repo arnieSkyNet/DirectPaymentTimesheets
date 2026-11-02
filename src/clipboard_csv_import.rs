@@ -12,11 +12,24 @@ pub(crate) struct Session {
 }
 impl Session {
     pub fn new(app: &Application, summary: &ImportSummary) -> Result<Self, Box<dyn Error>> {
+        Self::for_period(app, summary, None)
+    }
+    pub fn for_period(
+        app: &Application,
+        summary: &ImportSummary,
+        period: Option<(chrono::NaiveDate, chrono::NaiveDate)>,
+    ) -> Result<Self, Box<dyn Error>> {
         let outstanding: Vec<_> = app
             .personal_assistant_repository
             .get_active()?
             .into_iter()
-            .filter(|pa| !summary.imported_pa_ids.contains(&pa.id))
+            .filter(|pa| !match period {
+                Some((start, end)) => summary
+                    .covered_pa_dates
+                    .iter()
+                    .any(|(id, date)| *id == pa.id && *date >= start && *date <= end),
+                None => summary.imported_pa_ids.contains(&pa.id),
+            })
             .collect();
         Ok(Self {
             selected: outstanding.first().map_or(0, |pa| pa.id),
@@ -106,6 +119,7 @@ impl Session {
 
 pub(crate) fn combine(mut first: ImportSummary, second: ImportSummary) -> ImportSummary {
     first.imported_pa_ids.extend(second.imported_pa_ids);
+    first.covered_pa_dates.extend(second.covered_pa_dates);
     first.affected_pa_dates.extend(second.affected_pa_dates);
     first.files_discovered += second.files_discovered;
     first.files_already_imported += second.files_already_imported;

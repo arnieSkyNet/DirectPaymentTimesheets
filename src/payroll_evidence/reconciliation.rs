@@ -339,15 +339,8 @@ fn amended_changes(app:&Application,record:&PayrollTimesheet,version:&crate::tim
         let entries=current.iter().filter(|e|e.date().is_ok_and(|d|d>=ws && d<=we)).collect::<Vec<_>>();
         let mut after=entries.iter().map(|e|(e.key(),e.fingerprint())).collect::<Vec<_>>();
         before.sort();after.sort();
-        if before!=after {
-            let mut prospective=false;
-            for (key,_) in before.iter().chain(after.iter()) {
-                if let Some((source,id))=key.split_once(':') {
-                    if let Ok(id)=id.parse::<i64>() {prospective |= crate::shift_changes::prospective(&db,source,id)?;}
-                }
-            }
-            if prospective {continue;}
-        }
+        // CSV import and clock-out both append source audit events. Their
+        // presence is provenance, never a veto on newly acquired actual hours.
         let actual=if before==after {version.totals[index as usize]} else {
             let mut minutes=0i64;
             for e in entries {
@@ -355,7 +348,18 @@ fn amended_changes(app:&Application,record:&PayrollTimesheet,version:&crate::tim
                     minutes=minutes.checked_add(crate::pay_rate_allocation::payable_minutes(e.minutes,&app.context.config.payroll)?).ok_or("Worked hours overflow")?;
                 }
             }
-            minutes
+            // A saved downward correction remains authoritative for unchanged
+            // original facts when new, separate shifts arrive. Do not resurrect
+            // the old export's larger total merely because another row was added.
+            let original_unchanged=before.iter().all(|fact|after.contains(fact));
+            let offset=if original_unchanged {
+                let mut reference=0i64;
+                for e in current.iter().filter(|e|before.contains(&(e.key(),e.fingerprint()))) {
+                    reference=reference.checked_add(crate::pay_rate_allocation::payable_minutes(e.minutes,&app.context.config.payroll)?).ok_or("Worked hours overflow")?;
+                }
+                (version.totals[index as usize]-reference).min(0)
+            } else {0};
+            minutes.checked_add(offset).ok_or("Worked hours overflow")?.max(0)
         };
         let key=format!("version:{}:week:{}",version.document,index+1);
         let delta=actual-version.totals[index as usize]-net_corrections(&db,record.id,&key)?;
@@ -1021,6 +1025,9 @@ pub fn historical_save_notice(
     {
         let (start, end) = period(app, &r)?;
         if date >= start && date <= end && lifecycle::stage(&db, &r)? == Stage::Settled {
+            if crate::timesheet_amendments::latest(&db,r.id)?.is_some() {
+                return Ok(Some("Actual hours saved. Subsequent payroll reconciles against the latest corrected timesheet; the historical submission does not lock new hours.".into()));
+            }
             return Ok(Some("This shift belongs to a payroll period whose payslip has already been sent. Review it against paid evidence in the original Payroll Timesheet Preparation and explicitly approve any correction to carry forward. Settled payroll remains unchanged.".into()));
         }
     }

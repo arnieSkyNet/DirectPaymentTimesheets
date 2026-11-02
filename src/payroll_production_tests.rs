@@ -2640,3 +2640,153 @@ fn feature2_failed_version_publication_never_advances_authority_or_allows_stale_
     assert_eq!(generate(&mut app,&[1]).completed(),1);
     assert_eq!(crate::timesheet_amendments::latest(&conn,original.id).unwrap().unwrap().totals[0],240);
 }
+
+#[derive(Clone,Copy,Debug)]
+enum Feature2Ingest { Folder, Clipboard, Logger }
+fn feature2_source_csv(days:&[&str]) -> String {
+    let mut text="Fictional Hours Keeper export\nPA,Start,End,Break,Worked,Rate,Amount,Note\n".to_string();
+    for day in days {text.push_str(&format!("PA1 Test,{day} at 09:00:00,{day} at 11:00:00,0h 00m,2h 00m,12,24,source note\n"));}
+    text
+}
+fn feature2_ingest_actuals(app:&mut DirectPaymentApp, mode:Feature2Ingest, days:&[&str], name:&str) {
+    match mode {
+        Feature2Ingest::Folder=>{
+            crate::private_storage::write_new(&app.application.context.config.folders.csv_import.join(name),feature2_source_csv(days).as_bytes()).unwrap();
+            app.begin_hours_csv_import();
+            let summary=app.last_import.as_ref().unwrap();assert!(!summary.has_failures(),"{:?}",summary.failure_messages);
+            assert_eq!(summary.rows_imported,days.len() as i64);
+            assert!(app.clipboard_import.is_none(),"current-cycle CSV covers this PA");
+        }
+        Feature2Ingest::Clipboard=>{
+            app.begin_hours_csv_import();
+            let session=app.clipboard_import.as_mut().expect("historic CSV files must not hide the next-cycle clipboard prompt");
+            assert_eq!(session.outstanding.iter().map(|pa|pa.id).collect::<Vec<_>>(),vec![1]);
+            session.accepting=true;
+            let ctx=egui::Context::default();
+            let _=ctx.run(Default::default(),|ctx|app.draw_clipboard_import(ctx));
+            let _=ctx.run(egui::RawInput{events:vec![egui::Event::Paste(feature2_source_csv(days))],..Default::default()},|ctx|app.draw_clipboard_import(ctx));
+            assert!(app.clipboard_import.is_none());
+            let summary=app.last_import.as_ref().unwrap();assert!(!summary.has_failures(),"{:?}",summary.failure_messages);
+            assert_eq!(summary.rows_imported,days.len() as i64);
+        }
+        Feature2Ingest::Logger=>{
+            for day in days {
+                let start=crate::csv_import::parse_supported_timestamp(&format!("{day} at 09:00:00")).unwrap();
+                let end=crate::csv_import::parse_supported_timestamp(&format!("{day} at 11:00:00")).unwrap();
+                let shift=app.application.direct_shift_repository.clock_in(1,start,"synthetic cross-cycle").unwrap();
+                app.application.direct_shift_repository.complete(shift.id,end,0,Some("synthetic actual hours"),"synthetic cross-cycle").unwrap();
+            }
+        }
+    }
+}
+fn feature2_cycle_schedule(app:&DirectPaymentApp,cycle:i64,first:&str,pay:&str)->PayrollSchedule {
+    db(app).execute("INSERT INTO payroll_schedules(payroll_year,cycle_number,first_week_commencing,latest_posting_date,pay_date,created_at) VALUES('2026/27',?1,?2,?3,?3,'synthetic')",params![cycle,first,pay]).unwrap();
+    app.application.payroll_schedule_repository.get_for_year_and_cycle("2026/27",cycle).unwrap().unwrap()
+}
+fn feature2_assert_next_cycles_accept_actuals(mode:Feature2Ingest) {
+    for estimate in [3.0,5.0,1.5] {
+        let (_dir,mut app,original_schedule)=fixture();let conn=db(&app);
+        conn.execute_batch("UPDATE personal_assistants SET employment_status=CASE id WHEN 1 THEN 'Active' ELSE 'Inactive' END; UPDATE timesheets SET pa_name='PA1 Test',start_time='02/04/2026 at 09:00:00',end_time='02/04/2026 at 11:00:00' WHERE id=1;").unwrap();
+        crate::private_storage::ensure_private_dir(&app.application.context.config.folders.csv_import).unwrap();
+        // This CSV remains in the import folder across every later cycle.
+        crate::private_storage::write_new(&app.application.context.config.folders.csv_import.join("historic.csv"),feature2_source_csv(&["02/04/2026"]).as_bytes()).unwrap();
+        let initial=app.application.import_csv().unwrap();assert!(!initial.has_failures());assert_eq!(initial.rows_skipped,1);assert_eq!(initial.rows_imported,0);
+        let original_generation=generate(&mut app,&[1]);assert_eq!(original_generation.completed(),1,"{:?}",original_generation.entries);
+        let original=app.application.payroll_timesheet_repository.get_for_cycle_and_pa("2026/27",1,1).unwrap().unwrap();
+        let original_pdf=path(&app,&original_schedule,1);
+        crate::payroll_snapshot_service::send_production_candidate(&app.application.payroll_worked_item_repository,original.id,1,"2026/27",1,&original_pdf,"synthetic",||Ok(())).unwrap();
+        let before:Vec<u8>=conn.query_row("SELECT pdf_bytes FROM payroll_submissions WHERE payroll_timesheet_id=?1",[original.id],|r|r.get(0)).unwrap();
+        if estimate==5.0 {conn.execute("INSERT INTO payroll_timesheet_email_status(personal_assistant_id,payroll_year,cycle_number,email_type,sent_at) VALUES(1,'2026/27',1,'payslip','synthetic historical settlement')",[]).unwrap();}
+        save_feature2_hours(&app,estimate);assert_eq!(generate(&mut app,&[1]).completed(),1);
+        let mut authority=crate::timesheet_amendments::latest(&conn,original.id).unwrap().unwrap();
+        let next=feature2_cycle_schedule(&app,2,"29/04/2026","30/05/2026");
+        app.operational_payroll_period.select(&next,None);
+        feature2_ingest_actuals(&mut app,mode,&["05/04/2026","02/05/2026"],"cycle-two.csv");
+        // Real acquisition always records source audit events. Those events must
+        // not be mistaken for an instruction to suppress financial reconciliation.
+        if estimate==5.0 {
+            let notice=crate::payroll_evidence::reconciliation::historical_save_notice(&app.application,1,crate::date_utils::parse_legacy("05/04/2026").unwrap()).unwrap().unwrap();
+            assert!(!notice.contains("approve"));assert!(notice.contains("does not lock"));
+        }
+        let source_events:i64=conn.query_row("SELECT COUNT(*) FROM shift_change_events",[],|r|r.get(0)).unwrap();assert!(source_events>=2);
+        let carry=if estimate<2. {120} else {240-(estimate*60.) as i64};
+        let ctx=egui::Context::default();let mut preparation=crate::payroll_timesheet_screen::PayrollTimesheetScreen::new();
+        crate::gui_controls::acceptance::frame(&ctx,vec![],|ui|preparation.show(ui,&app.application,&next,"synthetic next cycle"),"Save PA1 Test");
+        let next_record=app.application.payroll_timesheet_repository.get_for_cycle_and_pa("2026/27",2,1).unwrap().unwrap();
+        let weeks=app.application.payroll_timesheet_repository.get_weeks(next_record.id).unwrap();
+        assert_eq!(weeks.iter().map(|w|(w.worked_hours*60.).round() as i64).sum::<i64>(),120+carry,"{mode:?}, estimate {estimate}: next cycle must include its actual hours plus only the reconciled difference");
+        assert_eq!(next_record.previous_cycle_hours.map_or(0,|h|(h*60.).round() as i64),carry);
+        assert!(!preparation.has_unsaved_changes());
+        // Reopening preparation must not freeze, lose actual hours or apply carry twice.
+        let mut reopened=crate::payroll_timesheet_screen::PayrollTimesheetScreen::new();
+        crate::gui_controls::acceptance::frame(&ctx,vec![],|ui|reopened.show(ui,&app.application,&next,"synthetic next cycle"),"Save PA1 Test");
+        assert_eq!(generate(&mut app,&[1]).completed(),1);
+        if matches!(mode,Feature2Ingest::Folder) && estimate==3.0 {
+            app.operational_payroll_period.select(&original_schedule,None);
+            save_feature2_hours(&app,3.5);assert_eq!(generate(&mut app,&[1]).completed(),1);
+            authority=crate::timesheet_amendments::latest(&conn,original.id).unwrap().unwrap();
+            app.operational_payroll_period.select(&next,None);
+            assert!(crate::payroll_evidence::lifecycle::verify_candidate_evidence(&conn,next_record.id).is_err(),"an old next-cycle PDF must not conceal the new authority");
+            let mut refreshed=crate::payroll_timesheet_screen::PayrollTimesheetScreen::new();
+            crate::gui_controls::acceptance::frame(&ctx,vec![],|ui|refreshed.show(ui,&app.application,&next,"updated next cycle"),"Save PA1 Test");
+            assert_eq!(app.application.payroll_timesheet_repository.get_weeks(next_record.id).unwrap().iter().map(|w|(w.worked_hours*60.).round() as i64).sum::<i64>(),120,"new parent authority supersedes old carry without freezing the prepared cycle");
+            assert_eq!(generate(&mut app,&[1]).completed(),1,"next-cycle regeneration remains available");
+        }
+        let next_pdf=path(&app,&next,1);
+        crate::payroll_snapshot_service::send_production_candidate(&app.application.payroll_worked_item_repository,next_record.id,1,"2026/27",2,&next_pdf,"synthetic",||Ok(())).unwrap();
+        let third=feature2_cycle_schedule(&app,3,"27/05/2026","30/06/2026");
+        app.operational_payroll_period.select(&third,None);
+        feature2_ingest_actuals(&mut app,mode,&["30/05/2026"],"cycle-three.csv");
+        let mut final_preparation=crate::payroll_timesheet_screen::PayrollTimesheetScreen::new();
+        crate::gui_controls::acceptance::frame(&ctx,vec![],|ui|final_preparation.show(ui,&app.application,&third,"synthetic third cycle"),"Save PA1 Test");
+        let third_record=app.application.payroll_timesheet_repository.get_for_cycle_and_pa("2026/27",3,1).unwrap().unwrap();
+        assert_eq!(app.application.payroll_timesheet_repository.get_weeks(third_record.id).unwrap().iter().map(|w|(w.worked_hours*60.).round() as i64).sum::<i64>(),120,"{mode:?}: third cycle must accept fresh actuals without repaying previous estimates/carry");
+        assert_eq!(third_record.previous_cycle_hours.unwrap_or(0.),0.);
+        assert_eq!(crate::timesheet_amendments::latest(&conn,original.id).unwrap().unwrap().document,authority.document);
+        assert_eq!(conn.query_row("SELECT pdf_bytes FROM payroll_submissions WHERE payroll_timesheet_id=?1",[original.id],|r|r.get::<_,Vec<u8>>(0)).unwrap(),before);
+        assert_eq!(conn.query_row("SELECT COUNT(*) FROM payroll_submissions WHERE payroll_timesheet_id=?1",[original.id],|r|r.get::<_,i64>(0)).unwrap(),1);
+    }
+}
+#[test]
+fn feature2_future_cycles_accept_folder_csv_actuals_and_reconcile_corrected_estimates() {feature2_assert_next_cycles_accept_actuals(Feature2Ingest::Folder);}
+#[test]
+fn feature2_future_cycles_accept_clipboard_actuals_despite_historic_csv_files() {feature2_assert_next_cycles_accept_actuals(Feature2Ingest::Clipboard);}
+#[test]
+fn feature2_future_cycles_accept_logged_actuals_and_reconcile_corrected_estimates() {feature2_assert_next_cycles_accept_actuals(Feature2Ingest::Logger);}
+
+#[test]
+fn feature2_last_two_estimated_weeks_reconcile_new_csv_actuals_in_next_cycle() {
+    let (_dir,mut app,original_schedule)=fixture();let conn=db(&app);
+    conn.execute_batch("UPDATE personal_assistants SET employment_status=CASE id WHEN 1 THEN 'Active' ELSE 'Inactive' END;").unwrap();
+    crate::private_storage::ensure_private_dir(&app.application.context.config.folders.csv_import).unwrap();
+    assert_eq!(generate(&mut app,&[1]).completed(),1);
+    let record=app.application.payroll_timesheet_repository.get_for_cycle_and_pa("2026/27",1,1).unwrap().unwrap();
+    let file=path(&app,&original_schedule,1);
+    crate::payroll_snapshot_service::send_production_candidate(&app.application.payroll_worked_item_repository,record.id,1,"2026/27",1,&file,"synthetic",||Ok(())).unwrap();
+    let repo=&app.application.payroll_timesheet_repository;
+    let mut weeks=repo.get_weeks(record.id).unwrap();weeks[2].worked_hours=3.;weeks[3].worked_hours=4.;
+    let adjustments=weeks.iter().map(|w|crate::payroll_worked_item_repository::ManualHoursAdjustment{week_number:w.week_number,adjustment_minutes:0,reason:None}).collect::<Vec<_>>();
+    repo.save_preparation_atomically(&record,&weeks,&repo.get_public_holidays(record.id).unwrap(),&repo.get_annual_leave(record.id).unwrap(),&adjustments,"synthetic estimated weeks").unwrap();
+    assert_eq!(generate(&mut app,&[1]).completed(),1);
+    let version=crate::timesheet_amendments::latest(&conn,record.id).unwrap().unwrap();assert_eq!(version.totals,[120,0,180,240]);
+    let next=feature2_cycle_schedule(&app,2,"29/04/2026","30/05/2026");app.operational_payroll_period.select(&next,None);
+    feature2_ingest_actuals(&mut app,Feature2Ingest::Folder,&["18/04/2026","25/04/2026","02/05/2026"],"estimated-week-actuals.csv");
+    let ctx=egui::Context::default();let mut preparation=crate::payroll_timesheet_screen::PayrollTimesheetScreen::new();
+    crate::gui_controls::acceptance::frame(&ctx,vec![],|ui|preparation.show(ui,&app.application,&next,"synthetic next cycle"),"Save PA1 Test");
+    let next_record=app.application.payroll_timesheet_repository.get_for_cycle_and_pa("2026/27",2,1).unwrap().unwrap();
+    assert_eq!(next_record.previous_cycle_hours,Some(-2.0),"negative carry uses available current hours without freezing payroll");
+    assert_eq!(app.application.payroll_timesheet_repository.get_weeks(next_record.id).unwrap().iter().map(|w|(w.worked_hours*60.).round() as i64).sum::<i64>(),0,"a larger overestimate leaves a zero-payable cycle, not an editing/generation lock");
+    assert_eq!(generate(&mut app,&[1]).completed(),1,"negative carry must not freeze next-cycle generation");
+    let next_pdf=path(&app,&next,1);
+    crate::payroll_snapshot_service::send_production_candidate(&app.application.payroll_worked_item_repository,next_record.id,1,"2026/27",2,&next_pdf,"synthetic",||Ok(())).unwrap();
+    let third=feature2_cycle_schedule(&app,3,"27/05/2026","30/06/2026");app.operational_payroll_period.select(&third,None);
+    feature2_ingest_actuals(&mut app,Feature2Ingest::Folder,&["30/05/2026"],"remaining-carry.csv");
+    let mut third_preparation=crate::payroll_timesheet_screen::PayrollTimesheetScreen::new();
+    crate::gui_controls::acceptance::frame(&ctx,vec![],|ui|third_preparation.show(ui,&app.application,&third,"synthetic third cycle"),"Save PA1 Test");
+    let third_record=app.application.payroll_timesheet_repository.get_for_cycle_and_pa("2026/27",3,1).unwrap().unwrap();
+    assert_eq!(third_record.previous_cycle_hours,Some(-1.0),"only the remaining overestimate is deducted next time");
+    assert_eq!(app.application.payroll_timesheet_repository.get_weeks(third_record.id).unwrap().iter().map(|w|(w.worked_hours*60.).round() as i64).sum::<i64>(),60);
+    assert_eq!(generate(&mut app,&[1]).completed(),1);
+
+    assert_eq!(crate::timesheet_amendments::latest(&conn,record.id).unwrap().unwrap().document,version.document);
+}

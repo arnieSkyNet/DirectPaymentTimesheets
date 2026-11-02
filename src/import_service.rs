@@ -11,6 +11,8 @@ use crate::repository::TimesheetRepository;
 #[derive(Default)]
 pub struct ImportSummary {
     pub imported_pa_ids: Vec<i64>,
+    // Coverage includes unchanged files, unlike affected dates (new imports).
+    pub covered_pa_dates: Vec<(i64, chrono::NaiveDate)>,
     pub affected_pa_dates: Vec<(i64, chrono::NaiveDate)>,
     pub files_discovered: i64,
     pub files_already_imported: i64,
@@ -143,6 +145,7 @@ impl<'a> ImportService<'a> {
                 if let Ok(mut rows) = csv_import::import_csv_bytes(&bytes) {
                     if self.resolve_personal_assistants(&mut rows, 0).is_ok() {
                         summary.imported_pa_ids.extend(rows.iter().filter_map(|r| r.entry.personal_assistant_id));
+                        summary.covered_pa_dates.extend(rows.iter().filter_map(|r|r.entry.personal_assistant_id.map(|pa|(pa,r.start.date()))));
                     }
                 }
                 continue;
@@ -157,6 +160,7 @@ impl<'a> ImportService<'a> {
                     summary.rows_skipped += result.rows_skipped;
                     summary.archived_paths.push(result.archive_path);
                     summary.imported_pa_ids.extend(result.affected_pa_dates.iter().map(|(id,_)| *id));
+                    summary.covered_pa_dates.extend(result.affected_pa_dates.iter().copied());
                     summary.affected_pa_dates.extend(result.affected_pa_dates);
                 }
                 Err(failure) => {
