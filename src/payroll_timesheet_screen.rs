@@ -411,6 +411,7 @@ impl PayrollTimesheetScreen {
                 finish_active_panel(ui, active_panel);
                 continue;
             }
+            let pending_editor_dirty = self.has_unsaved_changes();
             let (records, public_holidays, numeric_editor_texts, assistant_mileage_enabled) = (
                 &mut self.weeks,
                 &mut self.public_holidays,
@@ -573,7 +574,7 @@ impl PayrollTimesheetScreen {
                     if !notes_valid {
                         ui.colored_label(ui.visuals().error_fg_color, "Maximum 256 characters; shorten the note before saving. Input has not been truncated.");
                     }
-                    if !read_only && ui.add_enabled(notes_valid, egui::Button::new(format!("Save {}", assistant_name))).clicked() {
+                    if !read_only && crate::gui_controls::save_button_enabled(ui,format!("Save {}", assistant_name), pending_editor_dirty || leave_baseline.as_ref().is_some_and(|b| b.payroll_department_notes!=record.payroll_department_notes || !weeks_equal(&b.weeks, weeks) || !public_holidays_equal(&b.public_holidays, holidays) || !annual_leave_equal(&b.annual_leave, annual_leave) || !optional_hours_equal(b.previous_cycle_hours, record.previous_cycle_hours)),notes_valid).clicked() {
                         save_requested = true;
                     }
 
@@ -648,7 +649,7 @@ impl PayrollTimesheetScreen {
             let mut save = false;
             let mut clear = false;
             ui.horizontal(|ui| {
-                save = ui.button("Save returned hours").clicked();
+                save = crate::gui_controls::save_button(ui,"Save returned hours",*text!=record.actual_in_lieu_hours.map(|v|format!("{v:.2}")).unwrap_or_default()).clicked();
                 clear = ui.button("Clear returned hours").clicked();
             });
             if save || clear {
@@ -1087,7 +1088,7 @@ impl PayrollTimesheetScreen {
                     ("Discard changes", UnsavedChoice::Discard),
                     ("Cancel", UnsavedChoice::Cancel),
                 ] {
-                    if ui.button(label).clicked() {
+                    if crate::gui_controls::save_button(ui,label,matches!(choice,UnsavedChoice::Save)).clicked() {
                         match self.resolve_unsaved(application, choice) {
                             Ok(proceed) => {
                                 self.unsaved_error = None;
@@ -2348,6 +2349,24 @@ pub(crate) mod tests {
             .1
             .iter()
             .all(|week| week.worked_hours == 0.0));
+    }
+
+    #[test]
+    fn preparation_and_returned_hours_save_colour_lifecycles() {
+        use crate::gui_controls::acceptance::{frame,click};
+        let (_dir,app,schedule,mut screen)=load_active_record();let ctx=egui::Context::default();
+        let label=format!("Save {}",screen.weeks[0].2);
+        assert!(!frame(&ctx,vec![],|ui|screen.show(ui,&app,&schedule,"Synthetic period"),&label).1);
+        screen.weeks[0].0.payroll_department_notes="Synthetic note".into();
+        let(pos,blue)=frame(&ctx,vec![],|ui|screen.show(ui,&app,&schedule,"Synthetic period"),&label);assert!(blue);
+        click(&ctx,pos,|ui|screen.show(ui,&app,&schedule,"Synthetic period"),&label);
+        assert!(!frame(&ctx,vec![],|ui|screen.show(ui,&app,&schedule,"Synthetic period"),&label).1);
+        let id=screen.weeks[0].0.id;
+        assert!(!frame(&ctx,vec![],|ui|screen.show_returned_information(ui,&app,0),"Save returned hours").1);
+        screen.returned_hours_text.insert(id,"2.5".into());
+        let(pos,blue)=frame(&ctx,vec![],|ui|screen.show_returned_information(ui,&app,0),"Save returned hours");assert!(blue);
+        click(&ctx,pos,|ui|screen.show_returned_information(ui,&app,0),"Save returned hours");
+        assert!(!frame(&ctx,vec![],|ui|screen.show_returned_information(ui,&app,0),"Save returned hours").1);
     }
 
     fn load_active_record() -> (

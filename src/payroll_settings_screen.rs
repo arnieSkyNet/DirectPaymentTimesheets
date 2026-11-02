@@ -8,6 +8,7 @@ use chrono::Local;
 
 pub struct PayrollSettingsScreen {
     loaded: bool,
+    saved_form: String,
     annual_leave: AnnualLeaveSettings,
 
     public_holiday_region: crate::public_holidays::PublicHolidayRegion,
@@ -37,6 +38,7 @@ impl PayrollSettingsScreen {
     pub fn new() -> Self {
         Self {
             loaded: false,
+            saved_form: String::new(),
             annual_leave: AnnualLeaveSettings::default(),
 
             public_holiday_region: Default::default(),
@@ -298,7 +300,7 @@ impl PayrollSettingsScreen {
         ui.separator();
 
         ui.horizontal(|ui| {
-            if ui.button("Save Payroll Settings").clicked() {
+            if crate::gui_controls::save_button(ui,"Save Payroll Settings",self.form_state()!=self.saved_form).clicked() {
                 self.save(application);
             }
 
@@ -323,6 +325,7 @@ impl PayrollSettingsScreen {
         );
     }
 
+    fn form_state(&self) -> String { vec![format!("{:?}", self.public_holiday_region),format!("{:?}", self.frequency),format!("{:?}", self.rounding_minutes),format!("{:?}", self.rounding_direction),format!("{:?}", self.start_of_workweek),format!("{:?}", self.provider_name),format!("{:?}", self.provider_email),format!("{:?}", self.provider_address),format!("{:?}", self.provider_telephone),format!("{:?}", self.overtime_enabled),format!("{:?}", self.timesheet_footer_text),format!("{:?}", self.timesheet_footer_font_size),format!("{:?}", self.annual_leave.contracted_from),format!("{:?}", self.annual_leave.weeks),format!("{:?}", self.annual_leave.variable_from),format!("{:?}", self.annual_leave.percentage)].join("\0") }
     fn load(&mut self, application: &Application) {
         let payroll = &application.context.config.payroll;
 
@@ -345,6 +348,7 @@ impl PayrollSettingsScreen {
             self.provider_telephone = provider.telephone.unwrap_or_default();
         }
 
+        self.saved_form = self.form_state();
         self.status_message = "Payroll settings loaded.".to_string();
     }
 
@@ -440,6 +444,7 @@ impl PayrollSettingsScreen {
         {
             Ok(settings) => {
                 self.annual_leave.fill(&settings);
+                self.saved_form = self.form_state();
                 self.status_message = "Payroll settings saved.".into();
             }
             Err(error) => {
@@ -740,5 +745,26 @@ mod pre_release_safeguard_tests {
             assert_eq!(persisted.payroll.rounding_minutes, 5);
             assert_eq!(persisted.payroll.rounding_direction, "Down");
         }
+    }
+}
+
+#[cfg(test)] mod save_dirty_tests {
+    use super::*;
+    #[test] fn payroll_settings_save_colour_lifecycle() {
+        use crate::gui_controls::acceptance::{frame,click};
+        let (_dir,mut app)=crate::payroll_timesheet_screen::tests::test_application();let ctx=egui::Context::default();let mut screen=PayrollSettingsScreen::new();
+        assert!(!frame(&ctx,vec![],|ui|{screen.show(ui,&mut app);},"Save Payroll Settings").1);
+        screen.timesheet_footer_text="Changed synthetic footer".into();let(pos,blue)=frame(&ctx,vec![],|ui|{screen.show(ui,&mut app);},"Save Payroll Settings");assert!(blue);
+        click(&ctx,pos,|ui|{screen.show(ui,&mut app);},"Save Payroll Settings");
+        assert!(!frame(&ctx,vec![],|ui|{screen.show(ui,&mut app);},"Save Payroll Settings").1);
+    }
+    #[test] fn save_baseline_resets_only_on_success() {
+        let (_dir,mut app)=crate::payroll_timesheet_screen::tests::test_application();
+        let mut screen=PayrollSettingsScreen::new();screen.load(&app);
+        assert_eq!(screen.form_state(),screen.saved_form);
+        let valid=screen.annual_leave.weeks.clone();screen.annual_leave.weeks="invalid".into();
+        screen.save(&mut app);assert_ne!(screen.form_state(),screen.saved_form);
+        screen.annual_leave.weeks=valid;screen.timesheet_footer_text="Synthetic changed footer".into();
+        screen.save(&mut app);assert_eq!(screen.form_state(),screen.saved_form);
     }
 }

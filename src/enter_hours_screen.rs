@@ -355,13 +355,17 @@ impl EnterHoursScreen {
                     .range(0..=24 * 60)
                     .speed(1),
             );
-            if ui.button("Save Notes").clicked() {
+            if crate::gui_controls::save_button(ui,"Save Notes",self.notes!=running.notes.clone().unwrap_or_default()).clicked() {
                 match application.direct_shift_repository.save_running_notes(
                     running.id,
                     Some(&self.notes),
                     &Local::now().to_rfc3339(),
                 ) {
-                    Ok(()) => self.status_message = "Notes saved.".to_string(),
+                    Ok(()) => {
+                        self.notes = self.notes.trim().to_string();
+                        if let Some(shift)=self.running_shift.as_mut() { shift.notes=if self.notes.is_empty(){None}else{Some(self.notes.clone())}; }
+                        self.status_message = "Notes saved.".to_string();
+                    },
                     Err(error) => self.status_message = format!("Notes save failed: {error}"),
                 }
             }
@@ -1529,5 +1533,21 @@ mod tests {
         assert_eq!(save_payload.break_minutes, 17);
         assert_eq!(save_payload.notes, "displayed proposal");
         assert_eq!(completed_edit_worked_minutes(&save_payload), Ok(130));
+    }
+}
+
+#[cfg(test)] mod save_colour_acceptance {
+    use super::*;
+    #[test] fn running_notes_save_colour_resets_on_success() {
+        use crate::gui_controls::acceptance::{frame,click};
+        let (_dir,app)=crate::payroll_timesheet_screen::tests::test_application();
+        app.personal_assistant_repository.connection.execute("INSERT INTO personal_assistants(id,first_name,surname,employment_status) VALUES(1,'Synthetic','Assistant','Active')",[]).unwrap();
+        app.direct_shift_repository.clock_in(1,Local::now().naive_local(),"synthetic").unwrap();
+        let mut screen=EnterHoursScreen::new();screen.load(&app).unwrap();let ctx=egui::Context::default();
+        assert!(!frame(&ctx,vec![],|ui|screen.show(ui,&app),"Save Notes").1);
+        screen.notes="Synthetic note".into();let(pos,blue)=frame(&ctx,vec![],|ui|screen.show(ui,&app),"Save Notes");assert!(blue);
+        click(&ctx,pos,|ui|screen.show(ui,&app),"Save Notes");
+        assert!(!frame(&ctx,vec![],|ui|screen.show(ui,&app),"Save Notes").1);
+        assert_eq!(app.direct_shift_repository.get_running_for_pa(1).unwrap().unwrap().notes.as_deref(),Some("Synthetic note"));
     }
 }

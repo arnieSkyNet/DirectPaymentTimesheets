@@ -7,6 +7,7 @@ use crate::theme::{apply_theme, theme_label};
 
 pub struct ApplicationSettingsScreen {
     loaded: bool,
+    saved_form: String,
 
     theme: ApplicationTheme,
     date_display_format: crate::date_utils::DateDisplayFormat,
@@ -42,6 +43,7 @@ impl ApplicationSettingsScreen {
     pub fn new() -> Self {
         Self {
             loaded: false,
+            saved_form: String::new(),
 
             theme: ApplicationTheme::default(),
             date_display_format: Default::default(),
@@ -377,9 +379,10 @@ impl ApplicationSettingsScreen {
         ui.separator();
 
         ui.horizontal(|ui| {
-            if ui.button("Save Application Settings").clicked() {
+            if crate::gui_controls::save_button(ui,"Save Application Settings",self.form_state()!=self.saved_form).clicked() {
                 match self.save(application) {
                     Ok(()) => {
+                        self.saved_form = self.form_state();
                         self.status_message = "Application settings saved.".to_string();
                     }
 
@@ -665,6 +668,7 @@ impl ApplicationSettingsScreen {
         open_email_settings
     }
 
+    fn form_state(&self) -> String { vec![format!("{:?}", self.theme),format!("{:?}", self.date_display_format),format!("{:?}", self.hours_shift_date_time_spinner),format!("{:?}", self.csv_import),format!("{:?}", self.pdf_output),format!("{:?}", self.email_archive),format!("{:?}", self.payslip_folder),format!("{:?}", self.payroll_information_folder),format!("{:?}", self.regular_font),format!("{:?}", self.bold_font),format!("{:?}", self.week_commencing_font_size),format!("{:?}", self.hours_font_size),format!("{:?}", self.information_font_size)].join("\0") }
     fn load(&mut self, application: &Application) {
         let config = &application.context.config;
 
@@ -689,6 +693,7 @@ impl ApplicationSettingsScreen {
         self.hours_font_size = config.pdf.hours_font_size.to_string();
         self.information_font_size = config.pdf.information_font_size.to_string();
 
+        self.saved_form = self.form_state();
         self.status_message = "Application settings loaded.".to_string();
         self.refresh_backups(application);
     }
@@ -724,7 +729,7 @@ impl ApplicationSettingsScreen {
         }
     }
 
-    fn save(&self, application: &mut Application) -> Result<(), Box<dyn std::error::Error>> {
+    fn save(&mut self, application: &mut Application) -> Result<(), Box<dyn std::error::Error>> {
         #[cfg(all(windows, debug_assertions, feature = "windows-dev-isolation"))]
         crate::development::validate_folder_draft(&[
             std::path::PathBuf::from(self.csv_import.trim()),
@@ -794,7 +799,28 @@ impl ApplicationSettingsScreen {
         application.context.config.pdf.information_font_size = information_font_size;
 
         application.save_config()?;
-
+        self.saved_form = self.form_state();
         Ok(())
+    }
+}
+
+#[cfg(test)] mod save_dirty_tests {
+    use super::*;
+    #[test] fn application_settings_save_colour_lifecycle() {
+        use crate::gui_controls::acceptance::{frame,click};
+        let (_dir,mut app)=crate::payroll_timesheet_screen::tests::test_application();let ctx=egui::Context::default();let mut screen=ApplicationSettingsScreen::new();
+        assert!(!frame(&ctx,vec![],|ui|{screen.show(ui,&mut app);},"Save Application Settings").1);
+        screen.hours_font_size="12".into();let(pos,blue)=frame(&ctx,vec![],|ui|{screen.show(ui,&mut app);},"Save Application Settings");assert!(blue);
+        click(&ctx,pos,|ui|{screen.show(ui,&mut app);},"Save Application Settings");
+        assert!(!frame(&ctx,vec![],|ui|{screen.show(ui,&mut app);},"Save Application Settings").1);
+    }
+    #[test] fn failed_save_retains_dirty_and_success_resets_baseline() {
+        let (_dir,mut app)=crate::payroll_timesheet_screen::tests::test_application();
+        let mut screen=ApplicationSettingsScreen::new();screen.load(&app);
+        assert_eq!(screen.form_state(),screen.saved_form);
+        screen.hours_font_size="invalid".into();assert!(screen.save(&mut app).is_err());
+        assert_ne!(screen.form_state(),screen.saved_form);
+        screen.hours_font_size="12".into();screen.save(&mut app).unwrap();
+        assert_eq!(screen.form_state(),screen.saved_form);
     }
 }
