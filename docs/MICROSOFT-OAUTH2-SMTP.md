@@ -132,6 +132,33 @@ and rejected test sends. Existing macOS SQLite acceptance run 41305531150 does n
 validate these new OAuth changes. A distributable application ID and publisher/
 consent policy need owner approval; this code creates no external registration.
 
+### Network diagnostics and address fallback, 2026-11-02
+
+An isolated Linux sign-in failure was reproduced without issuing another device
+code: the same HTTP dependency failed on a public Microsoft discovery GET with
+`HostUnreachable`; IPv6-only failed likewise, while IPv4-only returned HTTP 200
+with certificate verification. The resolved ureq 3.4.1 TCP connector stopped on
+an unreachable route instead of trying other DNS addresses. The application
+previously discarded this category behind a generic connection error.
+
+Microsoft HTTPS now tries remaining resolved addresses during connection
+establishment, within the existing deadline, for unreachable routes, refused
+connections or connection timeouts. It retains both IP families, the default
+TLS/proxy connector and certificate/hostname checks. It does not retry an OAuth
+HTTP request after submission, bypass a proxy, or retry certificate/proxy rejection.
+An independent discovery-only GET using the corrected connector returned HTTP
+200. No device-code/token request or email was sent for this diagnosis.
+
+The existing sign-in status area now distinguishes DNS, routing, timeout, TLS,
+proxy/CONNECT, redirects, response-size limits and HTTP service failures. Only
+fixed categories and numeric HTTP status are displayed, never raw library errors,
+provider descriptions, response bodies, proxy URLs/credentials or OAuth secrets.
+Normal environment-based proxy configuration is retained; an OS/browser-only
+proxy is not automatically imported. Check the application's environment if a
+browser works but the application cannot connect. No VPN/proxy settings or trust
+stores are changed by the application. Registration, consent and real device-code
+acceptance remain unverified until an explicitly approved interactive retry.
+
 ### Local validation, 2026-11-01 (Linux)
 
 | Command (`cargo test --offline --bin direct_payment_timesheets …`) | Result |
@@ -176,3 +203,5 @@ isolated temporary data. Production `cargo check --offline`, dependency feature
 inspection and `git diff --check` passed. No real Microsoft network operation,
 native credential-store acceptance, native terminal SQLite fixture, VM operation
 or Actions dispatch was performed. The live acceptance requirements above remain.
+
+See [Email abuse safeguards](EMAIL-ABUSE-SAFEGUARDS.md) for confirmed local token cleanup, its historical-generation limitations, test/batch controls and the local-session/AI-agent trust boundary. Disconnect alone remains a draft-reference action.
