@@ -261,6 +261,7 @@ impl DirectPaymentApp {
         &self,
         batch: &PendingEmailBatch,
     ) -> Result<ProductionReport, Box<dyn std::error::Error>> {
+        crate::email_send_policy::validate_batch(batch.selected_personal_assistant_ids.len(),batch.volume_acknowledged)?;
         if self.email_settings_digest()? != batch.approved_settings { return Err("Email settings changed; approve a fresh selection".into()); }
         let schedule = self
             .validated_schedule_for_email_batch(batch)?

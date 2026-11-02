@@ -481,7 +481,7 @@ pub(crate) fn send_preview(
 ) -> Result<(), Box<dyn Error>> {
     let email = build_message(&preview, attachment_path)?;
 
-    send_prepared_timesheet(config, &email)?;
+    send_prepared_test(config, &email)?;
     Ok(())
 }
 
@@ -964,10 +964,18 @@ pub fn prepare_timesheet_message(
     )?)
 }
 
+pub(crate) fn send_prepared_test(config: &crate::config::EmailConfig, message: &Message) -> Result<(), ProductionSendError> {
+    crate::email_send_policy::claim(true).map_err(|e| ProductionSendError::NotSent(e.into()))?;
+    send_message(config, message)
+}
 pub fn send_prepared_timesheet(
     config: &crate::config::EmailConfig,
     message: &Message,
 ) -> Result<(), ProductionSendError> {
+    crate::email_send_policy::claim(false).map_err(|e| ProductionSendError::NotSent(e.into()))?;
+    send_message(config, message)
+}
+fn send_message(config: &crate::config::EmailConfig, message: &Message) -> Result<(), ProductionSendError> {
     #[cfg(test)]
     {
         dispatch_message(config, message, None)
@@ -976,6 +984,15 @@ pub fn send_prepared_timesheet(
     {
         dispatch_message(config, message)
     }
+}
+
+// Test builds may redirect only the localhost relay port to an isolated sink.
+// Production always uses port 25 and exposes no runtime override.
+#[cfg(test)]
+thread_local! { static TEST_LOCAL_RELAY_PORT: std::cell::Cell<Option<u16>> = const { std::cell::Cell::new(None) }; }
+fn local_relay_port() -> u16 {
+    #[cfg(test)] { TEST_LOCAL_RELAY_PORT.with(|p|p.get().unwrap_or(25)) }
+    #[cfg(not(test))] {25}
 }
 
 /// One actual connection for setup, authentication and dispatch. Setup errors
@@ -990,7 +1007,7 @@ fn dispatch_message(
     #[cfg(test)]
     let fixture_tls_diagnostics = trusted_tls.is_some();
     let (host, port, security, authenticate) = match config.smtp_transport.as_str() {
-        "Local SMTP Server" => ("localhost", 25, SmtpSecurity::Plaintext, false),
+        "Local SMTP Server" => ("localhost", local_relay_port(), SmtpSecurity::Plaintext, false),
         "SMTP Server" => (
             config.smtp_host.trim(),
             config.smtp_port,
@@ -1005,6 +1022,9 @@ fn dispatch_message(
     };
     crate::microsoft_oauth::validate(config).map_err(ProductionSendError::NotSent)?;
     let microsoft = authenticate && config.smtp_authentication == crate::config::SmtpAuthentication::MicrosoftOAuth2;
+    if authenticate && !config.smtp_username.trim().is_empty() && security == SmtpSecurity::Plaintext {
+        return Err(ProductionSendError::NotSent("Authenticated SMTP requires STARTTLS or implicit TLS; plaintext authentication is blocked.".into()));
+    }
     // Resolve/verify OS credentials before any DNS/socket/TLS operation.
     let auth_password = if microsoft {
         Some(crate::microsoft_oauth::for_send(config).map_err(ProductionSendError::NotSent)?)
@@ -1075,8 +1095,8 @@ fn dispatch_message(
 // Keep mechanism selection and the TLS invariant together, including if this
 // helper is reused by another SMTP entry point later.
 fn authenticate_smtp(connection: &mut SmtpConnection, username: &str, secret: &str, microsoft: bool) -> Result<(), ProductionSendError> {
-    if microsoft && !connection.is_encrypted() {
-        return Err(ProductionSendError::NotSent("Microsoft OAuth2 requires an encrypted SMTP connection; authentication blocked.".into()));
+    if !connection.is_encrypted() {
+        return Err(ProductionSendError::NotSent("Authenticated SMTP requires an encrypted SMTP connection; authentication blocked.".into()));
     }
     connection.auth(
         if microsoft { &[Mechanism::Xoauth2] } else { &[Mechanism::Plain, Mechanism::Login] },

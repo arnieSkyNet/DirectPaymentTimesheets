@@ -27,6 +27,7 @@ mod development;
 mod direct_shift_repository;
 mod email_service;
 mod email_settings;
+mod email_send_policy;
 mod employer_repository;
 mod employer_screen;
 mod enter_hours_screen;

@@ -2,6 +2,34 @@
 use crate::{config::EmailConfig, email_service::ProductionSendError};
 use std::sync::mpsc::{self, Receiver, TryRecvError};
 
+/// View state only: no configuration migration or duplicated setting drafts.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub(crate) enum EmailSettingsTab {
+    #[default]
+    Smtp,
+    Test,
+    Templates,
+    Signature,
+}
+impl EmailSettingsTab {
+    pub const ALL: [Self; 4] = [Self::Smtp, Self::Test, Self::Templates, Self::Signature];
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Smtp => "SMTP Config",
+            Self::Test => "Test Email",
+            Self::Templates => "Templates",
+            Self::Signature => "Signature & Options",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) enum ExamplePreviewKind {
+    #[default]
+    Templates,
+    SmtpTest,
+}
+
 #[derive(Clone, Copy, Default, PartialEq, Eq)]
 pub(crate) enum TestRecipient {
     #[default]
@@ -27,6 +55,9 @@ pub(crate) fn validate_standalone_test(
             }
             if config.smtp_port == 0 {
                 return Err("Enter an SMTP port between 1 and 65535.".into());
+            }
+            if !config.smtp_username.trim().is_empty() && matches!(config.smtp_security, None | Some(crate::config::SmtpSecurity::Plaintext)) {
+                return Err("Authenticated SMTP requires STARTTLS or implicit TLS.".into());
             }
             // Match dispatch: an empty username selects an unauthenticated
             // remote relay; a supplied username selects authentication.
@@ -117,7 +148,7 @@ impl TestEmailTask {
         }
         let message = crate::email_service::prepare_smtp_test_message(&config, recipient)?;
         self.start_with(
-            move || crate::email_service::send_prepared_timesheet(&config, &message),
+            move || crate::email_service::send_prepared_test(&config, &message),
             repaint,
         )
     }
@@ -178,26 +209,29 @@ pub(crate) fn example_preview(
     config: &crate::config::AppConfig,
     signature: Option<&str>,
 ) -> String {
-    let defaults = crate::config::AppConfig::default();
-    let body = |draft: &str, fallback: &str| {
-        if draft.trim().is_empty() {
-            fallback.to_string()
-        } else {
-            draft.to_string()
-        }
+    let subject = config.payroll.email_subject_format
+        .replace("{Personal Assistant Name}", "Example Assistant")
+        .replace("{Personal Assistant DOB}", "Example DOB")
+        .replace("{Personal Assistant NI}", "Example NI")
+        .replace("{YYYYMMwWW}", "EXAMPLE-PERIOD");
+    let signature = signature.unwrap_or("Example Employer (fictional signature)");
+    format!("EXAMPLE PREVIEW — fictional details; nothing is sent or read from attachments.\nCurrent draft templates/signature are used where available.\n\nFrom: Example Employer <employer@example.invalid>\nTo: Example Recipient <recipient@example.invalid>\nCC/BCC: None\n\nTimesheet subject: {subject}\nTimesheet attachment: Example Timesheet.pdf (fictional, not opened)\n\n{}\n\n{}\n\nPayslip subject: Payslip for Week EXAMPLE\nPayslip attachment: Example Payslip.pdf (fictional, not opened)\n\n{}\n\n{}", &config.payroll.timesheet_email_body, signature, &config.payroll.payslip_email_body, signature)
+}
+
+/// Preview the actual standalone connection-test wording without opening a
+/// socket or requiring valid SMTP settings. Placeholders are explicitly marked.
+pub(crate) fn standalone_preview(config: &EmailConfig, recipient: TestRecipient) -> String {
+    let sender = if config.smtp_username.trim().parse::<lettre::Address>().is_ok() {
+        config.smtp_username.trim()
+    } else if !config.test_sender_address.trim().is_empty() {
+        config.test_sender_address.trim()
+    } else { "(sender not configured)" };
+    let recipient = match recipient {
+        TestRecipient::Payroll => config.payroll_test_email_address.trim(),
+        TestRecipient::Pa => config.pa_test_email_address.trim(),
     };
-    let subject = body(
-        &config.payroll.email_subject_format,
-        &defaults.payroll.email_subject_format,
-    )
-    .replace("{Personal Assistant Name}", "Example Assistant")
-    .replace("{Personal Assistant DOB}", "Example DOB")
-    .replace("{Personal Assistant NI}", "Example NI")
-    .replace("{YYYYMMwWW}", "EXAMPLE-PERIOD");
-    let signature = signature
-        .filter(|text| !text.trim().is_empty())
-        .unwrap_or("Example Employer (fictional signature)");
-    format!("EXAMPLE PREVIEW — fictional details; nothing is sent or read from attachments.\nCurrent draft templates/signature are used where available.\n\nFrom: Example Employer <employer@example.invalid>\nTo: Example Recipient <recipient@example.invalid>\nCC/BCC: None\n\nTimesheet subject: {subject}\nTimesheet attachment: Example Timesheet.pdf (fictional, not opened)\n\n{}\n\n{}\n\nPayslip subject: Payslip for Week EXAMPLE\nPayslip attachment: Example Payslip.pdf (fictional, not opened)\n\n{}\n\n{}", body(&config.payroll.timesheet_email_body, &defaults.payroll.timesheet_email_body), signature, body(&config.payroll.payslip_email_body, &defaults.payroll.payslip_email_body), signature)
+    let recipient = if recipient.is_empty() { "(test recipient not configured)" } else { recipient };
+    format!("TEST EMAIL PREVIEW — nothing is sent.\nMissing settings are marked below; sending validates all required settings.\n\nFrom: {sender}\nTo: {recipient}\nCC/BCC: None\nAttachments: None\n\nSubject: DirectPaymentTimesheets  SMTP Test\n\nThis is an attachment-free DirectPaymentTimesheets SMTP transport test. No payroll records were used or changed.")
 }
 
 #[cfg(test)]
@@ -400,6 +434,35 @@ mod tests {
         config.payroll.timesheet_email_body = "Unsaved draft body".into();
         assert!(example_preview(&config, Some("Draft signature")).contains("Unsaved draft body"));
         assert!(example_preview(&config, Some("Draft signature")).contains("Draft signature"));
+    }
+
+    #[test]
+    fn preview_does_not_replace_deliberately_empty_draft_fields_with_defaults() {
+        let mut config=crate::config::AppConfig::default();
+        config.payroll.email_subject_format.clear();config.payroll.timesheet_email_body.clear();config.payroll.payslip_email_body.clear();
+        let preview=example_preview(&config,Some(""));
+        assert!(preview.contains("Timesheet subject: \n"));
+        assert!(!preview.contains("fictional signature"));
+        let defaults=crate::config::AppConfig::default();
+        assert!(!preview.contains(defaults.payroll.timesheet_email_body.trim()));
+    }
+    #[test]
+    fn standalone_preview_uses_selected_recipient_and_never_credentials_or_signature() {
+        let mut config=EmailConfig::default();
+        config.smtp_password="PASSWORD_SECRET".into();config.microsoft_credential_ref=Some("TOKEN_REFERENCE".into());
+        config.smtp_username="sender@example.invalid".into();
+        config.payroll_test_email_address="payroll@example.invalid".into();config.pa_test_email_address="pa@example.invalid".into();
+        for (recipient,address) in [(TestRecipient::Payroll,"payroll@example.invalid"),(TestRecipient::Pa,"pa@example.invalid")] {
+            let preview=standalone_preview(&config,recipient);
+            assert!(preview.contains(&format!("To: {address}")));
+            assert!(preview.contains("From: sender@example.invalid") && preview.contains("Attachments: None"));
+            assert!(!preview.contains("PASSWORD_SECRET") && !preview.contains("TOKEN_REFERENCE"));
+        }
+        config.smtp_username.clear();config.test_sender_address="explicit@example.invalid".into();
+        assert!(standalone_preview(&config,TestRecipient::Pa).contains("From: explicit@example.invalid"));
+        config.test_sender_address.clear();config.pa_test_email_address.clear();
+        assert!(standalone_preview(&config,TestRecipient::Pa).contains("(sender not configured)"));
+        assert!(standalone_preview(&config,TestRecipient::Pa).contains("(test recipient not configured)"));
     }
     #[test]
     fn asynchronous_worker_prevents_duplicates_and_reports_uncertainty() {
