@@ -481,7 +481,7 @@ The importer accepts UK dates with `at` and a 24-hour time, with optional second
 
 **Success check:** the preparation saves without errors, the four weeks match your period, and no unresolved payroll actions remain. The **W/c** rows are week-start dates; use the full date range in the period selector to check the period end. If an unsaved-changes prompt appears, choose **Save changes** to keep your work.
 
-> **You can do this later:** notes or claims that do not apply can stay blank. **Actual in-lieu hours awarded by Payroll** is for a figure returned by Payroll later; leave it blank until Payroll confirms it. Submitted records and records with indeterminate delivery are read-only; do not bypass those protections.
+> **You can do this later:** notes or claims that do not apply can stay blank. **Actual in-lieu hours awarded by Payroll** is for a figure returned by Payroll later; leave it blank until Payroll confirms it. Submitted timesheets can be reopened here: amend the hours, **Save**, regenerate the PDF, then explicitly email the corrected version. Earlier versions remain in the audit; the latest regenerated saved version supplies the reconciliation baseline. Unresolved delivery remains a separate safety condition; do not resend blindly.
 
 
 <details>
@@ -604,7 +604,7 @@ If the result is uncertain or the application was interrupted during sending, **
 | SMTP connection or TLS error | Check internet access, exact host, port **587** and **Required STARTTLS** for GMX/Gmail. Do not disable encryption as a workaround. |
 | Local SMTP connection refused | A local relay must already be running on localhost:25. Use your provider's SMTP configuration if no relay has been arranged. |
 | Stale PDF / changed data | Save the correct preparation, generate again, inspect the new PDF and preview again. |
-| Submitted or indeterminate record is read-only | Retain the message and ask for help. Do not delete records, alter the database or resend blindly. |
+| Amend an already submitted timesheet | Reopen its period in Payroll Preparation, amend hours, Save, regenerate and separately send the corrected PDF. For unresolved delivery, retain the message and reconcile its outcome before sending again. |
 
 When asking for help, provide the application version, screen, exact message and the step you reached. Remove passwords, names, National Insurance numbers, dates of birth and payroll attachments from anything shared publicly.
 

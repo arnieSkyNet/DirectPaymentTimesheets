@@ -604,7 +604,7 @@ fn partial_generation_preserves_completed_and_unattempted_files_and_state() {
 }
 
 #[test]
-fn authorised_replacement_retains_original_pdf_work_and_note_through_selected_workflow() {
+fn direct_amendment_retains_original_pdf_work_and_note_through_selected_workflow() {
     let (_dir, mut app, schedule) = fixture();
     assert_eq!(generate(&mut app, &[1]).completed(), 1);
     let original = std::fs::read(path(&app, &schedule, 1)).unwrap();
@@ -633,12 +633,7 @@ fn authorised_replacement_retains_original_pdf_work_and_note_through_selected_wo
     let changes =
         crate::payroll_evidence::reconciliation::changes(&app.application, &record).unwrap();
     assert!(changes.changed);
-    crate::payroll_evidence::lifecycle::authorize_resubmission(
-        &app.application,
-        &record,
-        &changes.signature,
-    )
-    .unwrap();
+    save_feature2_hours(&app,3.0);
     change_note(&app, 1, "Replacement payroll note");
     assert_eq!(generate(&mut app, &[1]).completed(), 1);
     let replacement = email_batch(&mut app, &[1]);
@@ -2518,4 +2513,130 @@ fn regional_holiday_submitted_pdf_and_evidence_survive_region_change_and_resend(
     let retained: Vec<(i64, String, Vec<u8>)> = db(&app).prepare("SELECT id,pdf_sha256,pdf_bytes FROM timesheet_documents WHERE payroll_timesheet_id=1 ORDER BY id").unwrap().query_map([], |r|Ok((r.get(0)?,r.get(1)?,r.get(2)?))).unwrap().collect::<rusqlite::Result<_>>().unwrap();
     assert_eq!(retained, original);
     assert_eq!(smtp.count(), 2);
+}
+
+fn save_feature2_hours(app:&DirectPaymentApp, hours:f64) -> i64 {
+    let record=app.application.payroll_timesheet_repository.get_for_cycle_and_pa("2026/27",1,1).unwrap().unwrap();
+    let mut weeks=app.application.payroll_timesheet_repository.get_weeks(record.id).unwrap();
+    weeks[0].worked_hours=hours;
+    let adjustments=weeks.iter().map(|w|crate::payroll_worked_item_repository::ManualHoursAdjustment{week_number:w.week_number,adjustment_minutes:0,reason:None}).collect::<Vec<_>>();
+    let holidays=app.application.payroll_timesheet_repository.get_public_holidays(record.id).unwrap();
+    let leave=app.application.payroll_timesheet_repository.get_annual_leave(record.id).unwrap();
+    assert!(app.application.payroll_timesheet_repository.save_preparation_atomically(&record,&weeks,&holidays,&leave,&adjustments,"synthetic amendment").unwrap());
+    record.id
+}
+#[test]
+fn feature2_submitted_and_settled_amendments_regenerate_without_sending_or_rewriting_history() {
+    use crate::payroll_worked_item_repository::SnapshotState;
+    for settled in [false,true] {
+        let (_dir,mut app,schedule)=fixture();
+        assert_eq!(generate(&mut app,&[1]).completed(),1);
+        let file=path(&app,&schedule,1);
+        let record=app.application.payroll_timesheet_repository.get_for_cycle_and_pa("2026/27",1,1).unwrap().unwrap();
+        crate::payroll_snapshot_service::send_production_candidate(&app.application.payroll_worked_item_repository,record.id,1,"2026/27",1,&file,"fixture",||Ok(())).unwrap();
+        let original=std::fs::read(&file).unwrap();
+        let conn=db(&app);
+        if settled {conn.execute("INSERT INTO payroll_timesheet_email_status(personal_assistant_id,payroll_year,cycle_number,email_type,sent_at) VALUES(1,'2026/27',1,'payslip','fixture-settlement')",[]).unwrap();}
+        let sid:i64=conn.query_row("SELECT MAX(id) FROM payroll_submissions",[],|r|r.get(0)).unwrap();
+        let sent:String=conn.query_row("SELECT sent_at FROM payroll_timesheet_email_status WHERE personal_assistant_id=1 AND email_type='timesheet'",[],|r|r.get(0)).unwrap();
+        for hours in [3.0,1.5,4.0] {
+            save_feature2_hours(&app,hours);
+            assert!(app.application.payroll_worked_item_repository.snapshot_metadata(record.id).unwrap().is_none());
+            let report=generate(&mut app,&[1]);assert_eq!(report.completed(),1,"{:?}",report.entries);
+            let version=crate::timesheet_amendments::latest(&conn,record.id).unwrap().unwrap();
+            assert_eq!(version.totals,[ (hours*60.0) as i64,0,0,0]);
+            assert_eq!(app.application.payroll_worked_item_repository.snapshot_metadata(record.id).unwrap().unwrap().state,SnapshotState::Candidate);
+            crate::payroll_snapshot_service::verify_preview_or_test_attachment(&app.application.payroll_worked_item_repository,record.id,&file).unwrap();
+            crate::payroll_evidence::lifecycle::verify_candidate_evidence(&conn,record.id).unwrap();
+            let current=std::fs::read(&file).unwrap();assert_ne!(current,original);assert!(current.starts_with(b"%PDF"));
+            use sha2::Digest;
+            let digest:String=conn.query_row("SELECT pdf_sha256 FROM timesheet_documents WHERE id=?1",[version.document],|r|r.get(0)).unwrap();
+            assert_eq!(digest,format!("{:x}",sha2::Sha256::digest(&current)));
+            assert_eq!(conn.query_row("SELECT pdf_bytes FROM timesheet_documents WHERE id=?1",[version.document],|r|r.get::<_,Vec<u8>>(0)).unwrap(),current);
+            assert_eq!(conn.query_row("SELECT COUNT(*) FROM payroll_submissions",[],|r|r.get::<_,i64>(0)).unwrap(),1);
+            assert_eq!(conn.query_row("SELECT sent_at FROM payroll_timesheet_email_status WHERE personal_assistant_id=1 AND email_type='timesheet'",[],|r|r.get::<_,String>(0)).unwrap(),sent);
+            assert_eq!(conn.query_row("SELECT pdf_bytes FROM payroll_submissions WHERE id=?1",[sid],|r|r.get::<_,Vec<u8>>(0)).unwrap(),original);
+        }
+        assert_eq!(conn.query_row("SELECT COUNT(*) FROM timesheet_amendment_versions WHERE event='save'",[],|r|r.get::<_,i64>(0)).unwrap(),3);
+        assert_eq!(conn.query_row("SELECT COUNT(*) FROM timesheet_amendment_versions WHERE event='generated'",[],|r|r.get::<_,i64>(0)).unwrap(),3);
+        assert!(conn.execute("DELETE FROM timesheet_amendment_versions",[]).is_err());
+        assert!(conn.execute("UPDATE timesheet_amendment_versions SET actor='changed'",[]).is_err());
+        // A replacement is sent only when the separate send operation is invoked.
+        crate::payroll_snapshot_service::send_production_candidate(&app.application.payroll_worked_item_repository,record.id,1,"2026/27",1,&file,"fixture",||Ok(())).unwrap();
+        assert_eq!(conn.query_row("SELECT COUNT(*) FROM payroll_submissions",[],|r|r.get::<_,i64>(0)).unwrap(),2);
+        assert_eq!(conn.query_row("SELECT supersedes_id FROM payroll_submissions ORDER BY id DESC LIMIT 1",[],|r|r.get::<_,i64>(0)).unwrap(),sid);
+    }
+}
+
+#[test]
+fn feature2_latest_regenerated_estimate_drives_future_carry_without_double_payment() {
+    let (_dir,mut app,schedule)=fixture();assert_eq!(generate(&mut app,&[1]).completed(),1);
+    let original_record=app.application.payroll_timesheet_repository.get_for_cycle_and_pa("2026/27",1,1).unwrap().unwrap();
+    let file=path(&app,&schedule,1);
+    crate::payroll_snapshot_service::send_production_candidate(&app.application.payroll_worked_item_repository,original_record.id,1,"2026/27",1,&file,"fixture",||Ok(())).unwrap();
+    save_feature2_hours(&app,1.5);
+    assert!(crate::timesheet_amendments::latest(&db(&app),original_record.id).unwrap().is_none(),"saved-only draft is not a regenerated authority");
+    assert_eq!(generate(&mut app,&[1]).completed(),1);
+    let conn=db(&app);
+    conn.execute("INSERT INTO payroll_schedules(id,payroll_year,cycle_number,first_week_commencing,latest_posting_date,pay_date,created_at) VALUES(6,'2026/27',2,'29/04/2026','20/05/2026','30/05/2026','synthetic')",[]).unwrap();
+    let future=app.application.payroll_timesheet_repository.insert("2026/27",2,1,None,"synthetic").unwrap();
+    app.application.payroll_timesheet_repository.create_missing_weeks(future,&["29/04/2026".into(),"06/05/2026".into(),"13/05/2026".into(),"20/05/2026".into()],&[0.;4]).unwrap();
+    let record=app.application.payroll_timesheet_repository.get_for_cycle_and_pa("2026/27",2,1).unwrap().unwrap();
+    let dates=["29/04/2026","06/05/2026","13/05/2026","20/05/2026"].map(|d|crate::date_utils::parse_legacy(d).unwrap());
+    let unchanged=crate::payroll_evidence::reconciliation::calculate(&app.application,&record,&dates,None).unwrap();
+    assert_eq!(unchanged.week_totals_minutes,[0;4],"historical CSV hours must not override the corrected version");
+    conn.execute("UPDATE timesheets SET worked_minutes=150,end_time='2026-04-02T11:30:00' WHERE id=1",[]).unwrap();
+    for amended in [1.5,1.0] {
+        if amended==1.0 {
+            save_feature2_hours(&app,amended);assert_eq!(generate(&mut app,&[1]).completed(),1);
+            assert_eq!(crate::payroll_evidence::reconciliation::calculate(&app.application,&record,&dates,None).unwrap().week_totals_minutes,[0;4]);
+            conn.execute("UPDATE timesheets SET worked_minutes=180,end_time='2026-04-02T12:00:00' WHERE id=1",[]).unwrap();
+        }
+        let difference=if amended==1.5 {60} else {120};
+        for _ in 0..2 {
+            let hours=crate::payroll_evidence::reconciliation::calculate(&app.application,&record,&dates,None).unwrap();
+            assert_eq!(hours.week_totals_minutes.iter().sum::<i64>(),difference);
+            assert_eq!(hours.previous_cycle_minutes,difference,"original 2-hour estimate must not override the corrected estimate");
+        }
+    }
+    // A later actual-hours reduction uses the same corrected baseline. Positive
+    // and negative remaining amounts net once through the established engine.
+    conn.execute("UPDATE timesheets SET worked_minutes=0,end_time='2026-04-02T09:00:00' WHERE id=1",[]).unwrap();
+    conn.execute("INSERT INTO timesheets(id,personal_assistant_id,pa_name,start_time,end_time,break_minutes,worked_minutes,hourly_rate,amount) VALUES(6,1,'Synthetic','2026-04-30T09:00:00','2026-04-30T12:00:00',0,180,12,36)",[]).unwrap();
+    let payable=crate::payroll_evidence::reconciliation::calculate(&app.application,&record,&dates,None).unwrap();
+    assert_eq!(payable.week_totals_minutes.iter().sum::<i64>(),120);
+    assert_eq!(payable.previous_cycle_minutes,-60);
+    let weeks=app.application.payroll_timesheet_repository.get_weeks(record.id).unwrap();
+    let week_ids=std::array::from_fn(|i|weeks[i].id);
+    let future_path=app.application.context.environment.data_dir.join("synthetic-future.pdf");
+    crate::payroll_snapshot_service::publish_candidate(&app.application.payroll_worked_item_repository,
+        crate::payroll_snapshot_service::CandidatePublication{payroll_timesheet_id:record.id,items:&payable.snapshot_items,final_pdf_path:&future_path,generated_at:"synthetic",previous_cycle_minutes:payable.previous_cycle_minutes,week_ids:&week_ids,week_totals_minutes:&payable.week_totals_minutes},|p|{std::fs::write(p,b"%PDF synthetic future")?;Ok(())}).unwrap();
+    crate::payroll_snapshot_service::send_production_candidate(&app.application.payroll_worked_item_repository,record.id,1,"2026/27",2,&future_path,"fixture",||Ok(())).unwrap();
+    conn.execute("INSERT INTO payroll_schedules(id,payroll_year,cycle_number,first_week_commencing,latest_posting_date,pay_date,created_at) VALUES(7,'2026/27',3,'27/05/2026','20/06/2026','30/06/2026','synthetic')",[]).unwrap();
+    let next_id=app.application.payroll_timesheet_repository.insert("2026/27",3,1,None,"synthetic").unwrap();
+    let text=["27/05/2026","03/06/2026","10/06/2026","17/06/2026"].map(str::to_string);
+    app.application.payroll_timesheet_repository.create_missing_weeks(next_id,&text,&[0.;4]).unwrap();
+    let next=app.application.payroll_timesheet_repository.get_for_cycle_and_pa("2026/27",3,1).unwrap().unwrap();
+    let next_dates=text.map(|d|crate::date_utils::parse_legacy(&d).unwrap());
+    assert_eq!(crate::payroll_evidence::reconciliation::calculate(&app.application,&next,&next_dates,None).unwrap().week_totals_minutes,[0;4],"already applied carry and source hours must not be paid again");
+    assert_eq!(conn.query_row("SELECT COUNT(*) FROM payroll_submissions WHERE payroll_timesheet_id=?1",[original_record.id],|r|r.get::<_,i64>(0)).unwrap(),1);
+}
+
+#[test]
+fn feature2_failed_version_publication_never_advances_authority_or_allows_stale_send() {
+    let (_dir,mut app,schedule)=fixture();assert_eq!(generate(&mut app,&[1]).completed(),1);
+    let original=app.application.payroll_timesheet_repository.get_for_cycle_and_pa("2026/27",1,1).unwrap().unwrap();
+    let file=path(&app,&schedule,1);
+    crate::payroll_snapshot_service::send_production_candidate(&app.application.payroll_worked_item_repository,original.id,1,"2026/27",1,&file,"fixture",||Ok(())).unwrap();
+    save_feature2_hours(&app,3.);assert_eq!(generate(&mut app,&[1]).completed(),1);
+    let conn=db(&app);let previous=crate::timesheet_amendments::latest(&conn,original.id).unwrap().unwrap();
+    save_feature2_hours(&app,4.);
+    conn.execute_batch("CREATE TRIGGER fail_version BEFORE INSERT ON timesheet_amendment_versions WHEN NEW.event='generated' BEGIN SELECT RAISE(ABORT,'synthetic version failure'); END;").unwrap();
+    assert_eq!(generate(&mut app,&[1]).completed(),0);
+    assert_eq!(crate::timesheet_amendments::latest(&conn,original.id).unwrap().unwrap().document,previous.document);
+    assert!(app.application.payroll_worked_item_repository.snapshot_metadata(original.id).unwrap().is_none());
+    assert!(crate::timesheet_delivery::capture(&conn,original.id).is_err());
+    conn.execute_batch("DROP TRIGGER fail_version").unwrap();
+    assert_eq!(generate(&mut app,&[1]).completed(),1);
+    assert_eq!(crate::timesheet_amendments::latest(&conn,original.id).unwrap().unwrap().totals[0],240);
 }

@@ -46,7 +46,8 @@ pub fn stage(db: &Connection, record: &PayrollTimesheet) -> Result<Stage> {
     {
         return Ok(Stage::Indeterminate);
     }
-    if state.as_deref() == Some("submitted") || timesheet_status.is_some() {
+    if state.as_deref() == Some("submitted") || timesheet_status.is_some()
+        || crate::timesheet_amendments::saved(db,record.id)? {
         return Ok(Stage::Submitted);
     }
     Ok(Stage::Editable)
@@ -124,7 +125,9 @@ pub fn submitted_items(
     record: i64,
     app: &Application,
 ) -> Result<Vec<WorkedItemSnapshot>> {
-    let mut retained = match latest(db, record)? {
+    let mut retained = if let Some(version)=crate::timesheet_amendments::latest(db,record)? {
+        version.items
+    } else { match latest(db, record)? {
         Some(id) => items(db, id)?,
         None => {
             if app
@@ -140,6 +143,7 @@ pub fn submitted_items(
                 Vec::new()
             }
         }
+    }
     };
     let pa: Option<i64> = db
         .query_row(
@@ -312,6 +316,10 @@ pub fn verify_candidate_evidence(db: &Connection, record: i64) -> Result<()> {
             );
         }
     }
+    if crate::timesheet_amendments::saved(db,record)? {
+        crate::timesheet_amendments::verify_generated(db,record)?;
+        return Ok(());
+    }
     for e in &captured {
         let consumed:bool=db.query_row("SELECT EXISTS(SELECT 1 FROM payroll_submission_items i JOIN payroll_submissions s ON s.id=i.submission_id JOIN payroll_timesheets p ON p.id=s.payroll_timesheet_id WHERE p.id<>?1 AND s.id=(SELECT MAX(id) FROM payroll_submissions WHERE payroll_timesheet_id=p.id) AND ((?2='imported' AND i.timesheet_id=?3) OR (?2='direct' AND i.direct_shift_id=?3)))",params![record,e.source,e.id],|r|r.get(0))?;
         if consumed {
@@ -375,7 +383,10 @@ pub fn ensure_editable(db: &Connection, id: i64) -> Result<()> {
     ensure_mutable(db, id, false)
 }
 
-/// Explicit PDF regeneration may replace submitted payroll; preparation stays read-only.
+/// Preparation amendments and PDF generation retain all original submission history.
+pub fn ensure_amendable(db: &Connection, id: i64) -> Result<()> {
+    ensure_mutable(db, id, true)
+}
 pub fn ensure_generatable(db: &Connection, id: i64) -> Result<()> {
     ensure_mutable(db, id, true)
 }
@@ -384,12 +395,8 @@ fn ensure_mutable(db: &Connection, id: i64, allow_submitted: bool) -> Result<()>
     let record:Option<PayrollTimesheet>=db.query_row("SELECT id,personal_assistant_id,payroll_year,cycle_number,previous_cycle_hours,created_at,updated_at,payroll_department_notes,actual_in_lieu_hours,actual_in_lieu_updated_at FROM payroll_timesheets WHERE id=?1",[id],|r|Ok(PayrollTimesheet{id:r.get(0)?,personal_assistant_id:r.get(1)?,payroll_year:r.get(2)?,cycle_number:r.get(3)?,previous_cycle_hours:r.get(4)?,created_at:r.get(5)?,updated_at:r.get(6)?,payroll_department_notes:r.get(7)?,actual_in_lieu_hours:r.get(8)?,actual_in_lieu_updated_at:r.get(9)?})).optional()?;
     if let Some(record) = record {
         let stage = stage(db, &record)?;
-        let sickness_only = allow_submitted
-            && stage == Stage::Settled
-            && crate::sickness_service::generation_allowed(db, id)?;
         if stage != Stage::Editable
-            && !(allow_submitted && stage == Stage::Submitted)
-            && !sickness_only
+            && !(allow_submitted && matches!(stage, Stage::Submitted | Stage::Settled))
         {
             return Err("Submitted, settled or indeterminate payroll is protected".into());
         }
@@ -436,6 +443,10 @@ pub fn candidate_signature(db: &Connection, id: i64) -> Result<String> {
         .map(WorkEvidence::fingerprint)
         .collect::<Vec<_>>();
     values.push(format!("period:{first:?}"));
+    if crate::timesheet_amendments::saved(db,id)? {
+        let revision:i64=db.query_row("SELECT MAX(id) FROM timesheet_amendment_versions WHERE payroll_timesheet_id=?1 AND event='save'",[id],|r|r.get(0))?;
+        values.push(format!("saved-amendment:{revision}"));
+    }
     values.push(crate::sickness_service::signature(db, id)?);
     let mut statement=db.prepare("SELECT group_fingerprint,winner_source,winner_id FROM payroll_duplicate_decisions WHERE invalidated_at IS NULL AND id IN (
         SELECT m.decision_id FROM payroll_duplicate_members m
@@ -487,6 +498,10 @@ pub fn candidate_signature(db: &Connection, id: i64) -> Result<String> {
         ))
     })? {
         values.push(row?);
+    }
+    if crate::timesheet_amendments::saved(db,id)? || db.query_row("SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE name='timesheet_amendment_versions')",[],|r|r.get::<_,bool>(0))? {
+        let mut revisions=db.prepare("SELECT MAX(v.id),v.payroll_timesheet_id FROM timesheet_amendment_versions v JOIN payroll_timesheets p ON p.id=v.payroll_timesheet_id WHERE p.personal_assistant_id=?1 AND p.id<>?2 AND v.event='generated' GROUP BY v.payroll_timesheet_id ORDER BY v.payroll_timesheet_id")?;
+        for row in revisions.query_map(params![pa,id],|r|Ok(format!("authority:{}:{}",r.get::<_,i64>(0)?,r.get::<_,i64>(1)?)))? {values.push(row?);}
     }
     values.sort();
     Ok(hash(&values.join("|")))

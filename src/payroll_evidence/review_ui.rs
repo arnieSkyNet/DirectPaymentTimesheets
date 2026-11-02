@@ -2,7 +2,6 @@ use super::lifecycle::Stage;
 use super::*;
 #[derive(Default)]
 pub struct ReviewUi {
-    complete: HashSet<String>,
     cached: std::collections::HashMap<i64, ReviewData>,
     error: String,
     historical_rows: std::collections::HashMap<i64, Vec<HistoricalRow>>,
@@ -94,6 +93,13 @@ impl ReviewUi {
                 || d.change.as_ref().is_some_and(|c| c.changed)
         })
     }
+    pub fn refresh_audit(&mut self,app:&Application,record:&crate::payroll_timesheet_repository::PayrollTimesheet)->Result<()> {
+        if let Some(data)=self.cached.get_mut(&record.id) {data.audit=reconciliation::audit_lines(app,record)?;}
+        Ok(())
+    }
+    pub fn historical(&self,id:i64)->bool {
+        self.cached.get(&id).is_some_and(|d|matches!(d.stage,Stage::Submitted|Stage::Settled))
+    }
     pub fn blocks_preparation(&self, id: i64) -> bool {
         self.cached.get(&id).is_some_and(|d| {
             d.plan
@@ -116,7 +122,7 @@ impl ReviewUi {
             let stage = data.stage;
             if stage == Stage::Editable {
                 if data.replacement {
-                    ui.label("Replacement authorised: the original submission remains retained. Review and save preparation, then generate and send the replacement through the normal payroll workflow.");
+                    ui.label("Earlier submission retained: amend and save preparation, then generate the replacement PDF. Sending remains a separate explicit action.");
                 }
                 if let Some(plan) = &data.plan {
                     for notice in &plan.notices {
@@ -155,24 +161,10 @@ impl ReviewUi {
                     }
                 }
             }
-            if let Some(change) = &data.change {
-                if change.changed {
-                    egui::Frame::group(ui.style()).show(ui,|ui| {
-                        ui.strong(format!("Submitted evidence review — {name}"));
-                        ui.label(if stage==Stage::Settled {"Payslip Sent: settled payroll will not be rewritten."}else{"This PA's timesheet was already sent and current hours/evidence differ. Follow Payroll's instructions."});
-                        ui.collapsing("Discrepancy and audit details",|ui|{ui.label(&change.description);});
-                        let mut complete=self.complete.contains(&change.signature);
-                        if change.requires_complete {
-                            ui.checkbox(&mut complete,"I confirm actual evidence for the displayed aggregate reconciliation is complete");
-                            if complete {self.complete.insert(change.signature.clone());}else{self.complete.remove(&change.signature);}
-                        }
-                        if stage==Stage::Submitted && ui.button("Correct / Resubmit Timesheet").clicked() {
-                            match lifecycle::authorize_resubmission(app,record,&change.signature) {Ok(())=>changed=true,Err(e)=>self.error=e.to_string()}
-                        }
-                        if ui.add_enabled(!change.requires_complete||complete,egui::Button::new("Carry correction forward")).clicked() {
-                            match reconciliation::carry(app,record,&change.signature,complete) {Ok(())=>changed=true,Err(e)=>self.error=e.to_string()}
-                        }
-                    });
+            if matches!(stage,Stage::Submitted|Stage::Settled) {
+                ui.label("Amend hours directly, Save and regenerate the PDF. The latest regenerated saved version is used for subsequent reconciliation. Email sending is a separate explicit action.");
+                if let Some(change)=&data.change {
+                    if change.changed {ui.collapsing("Current evidence and retained history",|ui|{ui.label(&change.description);});}
                 }
             }
             self.show_audit(ui, record.id, name);

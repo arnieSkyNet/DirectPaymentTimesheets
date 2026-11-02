@@ -76,6 +76,7 @@ mod signature;
 mod startup;
 mod theme;
 mod timesheet_delivery;
+mod timesheet_amendments;
 mod update_check;
 
 fn main() -> std::process::ExitCode {

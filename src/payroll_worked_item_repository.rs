@@ -9,7 +9,7 @@ pub struct ManualHoursAdjustment {
     pub reason: Option<String>,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct WorkedItemSnapshot {
     pub week_number: i64,
     pub source_type: String,

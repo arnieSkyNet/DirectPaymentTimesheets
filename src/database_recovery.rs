@@ -124,6 +124,10 @@ pub(crate) fn file_fingerprint(path: &Path) -> Result<Option<String>> {
 /// probes page integrity without an unbounded full scan of retained PDF blobs.
 /// Budget exhaustion is not evidence of corruption; backup/upgrade checks remain full.
 fn validate_current(db: &Connection) -> Result<()> {
+    for name in ["retain_timesheet_amendment","immutable_timesheet_amendment"] {
+        let exists:bool=db.query_row("SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='trigger' AND name=?1)",[name],|r|r.get(0))?;
+        if !exists {return Err(format!("Required timesheet version retention guard missing: {name}").into());}
+    }
     for (table, columns) in [
         (
             "timesheets",
@@ -146,6 +150,7 @@ fn validate_current(db: &Connection) -> Result<()> {
             "payroll_timesheet_id,document_id",
         ),
         ("timesheet_documents", "id,pdf_bytes"),
+        ("timesheet_amendment_versions", "id,payroll_timesheet_id,event,document_id,before_state,after_state,recorded_at,actor"),
         ("timesheet_delivery_attempts", "id,outcome,resolved_at"),
         ("timesheet_delivery_reviews", "id"),
         ("payroll_bundle_attempts", "id,recipients,message_id,marker,settings_digest"),
@@ -177,7 +182,7 @@ fn validate_current(db: &Connection) -> Result<()> {
     ] {
         db.prepare(&format!("SELECT {columns} FROM {} LIMIT 0", quote(table)))?;
         for operation in ["INSERT", "UPDATE", "DELETE"] {
-            let name = format!("dpt41_{table}_{operation}");
+            let name = format!("dpt42_{table}_{operation}");
             let exists: bool = db.query_row(
                 "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='trigger' AND name=?1)",
                 [name],
@@ -1212,7 +1217,7 @@ mod stage5_integrity_tests {
         let path = dir.path().join("database.sqlite");
         initialise(&path).unwrap();
         let db = crate::database::open(&path).unwrap();
-        db.execute_batch("DROP TRIGGER dpt41_timesheet_delivery_attempts_UPDATE")
+        db.execute_batch("DROP TRIGGER dpt42_timesheet_delivery_attempts_UPDATE")
             .unwrap();
         let before = fingerprint(&db).unwrap();
         assert!(initialise(&path).is_err());

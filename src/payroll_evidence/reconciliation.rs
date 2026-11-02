@@ -82,8 +82,13 @@ pub(crate) fn changes_prepared(
         .filter(|e| e.pa == record.personal_assistant_id)
         .cloned()
         .collect::<Vec<_>>();
+    if let Some(version)=crate::timesheet_amendments::latest(&db,record.id)? {
+        return amended_changes(app,record,&version,&current,start);
+    }
     let old = lifecycle::submitted_items(&db, record.id, app)?;
     let sid = lifecycle::latest(&db, record.id)?.unwrap_or(0);
+    let authority=crate::timesheet_amendments::latest(&db,record.id)?;
+    let baseline_key=authority.as_ref().map_or_else(||format!("submission:{sid}"),|v|format!("version:{}",v.document));
     let mut components = Vec::new();
     let mut materially_changed = false;
     for item in &old {
@@ -92,7 +97,7 @@ pub(crate) fn changes_prepared(
         };
         let current_item = current.iter().find(|e| e.key() == key);
         let actual = retained_actual_minutes(item, current_item);
-        let prefix = format!("submission:{sid}:{key}");
+        let prefix = format!("{baseline_key}:{key}");
         let delta = actual - item.worked_minutes - net_corrections(&db, record.id, &prefix)?;
         materially_changed |= item
             .source_evidence
@@ -124,7 +129,16 @@ pub(crate) fn changes_prepared(
     }
     // Opaque weekly estimates cannot be inferred from absence of later evidence.
     // Their proposed difference is displayed for an explicit review only.
-    let weeks = app.payroll_timesheet_repository.get_weeks(record.id)?;
+    let mut weeks = app.payroll_timesheet_repository.get_weeks(record.id)?;
+    // The most recently regenerated saved version, not an old sent estimate or
+    // an unsaved/unregenerated draft, supplies the reconciliation baseline.
+    if let Some(version)=&authority {
+        for week in &mut weeks { week.worked_hours=version.totals[(week.week_number-1) as usize] as f64/60.0; }
+    } else if sid!=0 {
+        for week in &mut weeks {
+            if let Some(hours)=db.query_row("SELECT worked_hours FROM payroll_submission_weeks WHERE submission_id=?1 AND week_number=?2",params![sid,week.week_number],|r|r.get::<_,f64>(0)).optional()? {week.worked_hours=hours;}
+        }
+    }
     let legacy_aggregate = lifecycle::stage(&db, record)? == Stage::Settled
         && super::legacy_baseline::has_settlement(&db, record.id)?;
     for week in weeks {
@@ -145,7 +159,7 @@ pub(crate) fn changes_prepared(
         // Cutover aggregates remain authoritative: source membership was never
         // established, so their comparison cannot establish an estimate correction.
         // New historical sources still receive their individual payment review.
-        if !opaque || legacy_aggregate {
+        if !opaque || (legacy_aggregate && authority.is_none()) {
             continue;
         }
         let mut actual = 0i64;
@@ -171,7 +185,7 @@ pub(crate) fn changes_prepared(
                 .ok_or("Actual worked hours overflow")?;
         }
         let submitted = (week.worked_hours * 60.0).round() as i64;
-        let prefix = format!("submission:{sid}:aggregate:{}", week.week_number);
+        let prefix = format!("{baseline_key}:aggregate:{}", week.week_number);
         // Remove the complete known-source difference, including differences
         // already recorded in earlier individual corrections. Otherwise a later
         // aggregate confirmation would deduct those same hours a second time.
@@ -228,7 +242,7 @@ pub(crate) fn changes_prepared(
         if consumed_elsewhere(app, &db, record, e)? {
             continue;
         }
-        let prefix = format!("submission:{sid}:new:{}", e.key());
+        let prefix = format!("{baseline_key}:new:{}", e.key());
         let delta = e.minutes - net_corrections(&db, record.id, &prefix)?;
         if delta != 0 {
             let rate = app
@@ -248,7 +262,7 @@ pub(crate) fn changes_prepared(
             });
         }
     }
-    let mut signature = hash(&format!("{sid}:{}", lifecycle::fingerprint(&current)));
+    let mut signature = hash(&format!("{baseline_key}:{}", lifecycle::fingerprint(&current)));
     let source_signature = signature.clone();
     let mut prospective = false;
     for e in &current {
@@ -311,6 +325,46 @@ pub(crate) fn changes_prepared(
         requires_complete,
     })
 }
+// Unchanged source exports are retained historical facts, not permission to
+// overwrite the employer's corrected total. Reconcile only later material source
+// changes against the latest generated version using the established carry engine.
+fn amended_changes(app:&Application,record:&PayrollTimesheet,version:&crate::timesheet_amendments::Version,current:&[WorkEvidence],start:NaiveDate)->Result<Changes> {
+    let db=open(app)?;
+    let mut components=Vec::new();
+    for index in 0..4 {
+        let ws=start+chrono::Duration::days(index*7);
+        let we=ws+chrono::Duration::days(6);
+        if we>chrono::Local::now().date_naive() {continue;}
+        let mut before=version.evidence.iter().filter(|(w,_,_)|*w==index+1).map(|(_,key,fp)|(key.clone(),fp.clone())).collect::<Vec<_>>();
+        let entries=current.iter().filter(|e|e.date().is_ok_and(|d|d>=ws && d<=we)).collect::<Vec<_>>();
+        let mut after=entries.iter().map(|e|(e.key(),e.fingerprint())).collect::<Vec<_>>();
+        before.sort();after.sort();
+        if before!=after {
+            let mut prospective=false;
+            for (key,_) in before.iter().chain(after.iter()) {
+                if let Some((source,id))=key.split_once(':') {
+                    if let Ok(id)=id.parse::<i64>() {prospective |= crate::shift_changes::prospective(&db,source,id)?;}
+                }
+            }
+            if prospective {continue;}
+        }
+        let actual=if before==after {version.totals[index as usize]} else {
+            let mut minutes=0i64;
+            for e in entries {
+                if !consumed_elsewhere(app,&db,record,e)? {
+                    minutes=minutes.checked_add(crate::pay_rate_allocation::payable_minutes(e.minutes,&app.context.config.payroll)?).ok_or("Worked hours overflow")?;
+                }
+            }
+            minutes
+        };
+        let key=format!("version:{}:week:{}",version.document,index+1);
+        let delta=actual-version.totals[index as usize]-net_corrections(&db,record.id,&key)?;
+        if delta!=0 {components.push(Component{key,source:None,source_id:None,date:Some(ws.to_string()),minutes:delta,rate_id:None,rate_date:None,rate:None,aggregate:false});}
+    }
+    let signature=hash(&format!("{}:{:?}:{:?}",version.document,lifecycle::fingerprint(current),components));
+    Ok(Changes{source_signature:signature.clone(),signature,changed:!components.is_empty(),description:format!("Latest regenerated saved timesheet document {} is authoritative; subsequent actual-hours difference: {:+.2} hours.",version.document,components.iter().map(|c|c.minutes).sum::<i64>() as f64/60.),components,requires_complete:false})
+}
+
 fn consumed_elsewhere(
     app: &Application,
     db: &Connection,
@@ -574,8 +628,12 @@ pub(crate) fn plan_prepared(
                 held = true;
                 break;
             }
+            if crate::timesheet_amendments::latest(&db,previous.id)?.is_some() {
+                held=true;
+                break;
+            }
             if stage == Stage::Submitted {
-                notices.push(format!("{}: original timesheet was sent; review Correct / Resubmit or Carry correction forward in its preparation",e.key()));
+                notices.push(format!("{}: original timesheet was sent; amend, Save and regenerate its original preparation to use corrected hours",e.key()));
                 held = true;
                 break;
             }
@@ -641,7 +699,16 @@ pub fn outstanding(
     record: &PayrollTimesheet,
 ) -> Result<Vec<CorrectionApplication>> {
     let db = open(app)?;
-    let mut rows=db.prepare("SELECT id,minutes,work_date,pay_rate_id,pay_rate_effective_date,total_hourly_rate,reason FROM payroll_corrections WHERE personal_assistant_id=?1 AND origin_payroll_timesheet_id<>?2 ORDER BY created_at,id")?.query_map(params![record.personal_assistant_id,record.id],|r|Ok(CorrectionApplication{id:r.get(0)?,minutes:r.get(1)?,date:r.get(2)?,rate_id:r.get(3)?,rate_date:r.get(4)?,rate:r.get(5)?,reason:r.get(6)?}))?.collect::<rusqlite::Result<Vec<_>>>()?;
+    let rows=db.prepare("SELECT id,minutes,work_date,pay_rate_id,pay_rate_effective_date,total_hourly_rate,reason FROM payroll_corrections WHERE personal_assistant_id=?1 AND origin_payroll_timesheet_id<>?2 ORDER BY created_at,id")?.query_map(params![record.personal_assistant_id,record.id],|r|Ok(CorrectionApplication{id:r.get(0)?,minutes:r.get(1)?,date:r.get(2)?,rate_id:r.get(3)?,rate_date:r.get(4)?,rate:r.get(5)?,reason:r.get(6)?}))?.collect::<rusqlite::Result<Vec<_>>>()?;
+    let mut current=Vec::new();
+    for c in rows {
+        let (origin,key):(i64,String)=db.query_row("SELECT origin_payroll_timesheet_id,evidence_key FROM payroll_corrections WHERE id=?1",[c.id],|r|Ok((r.get(0)?,r.get(1)?)))?;
+        if let Some(version)=crate::timesheet_amendments::latest(&db,origin)? {
+            if !key.starts_with(&format!("version:{}:",version.document)) {continue;}
+        }
+        current.push(c);
+    }
+    let mut rows=current;
     for c in &mut rows {
         for r in app
             .payroll_timesheet_repository
@@ -656,7 +723,9 @@ pub fn outstanding(
                     Stage::Submitted | Stage::Settled | Stage::Indeterminate
                 )
             {
-                if let Some(sid) = lifecycle::latest(&db, r.id)? {
+                if let Some(version)=crate::timesheet_amendments::latest(&db,r.id)? {
+                    c.minutes -= version.applications.iter().filter(|(id,_)|*id==c.id).map(|(_,m)|m).sum::<i64>();
+                } else if let Some(sid) = lifecycle::latest(&db, r.id)? {
                     let used:i64=db.query_row("SELECT COALESCE(SUM(minutes),0) FROM payroll_submission_corrections WHERE submission_id=?1 AND correction_id=?2",params![sid,c.id],|r|r.get(0))?;
                     c.minutes -= used;
                 }
@@ -720,6 +789,10 @@ pub fn calculate_for_generation(
     weeks: &[NaiveDate; 4],
     legacy: Option<&crate::pay_rate_allocation::PreviousCycleContext>,
 ) -> Result<crate::pay_rate_allocation::ReconciledPayrollHours> {
+    if crate::timesheet_amendments::saved(&*open(app)?,record.id)? {
+        lifecycle::ensure_generatable(&*open(app)?,record.id)?;
+        return crate::timesheet_amendments::hours(app,record);
+    }
     if let Some(hours) = crate::sickness_service::historical_hours(&*open(app)?, record.id)? {
         lifecycle::ensure_generatable(&*open(app)?, record.id)?;
         return Ok(hours);
@@ -887,7 +960,9 @@ pub fn sync_settled_corrections(app: &Application, pa: i64) -> Result<()> {
         .payroll_timesheet_repository
         .get_all_for_personal_assistant(pa)?
     {
-        if lifecycle::stage(&db, &record)? != Stage::Settled {
+        let authority=crate::timesheet_amendments::latest(&db,record.id)?;
+        let stage=lifecycle::stage(&db,&record)?;
+        if stage!=Stage::Settled && !(authority.is_some() && stage==Stage::Submitted) {
             continue;
         }
         let old = lifecycle::submitted_items(&db, record.id, app)?;
@@ -898,7 +973,7 @@ pub fn sync_settled_corrections(app: &Application, pa: i64) -> Result<()> {
         let exact = lifecycle::has_exact_intervals(&old);
         let all = load_for_pa(&db, record.personal_assistant_id)?;
         let tx = db.unchecked_transaction()?;
-        for c in changes.components.iter().filter(|c| !c.aggregate) {
+        for c in changes.components.iter().filter(|c| !c.aggregate || authority.is_some()) {
             let known_edit = c
                 .source
                 .as_ref()
@@ -918,7 +993,7 @@ pub fn sync_settled_corrections(app: &Application, pa: i64) -> Result<()> {
                 (Some(source), Some(id)) => crate::shift_changes::prospective(&tx, source, id)?,
                 _ => false,
             };
-            if (exact || known_edit) && !prospective {
+            if (exact || known_edit || authority.is_some()) && !prospective {
                 insert_component(
                     &tx,
                     &record,
@@ -955,6 +1030,10 @@ pub fn historical_save_notice(
 pub fn audit_lines(app: &Application, record: &PayrollTimesheet) -> Result<Vec<String>> {
     let db = open(app)?;
     let mut lines = Vec::new();
+    if crate::timesheet_amendments::saved(&db,record.id)? {
+        let mut revisions=db.prepare("SELECT id,event,document_id,recorded_at,actor,before_state,after_state FROM timesheet_amendment_versions WHERE payroll_timesheet_id=?1 ORDER BY id")?;
+        for row in revisions.query_map([record.id],|r|Ok(format!("Timesheet version {}: {} — document {:?}, {} by {}\nBefore: {}\nAfter: {}",r.get::<_,i64>(0)?,r.get::<_,String>(1)?,r.get::<_,Option<i64>>(2)?,r.get::<_,String>(3)?,r.get::<_,String>(4)?,r.get::<_,Option<String>>(5)?.unwrap_or_default(),r.get::<_,String>(6)?)))? {lines.push(row?);}
+    }
     let mut changes=db.prepare("SELECT e.recorded_at,e.source,e.source_id,e.reason,e.before_evidence,e.after_evidence FROM shift_change_events e LEFT JOIN timesheets t ON e.source='imported' AND t.id=e.source_id LEFT JOIN direct_shifts d ON e.source='direct' AND d.id=e.source_id WHERE COALESCE(t.personal_assistant_id,d.personal_assistant_id)=?1 ORDER BY e.id")?;
     for row in changes.query_map([record.personal_assistant_id], |r| {
         Ok(format!(

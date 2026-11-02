@@ -7612,7 +7612,7 @@ mod payroll_period_eligibility_tests {
     }
 
     #[test]
-    fn stored_out_of_overlap_payroll_is_in_dashboard_and_email_scope_but_protected_from_generation()
+    fn stored_out_of_overlap_payroll_remains_eligible_for_regeneration_without_changing_settlement()
     {
         let (_dir, application, historical, _) = employment_period_fixture();
         let mut app = DirectPaymentApp::new(application);
@@ -7648,7 +7648,7 @@ mod payroll_period_eligibility_tests {
         let pending = app.pending_email_batch.as_ref().unwrap();
         assert!(pending.choices.iter().any(|p| p.id == 1 && !p.available));
         assert!(!pending.selected_personal_assistant_ids.contains(&1));
-        assert_eq!(app.generate_payroll_timesheets().unwrap(), 3);
+        assert_eq!(app.generate_payroll_timesheets().unwrap(), 4);
         assert_eq!(
             app.application
                 .payroll_timesheet_repository
@@ -7668,7 +7668,7 @@ mod payroll_period_eligibility_tests {
             .payroll_worked_item_repository
             .snapshot_metadata(settled.id)
             .unwrap()
-            .is_none());
+            .is_some());
         assert_eq!(
             crate::payroll_evidence::lifecycle::stage(&db, settled).unwrap(),
             crate::payroll_evidence::lifecycle::Stage::Settled

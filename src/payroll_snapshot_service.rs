@@ -186,6 +186,13 @@ where
         "UPDATE payroll_timesheet_snapshot_states SET pdf_path=?1 WHERE payroll_timesheet_id=?2",
         rusqlite::params![final_path, publication.payroll_timesheet_id],
     ).map_err(operation_error)?;
+    if let Err(error)=crate::timesheet_amendments::record_generation(
+        &repository.connection, publication.payroll_timesheet_id,
+        *publication.week_totals_minutes, publication.previous_cycle_minutes, publication.items,
+    ) {
+        let _=repository.discard_candidate(publication.payroll_timesheet_id);
+        return Err(SnapshotSafetyError::Operation(error.to_string()));
+    }
     Ok(())
 }
 

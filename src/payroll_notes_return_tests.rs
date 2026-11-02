@@ -158,7 +158,7 @@ fn payroll_notes_invalidate_only_changed_candidate_and_rollback_atomically() {
 }
 
 #[test]
-fn payroll_notes_protected_states_refuse_and_returned_control_stays_available() {
+fn payroll_notes_amendments_save_except_uncertain_delivery_and_returned_control_stays_available() {
     for state in ["submitted", "indeterminate", "settled"] {
         let (_dir, app, schedule, mut screen) = load_active_record();
         let record = screen.weeks[0].0.clone();
@@ -178,9 +178,14 @@ fn payroll_notes_protected_states_refuse_and_returned_control_stays_available() 
             db.execute("UPDATE payroll_timesheet_snapshot_states SET state=?1 WHERE payroll_timesheet_id=?2", params![state, record.id]).unwrap();
         }
         db.execute("UPDATE personal_assistants SET employment_status='Inactive',leaving_date='2020-01-01' WHERE id=?1",[record.personal_assistant_id]).unwrap();
-        screen.weeks[0].0.payroll_department_notes = "Cannot overwrite submitted note".into();
-        assert!(screen.save_current(&app).is_err());
-        assert_eq!(stored_note(&app, &record), "");
+        screen.weeks[0].0.payroll_department_notes = "Amended payroll note".into();
+        if state=="indeterminate" {
+            assert!(screen.save_current(&app).is_err());
+            assert_eq!(stored_note(&app,&record),"");
+        } else {
+            screen.save_current(&app).unwrap();
+            assert_eq!(stored_note(&app,&record),"Amended payroll note");
+        }
         screen.reload();
         screen.load(&app, &schedule, "period").unwrap();
         let ctx = egui::Context::default();

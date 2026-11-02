@@ -199,7 +199,7 @@ PA Maintenance includes effective-dated Contracted/Variable Hours Basis, Start/L
 - A Dashboard operational payroll-period selector for deliberate current, historical or future work.
 - Payroll Timesheet Preparation bound to the selected period, including manual Hours Worked corrections, dated leave, structured sickness dates, public holidays and weekly mileage.
 - Select England and Wales (default), Scotland or Northern Ireland in Payroll Settings. GOV.UK holiday dates refresh in the background and can be refreshed manually; validated cached dates work offline. Coverage/fallback warnings remain visible. Existing drafts and historical PDFs are preserved, and identifying holidays never automatically subtracts worked hours.
-- Read-only protection for submitted or indeterminate preparation records and invalidation of stale generated candidates when represented data changes.
+- Submitted timesheets can be amended, saved and regenerated without an unlocking approval. Earlier versions/submissions remain auditable; the latest regenerated saved version governs later reconciliation. Actual unresolved delivery remains protected, and edited PDFs must be regenerated before sending. See [timesheet amendments](docs/TIMESHEET-AMENDMENTS.md).
 
 Imported `worked_minutes` is parsed from the CSV Worked Hours field. It is not recalculated from Start Time/End Time and is not changed by the persisted rounding setting. For open payroll, selected evidence from both sources is converted to payable minutes using Payroll Settings rounding; original source minutes remain unchanged. The current default is 15 minutes Up. CSV rate and amount fields are retained as imported data but are not the authoritative payroll rate; maintained PA rate history is authoritative.
 

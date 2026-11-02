@@ -133,7 +133,6 @@ impl DirectPaymentApp {
                     .ok_or("Preparation missing — prepare and save this PA first")?;
                 let current_stage = stage(&db, &record)?;
                 match current_stage {
-                    Stage::Settled if !sending && !crate::sickness_service::generation_allowed(&db, record.id)? => return Err("Settled — protected".into()),
                     Stage::Indeterminate => {
                         return Err("Delivery uncertain — do not regenerate or resend".into())
                     }
@@ -344,11 +343,6 @@ impl DirectPaymentApp {
                 let record =
                     record.ok_or("Preparation missing — prepare and save this PA first")?;
                 match stage(&db, &record)? {
-                    Stage::Settled if action == "Generation" && !crate::sickness_service::generation_allowed(&db, record.id)? => {
-                        return Ok(ProductionOutcome::Skipped(
-                            "Already submitted/settled — protected".into(),
-                        ))
-                    }
                     Stage::Indeterminate => {
                         return Err("Delivery uncertain — automatic retry refused".into())
                     }

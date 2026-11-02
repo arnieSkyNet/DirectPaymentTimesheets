@@ -647,7 +647,7 @@ impl PayrollTimesheetRepository {
         }
 
         let transaction = self.connection.unchecked_transaction()?;
-        crate::payroll_evidence::lifecycle::ensure_editable(&transaction, record.id)
+        crate::payroll_evidence::lifecycle::ensure_amendable(&transaction, record.id)
             .map_err(|e| rusqlite::Error::InvalidParameterName(e.to_string()))?;
         let state: Option<String> = transaction
             .query_row(
@@ -657,12 +657,30 @@ impl PayrollTimesheetRepository {
                 |row| row.get(0),
             )
             .optional()?;
-        if matches!(state.as_deref(), Some("submitted" | "indeterminate")) {
+        if matches!(state.as_deref(), Some("indeterminate")) {
             return Err(rusqlite::Error::InvalidParameterName(
-                "This payroll timesheet is submitted or indeterminate and is read-only."
+                "A delivery is unresolved; preparation cannot change during an uncertain send."
                     .to_string(),
             ));
         }
+
+        let stage = crate::payroll_evidence::lifecycle::stage(&transaction, record)
+            .map_err(|e| rusqlite::Error::InvalidParameterName(e.to_string()))?;
+        let amendment = stage != crate::payroll_evidence::lifecycle::Stage::Editable
+            || crate::payroll_evidence::lifecycle::latest(&transaction,record.id)
+                .map_err(|e|rusqlite::Error::InvalidParameterName(e.to_string()))?.is_some()
+            || crate::timesheet_amendments::saved(&transaction,record.id)
+                .map_err(|e|rusqlite::Error::InvalidParameterName(e.to_string()))?;
+        // Capture a legacy submitted snapshot before removing its mutable binding.
+        // Existing immutable submission/document histories are never rewritten.
+        if state.as_deref()==Some("submitted") && crate::payroll_evidence::lifecycle::latest(&transaction,record.id)
+            .map_err(|e|rusqlite::Error::InvalidParameterName(e.to_string()))?.is_none() {
+            let at:String=transaction.query_row("SELECT COALESCE(submitted_at,generated_at) FROM payroll_timesheet_snapshot_states WHERE payroll_timesheet_id=?1",[record.id],|r|r.get(0))?;
+            crate::payroll_evidence::lifecycle::archive_submission(&transaction,record.id,&at)
+                .map_err(|e|rusqlite::Error::InvalidParameterName(e.to_string()))?;
+        }
+        let before = if amendment {Some(crate::timesheet_amendments::details(&transaction,record.id)
+            .map_err(|e|rusqlite::Error::InvalidParameterName(e.to_string()))?)} else {None};
 
         let stored_weeks = self.get_weeks(record.id)?;
         let previous_leave = self.get_annual_leave(record.id)?;
@@ -689,11 +707,11 @@ impl PayrollTimesheetRepository {
         let annual_leave =
             derive_annual_leave(record.id, &mut weeks, annual_leave, &previous_leave)?;
 
-        let candidate_invalidated = state.as_deref() == Some("candidate");
+        let candidate_invalidated = matches!(state.as_deref(),Some("candidate" | "submitted"));
         if candidate_invalidated {
             transaction.execute(
                 "DELETE FROM payroll_timesheet_snapshot_states
-                 WHERE payroll_timesheet_id = ?1 AND state = 'candidate'",
+                 WHERE payroll_timesheet_id = ?1 AND state IN ('candidate','submitted')",
                 [record.id],
             )?;
             transaction.execute(
@@ -816,6 +834,10 @@ impl PayrollTimesheetRepository {
             )?;
         }
 
+        if let Some(before)=before {
+            crate::timesheet_amendments::record_save(&transaction,record.id,&before)
+                .map_err(|e|rusqlite::Error::InvalidParameterName(e.to_string()))?;
+        }
         transaction.commit()?;
         Ok(candidate_invalidated)
     }

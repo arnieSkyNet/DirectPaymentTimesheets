@@ -19,7 +19,7 @@ pub(crate) fn open_read_only_owned(
     DatabaseConnection::open_read_only(path, staging)
 }
 
-pub const CURRENT_SCHEMA_VERSION: i64 = 41;
+pub const CURRENT_SCHEMA_VERSION: i64 = 42;
 
 pub fn initialise_database(database_path: &Path) -> crate::database_recovery::Result<()> {
     crate::database_recovery::initialise(database_path)
@@ -315,6 +315,9 @@ fn apply_migrations(connection: &Connection, target: i64) -> Result<()> {
     }
     if current_version < 41 && target >= 41 {
         crate::payroll_delivery::migrate(connection)?;
+    }
+    if current_version < 42 && target >= 42 {
+        crate::timesheet_amendments::migrate(connection)?;
     }
     Ok(())
 }
