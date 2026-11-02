@@ -21,7 +21,7 @@ const RECONNECT: &str = "Microsoft authorization is missing, expired or revoked.
 const VAULT: &str = "Microsoft credential store unavailable or verification failed. Unlock your OS credential store and reconnect; no fallback is permitted.";
 const INVALID: &str =
     "Microsoft returned an invalid authorization response; no credentials were accepted.";
-const NETWORK: &str = "Microsoft authorization connection failed. Check connectivity and retry; provider details are redacted.";
+const NETWORK: &str = "Microsoft authorization connection failed. Check your network, VPN and HTTPS proxy settings; request details are withheld.";
 // A refresh token is replaced only after a verified native-store write. This
 // mutex also prevents an in-process send and sign-in racing token refresh.
 static TOKENS: Mutex<()> = Mutex::new(());
@@ -135,7 +135,7 @@ impl Drop for Tokens {
         self.refresh.zeroize();
     }
 }
-#[derive(Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 struct Manifest {
     generation: String,
     parts: usize,
@@ -143,6 +143,9 @@ struct Manifest {
 const PART_SIZE: usize = 1000; // Below Windows Credential Manager limits, even as UTF-16.
 fn read(store: &dyn Store, id: &str, context: &Context) -> Result<Tokens, String> {
     if !valid_ref(id) {
+        return Err(RECONNECT.into());
+    }
+    if store.get(&revoked_key(id)).map_err(|_| VAULT)?.is_some() {
         return Err(RECONNECT.into());
     }
     let manifest: Manifest =
@@ -176,6 +179,29 @@ fn read(store: &dyn Store, id: &str, context: &Context) -> Result<Tokens, String
     Ok(tokens)
 }
 fn write(store: &dyn Store, id: &str, tokens: &Tokens) -> Result<(), String> {
+    if store.get(&revoked_key(id)).map_err(|_| VAULT)?.is_some() {
+        return Err(RECONNECT.into());
+    }
+    let old = store
+        .get(id)
+        .map_err(|_| VAULT)?
+        .map(|v| serde_json::from_str::<Manifest>(&v).map_err(|_| VAULT))
+        .transpose()?;
+    if let Some(old) = &old {
+        validate_manifest(old)?;
+        let key = generation_key(&old.generation);
+        if store.get(&key).map_err(|_| VAULT)?.is_none() {
+            put_verified(
+                store,
+                &key,
+                &serde_json::to_string(&Generation {
+                    manifest: old.clone(),
+                    parent: None,
+                })
+                .map_err(|_| VAULT)?,
+            )?;
+        }
+    }
     let raw = Zeroizing::new(serde_json::to_string(tokens).map_err(|_| VAULT)?);
     // Immutable chunks are fully read-verified BEFORE publishing the small
     // manifest. Retain previous generations for recovery; never delete secrets
@@ -199,6 +225,18 @@ fn write(store: &dyn Store, id: &str, tokens: &Tokens) -> Result<(), String> {
             return Err(VAULT.into());
         }
     }
+    put_verified(
+        store,
+        &generation_key(&manifest.generation),
+        &serde_json::to_string(&Generation {
+            manifest: manifest.clone(),
+            parent: old.map(|m| m.generation),
+        })
+        .map_err(|_| VAULT)?,
+    )?;
+    if store.get(&revoked_key(id)).map_err(|_| VAULT)?.is_some() {
+        return Err(RECONNECT.into());
+    }
     store
         .put(id, &serde_json::to_string(&manifest).map_err(|_| VAULT)?)
         .map_err(|_| VAULT)?;
@@ -212,12 +250,213 @@ fn write(store: &dyn Store, id: &str, tokens: &Tokens) -> Result<(), String> {
     Ok(())
 }
 
+// An explicit cleanup tombstone blocks honest clients and restored references.
+// Microsoft consent/token revocation remains a separate user action.
+fn revoked_key(id: &str) -> String {
+    format!(
+        "oauth-revoked-{}",
+        id.strip_prefix("oauth-v1-").unwrap_or("invalid")
+    )
+}
+fn generation_key(generation: &str) -> String {
+    format!("oauth-generation-v1-{generation}")
+}
+#[derive(Serialize, Deserialize)]
+struct Generation {
+    manifest: Manifest,
+    parent: Option<String>,
+}
+fn validate_manifest(m: &Manifest) -> Result<(), String> {
+    if m.generation.len() != 32
+        || !m.generation.bytes().all(|b| b.is_ascii_hexdigit())
+        || m.parts == 0
+        || m.parts > 128
+    {
+        return Err(VAULT.into());
+    }
+    Ok(())
+}
+fn put_verified(store: &dyn Store, key: &str, value: &str) -> Result<(), String> {
+    store.put(key, value).map_err(|_| VAULT)?;
+    if store.get(key).map_err(|_| VAULT)?.as_deref() != Some(value) {
+        return Err(VAULT.into());
+    }
+    Ok(())
+}
+fn cleanup_with(store: &dyn Store, email: &EmailConfig) -> Result<(), String> {
+    let id = email.microsoft_credential_ref.as_deref().ok_or(RECONNECT)?;
+    if !valid_ref(id) {
+        return Err(RECONNECT.into());
+    }
+    let tombstone = revoked_key(id);
+    let root = match store.get(&tombstone).map_err(|_| VAULT)? {
+        Some(v) => serde_json::from_str::<Manifest>(&v).map_err(|_| VAULT)?,
+        None => {
+            read(store, id, &Context::from_email(email)?)?;
+            let v = store.get(id).map_err(|_| VAULT)?.ok_or(VAULT)?;
+            let manifest = serde_json::from_str::<Manifest>(&v).map_err(|_| VAULT)?;
+            validate_manifest(&manifest)?;
+            put_verified(store, &tombstone, &v)?;
+            manifest
+        }
+    };
+    // Build and validate the complete known chain before deleting any chunks.
+    let mut manifests = Vec::new();
+    let mut next = Some(root);
+    let mut seen = std::collections::HashSet::new();
+    while let Some(m) = next.take() {
+        validate_manifest(&m)?;
+        if !seen.insert(m.generation.clone()) || manifests.len() >= 10000 {
+            return Err(VAULT.into());
+        }
+        let meta = store
+            .get(&generation_key(&m.generation))
+            .map_err(|_| VAULT)?;
+        next = if let Some(raw) = meta {
+            let g: Generation = serde_json::from_str(&raw).map_err(|_| VAULT)?;
+            if g.manifest.generation != m.generation || g.manifest.parts != m.parts {
+                return Err(VAULT.into());
+            }
+            if let Some(parent) = g.parent {
+                let raw = store
+                    .get(&generation_key(&parent))
+                    .map_err(|_| VAULT)?
+                    .ok_or(VAULT)?;
+                Some(
+                    serde_json::from_str::<Generation>(&raw)
+                        .map_err(|_| VAULT)?
+                        .manifest,
+                )
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+        manifests.push(m);
+    }
+    store.delete(id).map_err(|_| VAULT)?;
+    for m in &manifests {
+        for part in 0..m.parts {
+            let key = format!("oauth-part-v1-{}-{part}", m.generation);
+            store.delete(&key).map_err(|_| VAULT)?;
+            if store.get(&key).map_err(|_| VAULT)?.is_some() {
+                return Err(VAULT.into());
+            }
+        }
+    }
+    // Keep non-secret chain metadata/tombstone for idempotent retries and backups.
+    if store.get(id).map_err(|_| VAULT)?.is_some() {
+        return Err(VAULT.into());
+    }
+    Ok(())
+}
+pub(crate) fn forget_local(email: &EmailConfig) -> Result<(), String> {
+    let _guard = TOKENS.lock().map_err(|_| VAULT)?;
+    cleanup_with(crate::smtp_credentials::store(), email)
+}
+
 // Transport is injected in tests; production endpoints are fixed HTTPS, with
 // certificate verification, no redirects, bounded responses and a deadline.
 trait Http {
     fn post(&self, endpoint: &str, form: &[(&str, &str)]) -> Result<Zeroizing<String>, String>;
 }
 struct MicrosoftHttp;
+
+// ureq 3.4's TCP connector stops on an unreachable route instead of trying
+// the remaining DNS addresses. Retry only connection establishment, before
+// any OAuth HTTP body is sent, preserving the default TLS/proxy chain.
+#[derive(Debug)]
+struct AddressFallback<C>(C);
+impl<C: ureq::unversioned::transport::Connector> ureq::unversioned::transport::Connector
+    for AddressFallback<C>
+{
+    type Out = C::Out;
+    fn connect(
+        &self,
+        details: &ureq::unversioned::transport::ConnectionDetails,
+        _: Option<()>,
+    ) -> Result<Option<Self::Out>, ureq::Error> {
+        use ureq::unversioned::transport::{time, ConnectionDetails};
+        let start = Instant::now();
+        let mut last = ureq::Error::HostNotFound;
+        for (index, address) in details.addrs.iter().enumerate() {
+            let remaining = details.timeout.after.saturating_sub(start.elapsed());
+            if remaining.is_zero() {
+                return Err(ureq::Error::Timeout(details.timeout.reason));
+            }
+            let mut timeout = details.timeout;
+            timeout.after = time::Duration::Exact(remaining / (details.addrs.len() - index) as u32);
+            let mut addrs = details.resolver.empty();
+            addrs.push(*address);
+            let attempt = ConnectionDetails {
+                uri: details.uri,
+                addrs,
+                config: details.config,
+                request_level: details.request_level,
+                resolver: details.resolver,
+                now: (details.current_time)(),
+                timeout,
+                current_time: details.current_time.clone(),
+                run_connector: details.run_connector.clone(),
+            };
+            match self.0.connect(&attempt, None) {
+                Err(error) if retry_connect(&error) => last = error,
+                result => return result,
+            }
+        }
+        Err(last)
+    }
+}
+fn retry_connect(error: &ureq::Error) -> bool {
+    matches!(error, ureq::Error::Io(e) if matches!(e.kind(),
+        std::io::ErrorKind::HostUnreachable | std::io::ErrorKind::NetworkUnreachable |
+        std::io::ErrorKind::ConnectionRefused))
+        || matches!(error, ureq::Error::Timeout(_))
+}
+#[cfg(not(test))]
+fn microsoft_agent() -> ureq::Agent {
+    let config = ureq::Agent::config_builder()
+        .https_only(true)
+        .max_redirects(0)
+        .http_status_as_error(false)
+        .timeout_global(Some(Duration::from_secs(30)))
+        .build();
+    ureq::Agent::with_parts(
+        config,
+        AddressFallback(ureq::unversioned::transport::DefaultConnector::default()),
+        ureq::unversioned::resolver::DefaultResolver::default(),
+    )
+}
+// Do not format provider/library errors: they can contain proxy credentials,
+// URLs, response bodies or certificate details. Only classify typed errors.
+fn transport_error(error: &ureq::Error) -> &'static str {
+    use std::io::ErrorKind;
+    match error {
+        ureq::Error::HostNotFound => "Microsoft sign-in: DNS lookup failed. Check your internet connection, DNS and VPN.",
+        ureq::Error::Io(e) => match e.kind() {
+            ErrorKind::HostUnreachable | ErrorKind::NetworkUnreachable => "Microsoft sign-in: no reachable network route. Check IPv4/IPv6 connectivity, VPN and firewall settings.",
+            ErrorKind::ConnectionRefused => "Microsoft sign-in: connection refused. Check your firewall and HTTPS proxy.",
+            ErrorKind::TimedOut => "Microsoft sign-in: connection timed out. Check your connection, VPN and HTTPS proxy.",
+            _ => "Microsoft sign-in: network I/O failed. Check your connection, VPN and HTTPS proxy; request details are withheld.",
+        },
+        ureq::Error::Timeout(_) => "Microsoft sign-in: connection timed out. Check your connection, VPN and HTTPS proxy.",
+        ureq::Error::Rustls(_) | ureq::Error::Tls(_) | ureq::Error::TlsRequired => "Microsoft sign-in: secure TLS connection failed. Check the system clock, certificate trust and HTTPS-inspecting proxy. Certificate verification remains required.",
+        ureq::Error::InvalidProxyUrl | ureq::Error::ConnectProxyFailed(_) => "Microsoft sign-in: HTTPS proxy configuration or CONNECT failed. Check the application's proxy environment; credentials are withheld.",
+        ureq::Error::TooManyRedirects | ureq::Error::RedirectFailed => "Microsoft sign-in: unexpected redirect blocked. Check for a captive portal or intercepting proxy.",
+        ureq::Error::BodyExceedsLimit(_) => "Microsoft sign-in: response exceeded the safe size limit. Check for an intercepting proxy; response content is withheld.",
+        _ => NETWORK,
+    }
+}
+fn http_status_error(status: u16) -> String {
+    match status {
+        300..=399 => "Microsoft sign-in: unexpected HTTP redirect blocked. Check for a captive portal or proxy.".into(),
+        407 => "Microsoft sign-in: proxy authentication required (HTTP 407). Check your HTTPS proxy configuration.".into(),
+        429 => "Microsoft sign-in: service rate limit reached (HTTP 429). Wait before retrying.".into(),
+        500..=599 => format!("Microsoft sign-in: service or gateway unavailable (HTTP {status}). Try again later; response content is withheld."),
+        _ => format!("Microsoft sign-in: unexpected response (HTTP {status}). Check application registration or network policy; response content is withheld."),
+    }
+}
 impl Http for MicrosoftHttp {
     fn post(&self, endpoint: &str, form: &[(&str, &str)]) -> Result<Zeroizing<String>, String> {
         #[cfg(test)]
@@ -227,29 +466,23 @@ impl Http for MicrosoftHttp {
         }
         #[cfg(not(test))]
         {
-            let config = ureq::Agent::config_builder()
-                .https_only(true)
-                .max_redirects(0)
-                .http_status_as_error(false)
-                .timeout_global(Some(Duration::from_secs(30)))
-                .build();
-            let agent: ureq::Agent = config.into();
+            let agent = microsoft_agent();
             let mut response = agent
                 .post(format!("{AUTHORITY}/{endpoint}"))
                 .send_form(form.iter().copied())
-                .map_err(|_| NETWORK)?;
+                .map_err(|e| transport_error(&e))?;
             let status = response.status().as_u16();
             if !(200..300).contains(&status) && !(400..500).contains(&status) {
                 // Never accept success-shaped bodies attached to failed HTTP
                 // responses or forward arbitrary redirect/server error text.
-                return Err(NETWORK.into());
+                return Err(http_status_error(status));
             }
             let body = response
                 .body_mut()
                 .with_config()
                 .limit(65536)
                 .read_to_string()
-                .map_err(|_| NETWORK)?;
+                .map_err(|e| transport_error(&e))?;
             checked_http_reply(status, Zeroizing::new(body))
         }
     }
@@ -260,13 +493,16 @@ fn checked_http_reply(status: u16, body: Zeroizing<String>) -> Result<Zeroizing<
     if (200..300).contains(&status) {
         return Ok(body);
     }
+    if matches!(status, 407 | 429) {
+        return Err(http_status_error(status));
+    }
     if (400..500).contains(&status) {
-        let parsed = reply(&body)?;
+        let parsed = reply(&body).map_err(|_| http_status_error(status))?;
         if !parsed.error.is_empty() {
             return Ok(body);
         }
     }
-    Err(NETWORK.into())
+    Err(http_status_error(status))
 }
 
 #[derive(Deserialize)]
@@ -656,6 +892,332 @@ mod tests {
         cell::RefCell,
         collections::{HashMap, VecDeque},
     };
+    #[derive(Debug)]
+    struct FakeConnect {
+        results: Mutex<VecDeque<Result<(), ureq::Error>>>,
+        attempts: Mutex<Vec<std::net::SocketAddr>>,
+    }
+    impl ureq::unversioned::transport::Connector for FakeConnect {
+        type Out = ();
+        fn connect(
+            &self,
+            d: &ureq::unversioned::transport::ConnectionDetails,
+            _: Option<()>,
+        ) -> Result<Option<()>, ureq::Error> {
+            assert_eq!(d.addrs.len(), 1);
+            assert!(d.timeout.after <= ureq::unversioned::transport::time::Duration::from_secs(30));
+            self.attempts.lock().unwrap().push(d.addrs[0]);
+            self.results
+                .lock()
+                .unwrap()
+                .pop_front()
+                .unwrap()
+                .map(|_| Some(()))
+        }
+    }
+    fn connection_attempts(
+        results: Vec<Result<(), ureq::Error>>,
+        v6_first: bool,
+        seconds: u64,
+    ) -> (Result<Option<()>, ureq::Error>, Vec<std::net::SocketAddr>) {
+        use ureq::unversioned::{
+            resolver::{DefaultResolver, Resolver},
+            transport::{time, ConnectionDetails, Connector, NextTimeout},
+        };
+        let resolver = DefaultResolver::default();
+        let mut addrs = resolver.empty();
+        let v4 = "192.0.2.1:443".parse().unwrap();
+        let v6 = "[2001:db8::1]:443".parse().unwrap();
+        for a in if v6_first { [v6, v4] } else { [v4, v6] } {
+            addrs.push(a);
+        }
+        let config = ureq::Agent::config_builder().build();
+        let uri = "https://example.test".parse().unwrap();
+        let details = ConnectionDetails {
+            uri: &uri,
+            addrs,
+            config: &config,
+            request_level: false,
+            resolver: &resolver,
+            now: time::Instant::now(),
+            timeout: NextTimeout {
+                after: time::Duration::from_secs(seconds),
+                reason: ureq::Timeout::Global,
+            },
+            current_time: Arc::new(time::Instant::now),
+            run_connector: Arc::new(|_| panic!("fake connection must not use network")),
+        };
+        let connector = AddressFallback(FakeConnect {
+            results: Mutex::new(results.into()),
+            attempts: Mutex::new(Vec::new()),
+        });
+        let result = connector.connect(&details, None);
+        let attempts = connector.0.attempts.lock().unwrap().clone();
+        (result, attempts)
+    }
+    const NATIVE_ID: &str = "oauth-v1-0123456789abcdef0123456789abcdef";
+    const NATIVE_OTHER: &str = "oauth-v1-fedcba9876543210fedcba9876543210";
+
+    #[test]
+    #[ignore = "Child of native_synthetic_persistence_and_cleanup; no production entries"]
+    fn native_synthetic_persistence_child() {
+        let namespace = std::env::var("DPT_NATIVE_SYNTHETIC_NAMESPACE").unwrap();
+        let store = crate::smtp_credentials::NativeAcceptanceStore::new(&namespace);
+        assert_eq!(store.get("password").unwrap().as_deref(), Some("SYNTHETIC_ONLY"));
+        let context = Context::from_email(&email()).unwrap();
+        assert_eq!(read(&store, NATIVE_ID, &context).unwrap().access, "ACCESS_SECRET");
+        assert!(read(&store, NATIVE_OTHER, &context).is_ok());
+    }
+
+    #[test]
+    #[ignore = "Explicit native synthetic vault/process-restart/OAuth cleanup acceptance; no network"]
+    fn native_synthetic_persistence_and_cleanup() {
+        let namespace = uuid::Uuid::new_v4().to_string();
+        let store = crate::smtp_credentials::NativeAcceptanceStore::new(&namespace);
+        assert!(store.get("password").unwrap().is_none());
+        store.put("password", "SYNTHETIC_ONLY").unwrap();
+        let mut e = email();
+        let context = Context::from_email(&e).unwrap();
+        let tokens = tokens(reply(TOKEN).unwrap(), &context, None, 100).unwrap();
+        let mut generations = Vec::new();
+        for _ in 0..2 {
+            write(&store, NATIVE_ID, &tokens).unwrap();
+            generations.push(serde_json::from_str::<Manifest>(&store.get(NATIVE_ID).unwrap().unwrap()).unwrap());
+        }
+        write(&store, NATIVE_OTHER, &tokens).unwrap();
+        let child = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", "microsoft_oauth::tests::native_synthetic_persistence_child", "--ignored", "--test-threads=1"])
+            .env("DPT_NATIVE_SYNTHETIC_NAMESPACE", &namespace).output().unwrap();
+        assert!(child.status.success(), "synthetic persistence child failed (details withheld)");
+        e.microsoft_credential_ref = Some(NATIVE_ID.into());
+        cleanup_with(&store, &e).unwrap();
+        assert!(store.get(NATIVE_ID).unwrap().is_none());
+        for manifest in generations {
+            for part in 0..manifest.parts {
+                assert!(store.get(&format!("oauth-part-v1-{}-{part}", manifest.generation)).unwrap().is_none());
+            }
+        }
+        assert!(read(&store, NATIVE_ID, &context).is_err());
+        assert!(write(&store, NATIVE_ID, &tokens).is_err());
+        assert!(read(&store, NATIVE_OTHER, &context).is_ok());
+        cleanup_with(&store, &e).unwrap();
+        store.delete("password").unwrap();
+        assert!(store.get("password").unwrap().is_none());
+        // Drop verifies deletion of every remaining fixture-owned entry.
+    }
+
+    #[test]
+    fn local_cleanup_removes_indexed_generations_and_blocks_restored_references() {
+        let store = Memory::default();
+        let mut e = email();
+        let context = Context::from_email(&e).unwrap();
+        let tokens = tokens(reply(TOKEN).unwrap(), &context, None, 100).unwrap();
+        let id = "oauth-v1-0123456789abcdef0123456789abcdef";
+        let other = "oauth-v1-fedcba9876543210fedcba9876543210";
+        write(&store, id, &tokens).unwrap();
+        write(&store, other, &tokens).unwrap();
+        let first: Manifest = serde_json::from_str(&store.get(id).unwrap().unwrap()).unwrap();
+        write(&store, id, &tokens).unwrap();
+        e.microsoft_credential_ref = Some(id.into());
+        cleanup_with(&store, &e).unwrap();
+        assert!(store.get(id).unwrap().is_none());
+        assert!(store
+            .get(&format!("oauth-part-v1-{}-0", first.generation))
+            .unwrap()
+            .is_none());
+        assert!(read(&store, other, &context).is_ok());
+        assert!(read(&store, id, &context).is_err());
+        assert!(write(&store, id, &tokens).is_err());
+        cleanup_with(&store, &e).unwrap();
+    }
+    #[test]
+    fn interrupted_cleanup_is_fail_closed_and_retryable() {
+        struct RefuseDelete<'a>(&'a Memory);
+        impl Store for RefuseDelete<'_> {
+            fn get(&self, id: &str) -> Result<Option<String>, String> {
+                self.0.get(id)
+            }
+            fn put(&self, id: &str, v: &str) -> Result<(), String> {
+                self.0.put(id, v)
+            }
+            fn delete(&self, _: &str) -> Result<(), String> {
+                Err("SECRET_BACKEND_ERROR".into())
+            }
+        }
+        let store = Memory::default();
+        let mut e = email();
+        let context = Context::from_email(&e).unwrap();
+        let t = tokens(reply(TOKEN).unwrap(), &context, None, 100).unwrap();
+        let id = "oauth-v1-0123456789abcdef0123456789abcdef";
+        write(&store, id, &t).unwrap();
+        e.microsoft_credential_ref = Some(id.into());
+        let error = cleanup_with(&RefuseDelete(&store), &e).unwrap_err();
+        assert!(!error.contains("SECRET"));
+        assert!(read(&store, id, &context).is_err());
+        cleanup_with(&store, &e).unwrap();
+    }
+    #[test]
+    fn cleanup_retries_after_manifest_and_first_chunk_were_removed() {
+        struct FailSecond<'a>(&'a Memory);
+        impl Store for FailSecond<'_> {
+            fn get(&self, id: &str) -> Result<Option<String>, String> {
+                self.0.get(id)
+            }
+            fn put(&self, id: &str, v: &str) -> Result<(), String> {
+                self.0.put(id, v)
+            }
+            fn delete(&self, id: &str) -> Result<(), String> {
+                if id.ends_with("-1") {
+                    Err("SECRET".into())
+                } else {
+                    self.0.delete(id)
+                }
+            }
+        }
+        let store = Memory::default();
+        let mut e = email();
+        let context = Context::from_email(&e).unwrap();
+        let mut t = tokens(reply(TOKEN).unwrap(), &context, None, 100).unwrap();
+        t.access = "A".repeat(4000);
+        let id = "oauth-v1-0123456789abcdef0123456789abcdef";
+        write(&store, id, &t).unwrap();
+        e.microsoft_credential_ref = Some(id.into());
+        assert!(cleanup_with(&FailSecond(&store), &e).is_err());
+        assert!(store.get(id).unwrap().is_none());
+        assert!(read(&store, id, &context).is_err());
+        assert!(write(&store, id, &t).is_err());
+        cleanup_with(&store, &e).unwrap();
+        cleanup_with(&store, &e).unwrap();
+    }
+    #[test]
+    fn cleanup_rejects_wrong_account_and_corrupt_chain_without_deleting_chunks() {
+        let store = Memory::default();
+        let mut e = email();
+        let context = Context::from_email(&e).unwrap();
+        let t = tokens(reply(TOKEN).unwrap(), &context, None, 100).unwrap();
+        let id = "oauth-v1-0123456789abcdef0123456789abcdef";
+        write(&store, id, &t).unwrap();
+        e.microsoft_credential_ref = Some(id.into());
+        let mut wrong = e.clone();
+        wrong.smtp_username = "another@example.test".into();
+        assert!(cleanup_with(&store, &wrong).is_err());
+        assert!(read(&store, id, &context).is_ok());
+        let m: Manifest = serde_json::from_str(&store.get(id).unwrap().unwrap()).unwrap();
+        store
+            .put(&generation_key(&m.generation), "invalid metadata")
+            .unwrap();
+        assert!(cleanup_with(&store, &e).is_err());
+        assert!(store.get(id).unwrap().is_some());
+        assert!(store
+            .get(&format!("oauth-part-v1-{}-0", m.generation))
+            .unwrap()
+            .is_some());
+    }
+    #[test]
+    fn unreachable_family_falls_back_before_http_in_both_directions() {
+        for (kind, v6_first) in [
+            (std::io::ErrorKind::HostUnreachable, true),
+            (std::io::ErrorKind::NetworkUnreachable, false),
+            (std::io::ErrorKind::ConnectionRefused, true),
+        ] {
+            let (result, attempts) = connection_attempts(
+                vec![
+                    Err(ureq::Error::Io(std::io::Error::new(
+                        kind,
+                        "SECRET_INTERNAL_DETAIL",
+                    ))),
+                    Ok(()),
+                ],
+                v6_first,
+                30,
+            );
+            assert!(result.is_ok());
+            assert_eq!(attempts.len(), 2);
+            assert_eq!(attempts[0].is_ipv6(), v6_first);
+            assert_ne!(attempts[0].is_ipv6(), attempts[1].is_ipv6());
+        }
+    }
+    #[test]
+    fn address_fallback_preserves_tls_proxy_errors_and_deadline() {
+        for error in [
+            ureq::Error::Tls("SECRET_CERT_DETAIL"),
+            ureq::Error::ConnectProxyFailed("SECRET_PROXY_CREDENTIAL".into()),
+            ureq::Error::Io(std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                "SECRET",
+            )),
+        ] {
+            let (result, attempts) = connection_attempts(vec![Err(error)], true, 30);
+            assert!(result.is_err());
+            assert_eq!(attempts.len(), 1);
+        }
+        let (result, attempts) = connection_attempts(vec![], true, 0);
+        assert!(matches!(result, Err(ureq::Error::Timeout(_))));
+        assert!(attempts.is_empty());
+        let (result, attempts) = connection_attempts(
+            vec![Err(ureq::Error::Timeout(ureq::Timeout::Connect)), Ok(())],
+            true,
+            30,
+        );
+        assert!(result.is_ok());
+        assert_eq!(attempts.len(), 2);
+    }
+    #[test]
+    fn actionable_transport_errors_never_format_sensitive_details() {
+        for (error, expected) in [
+            (ureq::Error::HostNotFound, "DNS"),
+            (ureq::Error::Tls("SECRET_CERT_DETAIL"), "TLS"),
+            (
+                ureq::Error::ConnectProxyFailed("SECRET_PROXY_CREDENTIAL".into()),
+                "proxy",
+            ),
+            (
+                ureq::Error::Io(std::io::Error::new(
+                    std::io::ErrorKind::HostUnreachable,
+                    "SECRET",
+                )),
+                "route",
+            ),
+            (ureq::Error::Timeout(ureq::Timeout::Global), "timed out"),
+        ] {
+            let text = transport_error(&error);
+            assert!(text.contains(expected), "{text}");
+            assert!(!text.contains("SECRET"));
+        }
+    }
+    #[test]
+    fn http_failures_are_distinct_and_bodies_remain_redacted() {
+        for (status, expected) in [
+            (302, "redirect"),
+            (407, "proxy"),
+            (429, "rate limit"),
+            (503, "gateway"),
+            (403, "HTTP 403"),
+        ] {
+            let error =
+                checked_http_reply(status, Zeroizing::new("SECRET_BODY".into())).unwrap_err();
+            assert!(error.contains(expected), "{error}");
+            assert!(!error.contains("SECRET"));
+        }
+    }
+    #[test]
+    fn sign_in_worker_error_reaches_ui_without_replacing_saved_authorization() {
+        let mut email = email();
+        let saved = "oauth-v1-0123456789abcdef0123456789abcdef";
+        email.microsoft_credential_ref = Some(saved.into());
+        let mut task = SignInTask::default();
+        let (tx, rx) = mpsc::channel();
+        task.receiver = Some(rx);
+        task.context = Some(Context::from_email(&email).unwrap());
+        task.cancel = Some(Arc::new(AtomicBool::new(false)));
+        let message = transport_error(&ureq::Error::HostNotFound);
+        tx.send(Event::Complete(Err(message.into()))).unwrap();
+        task.poll(&mut email);
+        assert_eq!(task.status, message);
+        assert!(!task.pending());
+        assert!(task.challenge.is_none());
+        assert_eq!(email.microsoft_credential_ref.as_deref(), Some(saved));
+    }
     #[derive(Default)]
     struct Memory {
         values: RefCell<HashMap<String, String>>,
@@ -663,6 +1225,10 @@ mod tests {
         corrupt: bool,
     }
     impl Store for Memory {
+        fn delete(&self, id: &str) -> Result<(), String> {
+            self.values.borrow_mut().remove(id);
+            Ok(())
+        }
         fn get(&self, id: &str) -> Result<Option<String>, String> {
             Ok(self.values.borrow().get(id).cloned())
         }

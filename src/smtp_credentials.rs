@@ -22,6 +22,7 @@ pub(crate) fn runtime_change_tag(email: &EmailConfig) -> u64 {
 pub(crate) trait Store {
     fn get(&self, id: &str) -> Result<Option<String>, String>;
     fn put(&self, id: &str, value: &str) -> Result<(), String>;
+    fn delete(&self, _id: &str) -> Result<(), String> { Err("Credential deletion is unavailable.".into()) }
 }
 struct Native;
 fn native_entry(service: &str, id: &str) -> Result<keyring::Entry, String> {
@@ -73,6 +74,12 @@ fn linux_collection_ready() -> Result<(), String> {
     )
 }
 impl Store for Native {
+    fn delete(&self, id: &str) -> Result<(), String> {
+        match native_entry(SERVICE, id)?.delete_credential() {
+            Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
+            Err(_) => Err(UNAVAILABLE.into()),
+        }
+    }
     fn get(&self, id: &str) -> Result<Option<String>, String> {
         let entry = native_entry(SERVICE, id)?;
         match entry.get_password() {
@@ -89,12 +96,63 @@ impl Store for Native {
     }
 }
 
+// Explicitly ignored native acceptance only. Separate service and UUID namespace;
+// never enumerate, read or delete production entries or existing profiles.
+#[cfg(test)]
+pub(crate) struct NativeAcceptanceStore {
+    namespace: String,
+    written: std::sync::Mutex<Vec<String>>,
+}
+#[cfg(test)]
+impl NativeAcceptanceStore {
+    pub(crate) fn new(namespace: &str) -> Self {
+        assert_eq!(uuid::Uuid::parse_str(namespace).unwrap().to_string(), namespace);
+        Self { namespace: namespace.into(), written: Default::default() }
+    }
+    fn entry(&self, id: &str) -> Result<keyring::Entry, String> {
+        assert!(id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-'));
+        native_entry("DirectPaymentTimesheets.Tests.v107.acceptance", &format!("{}-{id}", self.namespace))
+    }
+}
+#[cfg(test)]
+impl Store for NativeAcceptanceStore {
+    fn get(&self, id: &str) -> Result<Option<String>, String> {
+        match self.entry(id)?.get_password() {
+            Ok(value) => Ok(Some(value)),
+            Err(keyring::Error::NoEntry) => Ok(None),
+            Err(_) => Err(UNAVAILABLE.into()),
+        }
+    }
+    fn put(&self, id: &str, value: &str) -> Result<(), String> {
+        self.written.lock().unwrap().push(id.into());
+        self.entry(id)?.set_password(value).map_err(|_| UNAVAILABLE.into())
+    }
+    fn delete(&self, id: &str) -> Result<(), String> {
+        match self.entry(id)?.delete_credential() {
+            Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
+            Err(_) => Err(UNAVAILABLE.into()),
+        }
+    }
+}
+#[cfg(test)]
+impl Drop for NativeAcceptanceStore {
+    fn drop(&mut self) {
+        // Include manifests, generation metadata and revocation markers; all owned
+        // writes are recorded before attempting the backend operation.
+        for id in self.written.lock().unwrap().iter() {
+            self.delete(id).expect("synthetic native fixture cleanup failed");
+            assert!(self.get(id).unwrap().is_none(), "synthetic entry remains");
+        }
+    }
+}
+
 // Unit tests cannot silently access a developer's real credential store.
 #[cfg(test)]
 #[derive(Default)]
 struct Memory(std::sync::Mutex<std::collections::HashMap<String, String>>);
 #[cfg(test)]
 impl Store for Memory {
+    fn delete(&self, id: &str) -> Result<(), String> { self.0.lock().unwrap().remove(id); Ok(()) }
     fn get(&self, id: &str) -> Result<Option<String>, String> {
         Ok(self.0.lock().unwrap().get(id).cloned())
     }
