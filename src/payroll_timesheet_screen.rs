@@ -402,8 +402,9 @@ impl PayrollTimesheetScreen {
                 self.reload_evidence_preserving_visits();
                 return;
             }
+            let preparation_dirty = self.has_unsaved_changes();
             let (record, _, name) = &self.weeks[record_index];
-            if self.review_ui.show_pa(ui, application, record, name) {
+            if self.review_ui.show_pa(ui, application, record, name, preparation_dirty) {
                 review_changed = true;
             }
             if self.blocked(record.id, pa) {

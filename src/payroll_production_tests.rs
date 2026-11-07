@@ -1806,12 +1806,7 @@ fn stage2_sickness_authority_can_be_superseded_by_existing_worked_correction() {
     let change =
         crate::payroll_evidence::reconciliation::changes(&app.application, &record).unwrap();
     assert!(change.changed);
-    crate::payroll_evidence::lifecycle::authorize_resubmission(
-        &app.application,
-        &record,
-        &change.signature,
-    )
-    .unwrap();
+    save_feature2_hours(&app, 3.0);
     assert!(sick::correction(&conn, 1).unwrap().is_none());
     let result = generate(&mut app, &[1]);
     assert_eq!(result.completed(), 1, "{:?}", result.entries);

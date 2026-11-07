@@ -205,54 +205,6 @@ pub fn fingerprint(items: &[WorkEvidence]) -> String {
     keys.sort();
     hash(&keys.join("|"))
 }
-pub fn authorize_resubmission(
-    app: &Application,
-    record: &PayrollTimesheet,
-    expected: &str,
-) -> Result<()> {
-    let db = open(app)?;
-    let _guard = crate::timesheet_delivery::production_lock(&db)?;
-    let changes = super::reconciliation::changes(app, record)?;
-    let tx = db.unchecked_transaction()?;
-    tx.execute("UPDATE schema_version SET version=version", [])?;
-    if stage(&tx, record)? != Stage::Submitted {
-        return Err("Only a sent, unsettled timesheet can be corrected/resubmitted".into());
-    }
-    if changes.signature != expected || !changes.changed {
-        return Err("Evidence changed; refresh the discrepancy before proceeding".into());
-    }
-    if latest(&tx, record.id)?.is_none() {
-        return Err(
-            "No retained submission baseline; original submitted evidence cannot be reconstructed"
-                .into(),
-        );
-    }
-    record_decision(
-        &tx,
-        record.id,
-        latest(&tx, record.id)?,
-        "resubmit",
-        expected,
-        &changes.description,
-    )?;
-    // A general worked-evidence correction supersedes the limited sickness-only generation authority.
-    tx.execute("UPDATE sickness_corrections SET retired_at=?1 WHERE payroll_timesheet_id=?2 AND retired_at IS NULL",params![now(),record.id])?;
-    // The immutable submission tables retain the exact original. The ordinary
-    // candidate slot becomes editable only following this explicit decision.
-    tx.execute(
-        "DELETE FROM payroll_timesheet_snapshot_states WHERE payroll_timesheet_id=?1",
-        [record.id],
-    )?;
-    tx.execute(
-        "DELETE FROM payroll_timesheet_worked_item_snapshots WHERE payroll_timesheet_id=?1",
-        [record.id],
-    )?;
-    // Keep delivery history in submissions; current delivery awaits replacement.
-    tx.execute("UPDATE payroll_timesheet_email_status SET sent_at=NULL WHERE personal_assistant_id=?1 AND payroll_year=?2 AND cycle_number=?3 AND email_type='timesheet'",params![record.personal_assistant_id,record.payroll_year,record.cycle_number])?;
-    tx.commit()?;
-    Ok(())
-}
-
 pub fn payroll_items_equal(left: &[WorkedItemSnapshot], right: &[WorkedItemSnapshot]) -> bool {
     fn normalise(items: &[WorkedItemSnapshot]) -> Vec<WorkedItemSnapshot> {
         items

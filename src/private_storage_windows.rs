@@ -1996,7 +1996,7 @@ mod tests {
         );
         assert!(!is_private(&shared).unwrap());
         let refused = shared.join("refused.sqlite");
-        assert!(crate::private_storage::prepare_database(&refused).is_err());
+        assert!(crate::private_storage::writable_database_guard(&refused).is_err());
         assert!(!refused.exists());
     }
 

@@ -1922,7 +1922,11 @@ impl DirectPaymentApp {
             .map(|_| self.selected_operational_payroll_schedule())
             .transpose()?;
         let assistant = self
-            .payslip_email_assistants()?
+            .email_assistants(if payslip {
+                PayrollEmailKind::Payslip
+            } else {
+                PayrollEmailKind::Timesheet
+            })?
             .into_iter()
             .find(|p| p.id == id)
             .ok_or("PA unavailable")?;
@@ -2107,183 +2111,6 @@ impl DirectPaymentApp {
             }
         } else if cancel {
             self.document_test_message = None;
-        }
-    }
-
-    fn send_test_timesheet_email(&mut self) {
-        let result = (|| -> Result<(), Box<dyn std::error::Error>> {
-            let payroll_test_email = self
-                .application
-                .context
-                .config
-                .email
-                .payroll_test_email_address
-                .trim();
-            if payroll_test_email.is_empty() {
-                return Err(
-                    "Payroll test email address is required before sending a test email.".into(),
-                );
-            }
-
-            let personal_assistant_id = self
-                .test_personal_assistant_id
-                .ok_or("Select a Personal Assistant to test an email.")?;
-            let assistant = self
-                .selected_period_assistants()?
-                .into_iter()
-                .find(|assistant| assistant.id == personal_assistant_id)
-                .ok_or("Selected Personal Assistant was not found.")?;
-
-            let employer = self
-                .email_settings_employer
-                .clone()
-                .or_else(|| {
-                    self.application
-                        .employer_repository
-                        .get_all()
-                        .ok()
-                        .and_then(|employers| employers.into_iter().next())
-                })
-                .ok_or("No employer has been configured.")?;
-            let sender_email = employer
-                .email
-                .as_deref()
-                .map(str::trim)
-                .filter(|email| !email.is_empty())
-                .ok_or("Employer has no email address.")?;
-
-            let current_schedule = self.selected_operational_payroll_schedule()?;
-
-            let personal_assistant_name = format!("{} {}", assistant.first_name, assistant.surname);
-            let attachment_path = crate::payroll_snapshot_service::attachment_path(
-                &self.application,
-                assistant.id,
-                &current_schedule,
-            )?;
-            verify_timesheet_candidate_for_attachment(
-                &self.application,
-                assistant.id,
-                &current_schedule,
-                &attachment_path,
-            )?;
-            let pa_test_email = self
-                .application
-                .context
-                .config
-                .email
-                .pa_test_email_address
-                .as_str();
-
-            self.application.send_test_payroll_email(
-                sender_email,
-                payroll_test_email,
-                Some(pa_test_email),
-                &personal_assistant_name,
-                assistant.date_of_birth.as_deref(),
-                assistant.national_insurance_number.as_deref(),
-                &current_schedule,
-                &attachment_path,
-                &self.application.context.config.payroll.timesheet_email_body,
-                self.additional_notes_by_personal_assistant
-                    .get(&assistant.id)
-                    .map(String::as_str),
-                employer.email_signature.as_deref(),
-            )
-        })();
-
-        match result {
-            Ok(()) => self.status_message = "Test timesheet email sent.".to_string(),
-            Err(error) => self.status_message = format!("Test timesheet email failed: {}", error),
-        }
-    }
-
-    fn send_test_payslip_email(&mut self) {
-        let result = (|| -> Result<(), Box<dyn std::error::Error>> {
-            let pa_test_email = self
-                .application
-                .context
-                .config
-                .email
-                .pa_test_email_address
-                .trim();
-            if pa_test_email.is_empty() {
-                return Err(
-                    "PA test email address is required before sending a test email.".into(),
-                );
-            }
-
-            let personal_assistant_id = self
-                .test_personal_assistant_id
-                .ok_or("Select a Personal Assistant to test an email.")?;
-            let assistant = self
-                .payslip_email_assistants()?
-                .into_iter()
-                .find(|assistant| assistant.id == personal_assistant_id)
-                .ok_or("No unsent PA payroll documents are available for this test email, or the selected Personal Assistant was not found.")?;
-
-            let employer = self
-                .email_settings_employer
-                .clone()
-                .or_else(|| {
-                    self.application
-                        .employer_repository
-                        .get_all()
-                        .ok()
-                        .and_then(|employers| employers.into_iter().next())
-                })
-                .ok_or("No employer has been configured.")?;
-            let sender_email = employer
-                .email
-                .as_deref()
-                .map(str::trim)
-                .filter(|email| !email.is_empty())
-                .ok_or("Employer has no email address.")?;
-
-            let current_schedule = self
-                .operational_payroll_period
-                .selected
-                .as_ref()
-                .map(|_| self.selected_operational_payroll_schedule())
-                .transpose()?;
-            let personal_assistant_name = format!("{} {}", assistant.first_name, assistant.surname);
-            let bundle = self.unsent_payslip_documents(&assistant, current_schedule.as_ref())?;
-
-            let payslip_subject =
-                crate::email_service::payslip_subject(&bundle, current_schedule.as_ref())?;
-            let (subject, body) = crate::email_service::payroll_document_wording(
-                &bundle,
-                &payslip_subject,
-                &self.application.context.config.payroll.payslip_email_body,
-            );
-            self.application.send_test_payslip_email(
-                sender_email,
-                pa_test_email,
-                &personal_assistant_name,
-                assistant.date_of_birth.as_deref(),
-                assistant.national_insurance_number.as_deref(),
-                current_schedule
-                    .as_ref()
-                    .filter(|_| bundle.email_types.contains(&"payslip")),
-                &bundle.paths,
-                &crate::email_service::canonical_attachment_filenames(
-                    &bundle,
-                    &personal_assistant_name,
-                    current_schedule
-                        .as_ref()
-                        .filter(|_| bundle.email_types.contains(&"payslip")),
-                )?,
-                body,
-                subject,
-                self.additional_notes_by_personal_assistant
-                    .get(&assistant.id)
-                    .map(String::as_str),
-                employer.email_signature.as_deref(),
-            )
-        })();
-
-        match result {
-            Ok(()) => self.status_message = "Test payslip email sent.".to_string(),
-            Err(error) => self.status_message = format!("Test payslip email failed: {}", error),
         }
     }
 
@@ -7004,14 +6831,9 @@ mod payroll_period_eligibility_tests {
             // all delivery, schedule, evidence and settlement tables, even if a
             // later write were to restore their original values.
             if expected.paths.is_empty() {
-                app.send_test_payslip_email();
-                assert!(
-                    app.status_message
-                        .contains("No unsent PA payroll documents"),
-                    "{}",
-                    app.status_message
-                );
-                assert!(!app.status_message.contains("No such file"));
+                let error = app.prepare_document_test(true).unwrap_err().to_string();
+                assert!(matches!(error.as_str(), "PA unavailable" | "No eligible documents"), "{error}");
+                assert!(!error.contains("No such file"));
             } else {
                 assert!(app
                     .payslip_email_assistants()
@@ -7186,11 +7008,8 @@ mod payroll_period_eligibility_tests {
             // The timesheet action still requires a schedule and period-eligible PA,
             // even when the shared picker includes an inactive document recipient.
             if !has_schedule || (!ordinary && !kinds.is_empty()) {
-                app.send_test_timesheet_email();
-                assert!(app
-                    .status_message
-                    .starts_with("Test timesheet email failed:"));
-                assert!(!app.status_message.contains("No such file"));
+                let error = app.prepare_document_test(false).unwrap_err().to_string();
+                assert!(!error.contains("No such file"), "{error}");
             }
             let after: i64 = db
                 .query_row("PRAGMA data_version", [], |row| row.get(0))
@@ -8772,10 +8591,9 @@ mod standalone_email_ui_tests {
         }
         // The lightweight hints cannot authorize delivery. Clicking still runs
         // exact candidate hashing and PDF validation before any SMTP connection.
-        app.send_test_timesheet_email();
-        assert!(app.status_message.contains("changed since"));
-        app.send_test_payslip_email();
-        assert!(app.status_message.contains("failed"));
+        let error = app.prepare_document_test(false).unwrap_err().to_string();
+        assert!(error.contains("changed since"), "{error}");
+        assert!(app.prepare_document_test(true).is_err());
         #[cfg(target_os = "linux")]
         {
             use std::io::Read;

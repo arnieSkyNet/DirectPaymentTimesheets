@@ -91,7 +91,7 @@ fn phase1_windows_database_refuses_broad_ancestor_without_creating_files() {
     broad_fixture(&shared);
     assert!(platform::is_private(&child).unwrap());
     let database = child.join("synthetic.sqlite");
-    let result = prepare_database(&database);
+    let result = writable_database_guard(&database);
     let created = database.exists();
     let error = result.unwrap_err().to_string();
     assert!(error.contains("class=unsafe_ancestor; reason=untrusted_allow_ace"));
@@ -408,7 +408,7 @@ fn phase1_windows_database_refuses_private_parent_without_inheritable_access() {
     );
     assert!(platform::is_private(&child).unwrap());
     let database = child.join("refused.sqlite");
-    let error = prepare_database(&database).unwrap_err().to_string();
+    let error = writable_database_guard(&database).unwrap_err().to_string();
     assert!(error
         .contains("class=unsafe_sidecar_inheritance; reason=missing_inheritable_current_access"));
     assert!(error.contains("role=immediate_parent"));
@@ -425,7 +425,7 @@ fn phase1_windows_database_refuses_additional_read_only_trustee_without_repair()
     set_fixture_dacl(&parent, &format!("D:P(A;OICI;FA;;;{current})(A;OICI;FA;;;SY)(A;OICI;GR;;;WD)"));
     let policy = platform::TestSecurityPolicy::capture(&parent).unwrap();
     let refused = parent.join("refused.sqlite");
-    let error = prepare_database(&refused).unwrap_err().to_string();
+    let error = writable_database_guard(&refused).unwrap_err().to_string();
     assert!(error.contains("class=unsafe_sidecar_inheritance; reason=untrusted_allow_ace"));
     assert!(error.contains("role=immediate_parent"));
     assert!(!refused.exists());
@@ -525,7 +525,7 @@ fn phase1_windows_positive_database_ancestor_admission() {
     let guard =
         platform::with_synthetic_root_observation(|| platform::database_ancestor_guard(&database));
     drop(guard.unwrap());
-    prepare_database(&database).unwrap();
+    writable_database_guard(&database).unwrap();
     assert!(platform::is_private(&database).unwrap());
 }
 

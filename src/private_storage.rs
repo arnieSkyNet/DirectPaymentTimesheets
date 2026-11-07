@@ -541,12 +541,7 @@ pub(crate) fn read_only_database_guard(path: &Path) -> io::Result<Vec<File>> {
     }
 }
 
-pub fn prepare_database(path: &Path) -> io::Result<()> {
-    writable_database_guard(path).map(drop)
-}
-
-/// Preserve the existing admission policy, returning guards for an owning caller.
-/// Legacy callers of prepare_database still retain guards only during preparation.
+/// Preserve the admission policy and return guards for the connection owner.
 pub(crate) fn writable_database_guard(path: &Path) -> io::Result<Vec<File>> {
     check_path(path)?;
     for suffix in ["-journal", "-wal", "-shm"] {
@@ -812,7 +807,7 @@ mod tests {
         let before_dir = fs::metadata(&directory).unwrap().permissions();
         let before = fs::metadata(&file).unwrap().permissions();
         ensure_private_dir(&directory).unwrap();
-        prepare_database(&file).unwrap();
+        writable_database_guard(&file).unwrap();
         drop(open_or_create_lock(&file).unwrap());
         let _ = assess(&directory, true);
         assert_eq!(before_dir, fs::metadata(&directory).unwrap().permissions());
@@ -833,7 +828,7 @@ mod tests {
         let link = root.path().join("link");
         symlink(&source, &link).unwrap();
         assert!(write_atomic(&link, b"changed").is_err());
-        assert!(prepare_database(&link).is_err());
+        assert!(writable_database_guard(&link).is_err());
         assert!(open_or_create_lock(&link).is_err());
         assert!(copy_new(&link, &root.path().join("copy")).is_err());
         assert_eq!(fs::read(&source).unwrap(), b"retained");
@@ -843,7 +838,7 @@ mod tests {
         let database = root.path().join("live.sqlite");
         create_new(&database).unwrap();
         symlink(&source, root.path().join("live.sqlite-wal")).unwrap();
-        assert!(prepare_database(&database).is_err());
+        assert!(writable_database_guard(&database).is_err());
     }
 
     #[cfg(unix)]

@@ -354,7 +354,7 @@ mod tests {
     use super::*;
     use crate::database::create_schema;
     use crate::email_service::{
-        preview_payroll_email, preview_test_payroll_email, send_test_payroll_email,
+        preview_payroll_email, preview_test_payroll_email,
     };
     use crate::payroll_worked_item_repository::{SnapshotState, WorkedItemSnapshot};
     use tempfile::TempDir;
@@ -752,8 +752,7 @@ mod tests {
         )
         .unwrap();
         let missing_attachment = directory.path().join("missing.pdf");
-        assert!(send_test_payroll_email(
-            &crate::config::EmailConfig::default(),
+        let missing_preview = preview_test_payroll_email(
             "employer@example.com",
             "test@example.com",
             None,
@@ -766,8 +765,8 @@ mod tests {
             None,
             None,
             "Timesheet {Personal Assistant Name}",
-        )
-        .is_err());
+        ).unwrap();
+        assert!(crate::email_service::send_preview(&crate::config::EmailConfig::default(), missing_preview, &missing_attachment).is_err());
         assert_eq!(
             repository.snapshot_metadata(10).unwrap().unwrap().state,
             SnapshotState::Candidate

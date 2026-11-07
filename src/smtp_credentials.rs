@@ -6,6 +6,7 @@ use zeroize::Zeroizing;
 #[cfg(not(any(windows, target_os = "linux", target_os = "macos")))]
 compile_error!("SMTP credential storage requires Windows Credential Manager, Linux Secret Service or macOS Keychain; no fallback is permitted.");
 
+#[cfg(not(test))]
 const SERVICE: &str = "DirectPaymentTimesheets.v1.smtp";
 const UNAVAILABLE: &str = "SMTP credential store unavailable, locked, denied or missing. Unlock your OS keyring and retry/restart, or re-enter the password and Save Email Settings. Authenticated SMTP is blocked; there is no plaintext fallback.";
 
@@ -24,6 +25,8 @@ pub(crate) trait Store {
     fn put(&self, id: &str, value: &str) -> Result<(), String>;
     fn delete(&self, _id: &str) -> Result<(), String> { Err("Credential deletion is unavailable.".into()) }
 }
+// Unit tests use Memory; native acceptance uses its own isolated namespace.
+#[cfg(not(test))]
 struct Native;
 fn native_entry(service: &str, id: &str) -> Result<keyring::Entry, String> {
     #[cfg(target_os = "linux")]
@@ -73,6 +76,7 @@ fn linux_collection_ready() -> Result<(), String> {
         session.as_deref(),
     )
 }
+#[cfg(not(test))]
 impl Store for Native {
     fn delete(&self, id: &str) -> Result<(), String> {
         match native_entry(SERVICE, id)?.delete_credential() {

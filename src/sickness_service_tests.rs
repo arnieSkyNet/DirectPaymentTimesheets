@@ -955,14 +955,15 @@ fn failed_settled_correction_publication_remains_retryable_without_reopening_set
         }
     )
     .is_err());
-    assert!(correction_open(&db, 10).unwrap());
+    let correction_id = correction(&db, 10).unwrap().unwrap();
+    assert_eq!(db.query_row::<i64,_,_>("SELECT COUNT(*) FROM sickness_submission_evidence WHERE correction_id=?1", [correction_id], |r|r.get(0)).unwrap(), 0);
     assert_eq!(
         lifecycle::stage(&db, &record(&db, 10).unwrap()).unwrap(),
         lifecycle::Stage::Settled
     );
     let retry = publish(&dir, &db, 10, "retry correction");
     send(&db, &retry).unwrap();
-    assert!(!correction_open(&db, 10).unwrap());
+    assert_eq!(db.query_row::<i64,_,_>("SELECT COUNT(*) FROM sickness_submission_evidence WHERE correction_id=?1", [correction_id], |r|r.get(0)).unwrap(), 1);
 }
 
 fn retained_fixture() -> (tempfile::TempDir, crate::database::DatabaseConnection, SicknessPeriod) {

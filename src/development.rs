@@ -403,17 +403,17 @@ mod tests {
         let original_db = root.join("original.sqlite");
         crate::private_storage::write_new(&original_db, b"synthetic retained bytes").unwrap();
         std::fs::hard_link(&original_db, &linked).unwrap();
-        assert!(crate::private_storage::prepare_database(&linked).is_err());
+        assert!(crate::private_storage::writable_database_guard(&linked).is_err());
         assert_eq!(
             std::fs::read(&original_db).unwrap(),
             b"synthetic retained bytes"
         );
         let broad_sidecar_db = root.join("broad-sidecar.sqlite");
-        crate::private_storage::prepare_database(&broad_sidecar_db).unwrap();
+        crate::private_storage::writable_database_guard(&broad_sidecar_db).unwrap();
         let sidecar = root.join("broad-sidecar.sqlite-wal");
         crate::private_storage::write_new(&sidecar, b"synthetic sidecar").unwrap();
         fixture_acl(&sidecar, false);
-        assert!(crate::private_storage::prepare_database(&broad_sidecar_db).is_err());
+        assert!(crate::private_storage::writable_database_guard(&broad_sidecar_db).is_err());
         assert_eq!(std::fs::read(&sidecar).unwrap(), b"synthetic sidecar");
 
         let intermediate = root.join("intermediate");
@@ -442,7 +442,7 @@ mod tests {
         drop(guarded);
         fixture_acl(&intermediate, false);
         let refused = parent.join("refused.sqlite");
-        let error = crate::private_storage::prepare_database(&refused)
+        let error = crate::private_storage::writable_database_guard(&refused)
             .unwrap_err()
             .to_string();
         assert!(
@@ -454,7 +454,7 @@ mod tests {
         crate::private_storage::create_private_dir(&broad_parent).unwrap();
         fixture_acl(&broad_parent, true);
         let refused = broad_parent.join("refused.sqlite");
-        let error = crate::private_storage::prepare_database(&refused)
+        let error = crate::private_storage::writable_database_guard(&refused)
             .unwrap_err()
             .to_string();
         assert!(error.contains("unsafe_sidecar_inheritance"));
@@ -467,7 +467,7 @@ mod tests {
             .args(["-NoProfile", "-NonInteractive", "-Command", "$ErrorActionPreference='Stop'; New-Item -ItemType Junction -Path $env:DPT_LINK -Target $env:DPT_TARGET | Out-Null"])
             .env("DPT_LINK", &link).env("DPT_TARGET", &target).output().unwrap();
         assert!(output.status.success(), "junction fixture failed");
-        assert!(crate::private_storage::prepare_database(&link.join("refused.sqlite")).is_err());
+        assert!(crate::private_storage::writable_database_guard(&link.join("refused.sqlite")).is_err());
         assert!(!target.join("refused.sqlite").exists());
         // Remove only the new junction itself; never recurse into its target.
         std::fs::remove_dir(&link).unwrap();

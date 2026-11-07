@@ -2,6 +2,7 @@ use super::lifecycle::Stage;
 use super::*;
 #[derive(Default)]
 pub struct ReviewUi {
+    complete: HashSet<(i64, String)>,
     cached: std::collections::HashMap<i64, ReviewData>,
     error: String,
     historical_rows: std::collections::HashMap<i64, Vec<HistoricalRow>>,
@@ -113,6 +114,7 @@ impl ReviewUi {
         app: &Application,
         record: &crate::payroll_timesheet_repository::PayrollTimesheet,
         name: &str,
+        preparation_dirty: bool,
     ) -> bool {
         let Some(data) = self.cached.get(&record.id) else {
             return false;
@@ -164,12 +166,60 @@ impl ReviewUi {
             if matches!(stage,Stage::Submitted|Stage::Settled) {
                 ui.label("Amend hours directly, Save and regenerate the PDF. The latest regenerated saved version is used for subsequent reconciliation. Email sending is a separate explicit action.");
                 if let Some(change)=&data.change {
-                    if change.changed {ui.collapsing("Current evidence and retained history",|ui|{ui.label(&change.description);});}
+                    if change.changed {
+                        egui::Frame::group(ui.style()).show(ui, |ui| {
+                            ui.strong(format!("Carry-forward review — {name}"));
+                            ui.label(&change.description);
+                            ui.label("Carry this difference into a later payroll cycle. Original submissions and documents are retained.");
+                            let key = (record.id, change.signature.clone());
+                            let mut complete = self.complete.contains(&key);
+                            if change.requires_complete {
+                                ui.checkbox(&mut complete, "I confirm actual evidence for the displayed aggregate reconciliation is complete");
+                                if complete {
+                                    self.complete.insert(key.clone());
+                                } else {
+                                    self.complete.remove(&key);
+                                }
+                            }
+                            if preparation_dirty {
+                                ui.label("Save or discard preparation changes before carrying a correction.");
+                            }
+                            if ui.add_enabled(
+                                !preparation_dirty && (!change.requires_complete || complete),
+                                egui::Button::new("Carry correction forward"),
+                            ).clicked() {
+                                match reconciliation::carry(app, record, &change.signature, complete) {
+                                    Ok(()) => {
+                                        self.complete.remove(&key);
+                                        self.error.clear();
+                                        changed = true;
+                                    }
+                                    Err(error) => self.error = error.to_string(),
+                                }
+                            }
+                        });
+                    }
                 }
             }
             self.show_audit(ui, record.id, name);
         }
 
+        // The parent preserves this UI cache across evidence reloads so that
+        // historical row confirmations survive. Refresh a completed carry here
+        // to remove its action immediately and retain the new audit decision.
+        if changed && self.historical(record.id) {
+            match reconciliation::changes(app, record) {
+                Ok(change) => {
+                    if let Some(data) = self.cached.get_mut(&record.id) {
+                        data.change = Some(change);
+                    }
+                    if let Err(error) = self.refresh_audit(app, record) {
+                        self.error = error.to_string();
+                    }
+                }
+                Err(error) => self.error = error.to_string(),
+            }
+        }
         if !self.error.is_empty() {
             ui.colored_label(ui.visuals().error_fg_color, &self.error);
         }
