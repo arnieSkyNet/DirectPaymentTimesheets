@@ -2,7 +2,7 @@
 
 Direct Payment Timesheets is a local desktop application for administering UK Direct Payment Personal Assistant timesheets and the four-week payroll-provider workflow. It imports externally recorded work, prepares payroll timesheets, generates the provider PDF, sends timesheets and payslips, imports payroll documents, and preserves the evidence represented by submitted payroll.
 
-The **1.0.6 release** application uses SQLite schema **41**. It is a single-user local desktop application for the documented Direct Payment payroll workflow, not a general-purpose payroll product.
+Current source is **unreleased v1.0.7, SQLite schema 42**, on `security/v1.0.7-phase1`. It includes editable submitted/settled timesheets, separately generated replacement PDFs, Microsoft personal-account OAuth2, native credential storage, regional public holidays and configurable payroll rounding. See [current project state](docs/PROJECT_STATE.md) and [release readiness](docs/RELEASE-BUILDS.md). The **published v1.0.6 release** uses SQLite schema **41**. It is a single-user local desktop application for the documented Direct Payment payroll workflow, not a general-purpose payroll product.
 
 ## Download
 
@@ -175,7 +175,7 @@ Use disposable data for development as described under [Runtime data and configu
 
 ## Implemented functionality
 
-This section describes published **1.0.6 (schema41)** packages linked above. Historical schema numbers below identify when features were introduced.
+This section describes current **unreleased v1.0.7 (schema42)** source. The download links remain v1.0.6/schema41; development features below must not be assumed present in those older binaries. Historical stage/schema headings identify when features were introduced, not current acceptance results.
 
 ### Records and settings
 
@@ -332,7 +332,7 @@ Third-party dependencies and bundled font components remain subject to their res
 Corrected payroll PDFs are handled through Personal Assistant Maintenance → **Replace payroll document…**: select the existing identity, choose an individual corrected PDF, review both hashes/history, and confirm. Original bytes, hashes and delivery evidence remain retained. Revision/hash filenames are internal; payroll emails use canonical recipient-visible filenames. A saved Active-to-Inactive transition files safely identified PA-owned timesheets and payroll PDFs directly into shared year-level `Archived` folders, without a PA subfolder. New documents for inactive PAs go there directly; reactivation does not restore historical files. A durable move journal supports post-commit cleanup retries. See [filing and replacement details](docs/ARCHITECTURE.md#inactive-pa-filing-and-registered-supplement-repair).
 
 
-Stage 2 introduced schema37 in development 1.0.6 (current schema41) to protect sickness dates across payroll cycles. Changes require a reason and reviewed scope; protected cycles require authorised sickness-only corrections, and uncertain delivery remains blocked. Corrected historical PDFs preserve settled work and original evidence, display revised dates in the ordinary weekly table and explain the change in the notes area. Payroll assesses financial implications; the application does not calculate SSP or classify CSV notes as sickness. Upgrades retain verified database/config recovery; external business files need separate protection. See [Stage 2 workflow](docs/DEVELOPMENT.md#stage-2-sickness-protection-106schema37).
+Stage 2 introduced schema37 in development 1.0.6 (current development schema42) to protect sickness dates across payroll cycles. Changes require a reason and reviewed scope; protected cycles require authorised sickness-only corrections, and uncertain delivery remains blocked. Corrected historical PDFs preserve settled work and original evidence, display revised dates in the ordinary weekly table and explain the change in the notes area. Payroll assesses financial implications; the application does not calculate SSP or classify CSV notes as sickness. Upgrades retain verified database/config recovery; external business files need separate protection. See [Stage 2 workflow](docs/DEVELOPMENT.md#stage-2-sickness-protection-106schema37).
 
 ### Signature images and drawing (1.0.6)
 
@@ -367,7 +367,7 @@ supported. Neither external nor managed signature images are copied by database/
 backup: separately protect the complete data root and external business assets.
 
 
-Stage 4 introduced schema38 in development 1.0.6 (current schema41) for CSV content identity and prospective shift review across Hours Keeper and Hours Shift. Changed files at the same pathname are detected; originals and omitted rows are retained. Overnight overlaps and moved counterparts require explicit payable-version/separate-shift review, with audited deferral available. New protected edits require authorisation and contextual financial correction; legacy obligations remain unchanged. Upgrades use the existing verified recovery process. See [Stage 4 development notes](docs/DEVELOPMENT.md#stage-4-shift-change-protection-106schema38).
+Stage 4 introduced schema38 in development 1.0.6 (current development schema42) for CSV content identity and prospective shift review across Hours Keeper and Hours Shift. Changed files at the same pathname are detected; originals and omitted rows are retained. Overnight overlaps and moved counterparts require explicit payable-version/separate-shift review, with audited deferral available. New protected edits require authorisation and contextual financial correction; legacy obligations remain unchanged. Upgrades use the existing verified recovery process. See [Stage 4 development notes](docs/DEVELOPMENT.md#stage-4-shift-change-protection-106schema38).
 
 
 ## Stage 5 startup reliability (1.0.6/schema38)
@@ -448,6 +448,5 @@ trust requirements still need to be checked for each deployment.
 Unreleased development 1.0.7 adds private creation for payroll storage and recovery
 staging, plus **Settings → Application Settings → Assess Storage Permissions**.
 The assessment changes no existing permissions. Shared business directories and
-existing replacement access policies are preserved. SMTP behavior and published
-v1.0.6 packages/download links are unchanged. See
+existing replacement access policies are preserved. Published v1.0.6 packages/download links are unchanged. Development SMTP now blocks plaintext authentication, stores password/token secrets in native OS stores, and supports Microsoft personal-account device authorization and refresh; live-provider acceptance remains incomplete. Gmail/GMX password SMTP and unauthenticated local relays retain their transport paths. See [Microsoft OAuth2](docs/MICROSOFT-OAUTH2-SMTP.md), [credential storage](docs/SMTP-CREDENTIAL-STORAGE.md) and [email acceptance](docs/EMAIL-SECURITY-ACCEPTANCE.md). See
 [security hardening](docs/SECURITY-HARDENING.md) for limits and separate repair review.

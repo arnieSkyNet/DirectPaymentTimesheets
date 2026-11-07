@@ -1,6 +1,6 @@
 # DirectPaymentTimesheets domain guide
 
-This describes unreleased development 1.0.6 on `main`, schema41, including Stages
+This describes unreleased development 1.0.7 on `security/v1.0.7-phase1`, schema42, including Stages
 1–8. Historical schema references identify feature introductions, not the current
 schema. See [published downloads](../README.md#download) for Linux/Windows v1.0.4
 and macOS v1.0.5.
@@ -120,11 +120,11 @@ A selected-period payroll record can be:
 - **Submitted**: immutable baseline representing the production PDF successfully sent.
 - **Indeterminate**: protected state where acceptance is unknown after an ambiguous SMTP error or interrupted claim, or finalisation failed after possible/known acceptance.
 
-Submitted and indeterminate records are read-only in preparation. Changing represented data for a candidate invalidates it before the change is persisted, requiring regeneration. Opening unchanged data does not invalidate it. Stale-bound screens cannot save after the operational selection or material schedule dates change.
+Submitted and settled timesheets can be explicitly amended and saved, then regenerated as replacement PDFs; sending remains a separate confirmed action. Earlier submissions and PDF bytes remain retained. In-flight/indeterminate delivery remains protected. See [timesheet amendments](TIMESHEET-AMENDMENTS.md). Changing represented data for a candidate invalidates it before the change is persisted, requiring regeneration. Opening unchanged data does not invalidate it. Stale-bound screens cannot save after the operational selection or material schedule dates change.
 
 ## Public holidays
 
-Public-holiday identification is always active. Payroll Settings selects England and Wales (the default for existing and new configurations), Scotland or Northern Ireland. New four-week preparation receives zero-hour date suggestions from the selected regional GOV.UK bank-holiday feed. Published dates are used directly, including exceptional, moved and substitute holidays; names, notes and bunting do not determine dates, entitlement or pay. Existing editable drafts retain every date and entered hour; preparation shows missing and unexpected dates for manual review instead of accumulating suggestions from another region. Submitted and indeterminate records retain their original values and PDF evidence.
+Public-holiday identification is always active. Payroll Settings selects England and Wales (the default for existing and new configurations), Scotland or Northern Ireland. New four-week preparation receives zero-hour date suggestions from the selected regional GOV.UK bank-holiday feed. Published dates are used directly, including exceptional, moved and substitute holidays; names, notes and bunting do not determine dates, entitlement or pay. Existing editable drafts retain every date and entered hour; preparation shows missing and unexpected dates for manual review instead of accumulating suggestions from another region. Original submitted values and PDF evidence remain retained even when an explicit saved amendment produces a new version; indeterminate delivery remains protected.
 
 Settings and preparation show the selected region, cache check time, published years, sources and warnings. The feed has no year-completeness guarantee. Missing or suspiciously sparse coverage requires review. Valid cached regional data remains usable offline. When a year is unavailable, England/Wales uses the established recurring calculation with an explicit incomplete-fallback warning; Scotland and Northern Ireland show unavailable/manual-review warnings and never receive England/Wales fallback dates. A covered published year is never merged with recurring rules.
 
@@ -191,7 +191,7 @@ In **Settings → Email Settings**, **Local SMTP Server** uses unencrypted
   before credentials or email are transmitted.
 - **Implicit TLS** (normally port 465) establishes TLS before SMTP begins.
 - **Plaintext SMTP** permits intentional unencrypted relays and shows a warning:
-  credentials, addresses and payroll contents can be intercepted.
+  addresses and payroll contents can be intercepted; password/XOAUTH2 authentication over plaintext is blocked.
 
 New configurations select required STARTTLS for remote SMTP. Existing remote
 configurations without `smtp_security` retain legacy plaintext behavior until
@@ -202,7 +202,7 @@ do not overwrite your entered port. Serialized security values are
 TLS uses native platform certificate trust and hostname validation, with no
 certificate bypass or fallback to plaintext. Private relays need certificates
 trusted by the platform. Username/password authentication is attempted when a
-remote username is supplied. OAuth account setup is not implemented.
+remote username is supplied, with plaintext authentication refused. Microsoft personal-account SMTP instead uses delegated device authorization, mandatory STARTTLS and XOAUTH2, including refresh before expiry and no password fallback. Organizational Microsoft 365 is outside this implementation. See [Microsoft OAuth2](MICROSOFT-OAUTH2-SMTP.md); implementation is not live-provider acceptance.
 
 Production and preview/test email share the same transport path. Failures before
 message submission on that connection are definitely not sent; ambiguous
@@ -211,8 +211,7 @@ never establishes inbox receipt. Server diagnostics retain only safe phase,
 error class and numeric status, omitting server text. Security changes invalidate
 existing send approvals; uncertain attempts retain their original evidence.
 
-Passwords remain plaintext in `config.toml` and configuration backup copies;
-masking the Settings field does not encrypt storage. Configuration Debug output
+Development v1.0.7 stores SMTP passwords and Microsoft access/refresh tokens in native Windows Credential Manager, macOS Keychain or persistent Linux Secret Service. Configuration and new configuration backup copies contain opaque references; the vault is not exported. Verified legacy-password migration precedes configuration replacement, while old entries and historical backup files are retained. A different account/computer or unavailable store needs re-entry/reconnection, with no plaintext/session fallback. These controls do not erase previously created plaintext copies. See [credential storage](SMTP-CREDENTIAL-STORAGE.md). Configuration Debug output
 redacts credentials. Unix configuration publication and restore staging use
 owner-only permissions; backup directories use mode 0700. Development 1.0.7
 adds creation-time private Windows ACLs for new managed files/directories and a
@@ -239,7 +238,7 @@ A backup is an application-owned timestamp directory containing a consistent SQL
 
 ## Boundaries
 
-Payroll Settings displays frequency, workweek and overtime preferences as read-only, unsupported values retained for compatibility. Imported schedules determine periods and week commencing dates. Rounding remains functional and editable.
+Payroll Settings displays frequency, workweek and overtime preferences as read-only, unsupported values retained for compatibility. Imported schedules determine periods and week commencing dates. Rounding remains functional and editable: 1/5/10/15/30/60-minute increments, each Up or Down. Failed Payroll Settings saves retain effective rounding/region and the dirty editor, but provider/annual-leave commits can already be visible; see [save boundaries](SETTINGS-SAVE-CONSISTENCY.md).
 
 The application prepares payroll evidence and provider documents; it is not a general payroll/pay calculation engine. Overtime calculation, configurable frequency/workweek engines, scheduled backups, retention policy, cloud storage and multi-user access are not implemented. See [current limitations](../README.md#current-limitations) for the remaining boundaries.
 

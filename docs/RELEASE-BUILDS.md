@@ -1,9 +1,15 @@
 # Release builds and artifact-only packaging rehearsals
 
-Current development is **1.0.6** (planned for every platform). Published Linux
-AMD64/ARM64/ARMHF and Windows x64/ARM64 remain **1.0.4**; published macOS Intel
-and Apple Silicon are **1.0.5**. The inventory below describes the historical
-1.0.4 release, not the latest macOS downloads.
+Current source is **unreleased v1.0.7/schema42** on
+`security/v1.0.7-phase1`. The latest published release is **v1.0.6** for all
+supported targets. A read-only GitHub release inventory check on 7 November 2026
+found its ten package assets plus `SHA256SUMS`, and no v1.0.7 release.
+See [published inventory](https://github.com/arnieSkyNet/DirectPaymentTimesheets/releases/tag/v1.0.6).
+This verifies publication metadata, not package contents, installation, hardware
+compatibility or current-source acceptance. No workflow was dispatched.
+
+The older release inventories and test-run/source references below are historical
+records. They retain their original versions and do not certify the current HEAD.
 
 [v1.0.4](https://github.com/arnieSkyNet/DirectPaymentTimesheets/releases/tag/v1.0.4)
 was published on 01 October 2026 from source commit
@@ -220,7 +226,7 @@ Full rehearsal 35541897015 at source
 `15bd2620a45459bce3330453c4eb8a3b8bba1eb9` produced all nine 1.0.2 packages.
 Those 1.0.2 Windows 10 and ARMHF packages received real-hardware testing. A later
 startup-sizing change superseded those binaries. These are historical rehearsal
-results, not the current download inventory: v1.0.4 is now published with all ten
+results, not the current download inventory: v1.0.6 is now published with all ten
 packages. Publication alone does not establish completion of the remaining
 hardware and minimum-OS checks documented here.
 
@@ -272,29 +278,24 @@ LXDE menu configuration is part of the package.
 
 ## Public downloads and future publication checks
 
-The README links ten published packages: six Linux and two Windows assets use
-fixed `/releases/download/v1.0.4/` URLs; the two macOS DMGs use
-`/releases/download/v1.0.5/`. This includes the v1.0.4 Windows ARM64 installer.
-Asset names were checked against the published release inventories during the
-Stage 9 read-only audit. No button targets unreleased v1.0.6. The actual macOS bundle is
-`Direct Payments Timesheets.app` (with spaces), not `DirectPaymentTimesheets.app`.
-The published v1.0.4 bundles have minimum deployment target 12.0 on both
-architectures; changing the build configuration does not change those downloads.
-The published Mac-only v1.0.5 release and current packaging configuration target
-11.4 for Intel and 12.0 for Apple Silicon; minimum-OS hardware acceptance remains
-pending. These minimums do not retroactively change the historical v1.0.4 DMGs.
-The signature is ad-hoc, not Developer ID/notarised.
+The README links all ten v1.0.6 packages: six Linux packages, two Windows
+installers and two macOS DMGs, plus the release checksum list. Older v1.0.4/v1.0.5
+inventories above retain their historical provenance. No download link should
+point to development v1.0.7 until matching assets are actually published.
+The macOS bundle name is `Direct Payments Timesheets.app`; current packaging
+configuration targets Intel 11.4 and Apple Silicon 12.0 with ad-hoc signing,
+not Developer ID/notarisation. Configuration does not prove minimum-OS acceptance.
 
-For future publication, verify the ten-package inventory, same-source provenance
-and checksums, confirm each asset name matches the README, and record the status
-of ARM32 window behaviour, Mac first-launch/minimum-OS and ARM64 hardware checks.
-Documentation edits do not authorise a tag, release change, upload or workflow run.
+For future publication, verify all ten assets, same-source provenance and checksums
+at a single reviewed revision. Record ARM32 window/graphics, ARM64 hardware,
+Windows upgrade/uninstall and Mac first-launch/minimum-OS results. Neither this
+documentation audit nor earlier successful native tests creates current-HEAD
+platform sign-off. No publication or acceptance campaign is authorized by edits.
 
-### Release-readiness checklist for development 1.0.6/schema41
+### Release-readiness checklist for development 1.0.7/schema42
 
 These are checks for an authorised future release, not completed acceptance claims.
-Published Linux/Windows v1.0.4 and macOS v1.0.5 remain the downloads until matching
-new assets are actually published.
+Published v1.0.6 packages remain the downloads until matching new assets are actually published.
 
 - Verify Cargo/version, source SHA and manifest identity at one reviewed revision
   across all seven platform/architecture combinations and ten packages. Validate
@@ -304,7 +305,7 @@ new assets are actually published.
   publication. Update badges only to assets that exist. Keep historical releases
   and macOS minimums clearly distinguished from current development.
 - With disposable databases and separately isolated business folders, verify
-  populated schema35-to-41 upgrades including committed WAL, verified original
+  populated schema35-to-42 upgrades including committed WAL, verified original
   backups, failed/interrupted migration rollback and restart. Exercise reviewed
   legacy restore, stale approval, uncertainty blocking, transactional installation,
   post-commit configuration failure and retained recovery evidence. Never use an
@@ -335,3 +336,24 @@ new assets are actually published.
 See [SMTP settings](DOMAIN.md#smtp-configuration-and-security),
 [delivery review](DOMAIN.md#reviewing-uncertain-delivery) and
 [recovery safeguards](DATABASE-SCHEMA.md#verified-startup-upgrades-and-legacy-restore).
+
+
+## Current acceptance boundary — 7 November 2026
+
+The pinned macOS SMTP workflow still selects application source `d3006b7c526042a7ea5a2ab5f108a2f0d393d5dd`,
+not current v1.0.7 OAuth/amendment/settings code. Historical successful native
+Keychain migration/restart evidence at that source is retained in the local
+`macos-smtp-resumed-review-v107-20261020-1/REVIEW.md`; earlier failed attempts in
+[the preparation record](MACOS-SMTP-KEYCHAIN-VERIFICATION.md) are not its final outcome.
+Windows x64 password-migration evidence and the native macOS SQLite run also have
+bounded historical source identities; see [credentials](SMTP-CREDENTIAL-STORAGE.md),
+[ownership](SQLITE-CONNECTION-OWNERSHIP.md) and [email acceptance](EMAIL-SECURITY-ACCEPTANCE.md).
+None certifies later changes or a same-HEAD package set.
+
+Remaining sign-off includes live Microsoft authorization/refresh and provider
+SMTP compatibility, applicable current-source native credential failure/migration
+checks, Windows process-cleanup/SQLite/interactive scope, packaged GOV.UK HTTPS
+retrieval, all-target packaging, supported hardware and minimum-OS/GUI acceptance.
+The existing ignored tests require explicit scoped invocation; experimental native
+SQLite terminal machinery is not a prerequisite and remains inactive. Do not
+rerun completed historical campaigns or dispatch workflows merely to update prose.

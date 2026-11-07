@@ -1,8 +1,7 @@
 # Payroll evidence and reconciliation (schema 29)
 
 Schema29 is the historical evidence-migration milestone described here. Current
-scope is unreleased development v1.0.6 on `main`, schema41, including Stage 1–8
-protections. Published Linux/Windows v1.0.4 and macOS v1.0.5 remain separate;
+scope is unreleased development v1.0.7 on `security/v1.0.7-phase1`, schema42. Published v1.0.6 packages remain separate;
 see [downloads](../README.md#download).
 
 ## Sources and possible duplicates
@@ -20,8 +19,8 @@ Import retains conflicting same-start and within-file duplicate candidates inste
 Milestones are per PA/payroll period, not schedule-wide:
 
 1. Editable preparation uses current eligible evidence and explicit manual adjustments.
-2. A successfully emailed timesheet preserves submitted evidence. Differences are reviewed inside that period's preparation. **Correct / Resubmit Timesheet** explicitly opens a replacement preparation; **Carry correction forward** explicitly records the discrepancy instead. The replacement is generated and emailed through the existing normal workflow. Other submitted/settled PAs are skipped during batch PDF generation.
-3. A definitively Sent per-PA `email_type='payslip'` status establishes settlement. Indeterminate delivery remains protected. P60/P45 per-document delivery does not settle payroll or complete a schedule; see [schema31 documents](DATABASE-SCHEMA.md#schema-31-cycle-independent-pa-payroll-documents). Settled preparation cannot be silently recalculated or saved.
+2. A successfully emailed timesheet preserves submitted evidence. In v1.0.7/schema42, submitted and settled preparation allows explicit saved amendments without a Correct/Resubmit unlock. Generate the replacement PDF separately, then review and send it separately. Original submissions/documents remain retained; the latest successfully regenerated saved version is authoritative for later reconciliation. **Carry correction forward** remains an explicit audited decision for discrepancies requiring it, including completeness confirmation for aggregate reductions; unsaved preparation drafts must be saved/discarded first. See [timesheet amendments](TIMESHEET-AMENDMENTS.md).
+3. A definitively Sent per-PA `email_type='payslip'` status establishes settlement. Indeterminate delivery remains protected. P60/P45 per-document delivery does not settle payroll or complete a schedule; see [schema31 documents](DATABASE-SCHEMA.md#schema-31-cycle-independent-pa-payroll-documents). Settled history cannot be silently recalculated; deliberate saved amendments retain original evidence and do not mark email as sent.
 
 ## Payroll document history and corrections (schemas 31, 33 and 35)
 

@@ -1,8 +1,7 @@
 # DirectPaymentTimesheets architecture
 
-This describes unreleased development 1.0.6 on `main`, schema41. Stage/schema
-headings identify historical introductions. Published Linux/Windows v1.0.4 and
-macOS v1.0.5 remain separate; see [downloads](../README.md#download).
+This describes unreleased development 1.0.7 on `security/v1.0.7-phase1`, schema42. Stage/schema
+headings identify historical introductions. Published v1.0.6 packages remain separate; see [downloads](../README.md#download).
 
 ## Shape of the application
 
@@ -34,7 +33,7 @@ Configured business paths may point outside the data root. `email_archive` is cu
 
 ## SQLite and repositories
 
-`database.rs` creates the original schema and applies ordered migrations through `CURRENT_SCHEMA_VERSION` 41. In the unreleased v1.0.7 ownership candidate, each repository owns a `DatabaseConnection` retaining its rusqlite connection and existing storage guards. Query helpers borrow the underlying connection; transactions and backup handles borrow their owners. Backup destinations are opened explicitly, and restore/startup/migration connections retain shared staging ownership. Schema-changing work belongs in a migration; this ownership work changes no schema or payroll calculation. Safe in-memory failure admission and normal shutdown/restart protections are implemented. Selected Windows native ownership checks have passed. On 1 November 2026, [macOS acceptance run 41305531150](https://github.com/arnieSkyNet/DirectPaymentTimesheets/actions/runs/41305531150) compiled the application and passed 43 exact safe tests on each of Intel and Apple Silicon for candidate `d9b046bed1739843f854e57968ab5ce9947b26ce`, using controller `1afde972f46f0f66438952bbd56e6e8ec0aa1d6c`. Remaining Windows scope, interactive GUI acceptance and the documented native failure limitations remain separate; emergency termination remains deliberately inactive. See [SQLite ownership status](SQLITE-CONNECTION-OWNERSHIP.md).
+`database.rs` creates the original schema and applies ordered migrations through `CURRENT_SCHEMA_VERSION` 42. In the unreleased v1.0.7 ownership candidate, each repository owns a `DatabaseConnection` retaining its rusqlite connection and existing storage guards. Query helpers borrow the underlying connection; transactions and backup handles borrow their owners. Backup destinations are opened explicitly, and restore/startup/migration connections retain shared staging ownership. Schema-changing work belongs in a migration; this ownership work changes no schema or payroll calculation. Safe in-memory failure admission and normal shutdown/restart protections are implemented. Selected Windows native ownership checks have passed. On 1 November 2026, [macOS acceptance run 41305531150](https://github.com/arnieSkyNet/DirectPaymentTimesheets/actions/runs/41305531150) compiled the application and passed 43 exact safe tests on each of Intel and Apple Silicon for candidate `d9b046bed1739843f854e57968ab5ce9947b26ce`, using controller `1afde972f46f0f66438952bbd56e6e8ec0aa1d6c`. Remaining Windows scope, interactive GUI acceptance and the documented native failure limitations remain separate; emergency termination remains deliberately inactive. These are historical candidate results, not current-HEAD platform verification. See [SQLite ownership status](SQLITE-CONNECTION-OWNERSHIP.md).
 
 Principal persisted areas are:
 
@@ -48,7 +47,7 @@ Principal persisted areas are:
 - dated annual leave, SQLite annual-leave settings and structured sickness periods;
 - duplicate decisions, immutable submissions, corrections and verified legacy settlement;
 - schema31 cycle-independent P60/P45 documents, schema33 delivery-history reconciliation, schema34 file-cleanup journalling, schema35 superseded documents/current payslip revisions, and schema36 timesheet document/attempt/review evidence; and
-- schema38 CSV identity/provenance and shift reviews, schema39 filing recovery intents, schema40 imported-hours inclusion history, and schema41 immutable PA bundle attachment/transport/review evidence.
+- schema38 CSV identity/provenance and shift reviews, schema39 filing recovery intents, schema40 imported-hours inclusion history, schema41 immutable PA bundle attachment/transport/review evidence, and schema42 append-only timesheet amendment versions.
 
 Repositories isolate queries and identity rules. Important compound identities use payroll year plus internal cycle number, not row ID alone. Dates are currently stored as text in existing formats, so repository methods parse and compare calendar dates explicitly where ordering must be chronological.
 
@@ -62,7 +61,7 @@ Repositories isolate queries and identity rules. Important compound identities u
 - lookup by `(payroll_year, cycle_number)` re-fetches a complete schedule before operations; and
 - predecessor resolution uses dates and an exact 28-day boundary, allowing cross-year cycle 13 to cycle 1 rollover.
 
-Payroll Prep Sheet PDF extraction is implemented; DOCX is recognised but explicitly not implemented. A schedule's `payslips_sent` state is retained when the same cycle is re-imported with unchanged material dates. A changed cycle receives reset sent state when replacement is safe, while changed dates are refused if prepared payroll history already exists for that year.
+Payroll Prep Sheet PDF extraction is implemented; DOCX is recognised but deliberately deferred because payroll currently supplies PDFs. A schedule's `payslips_sent` state is retained when the same cycle is re-imported with unchanged material dates. A changed cycle receives reset sent state when replacement is safe, while changed dates are refused if prepared payroll history already exists for that year.
 
 The Dashboard operational selector stores the stable `(payroll_year, cycle_number)` key. A complete schedule is re-fetched before generation, preview/test email, status and other operational actions. Production batches additionally capture the first-week and pay dates to detect a materially changed re-import.
 
@@ -72,7 +71,7 @@ Payroll Return and View Payroll Schedule intentionally have independent selector
 
 `PayrollTimesheetScreen` receives a complete operational schedule and stores a private bound identity with its key and material dates. It does not independently choose today's schedule. Its display set combines inclusive Start/Leaving date overlap independent of current status with PAs already represented by a payroll-timesheet row in the selected period, including records outside those dates.
 
-Existing submitted or indeterminate records follow a persisted-only, read-only load path. Editable records follow the shared source-labelled reconciliation service against effective imported evidence, completed direct shifts, duplicate decisions, submission membership, outstanding corrections and manual adjustments. Preparation baselines are compared before writes so that:
+Existing submitted/settled records load retained values without silently recomputing history, but allow explicit saved amendments and replacement PDF generation. Actual in-flight/indeterminate delivery remains protected. Schema42 records append-only save/generated versions; original documents, submissions and attempts remain immutable. See [timesheet amendments](TIMESHEET-AMENDMENTS.md). Editable records follow the shared source-labelled reconciliation service against effective imported evidence, completed direct shifts, duplicate decisions, submission membership, outstanding corrections and manual adjustments. Preparation baselines are compared before writes so that:
 
 - opening unchanged data does not invalidate a candidate or update timestamps;
 - a material reconciliation change invalidates the candidate before persistence;
@@ -361,5 +360,5 @@ other errors remain uncertain. Final DATA acceptance is recorded without dependi
 on QUIT or claiming inbox receipt. Server-provided diagnostic text is never retained.
 Optional `EmailConfig.smtp_security` preserves missing legacy fields as plaintext;
 new configurations use required STARTTLS for remote mode. Local mode remains
-localhost:25 without credentials. No schema change is required (schema 41).
+localhost:25 without credentials. Authenticated remote SMTP requires TLS; Microsoft personal-account OAuth2 supplies XOAUTH2 and refresh, while other providers retain password authentication. Native OS stores hold secrets; configuration/backup copies retain opaque references. No transport-specific schema change is required; current schema42 is for amendment history. See [OAuth2](MICROSOFT-OAUTH2-SMTP.md) and [credential storage](SMTP-CREDENTIAL-STORAGE.md).
 See [security settings and storage limitations](DOMAIN.md#smtp-configuration-and-security).

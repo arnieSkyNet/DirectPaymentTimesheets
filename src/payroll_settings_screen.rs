@@ -437,13 +437,13 @@ impl PayrollSettingsScreen {
         let settings = match application.annual_leave_settings_repository.save(&annual_leave) {
             Ok(settings) => settings,
             Err(error) => {
-                self.status_message = format!("Payroll settings save failed: {}. Runtime settings are unchanged; provider details may have been saved. Retry to finish.", annual_leave_error(error));
+                self.status_message = format!("Payroll settings save failed: {}. Rounding and holiday region are unchanged; provider details may have been saved. Retry to finish.", annual_leave_error(error));
                 return;
             }
         };
         if let Err(error) = application.save_config_candidate(candidate) {
             self.status_message = format!(
-                "Payroll settings save failed: {error}. Runtime settings are unchanged; provider and annual-leave details were saved. Your edits are retained; retry to finish."
+                "Payroll settings save failed: {error}. Rounding and holiday region are unchanged; provider and annual-leave details were saved. Your edits are retained; retry to finish."
             );
             return;
         }
@@ -647,7 +647,7 @@ mod annual_leave_settings_tests {
                     assert!(!directory.path().join("config.toml").exists());
                 }
                 if scenario == "annual_failure" {
-                    assert!(screen.status_message.contains("Runtime settings are unchanged"));
+                    assert!(screen.status_message.contains("Rounding and holiday region are unchanged"));
                     assert!(!directory.path().join("config.toml").exists());
                 }
             }
@@ -1023,4 +1023,106 @@ mod save_consistency_tests {
             saved.smtp_credential_ref
         );
     }
+
+    #[test]
+    fn partial_database_saves_are_reported_without_activating_config_and_retry_is_idempotent() {
+        for failure in ["annual", "config"] {
+            let (dir, mut app) = crate::payroll_timesheet_screen::tests::test_application();
+            app.save_config().unwrap();
+            let config_path = dir.path().join("config.toml");
+            let original_config = std::fs::read(&config_path).unwrap();
+            app.payroll_provider_repository
+                .save(&PayrollProvider {
+                    id: 1,
+                    name: Some("Original synthetic provider".into()),
+                    email: None,
+                    address: None,
+                    telephone: None,
+                    payroll_department_email: Some("payroll@example.test".into()),
+                })
+                .unwrap();
+            let original_leave = StoredAnnualLeaveSettings::default();
+            app.annual_leave_settings_repository
+                .save(&original_leave)
+                .unwrap();
+            let db = crate::payroll_evidence::open(&app).unwrap();
+            let mut screen = PayrollSettingsScreen::new();
+            screen.load(&app);
+            let baseline = screen.saved_form.clone();
+            screen.provider_name = "Changed synthetic provider".into();
+            screen.provider_telephone = "synthetic contact".into();
+            screen.annual_leave.weeks = "6".into();
+            screen.annual_leave.percentage = "14".into();
+            screen.rounding_minutes = 60;
+            screen.rounding_direction = "Down".into();
+            screen.public_holiday_region = PublicHolidayRegion::Scotland;
+            let root = app.context.environment.data_dir.clone();
+            if failure == "annual" {
+                db.execute_batch("CREATE TRIGGER refuse_partial_annual BEFORE INSERT ON annual_leave_settings BEGIN SELECT RAISE(ABORT,'synthetic refusal'); END;").unwrap();
+            } else {
+                app.context.environment.data_dir = dir.path().join("missing-config-parent");
+            }
+            screen.save(&mut app);
+            assert!(screen
+                .status_message
+                .contains("Rounding and holiday region are unchanged"));
+            let provider = app.payroll_provider_repository.get().unwrap().unwrap();
+            assert_eq!(provider.name.as_deref(), Some("Changed synthetic provider"));
+            assert_eq!(provider.telephone.as_deref(), Some("synthetic contact"));
+            assert_eq!(
+                provider.payroll_department_email.as_deref(),
+                Some("payroll@example.test")
+            );
+            let leave = app.annual_leave_settings_repository.get().unwrap();
+            if failure == "annual" {
+                assert_eq!(leave, original_leave);
+                assert!(screen
+                    .status_message
+                    .contains("provider details may have been saved"));
+                db.execute_batch("DROP TRIGGER refuse_partial_annual")
+                    .unwrap();
+            } else {
+                assert_eq!(leave.statutory_weeks, 6.0);
+                assert_eq!(leave.accrual_percentage, 14.0);
+                assert!(screen
+                    .status_message
+                    .contains("provider and annual-leave details were saved"));
+                app.context.environment.data_dir = root;
+            }
+            assert_effective(&app, 15, "Up", PublicHolidayRegion::EnglandAndWales, 45);
+            assert_eq!(std::fs::read(&config_path).unwrap(), original_config);
+            assert_eq!(screen.saved_form, baseline);
+            assert_ne!(screen.form_state(), screen.saved_form);
+            assert_eq!(screen.annual_leave.weeks, "6");
+            assert_eq!(screen.rounding_minutes, 60);
+            assert_eq!(screen.public_holiday_region, PublicHolidayRegion::Scotland);
+            screen.save(&mut app);
+            assert_eq!(screen.status_message, "Payroll settings saved.");
+            assert_effective(&app, 60, "Down", PublicHolidayRegion::Scotland, 0);
+            let persisted = crate::config::AppConfig::load(&config_path).unwrap();
+            assert_eq!(persisted.payroll.rounding_minutes, 60);
+            assert_eq!(persisted.payroll.rounding_direction, "Down");
+            assert_eq!(
+                persisted.payroll.public_holiday_region,
+                PublicHolidayRegion::Scotland
+            );
+            assert_eq!(
+                app.annual_leave_settings_repository
+                    .get()
+                    .unwrap()
+                    .statutory_weeks,
+                6.0
+            );
+            assert_eq!(screen.form_state(), screen.saved_form);
+            for table in ["payroll_provider", "annual_leave_settings"] {
+                assert_eq!(
+                    db.query_row::<i64, _, _>(&format!("SELECT COUNT(*) FROM {table}"), [], |r| r
+                        .get(0))
+                        .unwrap(),
+                    1
+                );
+            }
+        }
+    }
+
 }

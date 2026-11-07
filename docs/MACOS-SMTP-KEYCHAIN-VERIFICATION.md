@@ -1,5 +1,14 @@
 # Prepared macOS SMTP verification — 19 October 2026
 
+> Historical preparation record: the original status and failed attempts below
+> are preserved. The subsequent 20 October review records native Keychain migration,
+> retrieval and restart success on both architectures at immutable source
+> `d3006b7c526042a7ea5a2ab5f108a2f0d393d5dd`; see
+> [Actions run 39336702478](https://github.com/arnieSkyNet/DirectPaymentTimesheets/actions/runs/39336702478). The retained local review is
+> `macos-smtp-resumed-review-v107-20261020-1/REVIEW.md` (not a distributed artifact).
+> That source predates current OAuth/amendment/settings changes. No current-HEAD
+> native run or new campaign is claimed here.
+
 Status: **no macOS native test result yet**. Published integration `d3006b7` and
 main registration `ef4ffcd` enabled run 39332360502, but both jobs failed at
 historical-source checkout before testing. See

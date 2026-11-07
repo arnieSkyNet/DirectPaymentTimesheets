@@ -1,5 +1,13 @@
 # SMTP password storage — development 1.0.7, 16 October 2026
 
+> Current-state note (7 November 2026): the platform table and Molly results below
+> are the original 16 October checkpoint. Later bounded Linux and macOS evidence
+> is recorded in [email acceptance](EMAIL-SECURITY-ACCEPTANCE.md) and the release
+> [acceptance boundary](RELEASE-BUILDS.md#current-acceptance-boundary--7-november-2026).
+> Their source pins do not certify current HEAD. The password/token storage model
+> below remains applicable; Microsoft OAuth2 is described separately in
+> [MICROSOFT-OAUTH2-SMTP.md](MICROSOFT-OAUTH2-SMTP.md).
+
 SMTP passwords are now OS-store secrets. Host, port, username, transport, TLS
 selection and test recipients remain ordinary settings; config.toml contains
 only an opaque `email.smtp_credential_ref`, never a newly serialized password.

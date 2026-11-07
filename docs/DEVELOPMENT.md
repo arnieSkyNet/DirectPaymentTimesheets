@@ -4,7 +4,7 @@
 
 This is a local Rust/egui/SQLite application. Prefer small, evidence-led changes that preserve payroll history and existing provider output. Inspect the current source, schema and tests before changing behaviour; documentation and conversation history are secondary evidence.
 
-Current unreleased development package version is `1.0.7`; current SQLite schema version is 41. Historical sections retain the schema numbers at feature introduction. Do not change either unless a task explicitly requires it.
+Current unreleased development package version is `1.0.7`; current SQLite schema version is 42. Historical sections retain the schema numbers at feature introduction. Do not change either unless a task explicitly requires it.
 
 ## Local setup
 
@@ -115,7 +115,7 @@ When adding file writes, preserve collision handling and propagate directory/wri
 
 Preparation, generation and timesheet email use inclusive Start/Leaving date overlap independent of current Active status, plus any PA with an existing selected-period record even outside those dates. Missing boundaries are unbounded.
 
-Submitted and indeterminate records are persisted-only/read-only. Loading them must not create missing weeks/holidays, reconcile imports or update timestamps. Candidate/unsent records are editable.
+Submitted/settled records load retained values without silent reconciliation or timestamp changes, but permit explicit saved amendments and replacement PDF generation. In-flight/indeterminate delivery remains protected. Candidate/unsent records remain editable. See [timesheet amendments](TIMESHEET-AMENDMENTS.md).
 
 Before changing data represented by a candidate:
 
@@ -410,7 +410,7 @@ A retained period whose PA-wide row was deleted can be shortened or deleted loca
 
 Sickness-only correction authority binds the exact original submission's financial evidence fingerprint. Generation and first delivery compare retained worked membership, correction applications, weekly values, dated leave/public-holiday records and carry-forward. New publication timestamps and row IDs are excluded from business-value comparison. Carry-forward is recovered from original late-work/legacy-carry/correction items, never inferred from today's mutable preparation value; inconsistent or insufficient legacy evidence refuses the correction and requests recovery/reconciliation. Original settlement values and original PDFs remain unchanged. This adds no SSP calculation or public-holiday classification/subtraction changes.
 
-Regression tests include populated schema35/schema36 databases created by the actual ordered migration steps (with the original non-AUTOINCREMENT sickness table), WAL-backed upgrade/restore, a failure after schema36 commits on the isolated copy, retained transfers across lifecycle states, nonzero worked/carry/correction evidence, parent indicators and full PA archive/reactivation with retained sickness snapshots and delivery history. At this Stage 2 milestone the schema remained 37; current development is 1.0.7/schema41.
+Regression tests include populated schema35/schema36 databases created by the actual ordered migration steps (with the original non-AUTOINCREMENT sickness table), WAL-backed upgrade/restore, a failure after schema36 commits on the isolated copy, retained transfers across lifecycle states, nonzero worked/carry/correction evidence, parent indicators and full PA archive/reactivation with retained sickness snapshots and delivery history. At this Stage 2 milestone the schema remained 37; current development is 1.0.7/schema42.
 
 ## Stage 3 signature validation and drawing
 
@@ -550,3 +550,13 @@ platform acceptance. Do not launch against production data for validation.
 
 See [security hardening](SECURITY-HARDENING.md) for existing-installation handling,
 remaining limits and a separately reviewed repair procedure.
+
+
+## Payroll Settings publication boundary
+
+The runtime configuration candidate is installed only after final publication.
+Provider and annual-leave SQLite statements precede it and are separate commits;
+the form stays dirty on failure. Do not add best-effort compensation that might
+silently overwrite a later writer or reactivate old credential references.
+[SETTINGS-SAVE-CONSISTENCY.md](SETTINGS-SAVE-CONSISTENCY.md) records exact partial
+outcomes, regression coverage and the independent-save proposal awaiting approval.

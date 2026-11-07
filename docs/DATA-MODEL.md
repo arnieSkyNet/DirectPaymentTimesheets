@@ -1,6 +1,6 @@
 # DirectPaymentTimesheets conceptual data model
 
-Current scope is unreleased development 1.0.6 on `main`, schema41. Historical
+Current scope is unreleased development 1.0.7 on `security/v1.0.7-phase1`, schema42. Historical
 schema references identify feature introductions; published package capabilities
 are separate from this model. See [downloads](../README.md#download).
 
@@ -110,6 +110,12 @@ Each payroll timesheet has up to four weekly rows. A weekly row contains its wee
 - travel miles.
 
 The final Hours Worked value can be edited. Imported work remains unchanged; the difference between the imported/reconciled baseline and the employer's final value is persisted as a manual adjustment.
+
+Schema42 adds append-only `timesheet_amendment_versions`: explicit preparation
+saves and generated replacement versions retain before/after data and document
+identity. Submitted/settled edits preserve original history; unresolved delivery
+remains protected. Save, regenerate and send are separate actions. See
+[timesheet amendments](TIMESHEET-AMENDMENTS.md).
 
 ## Sickness, leave and document entities
 
