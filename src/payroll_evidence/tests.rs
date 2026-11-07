@@ -1221,6 +1221,13 @@ fn shared_rounding_preserves_both_raw_sources_and_exact_duplicate_intervals() {
         (10, "Up", 40),
         (10, "Down", 30),
         (1, "Up", 34),
+        (1, "Down", 34),
+        (5, "Up", 35),
+        (5, "Down", 30),
+        (30, "Up", 60),
+        (30, "Down", 30),
+        (60, "Up", 60),
+        (60, "Down", 0),
     ] {
         for late in [false, true] {
             let (_dir, mut app) = setup();

@@ -91,9 +91,19 @@ impl Application {
     pub fn save_config(&mut self) -> Result<(), Box<dyn std::error::Error>> {
         let config_path = self.context.environment.data_dir.join("config.toml");
 
-        self.context.config.save(&config_path)?;
-        self.context.config.email = crate::config::AppConfig::load(&config_path)?.email;
+        self.context.config.email = self.context.config.save(&config_path)?;
 
+        Ok(())
+    }
+
+    /// Keep effective settings unchanged until the candidate is published.
+    pub(crate) fn save_config_candidate(
+        &mut self,
+        mut candidate: crate::config::AppConfig,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let config_path = self.context.environment.data_dir.join("config.toml");
+        candidate.email = candidate.save(&config_path)?;
+        self.context.config = candidate;
         Ok(())
     }
 

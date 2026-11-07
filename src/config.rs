@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 
 use crate::error::AppError;
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AppConfig {
     #[serde(default)]
     pub theme: ApplicationTheme,
@@ -40,7 +40,7 @@ pub enum ApplicationTheme {
     AccessibleHighContrast,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FolderConfig {
     #[serde(default = "default_csv_import_folder")]
     pub csv_import: PathBuf,
@@ -98,7 +98,7 @@ fn default_payroll_information_folder() -> PathBuf {
     portable_business_folder("payroll-information")
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PdfConfig {
     #[serde(default = "default_regular_font")]
     pub regular_font: PathBuf,
@@ -148,7 +148,7 @@ impl Default for PdfConfig {
     }
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PayrollConfig {
     #[serde(default)]
     pub public_holiday_region: crate::public_holidays::PublicHolidayRegion,
@@ -513,7 +513,10 @@ impl AppConfig {
         Ok(config)
     }
 
-    pub fn save(&self, path: &Path) -> Result<(), AppError> {
+    /// Publish once and return the verified credential state represented by that
+    /// publication. Do not reload after publication: a subsequent read failure
+    /// must not turn an already completed configuration save into a failed save.
+    pub fn save(&self, path: &Path) -> Result<EmailConfig, AppError> {
         use crate::startup::{Stage, StartupError};
         #[cfg(all(windows, debug_assertions, feature = "windows-dev-isolation"))]
         {
@@ -525,7 +528,7 @@ impl AppConfig {
             Stage::Configuration, Some(path), "Configuration encoding failed.", "Existing settings retained."))?;
         let reference = crate::smtp_credentials::prepare_save(&self.email)
             .map_err(|e| StartupError::new(Stage::Configuration,Some(path),e,"Unlock the OS credential store and retry; existing settings were retained."))?;
-        crate::smtp_credentials::set_reference(&mut value, reference);
+        crate::smtp_credentials::set_reference(&mut value, reference.clone());
         let contents = toml::to_string_pretty(&value).map_err(|_| {
             StartupError::new(
                 Stage::Configuration,
@@ -534,9 +537,19 @@ impl AppConfig {
                 "Retain the existing configuration and report this application error.",
             )
         })?;
+        let mut email = self.email.clone();
+        email.smtp_credential_ref = reference;
+        email.smtp_credential_error = None;
+        if email.smtp_authentication == SmtpAuthentication::MicrosoftOAuth2 {
+            use zeroize::Zeroize;
+            email.smtp_password.zeroize();
+            email.smtp_password_baseline.zeroize();
+        } else {
+            email.smtp_password_baseline = email.smtp_password.clone();
+        }
         publish_config(path, contents.as_bytes(), true)
             .map_err(|e| StartupError::io(Stage::Configuration, path, &e))?;
-        Ok(())
+        Ok(email)
     }
 }
 
