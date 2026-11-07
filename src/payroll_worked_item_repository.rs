@@ -1,6 +1,6 @@
 use std::collections::HashSet;
 
-use rusqlite::{params, Connection, OptionalExtension, Result};
+use rusqlite::{params, OptionalExtension, Result};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ManualHoursAdjustment {
@@ -9,7 +9,7 @@ pub struct ManualHoursAdjustment {
     pub reason: Option<String>,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct WorkedItemSnapshot {
     pub week_number: i64,
     pub source_type: String,
@@ -50,12 +50,14 @@ pub struct SnapshotMetadata {
 }
 
 pub struct PayrollWorkedItemRepository {
-    pub(crate) connection: Connection,
+    pub(crate) connection: crate::database::DatabaseConnection,
 }
 
 impl PayrollWorkedItemRepository {
-    pub fn new(connection: Connection) -> Self {
-        Self { connection }
+    pub fn new(connection: impl Into<crate::database::DatabaseConnection>) -> Self {
+        Self {
+            connection: connection.into(),
+        }
     }
 
     pub fn get_manual_adjustments(

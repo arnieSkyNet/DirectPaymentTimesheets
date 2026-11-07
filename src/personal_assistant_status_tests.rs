@@ -69,7 +69,7 @@ fn editor_click(
 fn status_fixture(
     status: &str,
 ) -> (
-    tempfile::TempDir,
+    crate::private_storage::PrivateTempDir,
     Application,
     egui::Context,
     PersonalAssistantScreen,

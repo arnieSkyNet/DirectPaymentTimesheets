@@ -1,11 +1,11 @@
 use super::*;
 use crate::import_service::{ImportService, ImportSummary};
-fn csv(dir: &tempfile::TempDir, name: &str, rows: &[&str]) {
+fn csv(dir: &crate::private_storage::PrivateTempDir, name: &str, rows: &[&str]) {
     std::fs::create_dir_all(dir.path().join("import")).unwrap();
     std::fs::create_dir_all(dir.path().join("archive")).unwrap();
     std::fs::write(dir.path().join("import").join(name),format!("period\nClient Name,Start Time,End Time,Break Time,Worked Hours,Rate/h,Amount,Note\n{}\n",rows.join("\n"))).unwrap();
 }
-fn imported(dir: &tempfile::TempDir, app: &Application) -> ImportSummary {
+fn imported(dir: &crate::private_storage::PrivateTempDir, app: &Application) -> ImportSummary {
     ImportService::new(
         &app.repository,
         dir.path().join("import"),
@@ -191,7 +191,7 @@ fn touching_same_day_separate_shifts_do_not_need_duplicate_review() {
     let (r, w) = period(&app, 1, "2026-04-01", 1);
     direct(&app, "2026-04-02T09:00", "2026-04-02T10:00");
     direct(&app, "2026-04-02T10:00", "2026-04-02T11:00");
-    assert!(preflight(&open(&app).unwrap(), &load(&app).unwrap())
+    assert!(preflight(&*open(&app).unwrap(), &load(&app).unwrap())
         .unwrap()
         .unresolved
         .is_empty());
@@ -623,7 +623,7 @@ fn co_present_daily_csv_records_are_not_mistaken_for_moved_revisions() {
     let (r, w) = period(&app, 1, "2026-04-01", 1);
     csv(&dir, "hours.csv", &[ORIGINAL, MOVED]);
     assert_eq!(imported(&dir, &app).rows_imported, 2);
-    assert!(preflight(&open(&app).unwrap(), &load(&app).unwrap())
+    assert!(preflight(&*open(&app).unwrap(), &load(&app).unwrap())
         .unwrap()
         .unresolved
         .is_empty());

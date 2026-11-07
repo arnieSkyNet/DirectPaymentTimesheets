@@ -454,7 +454,7 @@ fn historical_review_has_priority_but_completed_review_returns_to_longest_servin
 }
 
 #[test]
-fn submitted_discrepancy_is_prioritised_and_remains_read_only() {
+fn submitted_discrepancy_is_prioritised_without_overwriting_saved_hours_on_load() {
     let (_dir, app, schedule, mut screen) = two_pa_preparation();
     app.payroll_timesheet_email_repository
         .mark_sent(1, "2026/27", 6, "timesheet", "2026-09-04T10:00:00Z")

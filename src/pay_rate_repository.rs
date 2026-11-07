@@ -1,10 +1,10 @@
 use chrono::NaiveDate;
-use rusqlite::{params, Connection, Result};
+use rusqlite::{params, Result};
 use std::collections::HashSet;
 
 #[derive(Debug)]
 pub struct PayRateRepository {
-    connection: Connection,
+    connection: crate::database::DatabaseConnection,
 }
 
 #[derive(Debug, Clone)]
@@ -18,8 +18,10 @@ pub struct PersonalAssistantPayRate {
 }
 
 impl PayRateRepository {
-    pub fn new(connection: Connection) -> Self {
-        Self { connection }
+    pub fn new(connection: impl Into<crate::database::DatabaseConnection>) -> Self {
+        Self {
+            connection: connection.into(),
+        }
     }
 
     pub fn insert(&self, rate: &PersonalAssistantPayRate) -> Result<()> {

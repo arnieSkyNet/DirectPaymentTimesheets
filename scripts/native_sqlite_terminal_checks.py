@@ -30,7 +30,9 @@ CASES = ("normal", "retry", "unwind", "terminal", "panic_terminal", "rollback", 
 TERMINAL = {"terminal", "panic_terminal", "rollback", "wal"}
 STATUS = 86
 FIXTURE = "tests/native_sqlite_terminal_fixtures.rs"
-REVIEWED_FIXTURE_SHA256 = "f457d426fb87edfffa62afc6d79be854448380e9955ffddc728dd533486b9727"
+# Reconciliation is not source approval. Assign a fingerprint only after separate
+# review of immutable source/controller identities and the exact fixture bytes.
+REVIEWED_FIXTURE_SHA256 = None
 
 
 class Refusal(Exception):
@@ -596,6 +598,10 @@ def verify_controller(root=None):
 
 
 def verify_source_fixture(root, sha, inventory=None):
+    if (not isinstance(REVIEWED_FIXTURE_SHA256, str)
+            or re.fullmatch(r"[0-9a-f]{64}", REVIEWED_FIXTURE_SHA256) is None
+            or REVIEWED_FIXTURE_SHA256 == "0" * 64):
+        raise Refusal("unreviewed_fixture")
     # S is explicitly supplied by the launcher/caller; __file__ belongs to W.
     head = subprocess.check_output(["git", "-C", str(root), "rev-parse", "HEAD"], text=True, timeout=5).strip()
     if head != sha:

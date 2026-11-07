@@ -73,14 +73,14 @@ impl EmployerScreen {
 
         ui.separator();
 
-        let has_unsaved_changes = self.employer != self.persisted_employer;
+        let has_unsaved_changes = self.has_changes();
         if self.confirm_open_email_settings {
             egui::Window::new("Employer Maintenance has unsaved changes.")
                 .collapsible(false)
                 .resizable(false)
                 .show(ui.ctx(), |ui| {
                     ui.horizontal(|ui| {
-                        if ui.button("Save Changes and Continue").clicked() {
+                        if crate::gui_controls::save_button(ui,"Save Changes and Continue",has_unsaved_changes).clicked() {
                             if self.save_employer(application) {
                                 open_email_settings = true;
                                 self.confirm_open_email_settings = false;
@@ -222,7 +222,7 @@ impl EmployerScreen {
 
             ui.separator();
 
-            if ui.button("Save Employer").clicked() {
+            if crate::gui_controls::save_button(ui,"Save Employer",self.has_changes()).clicked() {
                 self.save_employer(application);
             }
         } else {
@@ -233,6 +233,16 @@ impl EmployerScreen {
 
         ui.label(&self.status_message);
         open_email_settings
+    }
+
+    fn has_changes(&self) -> bool {
+        fn normalise(mut value: Employer) -> Employer {
+            for field in [&mut value.date_of_birth,&mut value.national_insurance_number,&mut value.reference_account_number,&mut value.address,&mut value.telephone,&mut value.email] {
+                if field.as_deref()==Some("") { *field=None; }
+            }
+            value
+        }
+        self.employer.clone().map(normalise)!=self.persisted_employer.clone().map(normalise)
     }
 
     pub fn synchronize_email_signature(&mut self, saved_employer: &Employer) {
@@ -339,6 +349,29 @@ mod tests {
         }
     }
 
+    #[test]
+    fn viewing_empty_optional_fields_does_not_highlight_save() {
+        let (_dir,app)=crate::payroll_timesheet_screen::tests::test_application();
+        let saved=employer(1,"Synthetic employer",None);
+        let mut screen=EmployerScreen::new();screen.loaded=true;screen.employer=Some(saved.clone());screen.persisted_employer=Some(saved);
+        let ctx=egui::Context::default();
+        let out=ctx.run(Default::default(),|ctx|{egui::CentralPanel::default().show(ctx,|ui|{screen.show(ui,&app);});});
+        fn blue(s:&egui::Shape)->bool {match s {egui::Shape::Rect(r)=>r.fill==egui::Color32::from_rgb(0,85,170),egui::Shape::Vec(v)=>v.iter().any(blue),_=>false}}
+        assert!(!out.shapes.iter().any(|s|blue(&s.shape)),"Viewing empty optional fields must not mark the form dirty");
+    }
+    #[test]
+    fn employer_save_colour_tracks_edit_and_actual_success() {
+        use crate::gui_controls::acceptance::{frame,click};
+        let (_dir,app)=crate::payroll_timesheet_screen::tests::test_application();
+        app.personal_assistant_repository.connection.execute("INSERT INTO employers(id,name) VALUES(1,'Synthetic employer')",[]).unwrap();
+        let mut screen=EmployerScreen::new();let ctx=egui::Context::default();
+        assert!(!frame(&ctx,vec![],|ui|{screen.show(ui,&app);},"Save Employer").1);
+        screen.employer.as_mut().unwrap().name="Changed synthetic employer".into();
+        let (pos,blue)=frame(&ctx,vec![],|ui|{screen.show(ui,&app);},"Save Employer");assert!(blue);
+        click(&ctx,pos,|ui|{screen.show(ui,&app);},"Save Employer");
+        assert!(!frame(&ctx,vec![],|ui|{screen.show(ui,&app);},"Save Employer").1);
+        assert_eq!(app.employer_repository.get_all().unwrap()[0].name,"Changed synthetic employer");
+    }
     #[test]
     fn synchronizing_email_signature_preserves_unrelated_unsaved_edits() {
         let mut screen = EmployerScreen {

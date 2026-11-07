@@ -523,9 +523,6 @@ pub fn mutate(
 pub fn correction(db: &Connection, id: i64) -> Result<Option<i64>> {
     Ok(db.query_row("SELECT id FROM sickness_corrections WHERE payroll_timesheet_id=?1 AND retired_at IS NULL ORDER BY id DESC LIMIT 1",[id],|r|r.get(0)).optional()?)
 }
-pub fn correction_open(db: &Connection, id: i64) -> Result<bool> {
-    Ok(db.query_row("SELECT EXISTS(SELECT 1 FROM sickness_corrections c WHERE c.payroll_timesheet_id=?1 AND c.retired_at IS NULL AND c.id=(SELECT MAX(id) FROM sickness_corrections WHERE payroll_timesheet_id=?1 AND retired_at IS NULL) AND NOT EXISTS(SELECT 1 FROM sickness_submission_evidence s WHERE s.correction_id=c.id))",[id],|r|r.get(0))?)
-}
 // Compare business values, ignoring row identity and publication timestamps.
 // The same exact columns are used for original and candidate evidence.
 fn payload_rows(db: &Connection, table: &str, key: &str, id: i64) -> Result<Vec<String>> {
@@ -735,9 +732,6 @@ pub fn audit(db: &Connection, pa: i64) -> Result<Vec<String>> {
     Ok(lines)
 }
 
-pub fn generation_allowed(db: &Connection, id: i64) -> Result<bool> {
-    Ok(correction_open(db,id)? || db.query_row("SELECT EXISTS(SELECT 1 FROM payroll_timesheet_snapshot_states s JOIN sickness_document_evidence d ON d.document_id=s.document_id WHERE s.payroll_timesheet_id=?1 AND s.state='candidate' AND d.correction_id IS NOT NULL)",[id],|r|r.get(0))?)
-}
 pub fn historical_hours(
     db: &Connection,
     id: i64,

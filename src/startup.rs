@@ -14,6 +14,7 @@ pub enum Stage {
     Lock,
     Repositories,
     Graphics,
+    Shutdown,
 }
 impl fmt::Display for Stage {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -26,6 +27,7 @@ impl fmt::Display for Stage {
             Self::Lock => "Database/dispatch locking",
             Self::Repositories => "Opening application data",
             Self::Graphics => "Opening the application window",
+            Self::Shutdown => "Closing application data",
         })
     }
 }
@@ -102,10 +104,19 @@ fn report_with(
     mut graphical: impl FnMut(&str) -> bool,
     mut stderr: impl FnMut(&str),
 ) {
-    let text = format!("DirectPaymentTimesheets could not start.\n{error}");
+    let title = if error.stage == Stage::Shutdown {
+        "DirectPaymentTimesheets closed with database ownership uncertainty."
+    } else {
+        "DirectPaymentTimesheets could not start."
+    };
+    let text = format!("{title}\n{error}");
     stderr(&text);
     if !graphical(&text) {
-        stderr("A graphical error dialog could not be opened. Read the startup explanation above; no main application window was opened.");
+        if error.stage == Stage::Shutdown {
+            stderr("A graphical closure diagnostic could not be opened. Preserve the data and read the closure explanation above.");
+        } else {
+            stderr("A graphical error dialog could not be opened. Read the startup explanation above; no main application window was opened.");
+        }
     }
 }
 pub fn report(error: &StartupError) {
@@ -129,7 +140,7 @@ fn present_with(
     mut native: impl FnMut(&str) -> bool,
     mut lightweight: impl FnMut(&str) -> bool,
 ) -> bool {
-    native(text) || (stage != Stage::Graphics && lightweight(text))
+    native(text) || (!matches!(stage, Stage::Graphics | Stage::Shutdown) && lightweight(text))
 }
 fn lightweight_dialog(text: &str) -> bool {
     struct ErrorWindow(String);
@@ -346,5 +357,21 @@ mod stage5_presentation_tests {
             }
         ));
         assert_eq!(fallback, 1);
+    }
+}
+
+#[cfg(test)]
+mod shutdown_diagnostic_tests {
+    use super::*;
+
+    #[test]
+    fn closure_failure_reporting_never_claims_startup_failed_or_reopens_eframe() {
+        let error = StartupError::new(Stage::Shutdown, None, "Closure uncertain.", "Preserve data and use a known-good backup if needed.");
+        let mut output = Vec::new();
+        report_with(&error, |_| false, |line| output.push(line.to_owned()));
+        assert!(output[0].contains("closed with database ownership uncertainty"));
+        assert!(!output[0].contains("could not start"));
+        assert!(!output[1].contains("no main application window was opened"));
+        assert!(!present_with("safe closure diagnostic", Stage::Shutdown, |_| false, |_| panic!("must not reopen eframe during shutdown")));
     }
 }

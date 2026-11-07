@@ -1,4 +1,3 @@
-use std::fs;
 use std::path::{Path, PathBuf};
 
 use crate::error::AppError;
@@ -17,6 +16,18 @@ pub struct AppEnvironment {
 
 impl AppEnvironment {
     pub fn initialise() -> Result<Self, AppError> {
+        #[cfg(all(windows, debug_assertions, feature = "windows-dev-isolation"))]
+        {
+            let root = crate::development::initialise().map_err(|e| {
+                crate::startup::StartupError::new(crate::startup::Stage::Environment,
+                    Some(&crate::development::root()),
+                    format!("Isolated development startup refused: {e}"),
+                    "No production fallback. Preserve the isolated profile and inspect the development startup failure.")
+            })?;
+            return Self::at(root);
+        }
+        #[cfg(not(all(windows, debug_assertions, feature = "windows-dev-isolation")))]
+        {
         let configured_home = std::env::var("DIRECTPAYMENTTIMESHEETS_HOME").ok();
         let user_home = std::env::var("HOME").ok();
         let local_app_data = std::env::var_os("LOCALAPPDATA").map(PathBuf::from);
@@ -28,6 +39,7 @@ impl AppEnvironment {
         )?;
 
         Self::at(data_dir)
+        }
     }
 
     pub(crate) fn at(data_dir: PathBuf) -> Result<Self, AppError> {
@@ -48,7 +60,7 @@ impl AppEnvironment {
             &templates_dir,
             &cache_dir,
         ] {
-            fs::create_dir_all(directory).map_err(|e| {
+            crate::private_storage::ensure_private_dir(directory).map_err(|e| {
                 crate::startup::StartupError::io(crate::startup::Stage::Environment, directory, &e)
             })?;
         }

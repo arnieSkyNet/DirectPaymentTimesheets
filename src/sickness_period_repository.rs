@@ -4,7 +4,7 @@
 // and isolated low-level storage/migration fixtures.
 #![allow(dead_code)]
 
-use rusqlite::{params, Connection, OptionalExtension, Result};
+use rusqlite::{params, OptionalExtension, Result};
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct SicknessPeriod {
@@ -17,12 +17,14 @@ pub struct SicknessPeriod {
 }
 
 pub struct SicknessPeriodRepository {
-    connection: Connection,
+    connection: crate::database::DatabaseConnection,
 }
 
 impl SicknessPeriodRepository {
-    pub fn new(connection: Connection) -> Self {
-        Self { connection }
+    pub fn new(connection: impl Into<crate::database::DatabaseConnection>) -> Self {
+        Self {
+            connection: connection.into(),
+        }
     }
 
     /// Accept project calendar inputs, validating and normalizing them before storage.

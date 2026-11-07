@@ -33,7 +33,7 @@ pub struct Employer {
     pub mileage_enabled: bool,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct PersonalAssistant {
     pub id: i64,
     pub first_name: String,

@@ -247,7 +247,7 @@ class SplitLayout(unittest.TestCase):
             root = Path(directory).resolve()
             (root/'tests').mkdir()
             (root/n.FIXTURE).write_bytes(b'old fixture')
-            with patch.object(n.subprocess,'check_output',side_effect=['a'*40, b'100644 '+b'a'*40+b' 0\t'+n.FIXTURE.encode()+b'\0']), self.assertRaises(n.Refusal):
+            with patch.object(n, 'REVIEWED_FIXTURE_SHA256', 'e'*64), patch.object(n.subprocess,'check_output',side_effect=['a'*40, b'100644 '+b'a'*40+b' 0\t'+n.FIXTURE.encode()+b'\0']), self.assertRaises(n.Refusal):
                 n.verify_source_fixture(root,'a'*40,{n.FIXTURE:{'sha256':'e'*64}})
 
 class DriverLifecycle(unittest.TestCase):
@@ -505,14 +505,15 @@ class NativeMetadata(unittest.TestCase):
             exe=root/'synthetic'
             exe.write_bytes(b'NOT EXECUTABLE')
             manifest=root/'manifest.json'
-            inventory={n.FIXTURE:dict(sha256=n.REVIEWED_FIXTURE_SHA256,mode='100644')}
+            # Synthetic receipt data is not approval of a real source fixture.
+            inventory={n.FIXTURE:dict(sha256='d'*64,mode='100644')}
             manifest.write_text(json.dumps(dict(source=inventory)))
             env=dict(DPT_NATIVE_SQLITE_MANIFEST=str(manifest),GITHUB_RUN_ID='123',GITHUB_RUN_ATTEMPT='1',EXPECTED_CONTROLLER_SHA='b'*40,DPT_NATIVE_SQLITE_LAUNCHER_SHA='c'*40)
             with patch.dict(os.environ,env,clear=True),patch.object(n.subprocess,'check_output',return_value='rustc 1.98.1 (synthetic 2026-10-01)\n'),patch.object(n.platform,'system',return_value='Darwin'),patch.object(n.platform,'machine',return_value='arm64'),patch.object(n.platform,'python_version',return_value='3.12.8'),patch.object(n,'source_inventory',return_value={'controller':'synthetic inventory'}):
                 data=n.new_sanitized_receipt('a'*40,exe)
                 self.assertEqual((data['run']['S'],data['run']['W'],data['run']['L']),('a'*40,'b'*40,'c'*40))
                 self.assertEqual(data['run']['rust'],'1.98.1')
-                self.assertEqual(data['hashes']['fixture_source'],n.REVIEWED_FIXTURE_SHA256)
+                self.assertEqual(data['hashes']['fixture_source'],'d'*64)
                 with patch.object(n.subprocess,'check_output',return_value='rustc /Users/synthetic/private-details'):
                     with self.assertRaises(n.Refusal):
                         n.new_sanitized_receipt('a'*40,exe)

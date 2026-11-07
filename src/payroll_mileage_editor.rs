@@ -83,7 +83,7 @@ impl MileageEditor {
                 self.focus = false;
             }
             ui.horizontal(|ui| {
-                if ui.button("Save").clicked() {
+                if crate::gui_controls::save_button(ui,"Save",self.dirty()).clicked() {
                     match self.value() {
                         Ok(value) => action = Some(Action::Save(value)),
                         Err(error) => self.error = error.into(),
@@ -142,6 +142,14 @@ pub(super) fn cell(ui: &mut egui::Ui, enabled: bool, populated: bool) -> egui::R
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn mileage_save_colour_clears_when_persisted_result_is_accepted() {
+        use crate::gui_controls::acceptance::frame;
+        let ctx=egui::Context::default();let mut editor=MileageEditor::new(1,2,"Synthetic PA","12/10/2026",0.0);
+        assert!(!frame(&ctx,vec![],|ui|{editor.show(ui.ctx());},"Save").1);
+        editor.text="12.5".into();assert!(frame(&ctx,vec![],|ui|{editor.show(ui.ctx());},"Save").1);
+        editor.saved(12.5);assert!(!frame(&ctx,vec![],|ui|{editor.show(ui.ctx());},"Save").1);
+    }
     #[test]
     fn blank_and_saved_values_close_cleanly_but_edits_require_confirmation() {
         let mut editor = MileageEditor::new(1, 2, "PA", "12/10/2026", 0.0);

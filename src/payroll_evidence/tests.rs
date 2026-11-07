@@ -98,7 +98,7 @@ fn resolution_is_one_winner_retains_candidates_and_invalidates_material_edits() 
     rows.push(e("direct", 3, "09:30", "10:30"));
     assert_eq!(preflight(&db, &rows).unwrap().unresolved.len(), 1);
 }
-fn setup() -> (tempfile::TempDir, Application) {
+fn setup() -> (crate::private_storage::PrivateTempDir, Application) {
     let (dir, app) = crate::payroll_timesheet_screen::tests::test_application();
     let db = open(&app).unwrap();
     db.execute_batch("INSERT INTO personal_assistants(id,first_name,surname,employment_status) VALUES (1,'Example','PA','Active'),(2,'Other','PA','Active');
@@ -146,7 +146,12 @@ fn candidate(
     r: &PayrollTimesheet,
     weeks: &[NaiveDate; 4],
 ) -> std::path::PathBuf {
-    let hours = reconciliation::calculate(app, r, weeks, None).unwrap();
+    let db = open(app).unwrap();
+    let hours = if crate::timesheet_amendments::saved(&db, r.id).unwrap() {
+        crate::timesheet_amendments::hours(app, r).unwrap()
+    } else {
+        reconciliation::calculate(app, r, weeks, None).unwrap()
+    };
     let path = app
         .context
         .environment
@@ -174,8 +179,45 @@ fn candidate(
             &hours.week_totals_minutes,
         )
         .unwrap();
+    crate::timesheet_amendments::record_generation(&db, r.id, hours.week_totals_minutes, hours.previous_cycle_minutes, &hours.snapshot_items).unwrap();
     path
 }
+fn save_amendment(app: &Application, record: &PayrollTimesheet, hours: f64) {
+    let mut weeks = app
+        .payroll_timesheet_repository
+        .get_weeks(record.id)
+        .unwrap();
+    weeks[0].worked_hours = hours;
+    let adjustments = weeks
+        .iter()
+        .map(
+            |w| crate::payroll_worked_item_repository::ManualHoursAdjustment {
+                week_number: w.week_number,
+                adjustment_minutes: 0,
+                reason: None,
+            },
+        )
+        .collect::<Vec<_>>();
+    let holidays = app
+        .payroll_timesheet_repository
+        .get_public_holidays(record.id)
+        .unwrap();
+    let leave = app
+        .payroll_timesheet_repository
+        .get_annual_leave(record.id)
+        .unwrap();
+    app.payroll_timesheet_repository
+        .save_preparation_atomically(
+            record,
+            &weeks,
+            &holidays,
+            &leave,
+            &adjustments,
+            "test amendment",
+        )
+        .unwrap();
+}
+
 fn submit(app: &Application, r: &PayrollTimesheet, weeks: &[NaiveDate; 4]) {
     let path = candidate(app, r, weeks);
     crate::payroll_snapshot_service::send_production_candidate(
@@ -252,7 +294,7 @@ fn reopening_stored_evidence_sees_new_internal_work_without_import() {
     );
 }
 #[test]
-fn submitted_then_explicit_resubmission_keeps_original_pdf_and_items() {
+fn submitted_then_saved_amendment_keeps_original_pdf_and_items() {
     let (_dir, app) = setup();
     let (r, w) = period(&app, 1, "2026-04-01", 1);
     let id = direct(&app, "2026-04-02T09:00", "2026-04-02T10:00");
@@ -281,7 +323,7 @@ fn submitted_then_explicit_resubmission_keeps_original_pdf_and_items() {
     assert_eq!(lifecycle::items(&db, first).unwrap()[0].worked_minutes, 60);
     let change = reconciliation::changes(&app, &r).unwrap();
     assert!(change.changed);
-    lifecycle::authorize_resubmission(&app, &r, &change.signature).unwrap();
+    save_amendment(&app, &r, 2.0);
     db.execute(
         "UPDATE payroll_timesheets SET payroll_department_notes=?1 WHERE id=?2",
         params!["Replacement payroll note", r.id],
@@ -302,7 +344,7 @@ fn submitted_then_explicit_resubmission_keeps_original_pdf_and_items() {
     assert_eq!(note(second), "Replacement payroll note");
     assert_eq!(lifecycle::items(&db, first).unwrap()[0].worked_minutes, 60);
     assert_eq!(
-        lifecycle::items(&db, second).unwrap()[0].worked_minutes,
+        lifecycle::items(&db, second).unwrap().iter().map(|item| item.worked_minutes).sum::<i64>(),
         120
     );
     assert_eq!(
@@ -617,12 +659,12 @@ fn paid_duplicate_replacement_reconciles_only_the_difference() {
     settle(&app, &r);
     let replacement = direct(&app, "2026-04-02T09:00", "2026-04-02T11:00");
     let all = load(&app).unwrap();
-    let g = preflight(&open(&app).unwrap(), &all)
+    let g = preflight(&*open(&app).unwrap(), &all)
         .unwrap()
         .unresolved
         .remove(0);
     approve_group(
-        &open(&app).unwrap(),
+        &*open(&app).unwrap(),
         &all,
         &[(g.fingerprint, format!("direct:{replacement}"))],
     )
@@ -664,12 +706,12 @@ fn mixed_imported_and_direct_selected_evidence_is_paid_once_with_historical_rate
     );
     direct(&app, "2026-04-02T09:30", "2026-04-02T10:30");
     let all = load(&app).unwrap();
-    let group = preflight(&open(&app).unwrap(), &all)
+    let group = preflight(&*open(&app).unwrap(), &all)
         .unwrap()
         .unresolved
         .remove(0);
     approve_group(
-        &open(&app).unwrap(),
+        &*open(&app).unwrap(),
         &all,
         &[(
             group.fingerprint,
@@ -783,8 +825,7 @@ fn pending_replacement_keeps_original_membership_reserved_elsewhere() {
         "test",
     )
     .unwrap();
-    let change = reconciliation::changes(&app, &old).unwrap();
-    lifecycle::authorize_resubmission(&app, &old, &change.signature).unwrap();
+    save_amendment(&app, &old, 2.0);
     let (next, nw) = period(&app, 2, "2026-04-29", 1);
     assert_eq!(
         reconciliation::calculate(&app, &next, &nw, None)
@@ -801,7 +842,7 @@ fn indeterminate_payslip_is_not_settled_and_refuses_reconciliation() {
         .protect_payslip_for_send(1, "2026/27", 1, "attempt")
         .unwrap();
     assert_eq!(
-        lifecycle::stage(&open(&app).unwrap(), &r).unwrap(),
+        lifecycle::stage(&*open(&app).unwrap(), &r).unwrap(),
         Stage::Indeterminate
     );
     assert!(reconciliation::calculate(&app, &r, &w, None).is_err());
@@ -930,7 +971,7 @@ fn write_cutover(
         settled,
     };
     std::fs::write(
-        legacy_baseline::inventory_path(&open(app).unwrap())
+        legacy_baseline::inventory_path(&*open(app).unwrap())
             .unwrap()
             .unwrap(),
         toml::to_string(&inventory).unwrap(),
@@ -1180,6 +1221,13 @@ fn shared_rounding_preserves_both_raw_sources_and_exact_duplicate_intervals() {
         (10, "Up", 40),
         (10, "Down", 30),
         (1, "Up", 34),
+        (1, "Down", 34),
+        (5, "Up", 35),
+        (5, "Down", 30),
+        (30, "Up", 60),
+        (30, "Down", 30),
+        (60, "Up", 60),
+        (60, "Down", 0),
     ] {
         for late in [false, true] {
             let (_dir, mut app) = setup();
@@ -1324,3 +1372,246 @@ mod stage4_tests;
 
 #[path = "stage7_tests.rs"]
 mod stage7_tests;
+
+fn carry_review_frame(
+    ctx: &egui::Context,
+    review: &mut review_ui::ReviewUi,
+    app: &Application,
+    record: &PayrollTimesheet,
+    events: Vec<egui::Event>,
+    preparation_dirty: bool,
+) -> (bool, Vec<(String, egui::Rect)>) {
+    fn labels(shape: &egui::Shape, found: &mut Vec<(String, egui::Rect)>) {
+        match shape {
+            egui::Shape::Text(text) => found.push((
+                text.galley.text().into(),
+                egui::Rect::from_min_size(text.pos, text.galley.size()),
+            )),
+            egui::Shape::Vec(shapes) => {
+                for shape in shapes {
+                    labels(shape, found);
+                }
+            }
+            _ => {}
+        }
+    }
+    let mut changed = false;
+    let output = ctx.run(
+        egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(1000., 1000.),
+            )),
+            events,
+            ..Default::default()
+        },
+        |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                changed = review.show_pa(ui, app, record, "Synthetic PA", preparation_dirty);
+            });
+        },
+    );
+    let mut found = Vec::new();
+    for shape in &output.shapes {
+        labels(&shape.shape, &mut found);
+    }
+    (changed, found)
+}
+fn click_carry_review(
+    ctx: &egui::Context,
+    review: &mut review_ui::ReviewUi,
+    app: &Application,
+    record: &PayrollTimesheet,
+    label: &str,
+    preparation_dirty: bool,
+) -> bool {
+    let (_, labels) = carry_review_frame(ctx, review, app, record, vec![], preparation_dirty);
+    let pos = labels
+        .iter()
+        .find(|(text, _)| text == label)
+        .expect(label)
+        .1
+        .center();
+    let mut changed = false;
+    for pressed in [true, false] {
+        changed |= carry_review_frame(
+            ctx,
+            review,
+            app,
+            record,
+            vec![
+                egui::Event::PointerMoved(pos),
+                egui::Event::PointerButton {
+                    pos,
+                    button: egui::PointerButton::Primary,
+                    pressed,
+                    modifiers: Default::default(),
+                },
+            ],
+            preparation_dirty,
+        )
+        .0;
+    }
+    changed
+}
+fn refresh_carry_review(
+    review: &mut review_ui::ReviewUi,
+    app: &Application,
+    record: &PayrollTimesheet,
+) {
+    let db = open(app).unwrap();
+    let raw = load_for_pa(&db, record.personal_assistant_id).unwrap();
+    let pre = preflight_for_pa(&db, &raw, record.personal_assistant_id).unwrap();
+    review.refresh_record(app, record, false, &pre).unwrap();
+}
+
+#[test]
+fn carry_review_ui_requires_completeness_and_retains_settled_totals() {
+    let (_dir, app) = setup();
+    let (old, _) = period(&app, 1, "2026-04-01", 1);
+    settle(&app, &old);
+    let db = open(&app).unwrap();
+    db.execute("UPDATE payroll_timesheet_weeks SET worked_hours=3 WHERE payroll_timesheet_id=?1 AND week_number=1", [old.id]).unwrap();
+    let ctx = egui::Context::default();
+    let mut review = review_ui::ReviewUi::default();
+    refresh_carry_review(&mut review, &app, &old);
+    for _ in 0..3 {
+        carry_review_frame(&ctx, &mut review, &app, &old, vec![], false);
+    }
+    assert!(!click_carry_review(
+        &ctx,
+        &mut review,
+        &app,
+        &old,
+        "Carry correction forward",
+        false
+    ));
+    assert_eq!(
+        db.query_row::<i64, _, _>("SELECT COUNT(*) FROM payroll_corrections", [], |r| r.get(0))
+            .unwrap(),
+        0
+    );
+    click_carry_review(
+        &ctx,
+        &mut review,
+        &app,
+        &old,
+        "I confirm actual evidence for the displayed aggregate reconciliation is complete",
+        false,
+    );
+    assert!(!click_carry_review(
+        &ctx,
+        &mut review,
+        &app,
+        &old,
+        "Carry correction forward",
+        true
+    ));
+    assert!(click_carry_review(
+        &ctx,
+        &mut review,
+        &app,
+        &old,
+        "Carry correction forward",
+        false
+    ));
+    assert_eq!(
+        db.query_row::<i64, _, _>(
+            "SELECT COUNT(*) FROM payroll_reconciliation_decisions WHERE kind='complete_actuals'",
+            [],
+            |r| r.get(0)
+        )
+        .unwrap(),
+        1
+    );
+    assert_eq!(db.query_row::<f64,_,_>("SELECT worked_hours FROM payroll_timesheet_weeks WHERE payroll_timesheet_id=?1 AND week_number=1", [old.id], |r|r.get(0)).unwrap(), 3.);
+    assert_eq!(lifecycle::stage(&db, &old).unwrap(), Stage::Settled);
+    let (_, labels) = carry_review_frame(&ctx, &mut review, &app, &old, vec![], false);
+    assert!(!labels
+        .iter()
+        .any(|(text, _)| text == "Carry correction forward"));
+    let (next, dates) = period(&app, 2, "2026-04-29", 1);
+    direct(&app, "2026-04-30T09:00", "2026-04-30T11:00");
+    let result = reconciliation::calculate(&app, &next, &dates, None).unwrap();
+    assert_eq!(result.week_totals_minutes, [0; 4]);
+    assert_eq!(result.previous_cycle_minutes, -120);
+}
+
+#[test]
+fn carry_review_ui_rejects_stale_evidence_then_carries_without_resubmitting() {
+    for settled in [false, true] {
+        let (_dir, app) = setup();
+        let (record, dates) = period(&app, 1, "2026-04-01", 1);
+        let shift = direct(&app, "2026-04-02T09:00", "2026-04-02T10:00");
+        submit(&app, &record, &dates);
+        if settled {
+            settle(&app, &record);
+        }
+        let db = open(&app).unwrap();
+        let original = lifecycle::latest(&db, record.id).unwrap().unwrap();
+        let edit = |end: &str| {
+            reviewed_edit(
+                &app,
+                shift,
+                crate::direct_shift_repository::parse_shift_time("2026-04-02T09:00").unwrap(),
+                crate::direct_shift_repository::parse_shift_time(end).unwrap(),
+                0,
+                None,
+                "Synthetic reviewed correction",
+            )
+            .unwrap()
+        };
+        edit("2026-04-02T11:00");
+        let ctx = egui::Context::default();
+        let mut review = review_ui::ReviewUi::default();
+        refresh_carry_review(&mut review, &app, &record);
+        for _ in 0..3 {
+            carry_review_frame(&ctx, &mut review, &app, &record, vec![], false);
+        }
+        edit("2026-04-02T12:00");
+        assert!(!click_carry_review(
+            &ctx,
+            &mut review,
+            &app,
+            &record,
+            "Carry correction forward",
+            false
+        ));
+        let (_, labels) = carry_review_frame(&ctx, &mut review, &app, &record, vec![], false);
+        assert!(labels
+            .iter()
+            .any(|(text, _)| text.contains("refresh before deciding")));
+        refresh_carry_review(&mut review, &app, &record);
+        assert!(click_carry_review(
+            &ctx,
+            &mut review,
+            &app,
+            &record,
+            "Carry correction forward",
+            false
+        ));
+        assert_eq!(lifecycle::latest(&db, record.id).unwrap(), Some(original));
+        assert_eq!(
+            lifecycle::items(&db, original).unwrap()[0].worked_minutes,
+            60
+        );
+        assert_eq!(
+            lifecycle::stage(&db, &record).unwrap(),
+            if settled {
+                Stage::Settled
+            } else {
+                Stage::Submitted
+            }
+        );
+        assert_eq!(
+            db.query_row::<i64, _, _>("SELECT SUM(minutes) FROM payroll_corrections", [], |r| r
+                .get(0))
+                .unwrap(),
+            120
+        );
+        let (_, labels) = carry_review_frame(&ctx, &mut review, &app, &record, vec![], false);
+        assert!(!labels
+            .iter()
+            .any(|(text, _)| text == "Carry correction forward"));
+    }
+}

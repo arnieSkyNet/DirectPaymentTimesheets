@@ -59,7 +59,7 @@ fn draw_production_choices(
     ids: &mut Vec<i64>,
     unsent_only: bool,
 ) {
-    ui.horizontal(|ui| {
+    ui.horizontal_wrapped(|ui| {
         if ui
             .button(if unsent_only {
                 "Select all unsent"
@@ -85,7 +85,10 @@ fn draw_production_choices(
         .show(ui, |ui| {
             for choice in choices {
                 let mut checked = ids.contains(&choice.id);
-                ui.horizontal(|ui| {
+                // Keep the selectable PA separate from potentially very long
+                // paths/diagnostics, so neither can force the dialog wider.
+                ui.vertical(|ui| {
+                    ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Wrap);
                     if ui
                         .add_enabled(
                             choice.available,
@@ -98,7 +101,7 @@ fn draw_production_choices(
                             ids.push(choice.id);
                         }
                     }
-                    ui.label(&choice.detail);
+                    ui.add(egui::Label::new(&choice.detail).wrap().selectable(true));
                 });
             }
         });
@@ -117,6 +120,7 @@ impl DirectPaymentApp {
         let start = crate::date_utils::parse_legacy(&schedule.first_week_commencing)?;
         let mut choices = Vec::new();
         for pa in self.application.personal_assistant_repository.get_all()? {
+            if sending && !self.email_pa_visible(&pa) { continue; }
             let has_record: bool = db.query_row("SELECT EXISTS(SELECT 1 FROM payroll_timesheets WHERE personal_assistant_id=?1 AND payroll_year=?2 AND cycle_number=?3)", rusqlite::params![pa.id,schedule.payroll_year,schedule.cycle_number], |r|r.get(0))?;
             let eligibility =
                 pa.eligible_for_period(start, start + chrono::Duration::days(27), has_record);
@@ -133,7 +137,6 @@ impl DirectPaymentApp {
                     .ok_or("Preparation missing — prepare and save this PA first")?;
                 let current_stage = stage(&db, &record)?;
                 match current_stage {
-                    Stage::Settled if !sending && !crate::sickness_service::generation_allowed(&db, record.id)? => return Err("Settled — protected".into()),
                     Stage::Indeterminate => {
                         return Err("Delivery uncertain — do not regenerate or resend".into())
                     }
@@ -261,6 +264,7 @@ impl DirectPaymentApp {
         &self,
         batch: &PendingEmailBatch,
     ) -> Result<ProductionReport, Box<dyn std::error::Error>> {
+        crate::email_send_policy::validate_batch(batch.selected_personal_assistant_ids.len(),batch.volume_acknowledged)?;
         if self.email_settings_digest()? != batch.approved_settings { return Err("Email settings changed; approve a fresh selection".into()); }
         let schedule = self
             .validated_schedule_for_email_batch(batch)?
@@ -343,11 +347,6 @@ impl DirectPaymentApp {
                 let record =
                     record.ok_or("Preparation missing — prepare and save this PA first")?;
                 match stage(&db, &record)? {
-                    Stage::Settled if action == "Generation" && !crate::sickness_service::generation_allowed(&db, record.id)? => {
-                        return Ok(ProductionOutcome::Skipped(
-                            "Already submitted/settled — protected".into(),
-                        ))
-                    }
                     Stage::Indeterminate => {
                         return Err("Delivery uncertain — automatic retry refused".into())
                     }
@@ -521,9 +520,13 @@ impl DirectPaymentApp {
         };
         let mut cancel = false;
         let payslips = matches!(batch.kind, PayrollEmailKind::Payslip);
+        let max_width = (ui.ctx().content_rect().width() - 32.0).clamp(120.0, 720.0);
         egui::Window::new(if payslips { "Email payslips — select PAs" } else { "Email payroll timesheets — select PAs" })
             .collapsible(false)
+            .default_width(640.0)
+            .max_width(max_width)
             .show(ui.ctx(), |ui| {
+                ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Wrap);
                 if let Some(period) = &batch.payroll_period {
                     ui.label(&period.display_label);
                 }
@@ -538,7 +541,7 @@ impl DirectPaymentApp {
                     !payslips,
                 );
                 if previous_selection!=batch.selected_personal_assistant_ids {batch.resend_acknowledged=false;batch.approved.clear();batch.approved_selection.clear();}
-                ui.horizontal(|ui| {
+                ui.horizontal_wrapped(|ui| {
                     if ui
                         .add_enabled(
                             !batch.selected_personal_assistant_ids.is_empty(),

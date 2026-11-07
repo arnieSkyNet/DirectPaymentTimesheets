@@ -367,17 +367,14 @@ fn recover(db: &Connection, id: i64, bases: &[PathBuf]) -> Result<()> {
             return Err("Registered evidence changed or restored metadata does not match filing intent; retain files and review".into());
         }
         verified_bytes(source, &digest)?;
-        fs::create_dir_all(dest.parent().unwrap())?;
+        crate::private_storage::ensure_output_dir(dest.parent().unwrap())?;
         if !stage.try_exists()? {
             if state != "planned" || dest.try_exists()? {
                 return Err(
                     "Publication provenance is missing; destination must not be adopted".into(),
                 );
             }
-            let mut output = fs::OpenOptions::new()
-                .create_new(true)
-                .write(true)
-                .open(stage)?;
+            let mut output = crate::private_storage::create_new(stage)?;
             checkpoint("staging_created")?;
             std::io::copy(&mut fs::File::open(source)?, &mut output)?;
             output.flush()?;
@@ -411,6 +408,9 @@ fn recover(db: &Connection, id: i64, bases: &[PathBuf]) -> Result<()> {
         } else {
             progress(db, id, "staged")?;
             checkpoint("staged")?;
+            // A filing move must retain the original document's sharing policy.
+            // Only this operation's unpublished staging inode is changed.
+            crate::private_storage::preserve_access(stage, source)?;
             fs::hard_link(stage, dest)?;
             checkpoint("published_before_state")?;
         }

@@ -464,7 +464,7 @@ pub fn seed_legacy_path(db: &Connection, path: &str) -> Result<()> {
 #[cfg(test)]
 mod stage4_migration_tests {
     use super::*;
-    fn legacy() -> (tempfile::TempDir, Connection) {
+    fn legacy() -> (tempfile::TempDir, crate::database::DatabaseConnection) {
         let dir = tempfile::tempdir().unwrap();
         let db = crate::database::open(dir.path().join("payroll.sqlite")).unwrap();
         crate::database::create_legacy_schema(&db, 37).unwrap();

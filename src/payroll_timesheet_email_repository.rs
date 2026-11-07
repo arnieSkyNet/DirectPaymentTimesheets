@@ -1,4 +1,4 @@
-use rusqlite::{params, Connection, Result};
+use rusqlite::{params, Result};
 
 #[derive(Debug, Clone)]
 pub struct PayrollTimesheetEmailStatus {
@@ -22,12 +22,14 @@ impl PayrollTimesheetEmailStatus {
 }
 
 pub struct PayrollTimesheetEmailRepository {
-    pub(crate) connection: Connection,
+    pub(crate) connection: crate::database::DatabaseConnection,
 }
 
 impl PayrollTimesheetEmailRepository {
-    pub fn new(connection: Connection) -> Self {
-        Self { connection }
+    pub fn new(connection: impl Into<crate::database::DatabaseConnection>) -> Self {
+        Self {
+            connection: connection.into(),
+        }
     }
 
     pub fn get_for_pa_and_cycle(

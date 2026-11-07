@@ -422,7 +422,11 @@ For work happening now, **Clock in now** and **Clock out now** use the current t
 1. In Hours Keeper, export the relevant recorded hours as **CSV**. Transfer or download that file to this computer. Keep the original export.
 2. Click **Settings** and find **CSV Import Folder**. Note the full folder location. Use **Browse...** if you need to choose a folder you can find, then **Save Application Settings**.
 3. In your file manager, copy the `.csv` export into that exact folder. Keep only the CSV files you intend to import there: the button scans the folder, rather than opening a file chooser for a single CSV.
-4. Return to **Dashboard** and click **Import Hours CSV**.
+4. Return to **Dashboard** and click **Import Hours CSV**. Files already in the folder are processed first.
+   If any active PAs are still outstanding, a **Yes/No** prompt lists them, even when some folder files succeeded. Choose **No** to keep just the folder results, or **Yes** to enter the remaining CSV exports from the clipboard.
+   When a working payroll period is selected, outstanding PAs are checked for that period; old imported CSVs left in the folder do not hide clipboard entry for later cycles.
+   Select an outstanding PA and click **Import from Clipboard**. This opens a separate dialog with a large editable text box; opening it does not read the clipboard. Click in the box and paste the complete supported description line, eight-column header and rows using **Ctrl+V**. Edit the text if needed, then click **Import**. Every row must belong to that selected PA. Invalid content stays in the dialog with an error so you can correct it. **Cancel** discards the unsaved text and returns to the outstanding list.
+   Each successful Import saves an ordinary CSV in the configured CSV Import Folder, using its date range, full PA name and **Clipboard** marker, and runs the existing importer. The PA then leaves the list and the combined Import Summary updates. When the list is complete, the dialog closes. **Cancel remaining — import saved CSVs** finishes early without discarding completed folder or clipboard imports. No preview or simulation step is involved.
 5. Read **Import Summary**. Check **Files succeeded**, **Rows imported**, **Rows skipped**, **Files refused**, **Files failed** and any error messages.
 6. Click **View Imported Hours**. Check the PA, dates, breaks and worked hours against the export. Resolve any duplicate or overlap review before preparing payroll.
 
@@ -478,7 +482,7 @@ The importer accepts UK dates with `at` and a 24-hour time, with optional second
 
 **Success check:** the preparation saves without errors, the four weeks match your period, and no unresolved payroll actions remain. The **W/c** rows are week-start dates; use the full date range in the period selector to check the period end. If an unsaved-changes prompt appears, choose **Save changes** to keep your work.
 
-> **You can do this later:** notes or claims that do not apply can stay blank. **Actual in-lieu hours awarded by Payroll** is for a figure returned by Payroll later; leave it blank until Payroll confirms it. Submitted records and records with indeterminate delivery are read-only; do not bypass those protections.
+> **You can do this later:** notes or claims that do not apply can stay blank. **Actual in-lieu hours awarded by Payroll** is for a figure returned by Payroll later; leave it blank until Payroll confirms it. Submitted timesheets can be reopened here: amend the hours, **Save**, regenerate the PDF, then explicitly email the corrected version. Earlier versions remain in the audit; the latest regenerated saved version supplies the reconciliation baseline. Unresolved delivery remains a separate safety condition; do not resend blindly.
 
 
 <details>
@@ -555,6 +559,8 @@ The timesheet test uses the Payroll test address as **To**, optional PA test add
 
 1. Confirm the reviewed PDF is final, any required signing is complete, and you are ready to submit by the provider's deadline.
 2. On **Dashboard**, confirm the period and click **Email Payroll Timesheets**.
+
+   Current email lists show Active PAs whose employment dates include today. For a departed PA’s final timesheet, payslip, P45 or other outstanding payroll document, explicitly enable **Include inactive/departed PAs for final or outstanding documents** on Dashboard (also available beside email previews). Select that PA deliberately and follow the usual document review and send confirmation. Departed PAs are never automatically selected. Turn the option off to return to current recipients; changing it cancels any pending email selection and preview. The option starts off each time the application opens. Historical records, retained PDFs and delivery history remain available, and normal integrity and duplicate-send checks still apply.
 3. In **Email payroll timesheets — select PAs**, check the selected PAs. Current unsent PDFs are selected by default; previously sent versions can be listed for a deliberate resend. Avoid selecting a resend for a first submission.
 4. Click **Continue to email notes**. Choose **No Additional Note**, or **Add Additional Note**, enter any needed note for each selected PA and click **Continue**.
 5. In **Confirm email batch**, check the period, PA list, first-send/resend counts, document details and **To / CC / BCC** addresses. Cancel if anything is wrong.
@@ -601,7 +607,7 @@ If the result is uncertain or the application was interrupted during sending, **
 | SMTP connection or TLS error | Check internet access, exact host, port **587** and **Required STARTTLS** for GMX/Gmail. Do not disable encryption as a workaround. |
 | Local SMTP connection refused | A local relay must already be running on localhost:25. Use your provider's SMTP configuration if no relay has been arranged. |
 | Stale PDF / changed data | Save the correct preparation, generate again, inspect the new PDF and preview again. |
-| Submitted or indeterminate record is read-only | Retain the message and ask for help. Do not delete records, alter the database or resend blindly. |
+| Amend an already submitted timesheet | Reopen its period in Payroll Preparation, amend hours, Save, regenerate and separately send the corrected PDF. For unresolved delivery, retain the message and reconcile its outcome before sending again. |
 
 When asking for help, provide the application version, screen, exact message and the step you reached. Remove passwords, names, National Insurance numbers, dates of birth and payroll attachments from anything shared publicly.
 

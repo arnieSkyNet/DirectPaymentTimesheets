@@ -314,7 +314,7 @@ Before terminal execution the parent uses umask 077. Child environments keep onl
 SystemRoot/WINDIR where present plus explicit profile/case/source/barrier fields
 and fixture-private temp paths; no PATH, HOME, SMTP values, tokens, loader
 injection or Rust overrides. GitHub identity values are copied from checked
-runner values, never manufactured. Molly gets no GitHub identity at all.
+runner values, never manufactured. IMOLLY gets no GitHub identity at all.
 Windows terminal-profile supervisor controls also receive private temp storage,
 allowlisted environments and NUL handles; existing Phase 1 callers retain defaults.
 
@@ -346,10 +346,10 @@ private disk is ephemeral: this does **not** promise durable raw preservation
 beyond the job. Agree a sanitized durable receipt policy before a hosted run;
 raw retention/export would require separate authorization.
 
-### Local Molly profile (not executed)
+### Local IMOLLY profile (not executed)
 
 Use an isolated clean checkout containing the separately published reviewed
-source/controller revisions, not Florence's dirty working tree. On Molly,
+source/controller revisions, not Florence's dirty working tree. On IMOLLY,
 independently confirm the real computer name, x64 Python and the reviewed hashes.
 Required records, in addition to the common SHA/manifest/synthetic-risk gates:
 
@@ -362,7 +362,7 @@ Required records, in addition to the common SHA/manifest/synthetic-risk gates:
 
 No GITHUB_* variable may exist. The Python supervisor checks platform.node and
 pointer width; the Rust child independently calls GetComputerNameW and requires
-Windows x86_64 and native AMD64 using IsWow64Process2. Do not set synthetic GitHub variables or relabel Florence/Molly as
+Windows x86_64 and native AMD64 using IsWow64Process2. Do not set synthetic GitHub variables or relabel Florence/IMOLLY as
 windows-2022. Source acquisition is by exact approved commit, with clean Git
 status and hashes, never an unpinned branch tip. Build with the existing pinned
 Rust toolchain using only --no-run, inspect the one ignored-test inventory,
@@ -464,8 +464,10 @@ Compare with the independently read-back canonical JSON/digest and approved S/W/
 run ID/attempt, architecture and job/driver exits. Never copy raw fixture roots,
 crash reports, build logs or environment dumps alongside the retained receipt.
 
-The S checkout MUST contain fixture SHA-256
-`f457d426fb87edfffa62afc6d79be854448380e9955ffddc728dd533486b9727`.
+No fixture fingerprint is approved by this reconciliation. The controller keeps
+`REVIEWED_FIXTURE_SHA256 = None` and refuses source admission with
+`unreviewed_fixture` until a separately reviewed fingerprint is assigned. Neither
+historical fixture digest is carried forward as approval.
 The manifest producer and driver verify the clean committed S inventory and this
 fixture independently of controller-local files. Old HEAD's fixture is refused.
 W is verified from the controller script's own checkout; no Rust fixture needs to
@@ -483,7 +485,7 @@ user edits remain preserved. Before publication, approve exact S/W/L trees and t
 public sanitized receipt policy/90-day retention process. Native execution and
 residual reporting risk acceptance remain separate approvals.
 
-## Proposed iMolly hostname correction
+## Reconciled IMOLLY hostname contract — 1 November 2026
 
 The only admitted local computer name is IMOLLY (case-insensitive OS name;
 DPT_NATIVE_SQLITE_HOST must be exactly IMOLLY). The Rust child still queries
@@ -492,5 +494,12 @@ GetComputerNameW and IsWow64Process2; Python still checks platform.node and
 The historical profile/risk identifiers molly-local and
 Molly-disposable-synthetic-terminal-only are unchanged identifiers, not hostname
 aliases. Native token, isolation, cleanup and synthetic-risk policies are unchanged.
-The new fixture fingerprint requires newly reviewed immutable source/controller
-commits and launcher pins. No current S/W/L pin names this proposed fixture.
+The Python supervisor and Rust child both require the exact environment value
+`DPT_NATIVE_SQLITE_HOST=IMOLLY`. Their OS hostname comparisons remain
+case-insensitive; a legacy `Molly` host or environment value is refused.
+The new fixture fingerprint requires separate review of the final bytes and
+immutable source/controller commits, followed by matching launcher pins. This
+reconciliation assigns none of those identities or any execution approval. The
+workflow source/controller checkout pins remain zero sentinels and execution
+defaults false. Mock tests use synthetic hashes only inside patched test scopes;
+they do not approve this fixture or establish real Windows/macOS acceptance.

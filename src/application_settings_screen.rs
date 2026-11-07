@@ -7,6 +7,7 @@ use crate::theme::{apply_theme, theme_label};
 
 pub struct ApplicationSettingsScreen {
     loaded: bool,
+    saved_form: String,
 
     theme: ApplicationTheme,
     date_display_format: crate::date_utils::DateDisplayFormat,
@@ -27,6 +28,8 @@ pub struct ApplicationSettingsScreen {
 
     status_message: String,
     file_status: Option<(String, Vec<std::path::PathBuf>)>,
+    storage_assessment: Vec<String>,
+    storage_assessment_pending: Option<std::sync::mpsc::Receiver<Vec<String>>>,
     backups: Vec<BackupInfo>,
     selected_backup: Option<std::path::PathBuf>,
     confirm_restore: bool,
@@ -40,6 +43,7 @@ impl ApplicationSettingsScreen {
     pub fn new() -> Self {
         Self {
             loaded: false,
+            saved_form: String::new(),
 
             theme: ApplicationTheme::default(),
             date_display_format: Default::default(),
@@ -60,6 +64,8 @@ impl ApplicationSettingsScreen {
 
             status_message: "Application settings not loaded.".to_string(),
             file_status: None,
+            storage_assessment: Vec::new(),
+            storage_assessment_pending: None,
             backups: Vec::new(),
             selected_backup: None,
             confirm_restore: false,
@@ -373,9 +379,10 @@ impl ApplicationSettingsScreen {
         ui.separator();
 
         ui.horizontal(|ui| {
-            if ui.button("Save Application Settings").clicked() {
+            if crate::gui_controls::save_button(ui,"Save Application Settings",self.form_state()!=self.saved_form).clicked() {
                 match self.save(application) {
                     Ok(()) => {
+                        self.saved_form = self.form_state();
                         self.status_message = "Application settings saved.".to_string();
                     }
 
@@ -391,6 +398,80 @@ impl ApplicationSettingsScreen {
             }
         });
 
+        ui.separator();
+
+        ui.heading("Storage privacy");
+        ui.label("Assess existing file permissions without reading document contents or changing access. Shared business folders may intentionally allow other people. Any repair requires a separate review; this application does not repair existing permissions automatically.");
+        if let Some(receiver) = &self.storage_assessment_pending {
+            ui.ctx()
+                .request_repaint_after(std::time::Duration::from_millis(200));
+            match receiver.try_recv() {
+                Ok(messages) => {
+                    self.storage_assessment = messages;
+                    self.storage_assessment_pending = None;
+                }
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    self.storage_assessment =
+                        vec!["Assessment stopped; retry when storage is available.".into()];
+                    self.storage_assessment_pending = None;
+                }
+                Err(std::sync::mpsc::TryRecvError::Empty) => {
+                    ui.label("Assessing storage in the background…");
+                }
+            }
+        }
+        if ui
+            .add_enabled(
+                self.storage_assessment_pending.is_none(),
+                egui::Button::new("Assess Storage Permissions"),
+            )
+            .clicked()
+        {
+            let config = &application.context.config;
+            let roots = vec![
+                (application.context.environment.data_dir.clone(), false),
+                (crate::paths::expand_path(&config.folders.csv_import), true),
+                (crate::paths::expand_path(&config.folders.pdf_output), true),
+                (
+                    crate::paths::expand_path(&config.folders.email_archive),
+                    true,
+                ),
+                (
+                    crate::paths::expand_path(&config.folders.payslip_folder),
+                    true,
+                ),
+                (
+                    crate::paths::expand_path(&config.folders.payroll_information_folder),
+                    true,
+                ),
+            ];
+            let (sender, receiver) = std::sync::mpsc::channel();
+            match std::thread::Builder::new()
+                .name("storage-permissions-assessment".into())
+                .spawn(move || {
+                    let messages = roots
+                        .into_iter()
+                        .flat_map(|(root, shared)| crate::private_storage::assess(&root, shared))
+                        .collect();
+                    let _ = sender.send(messages);
+                }) {
+                Ok(_) => self.storage_assessment_pending = Some(receiver),
+                Err(_) => {
+                    self.storage_assessment =
+                        vec!["Could not start assessment; no changes made.".into()]
+                }
+            }
+        }
+        if !self.storage_assessment.is_empty() {
+            egui::ScrollArea::vertical()
+                .id_salt("storage_assessment")
+                .max_height(180.0)
+                .show(ui, |ui| {
+                    for message in &self.storage_assessment {
+                        ui.label(message);
+                    }
+                });
+        }
         ui.separator();
 
         ui.heading("Backup");
@@ -587,6 +668,7 @@ impl ApplicationSettingsScreen {
         open_email_settings
     }
 
+    fn form_state(&self) -> String { vec![format!("{:?}", self.theme),format!("{:?}", self.date_display_format),format!("{:?}", self.hours_shift_date_time_spinner),format!("{:?}", self.csv_import),format!("{:?}", self.pdf_output),format!("{:?}", self.email_archive),format!("{:?}", self.payslip_folder),format!("{:?}", self.payroll_information_folder),format!("{:?}", self.regular_font),format!("{:?}", self.bold_font),format!("{:?}", self.week_commencing_font_size),format!("{:?}", self.hours_font_size),format!("{:?}", self.information_font_size)].join("\0") }
     fn load(&mut self, application: &Application) {
         let config = &application.context.config;
 
@@ -611,6 +693,7 @@ impl ApplicationSettingsScreen {
         self.hours_font_size = config.pdf.hours_font_size.to_string();
         self.information_font_size = config.pdf.information_font_size.to_string();
 
+        self.saved_form = self.form_state();
         self.status_message = "Application settings loaded.".to_string();
         self.refresh_backups(application);
     }
@@ -646,7 +729,15 @@ impl ApplicationSettingsScreen {
         }
     }
 
-    fn save(&self, application: &mut Application) -> Result<(), Box<dyn std::error::Error>> {
+    fn save(&mut self, application: &mut Application) -> Result<(), Box<dyn std::error::Error>> {
+        #[cfg(all(windows, debug_assertions, feature = "windows-dev-isolation"))]
+        crate::development::validate_folder_draft(&[
+            std::path::PathBuf::from(self.csv_import.trim()),
+            std::path::PathBuf::from(self.pdf_output.trim()),
+            std::path::PathBuf::from(self.email_archive.trim()),
+            std::path::PathBuf::from(self.payslip_folder.trim()),
+            std::path::PathBuf::from(self.payroll_information_folder.trim()),
+        ])?;
         let week_commencing_font_size = self
             .week_commencing_font_size
             .trim()
@@ -708,7 +799,28 @@ impl ApplicationSettingsScreen {
         application.context.config.pdf.information_font_size = information_font_size;
 
         application.save_config()?;
-
+        self.saved_form = self.form_state();
         Ok(())
+    }
+}
+
+#[cfg(test)] mod save_dirty_tests {
+    use super::*;
+    #[test] fn application_settings_save_colour_lifecycle() {
+        use crate::gui_controls::acceptance::{frame,click};
+        let (_dir,mut app)=crate::payroll_timesheet_screen::tests::test_application();let ctx=egui::Context::default();let mut screen=ApplicationSettingsScreen::new();
+        assert!(!frame(&ctx,vec![],|ui|{screen.show(ui,&mut app);},"Save Application Settings").1);
+        screen.hours_font_size="12".into();let(pos,blue)=frame(&ctx,vec![],|ui|{screen.show(ui,&mut app);},"Save Application Settings");assert!(blue);
+        click(&ctx,pos,|ui|{screen.show(ui,&mut app);},"Save Application Settings");
+        assert!(!frame(&ctx,vec![],|ui|{screen.show(ui,&mut app);},"Save Application Settings").1);
+    }
+    #[test] fn failed_save_retains_dirty_and_success_resets_baseline() {
+        let (_dir,mut app)=crate::payroll_timesheet_screen::tests::test_application();
+        let mut screen=ApplicationSettingsScreen::new();screen.load(&app);
+        assert_eq!(screen.form_state(),screen.saved_form);
+        screen.hours_font_size="invalid".into();assert!(screen.save(&mut app).is_err());
+        assert_ne!(screen.form_state(),screen.saved_form);
+        screen.hours_font_size="12".into();screen.save(&mut app).unwrap();
+        assert_eq!(screen.form_state(),screen.saved_form);
     }
 }

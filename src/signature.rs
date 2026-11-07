@@ -256,7 +256,7 @@ pub fn edit_guard(
 /// Compare-and-swap only the signature field, under recovery/dispatch and writer locks.
 /// Human-readable, numbered files are never overwritten, even for identical ink.
 fn save_drawn_checked(
-    db: &mut Connection,
+    db: &mut crate::database::DatabaseConnection,
     root: &Path,
     owner: Owner,
     expected: Option<&str>,
@@ -289,15 +289,15 @@ fn save_drawn_checked(
     let (table, column, id) = owner.location();
     let stem = filename_stem(&owner.full_name(&tx)?);
     let directory = root.join("signatures");
-    std::fs::create_dir_all(&directory)?;
+    crate::private_storage::ensure_private_dir(&directory)?;
     let directory = std::fs::canonicalize(directory)?;
-    let mut temporary = tempfile::NamedTempFile::new_in(&directory)?;
+    let mut temporary = crate::private_storage::tempfile_in(&directory)?;
     use std::io::Write;
     temporary.write_all(bytes)?;
     temporary.as_file().sync_all()?;
     let path = loop {
         let path = next_filename(&directory, &stem)?;
-        match temporary.persist_noclobber(&path) {
+        match crate::private_storage::publish_tempfile(temporary, &path, false) {
             Ok(_) => break path,
             Err(e) if e.error.kind() == std::io::ErrorKind::AlreadyExists => {
                 // A writer outside our OS/database lock raced publication.
@@ -326,7 +326,7 @@ fn save_drawn_checked(
 
 #[cfg(test)]
 pub fn save_drawn(
-    db: &mut Connection,
+    db: &mut crate::database::DatabaseConnection,
     root: &Path,
     owner: Owner,
     expected: Option<&str>,
@@ -524,11 +524,11 @@ mod tests {
         .unwrap();
         out.into_inner()
     }
-    fn database() -> Connection {
+    fn database() -> crate::database::DatabaseConnection {
         let db = crate::database::open_in_memory().unwrap();
         crate::database::create_schema(&db).unwrap();
         db.execute_batch("INSERT INTO employers(id,name,employer_signature) VALUES(1,'Employer','previous.png'); INSERT INTO personal_assistants(id,first_name,surname,signature) VALUES(1,'PA','One','pa-old.png'),(2,'PA','Two',NULL);").unwrap();
-        db
+        db.into()
     }
     #[test]
     fn signature_jfif_exif_progressive_and_grayscale_decode_and_render() {

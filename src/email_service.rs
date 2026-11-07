@@ -402,78 +402,6 @@ pub fn send_payroll_email_with_attachments(
     send_preview(config, preview, attachment_path)
 }
 
-#[allow(clippy::too_many_arguments)]
-pub fn send_test_payroll_email(
-    config: &crate::config::EmailConfig,
-    sender_email: &str,
-    payroll_test_email: &str,
-    pa_test_email: Option<&str>,
-    personal_assistant_name: &str,
-    personal_assistant_dob: Option<&str>,
-    personal_assistant_ni: Option<&str>,
-    payroll_period: &str,
-    attachment_path: &Path,
-    email_body: &str,
-    additional_note: Option<&str>,
-    email_signature: Option<&str>,
-    subject_template: &str,
-) -> Result<(), Box<dyn Error>> {
-    let preview = preview_test_payroll_email(
-        sender_email,
-        payroll_test_email,
-        pa_test_email,
-        personal_assistant_name,
-        personal_assistant_dob,
-        personal_assistant_ni,
-        payroll_period,
-        attachment_path,
-        email_body,
-        additional_note,
-        email_signature,
-        subject_template,
-    )?;
-
-    send_preview(config, preview, attachment_path)
-}
-
-#[allow(clippy::too_many_arguments)]
-pub fn send_test_payslip_email(
-    config: &crate::config::EmailConfig,
-    sender_email: &str,
-    pa_test_email: &str,
-    personal_assistant_name: &str,
-    personal_assistant_dob: Option<&str>,
-    personal_assistant_ni: Option<&str>,
-    payroll_period: &str,
-    attachment_paths: &[std::path::PathBuf],
-    attachment_filenames: &[String],
-    email_body: &str,
-    additional_note: Option<&str>,
-    email_signature: Option<&str>,
-    subject_template: &str,
-) -> Result<(), Box<dyn Error>> {
-    let (attachment_path, additional_attachments) = attachment_paths
-        .split_first()
-        .ok_or("No unsent PA payroll documents are available for this test email.")?;
-    let mut preview = preview_test_payslip_email(
-        sender_email,
-        pa_test_email,
-        personal_assistant_name,
-        personal_assistant_dob,
-        personal_assistant_ni,
-        payroll_period,
-        attachment_path,
-        email_body,
-        additional_note,
-        email_signature,
-        subject_template,
-    )?;
-
-    preview.additional_attachment_paths = additional_attachments.to_vec();
-    preview.attachment_filenames = attachment_filenames.to_vec();
-    send_preview(config, preview, attachment_path)
-}
-
 pub(crate) fn send_preview(
     config: &crate::config::EmailConfig,
     preview: PayrollEmailPreview,
@@ -481,7 +409,7 @@ pub(crate) fn send_preview(
 ) -> Result<(), Box<dyn Error>> {
     let email = build_message(&preview, attachment_path)?;
 
-    send_prepared_timesheet(config, &email)?;
+    send_prepared_test(config, &email)?;
     Ok(())
 }
 
@@ -964,10 +892,18 @@ pub fn prepare_timesheet_message(
     )?)
 }
 
+pub(crate) fn send_prepared_test(config: &crate::config::EmailConfig, message: &Message) -> Result<(), ProductionSendError> {
+    crate::email_send_policy::claim(true).map_err(|e| ProductionSendError::NotSent(e.into()))?;
+    send_message(config, message)
+}
 pub fn send_prepared_timesheet(
     config: &crate::config::EmailConfig,
     message: &Message,
 ) -> Result<(), ProductionSendError> {
+    crate::email_send_policy::claim(false).map_err(|e| ProductionSendError::NotSent(e.into()))?;
+    send_message(config, message)
+}
+fn send_message(config: &crate::config::EmailConfig, message: &Message) -> Result<(), ProductionSendError> {
     #[cfg(test)]
     {
         dispatch_message(config, message, None)
@@ -976,6 +912,15 @@ pub fn send_prepared_timesheet(
     {
         dispatch_message(config, message)
     }
+}
+
+// Test builds may redirect only the localhost relay port to an isolated sink.
+// Production always uses port 25 and exposes no runtime override.
+#[cfg(test)]
+thread_local! { static TEST_LOCAL_RELAY_PORT: std::cell::Cell<Option<u16>> = const { std::cell::Cell::new(None) }; }
+fn local_relay_port() -> u16 {
+    #[cfg(test)] { TEST_LOCAL_RELAY_PORT.with(|p|p.get().unwrap_or(25)) }
+    #[cfg(not(test))] {25}
 }
 
 /// One actual connection for setup, authentication and dispatch. Setup errors
@@ -990,7 +935,7 @@ fn dispatch_message(
     #[cfg(test)]
     let fixture_tls_diagnostics = trusted_tls.is_some();
     let (host, port, security, authenticate) = match config.smtp_transport.as_str() {
-        "Local SMTP Server" => ("localhost", 25, SmtpSecurity::Plaintext, false),
+        "Local SMTP Server" => ("localhost", local_relay_port(), SmtpSecurity::Plaintext, false),
         "SMTP Server" => (
             config.smtp_host.trim(),
             config.smtp_port,
@@ -1003,6 +948,17 @@ fn dispatch_message(
             ))
         }
     };
+    crate::microsoft_oauth::validate(config).map_err(ProductionSendError::NotSent)?;
+    let microsoft = authenticate && config.smtp_authentication == crate::config::SmtpAuthentication::MicrosoftOAuth2;
+    if authenticate && !config.smtp_username.trim().is_empty() && security == SmtpSecurity::Plaintext {
+        return Err(ProductionSendError::NotSent("Authenticated SMTP requires STARTTLS or implicit TLS; plaintext authentication is blocked.".into()));
+    }
+    // Resolve/verify OS credentials before any DNS/socket/TLS operation.
+    let auth_password = if microsoft {
+        Some(crate::microsoft_oauth::for_send(config).map_err(ProductionSendError::NotSent)?)
+    } else if authenticate && !config.smtp_username.trim().is_empty() {
+        Some(crate::smtp_credentials::for_send(config).map_err(ProductionSendError::NotSent)?)
+    } else { None };
     let tls = match security {
         SmtpSecurity::Plaintext => None,
         _ => {
@@ -1047,17 +1003,8 @@ fn dispatch_message(
             })?;
     }
     if authenticate && !config.smtp_username.trim().is_empty() {
-        connection
-            .auth(
-                &[Mechanism::Plain, Mechanism::Login],
-                &Credentials::new(
-                    config.smtp_username.trim().into(),
-                    config.smtp_password.clone(),
-                ),
-            )
-            .map_err(|e| {
-                ProductionSendError::NotSent(safe_smtp_diagnostic("authentication", &e))
-            })?;
+        authenticate_smtp(&mut connection, config.smtp_username.trim(),
+            auth_password.as_ref().expect("Authenticated credential resolved"), microsoft)?;
     }
     // Success is the final DATA acceptance, not a later QUIT or inbox receipt.
     connection
@@ -1071,6 +1018,20 @@ fn dispatch_message(
                 ProductionSendError::Uncertain(detail)
             }
         })
+}
+
+// Keep mechanism selection and the TLS invariant together, including if this
+// helper is reused by another SMTP entry point later.
+fn authenticate_smtp(connection: &mut SmtpConnection, username: &str, secret: &str, microsoft: bool) -> Result<(), ProductionSendError> {
+    if !connection.is_encrypted() {
+        return Err(ProductionSendError::NotSent("Authenticated SMTP requires an encrypted SMTP connection; authentication blocked.".into()));
+    }
+    connection.auth(
+        if microsoft { &[Mechanism::Xoauth2] } else { &[Mechanism::Plain, Mechanism::Login] },
+        &Credentials::new(username.into(), secret.into()),
+    ).map(|_| ()).map_err(|error| ProductionSendError::NotSent(if microsoft {
+        format!("{}. Microsoft SMTP authentication rejected. Check mailbox identity, delegated SMTP.Send consent and whether SMTP AUTH is enabled; sign in / reconnect if needed. No password fallback or automatic resend.", safe_smtp_diagnostic("authentication", &error))
+    } else { safe_smtp_diagnostic("authentication", &error) }))
 }
 
 // Only synthetic TLS-injection tests enable this. Before AUTH/DATA there are
@@ -1155,3 +1116,32 @@ pub fn prepare_bundle_message(
 #[cfg(test)]
 #[path = "smtp_transport_tests.rs"]
 mod smtp_transport_tests;
+
+/// A standalone test has exactly one explicitly selected test recipient, no
+/// attachments or production CC/BCC, and no access to payroll repositories.
+pub(crate) fn prepare_smtp_test_message(
+    config: &crate::config::EmailConfig,
+    recipient: crate::email_settings::TestRecipient,
+) -> Result<Message, ProductionSendError> {
+    let invalid = |message: &str| ProductionSendError::NotSent(message.into());
+    let username = config.smtp_username.trim();
+    let sender = if username.parse::<lettre::Address>().is_ok() {
+        username
+    } else {
+        config.test_sender_address.trim()
+    };
+    let sender = sender.parse::<lettre::Address>().map_err(|_| {
+        invalid("Enter a valid test sender address; SMTP username is not an email address.")
+    })?;
+    let to = match recipient {
+        crate::email_settings::TestRecipient::Payroll => &config.payroll_test_email_address,
+        crate::email_settings::TestRecipient::Pa => &config.pa_test_email_address,
+    }
+    .trim()
+    .parse::<lettre::Address>()
+    .map_err(|_| invalid("Enter a valid selected test recipient address."))?;
+    Message::builder().from(Mailbox::new(None, sender)).to(Mailbox::new(None, to))
+        .subject("DirectPaymentTimesheets  SMTP Test")
+        .body("This is an attachment-free DirectPaymentTimesheets SMTP transport test. No payroll records were used or changed.".to_string())
+        .map_err(|_| invalid("Unable to prepare SMTP test message."))
+}

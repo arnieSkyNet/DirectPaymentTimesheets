@@ -1,7 +1,7 @@
 use crate::{app::Application, payroll_schedule_repository::PayrollSchedule};
 use std::{io::Write, path::Path};
 
-fn fixture() -> (tempfile::TempDir, Application) {
+fn fixture() -> (crate::private_storage::PrivateTempDir, Application) {
     let (dir, mut app) = crate::payroll_timesheet_screen::tests::test_application();
     app.context.config.folders.payslip_folder = dir.path().join("payslips");
     app.context.config.folders.payroll_information_folder = dir.path().join("information");

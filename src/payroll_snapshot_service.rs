@@ -89,7 +89,7 @@ where
         .parent()
         .filter(|parent| !parent.as_os_str().is_empty())
     {
-        fs::create_dir_all(parent).map_err(|error| {
+        crate::private_storage::ensure_output_dir(parent).map_err(|error| {
             SnapshotSafetyError::Operation(format!(
                 "Could not create payroll PDF output directory {}: {error}",
                 parent.display()
@@ -97,13 +97,31 @@ where
         })?;
     }
 
-    let temporary_path = temporary_pdf_path(publication.final_pdf_path);
+    let replacing = publication
+        .final_pdf_path
+        .try_exists()
+        .map_err(|e| SnapshotSafetyError::Operation(e.to_string()))?;
+    crate::private_storage::check_path(publication.final_pdf_path)
+        .map_err(|e| SnapshotSafetyError::Operation(e.to_string()))?;
+    let parent = publication
+        .final_pdf_path
+        .parent()
+        .unwrap_or(Path::new("."));
+    #[cfg(windows)]
+    let publication_guard = crate::private_storage::publication_guard(publication.final_pdf_path)
+        .map_err(|e| SnapshotSafetyError::Operation(e.to_string()))?;
+    let temporary = crate::private_storage::tempfile_in(parent)
+        .map_err(|e| SnapshotSafetyError::Operation(e.to_string()))?;
+    let temporary_path = temporary.path().to_path_buf();
     if let Err(error) = write_pdf(&temporary_path) {
         let _ = fs::remove_file(&temporary_path);
         return Err(SnapshotSafetyError::Operation(format!(
             "Could not generate temporary payroll PDF: {error}"
         )));
     }
+    #[cfg(windows)]
+    let temporary = publication_guard.rendered_stage(temporary)
+        .map_err(|e| SnapshotSafetyError::Operation(e.error.to_string()))?;
     let digest = match sha256_file(&temporary_path) {
         Ok(digest) => digest,
         Err(error) => {
@@ -112,6 +130,9 @@ where
         }
     };
 
+    // Access-policy refusal must happen before changing the candidate ledger.
+    crate::private_storage::preserve_access(&temporary_path, publication.final_pdf_path)
+        .map_err(|e| SnapshotSafetyError::Operation(e.to_string()))?;
     let final_path = publication.final_pdf_path.to_string_lossy().to_string();
     if let Err(error) = repository.replace_candidate(
         publication.payroll_timesheet_id,
@@ -135,7 +156,18 @@ where
         &bytes,
     )
     .map_err(|e| SnapshotSafetyError::Operation(e.to_string()))?;
-    if let Err(error) = fs::rename(&temporary_path, publication.final_pdf_path) {
+    let publication_result =
+        crate::private_storage::preserve_access(&temporary_path, publication.final_pdf_path)
+            .and_then(|_| {
+                crate::private_storage::publish_tempfile(
+                    temporary,
+                    publication.final_pdf_path,
+                    replacing,
+                )
+                .map(|_| ())
+                .map_err(|e| e.error)
+            });
+    if let Err(error) = publication_result {
         let current_document: Option<i64> = repository.connection.query_row(
             "SELECT document_id FROM payroll_timesheet_snapshot_states WHERE payroll_timesheet_id=?1",
             [publication.payroll_timesheet_id], |r|r.get(0),
@@ -154,6 +186,13 @@ where
         "UPDATE payroll_timesheet_snapshot_states SET pdf_path=?1 WHERE payroll_timesheet_id=?2",
         rusqlite::params![final_path, publication.payroll_timesheet_id],
     ).map_err(operation_error)?;
+    if let Err(error)=crate::timesheet_amendments::record_generation(
+        &repository.connection, publication.payroll_timesheet_id,
+        *publication.week_totals_minutes, publication.previous_cycle_minutes, publication.items,
+    ) {
+        let _=repository.discard_candidate(publication.payroll_timesheet_id);
+        return Err(SnapshotSafetyError::Operation(error.to_string()));
+    }
     Ok(())
 }
 
@@ -306,14 +345,6 @@ pub fn sha256_file(path: &Path) -> Result<String, SnapshotSafetyError> {
     Ok(format!("{:x}", Sha256::digest(bytes)))
 }
 
-fn temporary_pdf_path(final_path: &Path) -> PathBuf {
-    let file_name = final_path.file_name().unwrap_or_default().to_string_lossy();
-    final_path.with_file_name(format!(
-        ".{file_name}.{}.tmp",
-        chrono::Utc::now().timestamp_nanos_opt().unwrap_or_default()
-    ))
-}
-
 fn operation_error(error: rusqlite::Error) -> SnapshotSafetyError {
     SnapshotSafetyError::Operation(error.to_string())
 }
@@ -323,7 +354,7 @@ mod tests {
     use super::*;
     use crate::database::create_schema;
     use crate::email_service::{
-        preview_payroll_email, preview_test_payroll_email, send_test_payroll_email,
+        preview_payroll_email, preview_test_payroll_email,
     };
     use crate::payroll_worked_item_repository::{SnapshotState, WorkedItemSnapshot};
     use tempfile::TempDir;
@@ -721,8 +752,7 @@ mod tests {
         )
         .unwrap();
         let missing_attachment = directory.path().join("missing.pdf");
-        assert!(send_test_payroll_email(
-            &crate::config::EmailConfig::default(),
+        let missing_preview = preview_test_payroll_email(
             "employer@example.com",
             "test@example.com",
             None,
@@ -735,8 +765,8 @@ mod tests {
             None,
             None,
             "Timesheet {Personal Assistant Name}",
-        )
-        .is_err());
+        ).unwrap();
+        assert!(crate::email_service::send_preview(&crate::config::EmailConfig::default(), missing_preview, &missing_attachment).is_err());
         assert_eq!(
             repository.snapshot_metadata(10).unwrap().unwrap().state,
             SnapshotState::Candidate

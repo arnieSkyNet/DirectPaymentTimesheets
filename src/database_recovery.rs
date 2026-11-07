@@ -124,6 +124,10 @@ pub(crate) fn file_fingerprint(path: &Path) -> Result<Option<String>> {
 /// probes page integrity without an unbounded full scan of retained PDF blobs.
 /// Budget exhaustion is not evidence of corruption; backup/upgrade checks remain full.
 fn validate_current(db: &Connection) -> Result<()> {
+    for name in ["retain_timesheet_amendment","immutable_timesheet_amendment"] {
+        let exists:bool=db.query_row("SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='trigger' AND name=?1)",[name],|r|r.get(0))?;
+        if !exists {return Err(format!("Required timesheet version retention guard missing: {name}").into());}
+    }
     for (table, columns) in [
         (
             "timesheets",
@@ -146,6 +150,7 @@ fn validate_current(db: &Connection) -> Result<()> {
             "payroll_timesheet_id,document_id",
         ),
         ("timesheet_documents", "id,pdf_bytes"),
+        ("timesheet_amendment_versions", "id,payroll_timesheet_id,event,document_id,before_state,after_state,recorded_at,actor"),
         ("timesheet_delivery_attempts", "id,outcome,resolved_at"),
         ("timesheet_delivery_reviews", "id"),
         ("payroll_bundle_attempts", "id,recipients,message_id,marker,settings_digest"),
@@ -177,7 +182,7 @@ fn validate_current(db: &Connection) -> Result<()> {
     ] {
         db.prepare(&format!("SELECT {columns} FROM {} LIMIT 0", quote(table)))?;
         for operation in ["INSERT", "UPDATE", "DELETE"] {
-            let name = format!("dpt41_{table}_{operation}");
+            let name = format!("dpt42_{table}_{operation}");
             let exists: bool = db.query_row(
                 "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='trigger' AND name=?1)",
                 [name],
@@ -243,6 +248,7 @@ pub fn initialise(path: &Path) -> Result<()> {
         Some(crate::database::CURRENT_SCHEMA_VERSION) => {
             validate_current(&tx)?;
             tx.commit()?;
+            live.close_or_retain()?;
             return Ok(());
         }
         None => {
@@ -259,12 +265,14 @@ pub fn initialise(path: &Path) -> Result<()> {
                 .parent()
                 .filter(|p| !p.as_os_str().is_empty())
                 .unwrap_or(Path::new("."));
-            let pending = tempfile::tempdir_in(parent)?;
-            let staged = crate::database::open(pending.path().join("fresh.sqlite"))?;
+            let pending = std::sync::Arc::new(crate::private_storage::tempdir_in(parent)?);
+            let staged = crate::database::open_owned(&pending.path().join("fresh.sqlite"), Some(pending.clone()))?;
             crate::database::create_schema(&staged)?;
             integrity(&staged)?;
             install(&tx, &staged)?;
+            staged.close_or_retain()?;
             tx.commit()?;
+            live.close_or_retain().map_err(|error| format!("Database initialized; restart required because closure could not be confirmed: {error}"))?;
             return Ok(());
         }
         Some(_) => {}
@@ -273,18 +281,20 @@ pub fn initialise(path: &Path) -> Result<()> {
     let recovery = BackupService::create_verified(path, &parent.join("config.toml"), &parent.join("backups"))
         .map_err(|e| format!("Upgrade refused before changing the database: {e}. Free backup storage/check permissions and retry; never delete the original database."))?;
     let upgrade = (|| -> Result<()> {
-        let staged = tempfile::tempdir_in(parent)?;
+        let staged = std::sync::Arc::new(crate::private_storage::tempdir_in(parent)?);
         let staged_path = staged.path().join("upgrade.sqlite");
-        std::fs::copy(recovery.join("database.sqlite"), &staged_path)?;
-        let migrated = crate::database::open(&staged_path)?;
+        crate::private_storage::copy_new(&recovery.join("database.sqlite"), &staged_path)?;
+        let migrated = crate::database::open_owned(&staged_path, Some(staged.clone()))?;
         crate::database::create_schema(&migrated)?;
         integrity(&migrated)?;
         // The existing writer reservation excludes concurrent edits during installation.
         install(&tx, &migrated)?;
+        migrated.close_or_retain()?;
         tx.commit()?;
         Ok(())
     })();
     upgrade.map_err(|e| format!("Isolated upgrade/install failed: {e}. Uncommitted installation changes are rolled back; verified original recovery is {}. Close all instances, retain this recovery copy, and seek help before retrying or sending payroll.",recovery.display()))?;
+    live.close_or_retain().map_err(|error| format!("Database upgraded; restart required because closure could not be confirmed: {error}. Verified original recovery: {}", recovery.display()))?;
     println!("Database upgraded to schema {}. Verified database/config recovery: {}. External business files are not copied; see its recovery manifest.",crate::database::CURRENT_SCHEMA_VERSION,recovery.display());
     Ok(())
 }
@@ -418,15 +428,16 @@ pub(crate) fn losses(live: &Connection, staged: &Connection) -> Result<Vec<(Stri
     Ok(lost)
 }
 
-pub(crate) fn staged_backup(backup: &Path) -> Result<(tempfile::TempDir, Connection)> {
-    let dir = tempfile::tempdir()?;
+pub(crate) fn staged_backup(
+    backup: &Path,
+) -> Result<(std::sync::Arc<crate::private_storage::PrivateTempDir>, crate::database::DatabaseConnection)> {
+    let dir = std::sync::Arc::new(crate::private_storage::tempdir()?);
+    // Reserve the database privately before SQLite creates its snapshot.
     let path = dir.path().join("restore.sqlite");
-    let source = Connection::open_with_flags(
-        backup.join("database.sqlite"),
-        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
-    )?;
-    source.backup(rusqlite::DatabaseName::Main, &path, None)?;
-    let db = crate::database::open(path)?;
+    let source = crate::database::open_read_only(&backup.join("database.sqlite"))?;
+    let mut db = crate::database::open_owned(&path, Some(dir.clone()))?;
+    source.copy_into(&mut db)?;
+    source.close_or_retain()?;
     crate::database::create_schema(&db)?;
     integrity(&db)?;
     Ok((dir, db))
@@ -439,8 +450,8 @@ mod tests {
     use crate::payroll_snapshot_service::{publish_candidate, CandidatePublication};
     use crate::payroll_worked_item_repository::PayrollWorkedItemRepository;
 
-    fn fixture() -> (tempfile::TempDir, Connection) {
-        let dir = tempfile::tempdir().unwrap();
+    fn fixture() -> (crate::private_storage::PrivateTempDir, crate::database::DatabaseConnection) {
+        let dir = crate::private_storage::tempdir().unwrap();
         let db = crate::database::open(dir.path().join("database.sqlite")).unwrap();
         crate::database::create_schema(&db).unwrap();
         std::fs::write(
@@ -567,12 +578,12 @@ mod tests {
         let before = fingerprint(&db).unwrap();
         assert!(initialise(&dir.path().join("database.sqlite")).is_err());
         assert_eq!(fingerprint(&db).unwrap(), before);
-        assert_eq!(
-            std::fs::read_dir(dir.path().join("backups"))
-                .unwrap()
-                .count(),
-            0
-        );
+        let backups = dir.path().join("backups");
+        let incomplete: Vec<_> = std::fs::read_dir(&backups).unwrap().map(|entry| entry.unwrap().path()).collect();
+        assert_eq!(incomplete.len(), 1);
+        assert!(incomplete[0].join(".incomplete").is_file());
+        assert!(BackupService::discover(&backups).unwrap().is_empty());
+        assert!(BackupService::validate(&incomplete[0], &backups).unwrap_err().to_string().contains("incomplete"));
     }
     #[test]
     fn verified_backup_includes_wal_and_does_not_checkpoint_original() {
@@ -1091,7 +1102,7 @@ mod stage5_tests {
     use super::*;
     #[test]
     fn current_schema_validation_preserves_bytes_and_rejects_missing_critical_schema() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = crate::private_storage::tempdir().unwrap();
         let path = dir.path().join("database.sqlite");
         initialise(&path).unwrap();
         let db = crate::database::open(&path).unwrap();
@@ -1105,7 +1116,7 @@ mod stage5_tests {
     }
     #[test]
     fn current_schema_rejects_missing_critical_columns_without_repairing() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = crate::private_storage::tempdir().unwrap();
         let path = dir.path().join("database.sqlite");
         initialise(&path).unwrap();
         let db = crate::database::open(&path).unwrap();
@@ -1133,7 +1144,7 @@ mod stage5_tests {
     }
     #[test]
     fn interrupted_fresh_staging_is_ignored_and_unknown_partial_live_data_is_not_reset() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = crate::private_storage::tempdir().unwrap();
         let path = dir.path().join("database.sqlite");
         std::fs::write(
             dir.path().join("abandoned-fresh.sqlite"),
@@ -1142,7 +1153,7 @@ mod stage5_tests {
         .unwrap();
         initialise(&path).unwrap();
         assert_eq!(
-            version(&crate::database::open(&path).unwrap()).unwrap(),
+            version(&*crate::database::open(&path).unwrap()).unwrap(),
             Some(crate::database::CURRENT_SCHEMA_VERSION)
         );
         let unknown = dir.path().join("unknown.sqlite");
@@ -1154,7 +1165,7 @@ mod stage5_tests {
     }
     #[test]
     fn corrupt_database_is_fatal_and_not_replaced() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = crate::private_storage::tempdir().unwrap();
         let path = dir.path().join("database.sqlite");
         let bytes = b"not a sqlite database";
         std::fs::write(&path, bytes).unwrap();
@@ -1163,13 +1174,16 @@ mod stage5_tests {
     }
     #[test]
     fn post_migration_configuration_failure_reports_applied_upgrade_and_recovery_copy() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = crate::private_storage::tempdir().unwrap();
         let path = dir.path().join("database.sqlite");
         let db = crate::database::open(&path).unwrap();
         crate::database::create_legacy_schema(&db, 37).unwrap();
         std::fs::write(
             dir.path().join("config.toml"),
-            b"secret='PRIVATE_SECRET'\nbroken=[",
+            // Valid TOML can be backed up without risking a malformed hidden
+            // password; the unsupported enum still fails application loading
+            // AFTER migration, which is the boundary this fixture exercises.
+            b"secret='PRIVATE_SECRET'\ntheme='unsupported_fixture_theme'",
         )
         .unwrap();
         let environment = crate::environment::AppEnvironment::at(dir.path().to_path_buf()).unwrap();
@@ -1187,7 +1201,7 @@ mod stage5_tests {
             crate::backup_service::BackupService::discover(&dir.path().join("backups")).unwrap();
         assert_eq!(saved.len(), 1);
         assert_eq!(
-            version(&crate::database::open(saved[0].path.join("database.sqlite")).unwrap())
+            version(&*crate::database::open(saved[0].path.join("database.sqlite")).unwrap())
                 .unwrap(),
             Some(37)
         );
@@ -1199,11 +1213,11 @@ mod stage5_integrity_tests {
     use super::*;
     #[test]
     fn stage5_missing_schema_write_guard_is_fatal_without_repair() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = crate::private_storage::tempdir().unwrap();
         let path = dir.path().join("database.sqlite");
         initialise(&path).unwrap();
         let db = crate::database::open(&path).unwrap();
-        db.execute_batch("DROP TRIGGER dpt41_timesheet_delivery_attempts_UPDATE")
+        db.execute_batch("DROP TRIGGER dpt42_timesheet_delivery_attempts_UPDATE")
             .unwrap();
         let before = fingerprint(&db).unwrap();
         assert!(initialise(&path).is_err());
@@ -1211,7 +1225,7 @@ mod stage5_integrity_tests {
     }
     #[test]
     fn stage5_corrupt_data_page_with_current_schema_is_fatal_and_preserved() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = crate::private_storage::tempdir().unwrap();
         let path = dir.path().join("database.sqlite");
         initialise(&path).unwrap();
         let db = crate::database::open(&path).unwrap();

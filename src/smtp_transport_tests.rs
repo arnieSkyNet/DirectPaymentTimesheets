@@ -118,9 +118,9 @@ impl Fixture {
                 }
                 let response: &[u8] = if line.starts_with("EHLO") {
                     if advertise_tls && !encrypted {
-                        b"250-synthetic\r\n250-STARTTLS\r\n250 AUTH PLAIN LOGIN\r\n"
+                        b"250-synthetic\r\n250-STARTTLS\r\n250 AUTH PLAIN LOGIN XOAUTH2\r\n"
                     } else {
-                        b"250-synthetic\r\n250 AUTH PLAIN LOGIN\r\n"
+                        b"250-synthetic\r\n250 AUTH PLAIN LOGIN XOAUTH2\r\n"
                     }
                 } else if line.starts_with("STARTTLS") {
                     trace
@@ -227,6 +227,7 @@ impl Drop for Fixture {
 }
 // Never retain AUTH payloads, addresses, headers or DATA contents.
 fn command_phase(line: &str) -> &'static str {
+    if line.starts_with("AUTH XOAUTH2 ") { return "AUTH XOAUTH2"; }
     for phase in ["EHLO", "STARTTLS", "AUTH", "MAIL", "RCPT", "DATA", "QUIT"] {
         if line.starts_with(phase) {
             return phase;
@@ -295,6 +296,24 @@ fn trusted_transport(mode: SmtpSecurity) {
         && (line.starts_with("AUTH") || line.starts_with("MAIL") || line.starts_with("DATA"))));
 }
 #[test]
+fn unauthenticated_remote_relay_keeps_starttls_and_implicit_tls() {
+    for mode in [SmtpSecurity::RequiredStarttls, SmtpSecurity::ImplicitTls] {
+        let fixture=Fixture::new(mode,true,true,false);
+        let mut config=config(fixture.port,mode);
+        config.smtp_username.clear();
+        config.smtp_password.clear();
+        config.test_sender_address="sender@example.invalid".into();
+        config.payroll_test_email_address="recipient@example.invalid".into();
+        assert!(crate::email_settings::validate_standalone_test(&config,Some(crate::email_settings::TestRecipient::Payroll)).is_ok());
+        let message=prepare_smtp_test_message(&config,crate::email_settings::TestRecipient::Payroll).unwrap();
+        dispatch_message(&config,&message,Some(trusted("localhost"))).unwrap();
+        let commands=fixture.finish();
+        assert!(!commands.iter().any(|(_,line)|line.starts_with("AUTH")));
+        assert!(commands.iter().any(|(encrypted,line)|*encrypted && line.starts_with("MAIL")));
+        assert!(!commands.iter().any(|(encrypted,line)|!*encrypted && (line.starts_with("MAIL")||line.starts_with("DATA"))));
+    }
+}
+#[test]
 fn untrusted_and_wrong_hostname_fail_without_plaintext_fallback() {
     for mode in [SmtpSecurity::RequiredStarttls, SmtpSecurity::ImplicitTls] {
         for wrong_hostname in [false, true] {
@@ -359,10 +378,12 @@ fn secure_lost_acceptance_acknowledgement_remains_uncertain() {
         .any(|(encrypted, phase)| *encrypted && phase == "DATA terminator"));
 }
 #[test]
-fn legacy_plaintext_and_explicit_plaintext_remain_compatible() {
+fn unauthenticated_legacy_plaintext_and_explicit_plaintext_remain_compatible() {
     for legacy in [false, true] {
         let fixture = Fixture::new(SmtpSecurity::Plaintext, false, false, false);
         let mut config = config(fixture.port, SmtpSecurity::Plaintext);
+        config.smtp_username.clear();
+        config.smtp_password.clear();
         if legacy {
             config.smtp_security = None;
         }
@@ -454,4 +475,173 @@ fn handshake_detail<S>(error: native_tls::HandshakeError<S>) -> String {
             "TLS server handshake interrupted (WouldBlock)".into()
         }
     }
+}
+
+#[test]
+fn standalone_async_test_uses_empty_database_and_writes_no_delivery_history() {
+    use crate::email_settings::{TestEmailTask, TestRecipient};
+    let (_directory, application) = crate::payroll_timesheet_screen::tests::test_application();
+    let db = &application.payroll_timesheet_email_repository.connection;
+    let snapshot = || -> Vec<i64> {
+        [
+            "personal_assistants",
+            "employers",
+            "payroll_schedules",
+            "payroll_timesheet_email_status",
+            "imported_payroll_documents",
+        ]
+        .iter()
+        .map(|table| {
+            db.query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |row| {
+                row.get(0)
+            })
+            .unwrap()
+        })
+        .collect()
+    };
+    let before = snapshot();
+    assert!(before.iter().all(|count| *count == 0));
+    let fixture = Fixture::new(SmtpSecurity::Plaintext, false, false, false);
+    let mut config = config(fixture.port, SmtpSecurity::Plaintext);
+    config.smtp_username.clear();
+    config.smtp_password.clear();
+    config.test_sender_address = "from@example.test".into();
+    config.payroll_test_email_address = "to@example.test".into();
+    let (repaint_tx, repaint_rx) = std::sync::mpsc::channel();
+    let mut task = TestEmailTask::default();
+    task.start(config, TestRecipient::Payroll, move || {
+        let _ = repaint_tx.send(());
+    })
+    .unwrap();
+    repaint_rx
+        .recv_timeout(std::time::Duration::from_secs(5))
+        .unwrap();
+    assert!(task.poll().unwrap().is_ok());
+    assert!(!task.pending());
+    assert_eq!(before, snapshot());
+    let commands = fixture.finish();
+    assert_eq!(
+        commands
+            .iter()
+            .filter(|(_, line)| line.starts_with("RCPT"))
+            .count(),
+        1
+    );
+    assert!(commands.iter().any(|(_, line)| line.starts_with("DATA")));
+}
+
+#[test]
+fn standalone_message_reuses_required_tls_authentication_and_custom_ports() {
+    for mode in [SmtpSecurity::RequiredStarttls, SmtpSecurity::ImplicitTls] {
+        let fixture = Fixture::new(mode, true, false, false);
+        let mut config = config(fixture.port, mode);
+        config.test_sender_address = "from@example.test".into();
+        config.pa_test_email_address = "to@example.test".into();
+        let message =
+            prepare_smtp_test_message(&config, crate::email_settings::TestRecipient::Pa).unwrap();
+        dispatch_message(&config, &message, Some(trusted("localhost"))).unwrap();
+        let commands = fixture.finish();
+        assert!(commands
+            .iter()
+            .any(|(encrypted, line)| *encrypted && line.starts_with("AUTH")));
+        assert_eq!(
+            commands
+                .iter()
+                .filter(|(_, line)| line.starts_with("RCPT"))
+                .count(),
+            1
+        );
+        assert!(!commands.iter().any(|(encrypted, line)| !encrypted
+            && (line.starts_with("AUTH") || line.starts_with("MAIL") || line.starts_with("DATA"))));
+    }
+}
+
+#[test]
+fn microsoft_configuration_failures_stop_before_socket_or_authentication() {
+    use crate::config::SmtpAuthentication;
+    let fixture = Fixture::new(SmtpSecurity::RequiredStarttls, true, false, false);
+    let mut config = config(fixture.port, SmtpSecurity::RequiredStarttls);
+    config.smtp_username = "fixture@outlook.com".into();
+    let error = dispatch_message(&config, &message(), Some(trusted("localhost"))).unwrap_err();
+    assert!(matches!(error, ProductionSendError::NotSent(ref detail) if detail.contains("requires OAuth2")));
+    config.smtp_authentication = SmtpAuthentication::MicrosoftOAuth2;
+    let error = dispatch_message(&config, &message(), Some(trusted("localhost"))).unwrap_err();
+    assert!(matches!(error, ProductionSendError::NotSent(ref detail) if detail.contains("requires smtp-mail.outlook.com")));
+    assert!(fixture.commands.lock().unwrap().is_empty());
+}
+
+#[test]
+fn microsoft_xoauth2_uses_tls_only_and_authentication_rejection_never_submits_mail() {
+    for reject in [false, true] {
+        let fixture = Fixture::new(SmtpSecurity::RequiredStarttls, true, reject, false);
+        let hello = ClientId::default();
+        let mut connection = SmtpConnection::connect(("localhost", fixture.port), Some(std::time::Duration::from_secs(5)), &hello, None, None).unwrap();
+        connection.starttls(&trusted("localhost"), &hello).unwrap();
+        let result = authenticate_smtp(&mut connection, "fixture@outlook.com", "SYNTHETIC_ACCESS_TOKEN", true);
+        if reject {
+            assert!(matches!(result, Err(ProductionSendError::NotSent(ref detail)) if detail.contains("SMTP AUTH") && !detail.contains("SECRET")));
+        } else {
+            result.unwrap(); connection.send(message().envelope(), &message().formatted()).unwrap();
+        }
+        drop(connection);
+        let commands = fixture.finish();
+        assert_eq!(commands.iter().filter(|(_,line)| line.starts_with("AUTH")).count(), 1);
+        assert!(commands.iter().any(|(encrypted,line)| *encrypted && line == "AUTH XOAUTH2"));
+        assert!(!commands.iter().any(|(encrypted,line)| !encrypted && line.starts_with("AUTH")));
+        if reject { assert!(!commands.iter().any(|(_,line)| line == "MAIL" || line == "DATA")); }
+    }
+}
+
+#[test]
+fn microsoft_bearer_authentication_is_blocked_on_an_unencrypted_connection() {
+    let fixture = Fixture::new(SmtpSecurity::Plaintext, false, false, false);
+    let mut connection = SmtpConnection::connect(("localhost", fixture.port), Some(std::time::Duration::from_secs(5)), &ClientId::default(), None, None).unwrap();
+    assert!(matches!(authenticate_smtp(&mut connection, "fixture@outlook.com", "SYNTHETIC_ACCESS_TOKEN", true), Err(ProductionSendError::NotSent(_))));
+    drop(connection);
+    assert!(!fixture.finish().iter().any(|(_,line)| line.starts_with("AUTH") || line == "MAIL"));
+}
+
+#[test]
+fn password_auth_is_blocked_before_vault_or_socket_without_tls() {
+    for security in [None,Some(SmtpSecurity::Plaintext)] {
+        let mut e=EmailConfig::default();e.smtp_transport="SMTP Server".into();e.smtp_host="smtp.example.invalid".into();e.smtp_username="test@example.test".into();e.smtp_security=security;
+        let error=dispatch_message(&e,&message(),None).unwrap_err();
+        assert!(matches!(error,ProductionSendError::NotSent(ref s) if s.contains("plaintext authentication is blocked")));
+    }
+}
+
+#[test]
+fn local_transport_ignores_remote_credentials_and_never_authenticates() {
+    struct Reset;impl Drop for Reset {fn drop(&mut self){TEST_LOCAL_RELAY_PORT.with(|p|p.set(None));}}
+    let fixture=Fixture::new(SmtpSecurity::Plaintext,false,false,false);
+    TEST_LOCAL_RELAY_PORT.with(|p|p.set(Some(fixture.port)));let _reset=Reset;
+    let mut e=config(1,SmtpSecurity::RequiredStarttls);e.smtp_transport="Local SMTP Server".into();
+    e.smtp_host="must-not-contact.example.invalid".into();e.smtp_username="must-not-authenticate@outlook.com".into();
+    e.smtp_password.clear();e.smtp_credential_error=Some("Native vault must not be read".into());
+    send_prepared_timesheet(&e,&message()).unwrap();
+    let commands=fixture.finish();
+    assert!(commands.iter().any(|(_,s)|s.starts_with("MAIL")));
+    assert!(!commands.iter().any(|(_,s)|s.starts_with("AUTH")));
+    assert!(!commands.iter().any(|(tls,_)|*tls));
+}
+#[test]
+fn password_auth_helper_never_issues_cleartext_auth_for_any_provider() {
+    for user in ["synthetic@gmail.com","synthetic@gmx.com","synthetic@example.test"] {
+        let fixture=Fixture::new(SmtpSecurity::Plaintext,false,false,false);
+        let mut connection=SmtpConnection::connect(("localhost",fixture.port),Some(std::time::Duration::from_secs(5)),&ClientId::default(),None,None).unwrap();
+        assert!(authenticate_smtp(&mut connection,user,"SYNTHETIC_SECRET",false).is_err());
+        drop(connection);
+        assert!(!fixture.finish().iter().any(|(_,s)|s.starts_with("AUTH")||s.starts_with("MAIL")));
+    }
+}
+
+#[test]
+fn actual_dispatch_entries_enforce_shared_cooldown_and_volume_before_transport() {
+    crate::email_send_policy::with_test_limits(|| {
+        let mut e=EmailConfig::default();e.smtp_transport="unsupported".into();let msg=message();
+        assert!(send_prepared_test(&e,&msg).unwrap_err().to_string().contains("unsupported transport"));
+        assert!(send_prepared_test(&e,&msg).unwrap_err().to_string().contains("30 seconds"));
+        for _ in 1..100 {assert!(send_prepared_timesheet(&e,&msg).unwrap_err().to_string().contains("unsupported transport"));}
+        assert!(send_prepared_timesheet(&e,&msg).unwrap_err().to_string().contains("100 attempts"));
+    });
 }

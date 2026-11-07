@@ -312,7 +312,7 @@ impl PersonalAssistantScreen {
                     ui.separator();
 
                     ui.horizontal_wrapped(|ui| {
-                        if ui.button("Save Personal Assistant").clicked() {
+                        if crate::gui_controls::save_button(ui,"Save Personal Assistant",self.assistants.iter().find(|p|p.id==assistant.id).is_none_or(|saved|!same_pa_draft(saved,assistant))).clicked() {
                             let previous = self.assistants.iter().find(|p|p.id==assistant.id).and_then(|p|p.signature.as_ref());
                             let validation = if previous != assistant.signature.as_ref() {
                                 assistant.signature.as_deref().map(|p|crate::signature::read(std::path::Path::new(p))).transpose().map(|_| ())
@@ -516,6 +516,7 @@ impl PersonalAssistantScreen {
                     ui,
                     "Save Hours Basis",
                     self.editing_contracted_hours_id.is_some(),
+                    self.contracted_hours.iter().find(|h|Some(h.id)==self.editing_contracted_hours_id).map_or(!self.new_hours_effective_date.is_empty() || !self.new_contracted_hours.is_empty() || self.new_hours_basis!=HoursBasis::Contracted,|h|h.effective_date!=self.new_hours_effective_date || h.hours_basis!=self.new_hours_basis || self.new_contracted_hours!=h.contracted_hours),
                 );
                 save = actions.0;
                 if actions.1 {
@@ -651,7 +652,7 @@ impl PersonalAssistantScreen {
             let mut save = false;
             if section == MaintenanceSection::Save {
                 let actions =
-                    history_actions(ui, "Save Pay Rate", self.editing_pay_rate_id.is_some());
+                    history_actions(ui, "Save Pay Rate", self.editing_pay_rate_id.is_some(), self.pay_rates.iter().find(|r|Some(r.id)==self.editing_pay_rate_id).map_or(!self.new_rate_effective_date.is_empty() || !self.new_rate_base.is_empty() || !self.new_rate_top_up.is_empty(),|r|r.effective_date!=self.new_rate_effective_date || self.new_rate_base.parse::<f64>().ok()!=Some(r.base_hourly_rate) || self.new_rate_top_up.parse::<f64>().ok()!=Some(r.employer_top_up_rate)));
                 save = actions.0;
                 if actions.1 {
                     self.cancel_pay_rate_edit();
@@ -730,6 +731,16 @@ impl PersonalAssistantScreen {
             }
         }
     }
+}
+
+fn same_pa_draft(left: &PersonalAssistant, right: &PersonalAssistant) -> bool {
+    fn normalise(mut value: PersonalAssistant) -> PersonalAssistant {
+        for field in [&mut value.date_of_birth,&mut value.national_insurance_number,&mut value.address,&mut value.postcode,&mut value.telephone,&mut value.email,&mut value.start_date,&mut value.leaving_date] {
+            if field.as_deref()==Some("") { *field=None; }
+        }
+        value
+    }
+    normalise(left.clone())==normalise(right.clone())
 }
 
 fn details_heading(assistant: Option<&PersonalAssistant>) -> String {
@@ -879,9 +890,9 @@ fn weekly_hours_edit(ui: &mut egui::Ui, basis: HoursBasis, value: &mut String) -
     .on_hover_text("Weekly hours are required for Contracted; not applicable for Variable.")
 }
 
-fn history_actions(ui: &mut egui::Ui, save_label: &str, editing: bool) -> (bool, bool) {
+fn history_actions(ui: &mut egui::Ui, save_label: &str, editing: bool, dirty: bool) -> (bool, bool) {
     ui.horizontal_wrapped(|ui| {
-        let save = ui.button(save_label).clicked();
+        let save = crate::gui_controls::save_button(ui,save_label,dirty).clicked();
         let cancel = editing && ui.button("Cancel").clicked();
         (save, cancel)
     })
@@ -1310,5 +1321,41 @@ mod save_status_tests {
             .status_message
             .starts_with("Failed loading Personal Assistants:"));
         assert!(!screen.refresh_after_save);
+    }
+}
+
+#[cfg(test)] mod dirty_acceptance_tests {
+    use super::*;
+    #[test] fn pa_and_history_save_controls_reset_after_actual_saves() {
+        use crate::gui_controls::acceptance::{frame,click};
+        let (_dir,app)=crate::payroll_timesheet_screen::tests::test_application();
+        app.personal_assistant_repository.connection.execute("INSERT INTO personal_assistants(id,first_name,surname,employment_status) VALUES(1,'Synthetic','Assistant','Active')",[]).unwrap();
+        let saved=app.personal_assistant_repository.get_all().unwrap().remove(0);
+        let mut screen=PersonalAssistantScreen::new();screen.loaded=true;screen.selected_index=Some(0);screen.assistants=vec![saved.clone()];screen.editing_assistant=Some(saved);
+        let ctx=egui::Context::default();
+        assert!(!frame(&ctx,vec![],|ui|screen.show(ui,&app),"Save Personal Assistant").1);
+        screen.editing_assistant.as_mut().unwrap().telephone=Some("01234 567890".into());
+        let(pos,blue)=frame(&ctx,vec![],|ui|screen.show(ui,&app),"Save Personal Assistant");assert!(blue);
+        click(&ctx,pos,|ui|screen.show(ui,&app),"Save Personal Assistant");
+        assert!(!frame(&ctx,vec![],|ui|screen.show(ui,&app),"Save Personal Assistant").1);
+        assert!(!frame(&ctx,vec![],|ui|screen.show_pay_rates(ui,&app,1,MaintenanceSection::Save),"Save Pay Rate").1);
+        screen.new_rate_effective_date="01/04/2026".into();screen.new_rate_base="20".into();screen.new_rate_top_up="0".into();
+        let(pos,blue)=frame(&ctx,vec![],|ui|screen.show_pay_rates(ui,&app,1,MaintenanceSection::Save),"Save Pay Rate");assert!(blue);
+        click(&ctx,pos,|ui|screen.show_pay_rates(ui,&app,1,MaintenanceSection::Save),"Save Pay Rate");
+        assert!(!frame(&ctx,vec![],|ui|screen.show_pay_rates(ui,&app,1,MaintenanceSection::Save),"Save Pay Rate").1);
+        screen.new_hours_effective_date="01/04/2026".into();screen.new_contracted_hours="20".into();
+        let(pos,blue)=frame(&ctx,vec![],|ui|screen.show_contracted_hours(ui,&app,1,MaintenanceSection::Save),"Save Hours Basis");assert!(blue);
+        click(&ctx,pos,|ui|screen.show_contracted_hours(ui,&app,1,MaintenanceSection::Save),"Save Hours Basis");
+        assert!(!frame(&ctx,vec![],|ui|screen.show_contracted_hours(ui,&app,1,MaintenanceSection::Save),"Save Hours Basis").1);
+    }
+    #[test] fn pa_optional_paint_is_clean_but_actual_edits_are_dirty() {
+        let (_dir,app)=crate::payroll_timesheet_screen::tests::test_application();
+        app.personal_assistant_repository.connection.execute("INSERT INTO personal_assistants(id,first_name,surname,employment_status) VALUES(1,'Synthetic','Assistant','Active')",[]).unwrap();
+        let saved=app.personal_assistant_repository.get_all().unwrap().remove(0);
+        let mut draft=saved.clone();let ctx=egui::Context::default();
+        let _=ctx.run(Default::default(),|ctx|{egui::CentralPanel::default().show(ctx,|ui|{compact_personal_details(ui,&mut draft,Default::default());});});
+        assert!(same_pa_draft(&saved,&draft));
+        draft.email=Some("synthetic@example.test".into());assert!(!same_pa_draft(&saved,&draft));
+        draft=saved.clone();draft.employment_status=Some("Inactive".into());assert!(!same_pa_draft(&saved,&draft));
     }
 }

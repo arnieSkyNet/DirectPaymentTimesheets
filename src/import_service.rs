@@ -10,6 +10,9 @@ use crate::repository::TimesheetRepository;
 
 #[derive(Default)]
 pub struct ImportSummary {
+    pub imported_pa_ids: Vec<i64>,
+    // Coverage includes unchanged files, unlike affected dates (new imports).
+    pub covered_pa_dates: Vec<(i64, chrono::NaiveDate)>,
     pub affected_pa_dates: Vec<(i64, chrono::NaiveDate)>,
     pub files_discovered: i64,
     pub files_already_imported: i64,
@@ -92,6 +95,15 @@ impl<'a> ImportService<'a> {
     }
 
     pub fn run(&self) -> Result<ImportSummary, Box<dyn Error>> {
+        self.run_selected(None)
+    }
+
+    // Same guarded importer, limited to files just published by clipboard entry.
+    pub(crate) fn run_paths(&self, paths: &[PathBuf]) -> Result<ImportSummary, Box<dyn Error>> {
+        self.run_selected(Some(paths))
+    }
+
+    fn run_selected(&self, paths: Option<&[PathBuf]>) -> Result<ImportSummary, Box<dyn Error>> {
         let _guard = crate::timesheet_delivery::production_lock(self.repository.connection())?;
         let mut summary = ImportSummary::default();
         let mut csv_files = Vec::new();
@@ -103,10 +115,13 @@ impl<'a> ImportService<'a> {
                 .and_then(|value| value.to_str())
                 .is_some_and(|value| value.eq_ignore_ascii_case("csv"))
             {
-                csv_files.push(path);
+                if paths.is_none_or(|paths| paths.contains(&path)) { csv_files.push(path); }
             }
         }
         csv_files.sort();
+        if paths.is_some_and(|paths| paths.len() != csv_files.len()) {
+            return Err("A saved clipboard CSV is missing from the import folder; import stopped.".into());
+        }
         summary.files_discovered = csv_files.len() as i64;
 
         for path in csv_files {
@@ -125,6 +140,14 @@ impl<'a> ImportService<'a> {
             if crate::shift_changes::content_seen(self.repository.connection(), &digest, &filename)?
             {
                 summary.files_already_imported += 1;
+                // Only successfully recognized file contents count as covered;
+                // never infer a PA from a filename or historical database rows.
+                if let Ok(mut rows) = csv_import::import_csv_bytes(&bytes) {
+                    if self.resolve_personal_assistants(&mut rows, 0).is_ok() {
+                        summary.imported_pa_ids.extend(rows.iter().filter_map(|r| r.entry.personal_assistant_id));
+                        summary.covered_pa_dates.extend(rows.iter().filter_map(|r|r.entry.personal_assistant_id.map(|pa|(pa,r.start.date()))));
+                    }
+                }
                 continue;
             }
 
@@ -136,6 +159,8 @@ impl<'a> ImportService<'a> {
                     summary.rows_imported += result.rows_imported;
                     summary.rows_skipped += result.rows_skipped;
                     summary.archived_paths.push(result.archive_path);
+                    summary.imported_pa_ids.extend(result.affected_pa_dates.iter().map(|(id,_)| *id));
+                    summary.covered_pa_dates.extend(result.affected_pa_dates.iter().copied());
                     summary.affected_pa_dates.extend(result.affected_pa_dates);
                 }
                 Err(failure) => {

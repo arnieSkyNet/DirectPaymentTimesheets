@@ -4,11 +4,14 @@ use std::fs::OpenOptions;
 use std::path::{Path, PathBuf};
 
 use chrono::Local;
-use rusqlite::{Connection, DatabaseName, OpenFlags};
+use rusqlite::Connection;
+#[cfg(test)]
+use rusqlite::DatabaseName;
 
 const DATABASE_BACKUP_NAME: &str = "database.sqlite";
 const CONFIG_BACKUP_NAME: &str = "config.toml";
 const README_NAME: &str = "README.txt";
+const INCOMPLETE_NAME: &str = ".incomplete";
 const BACKUP_IDENTITY: &str = "DirectPaymentTimesheets backup";
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -31,12 +34,13 @@ pub struct RestorePlan {
     pub schema_version: i64,
     pub replaced_rows: Vec<(String, usize)>,
     live_path: PathBuf,
-    staged_directory: std::sync::Arc<tempfile::TempDir>,
+    staged_directory: std::sync::Arc<crate::private_storage::PrivateTempDir>,
     staged_database: String,
     live_database: String,
     backup_database: String,
     live_config: Option<String>,
     backup_config: Option<String>,
+    staged_config: Option<String>,
 }
 
 #[derive(Clone, Debug)]
@@ -125,6 +129,10 @@ impl BackupService {
                 continue;
             }
 
+            if !matches!(fs::symlink_metadata(path.join(INCOMPLETE_NAME)), Err(error) if error.kind() == std::io::ErrorKind::NotFound) {
+                continue;
+            }
+
             let readme = match fs::read_to_string(path.join(README_NAME)) {
                 Ok(readme) if has_backup_identity(&readme) => readme,
                 _ => continue,
@@ -174,7 +182,7 @@ impl BackupService {
         directory_name: &str,
         created_at: &str,
     ) -> Result<PathBuf, BackupError> {
-        fs::create_dir_all(backups_dir).map_err(|error| {
+        crate::private_storage::ensure_private_dir(backups_dir).map_err(|error| {
             BackupError(format!(
                 "Could not create backups directory {}: {error}",
                 backups_dir.display()
@@ -182,30 +190,26 @@ impl BackupService {
         })?;
 
         let backup_dir = backups_dir.join(directory_name);
-        fs::create_dir(&backup_dir).map_err(|error| {
+        crate::private_storage::create_private_dir(&backup_dir).map_err(|error| {
             BackupError(format!(
                 "Could not create backup directory {}: {error}",
                 backup_dir.display()
             ))
         })?;
+        crate::private_storage::write_new(&backup_dir.join(INCOMPLETE_NAME), b"Incomplete backup; not eligible for restore\n")
+            .map_err(|error| BackupError(format!("Could not mark the new backup incomplete: {error}")))?;
 
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            fs::set_permissions(&backup_dir, fs::Permissions::from_mode(0o700))
-                .map_err(|e| BackupError(e.to_string()))?;
-        }
         let result = Self::populate_backup(database_path, config_path, &backup_dir, created_at);
         if let Err(error) = result {
-            if let Err(cleanup_error) = fs::remove_dir_all(&backup_dir) {
-                return Err(BackupError(format!(
-                    "{error} The incomplete backup at {} could not be removed: {cleanup_error}",
-                    backup_dir.display()
-                )));
-            }
-
-            return Err(error.into());
+            // A failed open/close can retain a live owner. Never recursively
+            // delete its database by pathname, even inside a new private root.
+            return Err(BackupError(format!("{error} Incomplete private backup retained at {}; it is not eligible for restore.", backup_dir.display())));
         }
+        fs::remove_file(backup_dir.join(INCOMPLETE_NAME))
+            .map_err(|error| BackupError(format!("Verified backup completion could not be published: {error}")))?;
+        #[cfg(unix)]
+        fs::File::open(&backup_dir).and_then(|file| file.sync_all())
+            .map_err(|error| BackupError(format!("Could not flush backup completion: {error}")))?;
 
         #[cfg(unix)]
         fs::File::open(backups_dir)
@@ -219,6 +223,9 @@ impl BackupService {
         backups_dir: &Path,
     ) -> Result<BackupValidation, BackupError> {
         validate_backup_location(backup_dir, backups_dir)?;
+        if !matches!(fs::symlink_metadata(backup_dir.join(INCOMPLETE_NAME)), Err(error) if error.kind() == std::io::ErrorKind::NotFound) {
+            return Err(BackupError("Backup is incomplete or its completion cannot be verified; restore refused.".into()));
+        }
 
         let readme_path = backup_dir.join(README_NAME);
         reject_symlink(&readme_path, "backup manifest")?;
@@ -374,31 +381,34 @@ impl BackupService {
                 return Err("Selected backup changed during preparation".into());
             }
             if let Some(expected) = &config_fingerprint {
-                fs::copy(
-                    backup_dir.join(CONFIG_BACKUP_NAME),
-                    temporary.path().join(CONFIG_BACKUP_NAME),
-                )?;
-                if crate::database_recovery::file_fingerprint(
+                copy_protected_config(
+                    &backup_dir.join(CONFIG_BACKUP_NAME),
                     &temporary.path().join(CONFIG_BACKUP_NAME),
-                )?
-                .as_ref()
-                    != Some(expected)
+                )?;
+                if crate::database_recovery::file_fingerprint(&backup_dir.join(CONFIG_BACKUP_NAME))?.as_ref() != Some(expected)
                 {
                     return Err("Selected configuration changed during preparation".into());
                 }
             }
-            Ok(RestorePlan {
+            let staged_config = crate::database_recovery::file_fingerprint(&temporary.path().join(CONFIG_BACKUP_NAME))?;
+            let plan = RestorePlan {
                 backup: backup_dir.canonicalize()?,
                 schema_version: validation.schema_version,
                 replaced_rows: crate::database_recovery::losses(&tx, &staged)?,
                 live_path: database_path.canonicalize()?,
                 staged_database: crate::database_recovery::fingerprint(&staged)?,
-                staged_directory: std::sync::Arc::new(temporary),
+                staged_directory: temporary,
                 live_database: crate::database_recovery::fingerprint(&tx)?,
                 backup_database: source_fingerprint,
+                staged_config,
                 live_config: crate::database_recovery::file_fingerprint(config_path)?,
                 backup_config: config_fingerprint,
-            })
+            };
+            drop(tx);
+            staged.close_or_retain()?;
+            source.close_or_retain()?;
+            live.close_or_retain()?;
+            Ok(plan)
         })();
         result.map_err(|e| BackupError(e.to_string()))
     }
@@ -420,6 +430,10 @@ impl BackupService {
             .into());
         }
         let result = (|| -> crate::database_recovery::Result<RestoreResult> {
+            // Serialize the entire approval/configuration commit boundary with
+            // saves and credential migration, not merely the final rename.
+            #[cfg(windows)]
+            let _publication = crate::private_storage::publication_guard(config_path)?;
             let mut live = crate::database::open(database_path)?;
             let _dispatch = crate::timesheet_delivery::production_lock(&live)?;
             live.pragma_update(None, "foreign_keys", false)?;
@@ -441,20 +455,21 @@ impl BackupService {
             {
                 return Err("Restore approval is stale: live data, configuration or selected backup changed. Review and authorise again.".into());
             }
-            let staged = crate::database::open(
-                approval.plan.staged_directory.path().join("restore.sqlite"),
+            let staged = crate::database::open_owned(
+                &approval.plan.staged_directory.path().join("restore.sqlite"),
+                Some(approval.plan.staged_directory.clone()),
             )?;
             if crate::database_recovery::fingerprint(&staged)? != approval.plan.staged_database {
                 return Err("Reviewed isolated restore copy changed; restore refused.".into());
             }
             // Recheck the captured source after staging (selected backups are never changed).
-            if approval.plan.backup_database
-                != crate::database_recovery::fingerprint(&open_read_only(
-                    &backup_dir.join(DATABASE_BACKUP_NAME),
-                )?)?
-            {
+            let rechecked_source = open_read_only(&backup_dir.join(DATABASE_BACKUP_NAME))?;
+            let rechecked_fingerprint = crate::database_recovery::fingerprint(&rechecked_source)?;
+            rechecked_source.close_or_retain()?;
+            if approval.plan.backup_database != rechecked_fingerprint {
                 return Err("Selected backup changed during preparation; restore refused.".into());
             }
+            source.close_or_retain()?;
             let safety_backup = Self::create_verified(database_path, config_path, backups_dir)?;
             use std::io::Write;
             let mut manifest = OpenOptions::new()
@@ -468,7 +483,7 @@ impl BackupService {
                 .path()
                 .join(CONFIG_BACKUP_NAME);
             if crate::database_recovery::file_fingerprint(&selected_config)?
-                != approval.plan.backup_config
+                != approval.plan.staged_config
             {
                 return Err("Reviewed isolated configuration changed; restore refused".into());
             }
@@ -477,7 +492,14 @@ impl BackupService {
             } else {
                 None
             };
+            if approval.plan.live_config != crate::database_recovery::file_fingerprint(config_path)? {
+                if let Some(path) = staged_config {
+                    let _ = fs::remove_file(path);
+                }
+                return Err("Restore approval is stale: configuration changed during preparation; restore refused.".into());
+            }
             if let Err(e) = crate::database_recovery::install(&tx, &staged)
+                .and_then(|_| staged.close_or_retain().map_err(Into::into))
                 .and_then(|_| tx.commit().map_err(Into::into))
             {
                 if let Some(path) = staged_config {
@@ -485,10 +507,17 @@ impl BackupService {
                 }
                 return Err(format!("Restore failed; live database transaction rolled back. Verified recovery: {}. {e}",safety_backup.display()).into());
             }
+            live.close_or_retain().map_err(|error| format!("DATABASE RESTORED; RESTART REQUIRED: database closure could not be confirmed: {error}. Verified recovery: {}", safety_backup.display()))?;
             if let Some(path) = staged_config {
-                if let Err(e) = fs::rename(&path, config_path) {
+                // Use the same guarded, identity-checked atomic publication as
+                // normal saves. Never replace a file via an unchecked pathname.
+                let publication = read_protected_config(&path).and_then(|bytes| {
+                    crate::private_storage::write_atomic(config_path, &bytes)
+                });
+                if let Err(e) = publication {
                     return Err(format!("DATABASE RESTORED; RESTART REQUIRED: configuration could not be restored: {e}. Verified recovery: {}",safety_backup.display()).into());
                 }
+                fs::remove_file(path).map_err(|e| format!("DATABASE RESTORED; RESTART REQUIRED: configuration published but private stage cleanup failed: {e}. Verified recovery: {}", safety_backup.display()))?;
             }
             Ok(RestoreResult {
                 restored_backup: backup_dir.to_path_buf(),
@@ -523,14 +552,17 @@ impl BackupService {
         let expected = crate::database_recovery::fingerprint(&read_snapshot)
             .map_err(|e| BackupError(e.to_string()))?;
         let database_backup_path = backup_dir.join(DATABASE_BACKUP_NAME);
+        let mut destination = crate::database::open(&database_backup_path)
+            .map_err(|e| BackupError(e.to_string()))?;
         source
-            .backup(DatabaseName::Main, &database_backup_path, None)
+            .copy_into(&mut destination)
             .map_err(|error| {
                 BackupError(format!(
                     "Could not back up database to {}: {error}",
                     database_backup_path.display()
                 ))
             })?;
+        destination.close_or_retain().map_err(|e| BackupError(format!("Backup destination close was not confirmed: {e}")))?;
 
         let verified = open_read_only(&database_backup_path)?;
         crate::database_recovery::integrity(&verified).map_err(|e| BackupError(e.to_string()))?;
@@ -542,19 +574,22 @@ impl BackupService {
                 "Backup content verification failed; original database was not modified.".into(),
             ));
         }
+        verified.close_or_retain().map_err(|e| BackupError(format!("Backup verification close was not confirmed: {e}")))?;
         sync_file(&database_backup_path)
             .map_err(|e| BackupError(format!("Could not flush database backup: {e}")))?;
         let mut backed_up_files = vec![DATABASE_BACKUP_NAME];
         if config_path.exists() {
             let config_backup_path = backup_dir.join(CONFIG_BACKUP_NAME);
-            fs::copy(config_path, &config_backup_path).map_err(|error| {
-                BackupError(format!(
-                    "Could not copy configuration file {} to {}: {error}",
-                    config_path.display(),
-                    config_backup_path.display()
-                ))
-            })?;
-            if fs::read(config_path).map_err(|e| BackupError(e.to_string()))?
+            let expected_config = copy_protected_config(config_path, &config_backup_path).map_err(
+                |error| {
+                    BackupError(format!(
+                        "Could not copy configuration file {} to {}: {error}",
+                        config_path.display(),
+                        config_backup_path.display()
+                    ))
+                },
+            )?;
+            if expected_config
                 != fs::read(&config_backup_path).map_err(|e| BackupError(e.to_string()))?
             {
                 return Err(BackupError(
@@ -571,11 +606,13 @@ impl BackupService {
             .collect::<Vec<_>>()
             .join("\n");
         let inventory = recovery_inventory(&source, config_path)?;
+        drop(read_snapshot);
+        source.close_or_retain().map_err(|e| BackupError(format!("Backup source close was not confirmed: {e}")))?;
         let readme = format!(
             "{BACKUP_IDENTITY}\n\nCreated: {created_at}\n\nBacked-up files:\n{file_list}\n\nVerified consistent SQLite snapshot (including committed WAL data): {expected}\nThis is DATABASE AND CONFIGURATION recovery, not a complete application-data backup.\nExternal PDFs, payslips, signatures, imported/archive files and fonts are NOT copied or restored.\nBefore an upgrade/rollback, close every application instance and separately protect the full application root and these business files/folders. Do not copy a live SQLite file without its WAL; prefer this verified snapshot.\nUse 1.0.6 Restore Backup to validate and migrate legacy data on an isolated copy. A rollback needs fresh explicit approval; unresolved email uncertainty blocks it. Keep old binaries away from upgraded data: their restore tools can overwrite newer schemas.\nRecovery inventory (paths only; no external files copied):\n{inventory}\n"
         );
         let readme_path = backup_dir.join(README_NAME);
-        fs::write(&readme_path, readme).map_err(|error| {
+        crate::private_storage::write_new(&readme_path, readme.as_bytes()).map_err(|error| {
             BackupError(format!(
                 "Could not write backup manifest {}: {error}",
                 readme_path.display()
@@ -741,13 +778,26 @@ fn reject_symlink(path: &Path, description: &str) -> Result<(), BackupError> {
     Ok(())
 }
 
-fn open_read_only(path: &Path) -> Result<Connection, BackupError> {
-    Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY).map_err(|error| {
+fn open_read_only(path: &Path) -> Result<crate::database::DatabaseConnection, BackupError> {
+    crate::database::open_read_only(path).map_err(|error| {
         BackupError(format!(
             "Could not open backup database {} read-only: {error}",
             path.display()
         ))
     })
+}
+
+fn read_protected_config(source: &Path) -> std::io::Result<Vec<u8>> {
+    use std::io::Read;
+    let mut raw = zeroize::Zeroizing::new(Vec::new());
+    crate::private_storage::open_read(source)?.read_to_end(&mut raw)?;
+    crate::smtp_credentials::protected_bytes(&raw)
+}
+
+fn copy_protected_config(source: &Path, destination: &Path) -> std::io::Result<Vec<u8>> {
+    let clean = read_protected_config(source)?;
+    crate::private_storage::write_new(destination, &clean)?;
+    Ok(clean)
 }
 
 fn stage_config(source: &Path, destination: &Path) -> Result<PathBuf, BackupError> {
@@ -757,46 +807,194 @@ fn stage_config(source: &Path, destination: &Path) -> Result<PathBuf, BackupErro
             destination.display()
         ))
     })?;
-    let staged = parent.join(format!(".config.toml.restore-{}", std::process::id()));
-    let contents = fs::read(source).map_err(|error| {
-        BackupError(format!(
-            "Could not read backup configuration {}: {error}",
-            source.display()
-        ))
-    })?;
-    let mut options = OpenOptions::new();
-    options.write(true).create_new(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        options.mode(0o600);
-    }
-    let mut file = options.open(&staged).map_err(|error| {
-        BackupError(format!(
-            "Could not create staged configuration {}: {error}",
-            staged.display()
-        ))
-    })?;
+    let bytes = read_protected_config(source).map_err(|e| BackupError(e.to_string()))?;
+    let mut pending =
+        crate::private_storage::tempfile_in(parent).map_err(|e| BackupError(e.to_string()))?;
     use std::io::Write;
-    file.write_all(&contents).map_err(|error| {
-        BackupError(format!(
-            "Could not write staged configuration {}: {error}",
-            staged.display()
-        ))
-    })?;
-    file.sync_all().map_err(|error| {
-        BackupError(format!(
-            "Could not flush staged configuration {}: {error}",
-            staged.display()
-        ))
-    })?;
+    pending.write_all(&bytes).map_err(|e| BackupError(e.to_string()))?;
+    pending
+        .as_file()
+        .sync_all()
+        .map_err(|e| BackupError(e.to_string()))?;
+    crate::private_storage::preserve_access(pending.path(), destination)
+        .map_err(|e| BackupError(e.to_string()))?;
+    let (_, staged) =
+        crate::private_storage::keep_tempfile(pending).map_err(|e| BackupError(e.to_string()))?;
     Ok(staged)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tempfile::TempDir;
+
+    fn source_reader_errors(backup: &Path) -> [String; 2] {
+        [
+            open_read_only(&backup.join(DATABASE_BACKUP_NAME))
+                .err()
+                .expect("Backup source must be refused")
+                .to_string(),
+            crate::database_recovery::staged_backup(backup)
+                .err()
+                .expect("Restore source must be refused")
+                .to_string(),
+        ]
+    }
+
+    #[test]
+    fn checked_source_readers_do_not_create_missing_databases() {
+        let root = crate::private_storage::tempdir().unwrap();
+        source_reader_errors(root.path());
+        assert_eq!(fs::read_dir(root.path()).unwrap().count(), 0);
+    }
+
+    #[test]
+    fn checked_source_readers_refuse_non_regular_database_without_changes() {
+        let root = crate::private_storage::tempdir().unwrap();
+        let source = root.path().join(DATABASE_BACKUP_NAME);
+        crate::private_storage::create_private_dir(&source).unwrap();
+        let marker = source.join("marker");
+        crate::private_storage::write_new(&marker, b"retained source directory").unwrap();
+        let permissions = fs::metadata(&source).unwrap().permissions();
+
+        for error in source_reader_errors(root.path()) {
+            assert!(error.contains("Database is not a regular file"));
+        }
+
+        assert_eq!(fs::read(&marker).unwrap(), b"retained source directory");
+        assert_eq!(fs::metadata(&source).unwrap().permissions(), permissions);
+        assert_eq!(fs::read_dir(&source).unwrap().count(), 1);
+        assert_eq!(fs::read_dir(root.path()).unwrap().count(), 1);
+    }
+
+    #[test]
+    fn checked_source_readers_refuse_parent_traversal_without_changes() {
+        let root = crate::private_storage::tempdir().unwrap();
+        let source = root.path().join(DATABASE_BACKUP_NAME);
+        create_application_database(&source, "source retained");
+        let before = fs::read(&source).unwrap();
+        let permissions = fs::metadata(&source).unwrap().permissions();
+        let child = root.path().join("child");
+        crate::private_storage::create_private_dir(&child).unwrap();
+
+        for error in source_reader_errors(&child.join("..")) {
+            assert!(error.contains("Parent traversal in managed storage path"));
+        }
+
+        assert_eq!(fs::read(&source).unwrap(), before);
+        assert_eq!(fs::metadata(&source).unwrap().permissions(), permissions);
+        assert_eq!(fs::read_dir(root.path()).unwrap().count(), 2);
+        assert_eq!(fs::read_dir(&child).unwrap().count(), 0);
+    }
+
+    #[test]
+    fn checked_source_readers_preserve_valid_backup_and_stage_an_isolated_copy() {
+        let root = crate::private_storage::tempdir().unwrap();
+        let source = root.path().join(DATABASE_BACKUP_NAME);
+        create_application_database(&source, "source retained");
+        let before = fs::read(&source).unwrap();
+        let permissions = fs::metadata(&source).unwrap().permissions();
+        let reader = open_read_only(&source).unwrap();
+        assert!(reader.is_readonly(DatabaseName::Main).unwrap());
+        assert!(reader
+            .execute("DELETE FROM restore_test_marker", [])
+            .is_err());
+        // A read-only source must not register application functions or migrate.
+        assert!(reader
+            .query_row("SELECT dpt_schema_version()", [], |row| row
+                .get::<_, i64>(0))
+            .is_err());
+        reader.close().unwrap();
+        let (stage, staged) = crate::database_recovery::staged_backup(root.path()).unwrap();
+        assert_ne!(stage.path(), root.path());
+        assert_eq!(
+            staged
+                .query_row("SELECT value FROM restore_test_marker", [], |row| row
+                    .get::<_, String>(0))
+                .unwrap(),
+            "source retained"
+        );
+        staged
+            .execute("DELETE FROM restore_test_marker", [])
+            .unwrap();
+        staged.close().unwrap();
+        assert_eq!(fs::read(&source).unwrap(), before);
+        assert_eq!(fs::metadata(&source).unwrap().permissions(), permissions);
+        assert_eq!(fs::read_dir(root.path()).unwrap().count(), 1);
+    }
+
+    #[test]
+    fn staged_connection_retains_directory_after_returned_stage_is_released() {
+        let root = crate::private_storage::tempdir().unwrap();
+        let source = root.path().join(DATABASE_BACKUP_NAME);
+        create_application_database(&source, "original retained");
+        let before = fs::read(&source).unwrap();
+        let (stage, database) = crate::database_recovery::staged_backup(root.path()).unwrap();
+        let weak = std::sync::Arc::downgrade(&stage);
+        let staged_path = stage.path().join("restore.sqlite");
+        drop(stage);
+        assert!(weak.upgrade().is_some());
+        assert!(staged_path.is_file());
+        assert_eq!(database.query_row("SELECT value FROM restore_test_marker", [], |row| row.get::<_, String>(0)).unwrap(), "original retained");
+        database.close_or_retain().unwrap();
+        assert!(weak.upgrade().is_none());
+        assert_eq!(fs::read(source).unwrap(), before);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn checked_source_readers_refuse_database_ancestor_and_sidecar_symlinks() {
+        use std::os::unix::fs::symlink;
+        let root = crate::private_storage::tempdir().unwrap();
+        let backup = root.path().join("backup");
+        crate::private_storage::create_private_dir(&backup).unwrap();
+        let source = backup.join(DATABASE_BACKUP_NAME);
+        create_application_database(&source, "source retained");
+        let before = fs::read(&source).unwrap();
+        let permissions = fs::metadata(&source).unwrap().permissions();
+        let alias = root.path().join("ancestor-alias");
+        symlink(&backup, &alias).unwrap();
+        let refused = |path: &Path| {
+            for error in source_reader_errors(path) {
+                assert!(error.contains("Symlink in managed storage path"));
+            }
+        };
+        refused(&alias);
+
+        let linked_backup = root.path().join("linked-backup");
+        crate::private_storage::create_private_dir(&linked_backup).unwrap();
+        let linked_source = linked_backup.join(DATABASE_BACKUP_NAME);
+        symlink(&source, &linked_source).unwrap();
+        refused(&linked_backup);
+        assert!(fs::symlink_metadata(&linked_source)
+            .unwrap()
+            .file_type()
+            .is_symlink());
+
+        for suffix in ["-journal", "-wal", "-shm"] {
+            let sidecar = backup.join(format!("{DATABASE_BACKUP_NAME}{suffix}"));
+            symlink(&source, &sidecar).unwrap();
+            refused(&backup);
+            assert!(fs::symlink_metadata(&sidecar)
+                .unwrap()
+                .file_type()
+                .is_symlink());
+            fs::remove_file(sidecar).unwrap();
+        }
+        assert_eq!(fs::read(&source).unwrap(), before);
+        assert_eq!(fs::metadata(&source).unwrap().permissions(), permissions);
+        assert_eq!(fs::read_dir(&backup).unwrap().count(), 1);
+    }
+
+    #[test]
+    fn credential_backup_and_restore_stages_never_copy_plaintext() {
+        let dir=crate::private_storage::tempdir().unwrap();
+        let source=dir.path().join("legacy.toml");let backup=dir.path().join("backup.toml");let live=dir.path().join("live.toml");
+        let raw=b"[email]\nsmtp_password='LEGACY_FIXTURE_SECRET'\n";
+        crate::private_storage::write_new(&source,raw).unwrap();crate::private_storage::write_new(&live,b"marker='live'\n").unwrap();
+        copy_protected_config(&source,&backup).unwrap();let stage=stage_config(&source,&live).unwrap();
+        for path in [&backup,&stage] { let text=fs::read_to_string(path).unwrap();assert!(!text.contains("LEGACY_FIXTURE_SECRET"));assert!(!text.contains("smtp_password"));assert!(text.contains("smtp_credential_ref")); }
+        assert_eq!(fs::read(&source).unwrap(),raw);assert_eq!(fs::read_to_string(&live).unwrap(),"marker='live'\n");
+    }
 
     fn restore_test(
         backup: &Path,
@@ -871,21 +1069,22 @@ mod tests {
     #[test]
     fn restored_configuration_is_private_even_when_source_is_world_readable() {
         use std::os::unix::fs::PermissionsExt;
-        let directory = TempDir::new().unwrap();
+        let directory = crate::private_storage::tempdir().unwrap();
         let source = directory.path().join("backup-config.toml");
-        fs::write(&source, "smtp_password = 'synthetic-secret'").unwrap();
+        fs::write(&source, "[email]\nsmtp_password = 'synthetic-secret'").unwrap();
         fs::set_permissions(&source, fs::Permissions::from_mode(0o644)).unwrap();
         let staged = stage_config(&source, &directory.path().join("config.toml")).unwrap();
         assert_eq!(
             fs::metadata(&staged).unwrap().permissions().mode() & 0o777,
             0o600
         );
-        assert_eq!(fs::read(&staged).unwrap(), fs::read(&source).unwrap());
+        let clean=fs::read_to_string(&staged).unwrap();
+        assert!(!clean.contains("synthetic-secret"));assert!(clean.contains("smtp_credential_ref"));
     }
 
     #[test]
     fn creates_openable_database_backup_with_expected_data_and_copies_config() {
-        let temp_dir = TempDir::new().unwrap();
+        let temp_dir = crate::private_storage::tempdir().unwrap();
         let database_path = temp_dir.path().join("source.sqlite");
         let config_path = temp_dir.path().join("source.toml");
         let backups_dir = temp_dir.path().join("backups");
@@ -923,7 +1122,7 @@ mod tests {
 
     #[test]
     fn succeeds_without_a_config_file_and_omits_it_from_the_manifest() {
-        let temp_dir = TempDir::new().unwrap();
+        let temp_dir = crate::private_storage::tempdir().unwrap();
         let database_path = temp_dir.path().join("source.sqlite");
         let missing_config_path = temp_dir.path().join("missing.toml");
         let backups_dir = temp_dir.path().join("backups");
@@ -947,7 +1146,7 @@ mod tests {
 
     #[test]
     fn validates_and_restores_application_database_config_and_creates_safety_backup() {
-        let temp_dir = TempDir::new().unwrap();
+        let temp_dir = crate::private_storage::tempdir().unwrap();
         let live_database = temp_dir.path().join("database.sqlite");
         let selected_database = temp_dir.path().join("selected.sqlite");
         let live_config = temp_dir.path().join("config.toml");
@@ -955,8 +1154,8 @@ mod tests {
         let backups_dir = temp_dir.path().join("backups");
         create_application_database(&live_database, "current live data");
         create_application_database(&selected_database, "selected backup data");
-        fs::write(&live_config, "current config").unwrap();
-        fs::write(&selected_config, "selected config").unwrap();
+        fs::write(&live_config, "marker = 'current config'\n").unwrap();
+        fs::write(&selected_config, "marker = 'selected config'\n").unwrap();
         let selected_backup = create_named_backup(
             &selected_database,
             &selected_config,
@@ -981,23 +1180,61 @@ mod tests {
             "current live data"
         );
         assert_eq!(read_marker(&live_database), "selected backup data");
-        assert_eq!(fs::read_to_string(&live_config).unwrap(), "selected config");
+        assert_eq!(fs::read_to_string(&live_config).unwrap(), "marker = 'selected config'\n");
         assert_eq!(
             fs::read_to_string(result.safety_backup.join(CONFIG_BACKUP_NAME)).unwrap(),
-            "current config"
+            "marker = 'current config'\n"
         );
         assert!(selected_backup.is_dir());
     }
 
+    #[cfg(windows)]
+    #[test]
+    fn restore_waits_for_configuration_writer_and_rejects_stale_approval() {
+        let root = crate::private_storage::tempdir().unwrap();
+        let live = root.path().join("live.sqlite");
+        let selected = root.path().join("selected.sqlite");
+        let config = root.path().join("config.toml");
+        let backups = root.path().join("backups");
+        create_application_database(&live, "live marker");
+        create_application_database(&selected, "selected marker");
+        crate::private_storage::write_new(&config, b"marker='before'\n").unwrap();
+        let backup = create_named_backup(&selected, &config, &backups, "20260101-010101");
+        let approval = RestoreAuthorisation {
+            plan: BackupService::preview_restore(&backup, &live, &config, &backups).unwrap(),
+            reason: "Synthetic cooperating writer race".into(),
+            acknowledged: true,
+        };
+        let guard = crate::private_storage::publication_guard(&config).unwrap();
+        let (ready_tx, ready_rx) = std::sync::mpsc::channel();
+        let (done_tx, done_rx) = std::sync::mpsc::channel();
+        let (l, c, b) = (live.clone(), config.clone(), backups.clone());
+        let child = std::thread::spawn(move || {
+            ready_tx.send(()).unwrap();
+            let result = BackupService::restore(&backup, &l, &c, &b, &approval);
+            done_tx.send(result).unwrap();
+        });
+        ready_rx.recv().unwrap();
+        assert!(done_rx.recv_timeout(std::time::Duration::from_millis(150)).is_err());
+        crate::config::publish_config(&config, b"marker='concurrent save'\n", true).unwrap();
+        drop(guard);
+        let error = done_rx.recv_timeout(std::time::Duration::from_secs(20)).unwrap().unwrap_err();
+        child.join().unwrap();
+        assert!(error.to_string().contains("stale"));
+        assert_eq!(read_marker(&live), "live marker");
+        assert_eq!(fs::read(&config).unwrap(), b"marker='concurrent save'\n");
+        assert_eq!(fs::read_dir(&backups).unwrap().count(), 1);
+    }
+
     #[test]
     fn rejects_corrupt_backup_without_altering_live_data_or_creating_safety_backup() {
-        let temp_dir = TempDir::new().unwrap();
+        let temp_dir = crate::private_storage::tempdir().unwrap();
         let live_database = temp_dir.path().join("database.sqlite");
         let live_config = temp_dir.path().join("config.toml");
         let backups_dir = temp_dir.path().join("backups");
         let corrupt_backup = backups_dir.join("20260101-010101");
         create_application_database(&live_database, "current live data");
-        fs::write(&live_config, "current config").unwrap();
+        fs::write(&live_config, "marker = 'current config'\n").unwrap();
         fs::create_dir_all(&corrupt_backup).unwrap();
         fs::write(corrupt_backup.join(DATABASE_BACKUP_NAME), "not sqlite").unwrap();
         fs::write(
@@ -1011,13 +1248,13 @@ mod tests {
 
         assert!(error.to_string().contains("integrity_check"));
         assert_eq!(read_marker(&live_database), "current live data");
-        assert_eq!(fs::read_to_string(&live_config).unwrap(), "current config");
+        assert_eq!(fs::read_to_string(&live_config).unwrap(), "marker = 'current config'\n");
         assert_eq!(fs::read_dir(&backups_dir).unwrap().count(), 1);
     }
 
     #[test]
     fn rejects_sqlite_database_that_is_not_direct_payment_timesheets() {
-        let temp_dir = TempDir::new().unwrap();
+        let temp_dir = crate::private_storage::tempdir().unwrap();
         let live_database = temp_dir.path().join("database.sqlite");
         let unrelated_database = temp_dir.path().join("unrelated.sqlite");
         let live_config = temp_dir.path().join("config.toml");
@@ -1025,7 +1262,7 @@ mod tests {
         let backups_dir = temp_dir.path().join("backups");
         create_application_database(&live_database, "current live data");
         create_test_database(&unrelated_database);
-        fs::write(&live_config, "current config").unwrap();
+        fs::write(&live_config, "marker = 'current config'\n").unwrap();
         let unrelated_backup = create_named_backup(
             &unrelated_database,
             &missing_config,
@@ -1043,13 +1280,13 @@ mod tests {
 
         assert!(error.to_string().contains("not recognisable"));
         assert_eq!(read_marker(&live_database), "current live data");
-        assert_eq!(fs::read_to_string(&live_config).unwrap(), "current config");
+        assert_eq!(fs::read_to_string(&live_config).unwrap(), "marker = 'current config'\n");
         assert_eq!(fs::read_dir(&backups_dir).unwrap().count(), 1);
     }
 
     #[test]
     fn restores_database_but_preserves_current_config_when_backup_has_none() {
-        let temp_dir = TempDir::new().unwrap();
+        let temp_dir = crate::private_storage::tempdir().unwrap();
         let live_database = temp_dir.path().join("database.sqlite");
         let selected_database = temp_dir.path().join("selected.sqlite");
         let live_config = temp_dir.path().join("config.toml");
@@ -1057,7 +1294,7 @@ mod tests {
         let backups_dir = temp_dir.path().join("backups");
         create_application_database(&live_database, "current live data");
         create_application_database(&selected_database, "selected backup data");
-        fs::write(&live_config, "current config").unwrap();
+        fs::write(&live_config, "marker = 'current config'\n").unwrap();
         let selected_backup = create_named_backup(
             &selected_database,
             &missing_config,
@@ -1070,7 +1307,54 @@ mod tests {
 
         assert!(!result.config_restored);
         assert_eq!(read_marker(&live_database), "selected backup data");
-        assert_eq!(fs::read_to_string(&live_config).unwrap(), "current config");
+        assert_eq!(fs::read_to_string(&live_config).unwrap(), "marker = 'current config'\n");
         assert!(result.safety_backup.join(CONFIG_BACKUP_NAME).is_file());
+    }
+}
+
+#[cfg(test)]
+mod phase1_tests {
+    use super::*;
+    #[test]
+    fn phase1_restore_preview_is_private_for_its_entire_approval_lifetime() {
+        let root = crate::private_storage::tempdir().unwrap();
+        let path = root.path().join("database.sqlite");
+        let db = crate::database::open(&path).unwrap();
+        crate::database::create_schema(&db).unwrap();
+        let config = root.path().join("config.toml");
+        crate::private_storage::write_new(&config, b"theme = 'dark'\n").unwrap();
+        let backups = root.path().join("backups");
+        let backup = BackupService::create_verified(&path, &config, &backups).unwrap();
+        let plan = BackupService::preview_restore(&backup, &path, &config, &backups).unwrap();
+        let stage = plan.staged_directory.path().to_path_buf();
+        let cleanup_enabled = plan.staged_directory.cleanup_enabled();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            for (path, mode) in [
+                (stage.clone(), 0o700),
+                (stage.join("restore.sqlite"), 0o600),
+                (stage.join("config.toml"), 0o600),
+                (backup.join("database.sqlite"), 0o600),
+            ] {
+                assert_eq!(
+                    fs::metadata(path).unwrap().permissions().mode() & 0o777,
+                    mode
+                );
+            }
+        }
+        let retained = plan.clone();
+        drop(plan);
+        assert!(stage.join("restore.sqlite").exists());
+        drop(retained);
+        if cleanup_enabled {
+            assert!(!stage.exists());
+        } else {
+            assert!(
+                stage.join("restore.sqlite").exists(),
+                "Unverified cleanup must retain private staging"
+            );
+        }
+        assert!(path.exists() && backup.join("database.sqlite").exists());
     }
 }

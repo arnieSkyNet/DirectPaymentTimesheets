@@ -76,18 +76,7 @@ impl Editor {
     }
 
     fn has_unsaved(&self) -> bool {
-        self.rows.iter().any(|row| {
-            if row.id == 0 {
-                return !row.start_date.trim().is_empty() || !row.end_date.trim().is_empty();
-            }
-            let Some(saved) = self.saved.iter().find(|saved| saved.id == row.id) else {
-                return true;
-            };
-            match resolved_row(row, &self.week) {
-                Ok(row) => row.start_date != saved.start_date || row.end_date != saved.end_date,
-                Err(_) => true,
-            }
-        })
+        self.rows.iter().any(|row| row_unsaved(row,&self.saved,&self.week))
     }
 
     fn request_close(&mut self) -> bool {
@@ -158,6 +147,12 @@ fn resolved_row(row: &SicknessPeriod, week: &str) -> Result<SicknessPeriod> {
     })
 }
 
+fn row_unsaved(row:&SicknessPeriod,saved:&[SicknessPeriod],week:&str)->bool {
+    if row.id==0 {return !row.start_date.trim().is_empty() || !row.end_date.trim().is_empty();}
+    let Some(before)=saved.iter().find(|saved|saved.id==row.id) else {return true;};
+    resolved_row(row,week).map_or(true,|row|row.start_date!=before.start_date || row.end_date!=before.end_date)
+}
+
 fn edit_date(ui: &mut egui::Ui, value: &mut String, focus: bool) {
     // Editor-local buffer: day-only drafts must not be flagged by the global full-date widget.
     let response = ui.add(
@@ -196,7 +191,7 @@ fn cycle_periods(
     let start = crate::date_utils::parse_legacy(week)?;
     let end = start + chrono::Duration::days(6);
     Ok(
-        crate::sickness_service::evidence(&crate::payroll_evidence::open(app)?, record.id)?
+        crate::sickness_service::evidence(&*crate::payroll_evidence::open(app)?, record.id)?
             .periods
             .into_iter()
             .filter(|p| {
@@ -391,7 +386,7 @@ impl SicknessUi {
                                 edit_date(ui, &mut row.end_date, false);
                             });
                             ui.horizontal(|ui| {
-                                if ui.button("Save").clicked() {
+                                if crate::gui_controls::save_button(ui,"Save",row_unsaved(row,&editor.saved,&editor.week)).clicked() {
                                     action = Some((index, false));
                                 }
                                 if ui.button("Delete").clicked() {
@@ -516,7 +511,7 @@ mod tests {
     use super::*;
 
     fn setup() -> (
-        tempfile::TempDir,
+        crate::private_storage::PrivateTempDir,
         Application,
         PayrollTimesheet,
         Vec<PayrollTimesheetWeek>,
@@ -656,6 +651,21 @@ mod tests {
         reopened.add_blank();
         reopened.rows[1].end_date = "bad".into();
         assert!(!reopened.request_close());
+    }
+
+    #[test]
+    fn sickness_save_colour_is_clean_after_saved_dates_are_formatted() {
+        use crate::gui_controls::acceptance::frame;
+        let (_dir,app,record,weeks)=setup();
+        let saved=save_row(&app,&record,&draft(),false).unwrap().unwrap();
+        let mut editor=Editor::new(record.clone(),"12/10/2026".into(),"Synthetic PA".into(),vec![saved.clone()],String::new());
+        editor.rows[0].start_date=crate::date_utils::DateDisplayFormat::default().display(&saved.start_date);
+        editor.rows[0].end_date=crate::date_utils::DateDisplayFormat::default().display(&saved.end_date);
+        assert!(!row_unsaved(&editor.rows[0],&editor.saved,&editor.week));
+        let mut screen=SicknessUi::default();screen.editor=Some(editor);let ctx=egui::Context::default();let records=vec![(record,weeks,"Synthetic PA".into())];
+        assert!(!frame(&ctx,vec![],|ui|screen.show(ui,&app,&records),"Save").1);
+        screen.editor.as_mut().unwrap().rows[0].end_date="invalid date".into();
+        assert!(frame(&ctx,vec![],|ui|screen.show(ui,&app,&records),"Save").1);
     }
 
     fn stored_record(app: &Application) -> PayrollTimesheet {

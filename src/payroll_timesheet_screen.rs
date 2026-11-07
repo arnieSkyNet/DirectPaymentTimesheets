@@ -402,8 +402,9 @@ impl PayrollTimesheetScreen {
                 self.reload_evidence_preserving_visits();
                 return;
             }
+            let preparation_dirty = self.has_unsaved_changes();
             let (record, _, name) = &self.weeks[record_index];
-            if self.review_ui.show_pa(ui, application, record, name) {
+            if self.review_ui.show_pa(ui, application, record, name, preparation_dirty) {
                 review_changed = true;
             }
             if self.blocked(record.id, pa) {
@@ -411,6 +412,7 @@ impl PayrollTimesheetScreen {
                 finish_active_panel(ui, active_panel);
                 continue;
             }
+            let pending_editor_dirty = self.has_unsaved_changes();
             let (records, public_holidays, numeric_editor_texts, assistant_mileage_enabled) = (
                 &mut self.weeks,
                 &mut self.public_holidays,
@@ -429,7 +431,7 @@ impl PayrollTimesheetScreen {
             let snapshot_state = self.snapshot_states.get(&record.id).copied();
             let read_only = matches!(
                 snapshot_state,
-                Some(SnapshotState::Submitted | SnapshotState::Indeterminate)
+                Some(SnapshotState::Indeterminate)
             );
 
             let section_style =
@@ -443,7 +445,7 @@ impl PayrollTimesheetScreen {
 
                     match snapshot_state {
                         Some(SnapshotState::Submitted) => {
-                            ui.label("Submitted payroll timesheet — read-only");
+                            ui.label("Previously submitted — amend, Save and regenerate; sending remains separate");
                         }
                         Some(SnapshotState::Indeterminate) => {
                             ui.label("Delivery status is indeterminate — read-only");
@@ -573,7 +575,7 @@ impl PayrollTimesheetScreen {
                     if !notes_valid {
                         ui.colored_label(ui.visuals().error_fg_color, "Maximum 256 characters; shorten the note before saving. Input has not been truncated.");
                     }
-                    if !read_only && ui.add_enabled(notes_valid, egui::Button::new(format!("Save {}", assistant_name))).clicked() {
+                    if !read_only && crate::gui_controls::save_button_enabled(ui,format!("Save {}", assistant_name), pending_editor_dirty || leave_baseline.as_ref().is_some_and(|b| b.payroll_department_notes!=record.payroll_department_notes || !weeks_equal(&b.weeks, weeks) || !public_holidays_equal(&b.public_holidays, holidays) || !annual_leave_equal(&b.annual_leave, annual_leave) || !optional_hours_equal(b.previous_cycle_hours, record.previous_cycle_hours)),notes_valid).clicked() {
                         save_requested = true;
                     }
 
@@ -648,7 +650,7 @@ impl PayrollTimesheetScreen {
             let mut save = false;
             let mut clear = false;
             ui.horizontal(|ui| {
-                save = ui.button("Save returned hours").clicked();
+                save = crate::gui_controls::save_button(ui,"Save returned hours",*text!=record.actual_in_lieu_hours.map(|v|format!("{v:.2}")).unwrap_or_default()).clicked();
                 clear = ui.button("Clear returned hours").clicked();
             });
             if save || clear {
@@ -759,7 +761,7 @@ impl PayrollTimesheetScreen {
                 .snapshot_metadata(record.id)?
                 .map(|m| m.state);
             let stage = crate::payroll_evidence::lifecycle::stage(
-                &crate::payroll_evidence::open(application)?,
+                &*crate::payroll_evidence::open(application)?,
                 record,
             )?;
             let state = match stage {
@@ -898,6 +900,7 @@ impl PayrollTimesheetScreen {
     }
 
     fn blocked(&self, record: i64, pa: i64) -> bool {
+        if self.review_ui.historical(record) {return false;}
         self.review_ui.blocks_preparation(record)
             || self
                 .duplicate_ui
@@ -1051,6 +1054,9 @@ impl PayrollTimesheetScreen {
         } else {
             format!("No changes to save for {name}.")
         };
+        if let Err(error)=self.review_ui.refresh_audit(application,record) {
+            self.status_message.push_str(&format!(" Audit view refresh failed: {error}; reopen preparation to view retained history."));
+        }
         Ok(())
     }
 
@@ -1087,7 +1093,7 @@ impl PayrollTimesheetScreen {
                     ("Discard changes", UnsavedChoice::Discard),
                     ("Cancel", UnsavedChoice::Cancel),
                 ] {
-                    if ui.button(label).clicked() {
+                    if crate::gui_controls::save_button(ui,label,matches!(choice,UnsavedChoice::Save)).clicked() {
                         match self.resolve_unsaved(application, choice) {
                             Ok(proceed) => {
                                 self.unsaved_error = None;
@@ -1262,7 +1268,7 @@ impl PayrollTimesheetScreen {
                 .snapshot_metadata(record.id)?
                 .map(|metadata| metadata.state);
             let stage = crate::payroll_evidence::lifecycle::stage(
-                &crate::payroll_evidence::open(application)?,
+                &*crate::payroll_evidence::open(application)?,
                 &record,
             )?;
             let snapshot_state = match stage {
@@ -1309,6 +1315,11 @@ impl PayrollTimesheetScreen {
                         .payroll_timesheet_repository
                         .get_annual_leave(record.id)?,
                 );
+                let adjustments=application.payroll_worked_item_repository.get_manual_adjustments(record.id)?;
+                for week in &weeks {
+                    let adjustment=adjustments.iter().find(|a|a.week_number==week.week_number).map_or(0,|a|a.adjustment_minutes);
+                    self.worked_hours_baselines.insert((record.id,week.week_number),(week.worked_hours*60.0).round() as i64-adjustment);
+                }
                 self.records.push(record.clone());
                 self.weeks.push((record, weeks, assistant_name));
                 self.public_holidays.push(holidays);
@@ -1662,24 +1673,9 @@ fn save_preparation_record(
         return Err("The payroll schedule changed while this screen was open. Reload Payroll Timesheet Preparation before saving.".into());
     }
 
-    let snapshot_state = application
-        .payroll_worked_item_repository
-        .snapshot_metadata(record.id)?
-        .map(|metadata| metadata.state);
-    if matches!(
-        snapshot_state,
-        Some(SnapshotState::Submitted | SnapshotState::Indeterminate)
-    ) {
-        return Err("This payroll timesheet is submitted or has an indeterminate delivery state and is read-only.".into());
-    }
-
-    if crate::payroll_evidence::lifecycle::stage(
-        &crate::payroll_evidence::open(application)?,
-        record,
-    )? != crate::payroll_evidence::lifecycle::Stage::Editable
-    {
-        return Err("Submitted or settled payroll is protected from changes".into());
-    }
+    crate::payroll_evidence::lifecycle::ensure_amendable(
+        &*crate::payroll_evidence::open(application)?, record.id,
+    )?;
     let mut weeks = weeks.to_vec();
     let previous_leave = application
         .payroll_timesheet_repository
@@ -2172,11 +2168,11 @@ pub(crate) mod tests {
     use crate::config::AppConfig;
     use crate::context::AppContext;
     use crate::environment::AppEnvironment;
+    use crate::private_storage::PrivateTempDir as TempDir;
     use rusqlite::{params, Connection};
-    use tempfile::TempDir;
 
     pub(crate) fn test_application() -> (TempDir, Application) {
-        let directory = TempDir::new().unwrap();
+        let directory = crate::private_storage::tempdir().unwrap();
         // macOS temporary paths may start with /var -> /private/var. Resolve
         // this newly created fixture root before constructing managed paths;
         // production validation must still reject symlink ancestors.
@@ -2244,7 +2240,7 @@ pub(crate) mod tests {
     include!("payroll_notes_return_tests.rs");
     include!("payroll_leaving_note_tests.rs");
 
-    fn setup_connection(application: &Application) -> Connection {
+    fn setup_connection(application: &Application) -> crate::database::DatabaseConnection {
         crate::database::open(&application.context.environment.database_path).unwrap()
     }
 
@@ -2348,6 +2344,24 @@ pub(crate) mod tests {
             .1
             .iter()
             .all(|week| week.worked_hours == 0.0));
+    }
+
+    #[test]
+    fn preparation_and_returned_hours_save_colour_lifecycles() {
+        use crate::gui_controls::acceptance::{frame,click};
+        let (_dir,app,schedule,mut screen)=load_active_record();let ctx=egui::Context::default();
+        let label=format!("Save {}",screen.weeks[0].2);
+        assert!(!frame(&ctx,vec![],|ui|screen.show(ui,&app,&schedule,"Synthetic period"),&label).1);
+        screen.weeks[0].0.payroll_department_notes="Synthetic note".into();
+        let(pos,blue)=frame(&ctx,vec![],|ui|screen.show(ui,&app,&schedule,"Synthetic period"),&label);assert!(blue);
+        click(&ctx,pos,|ui|screen.show(ui,&app,&schedule,"Synthetic period"),&label);
+        assert!(!frame(&ctx,vec![],|ui|screen.show(ui,&app,&schedule,"Synthetic period"),&label).1);
+        let id=screen.weeks[0].0.id;
+        assert!(!frame(&ctx,vec![],|ui|screen.show_returned_information(ui,&app,0),"Save returned hours").1);
+        screen.returned_hours_text.insert(id,"2.5".into());
+        let(pos,blue)=frame(&ctx,vec![],|ui|screen.show_returned_information(ui,&app,0),"Save returned hours");assert!(blue);
+        click(&ctx,pos,|ui|screen.show_returned_information(ui,&app,0),"Save returned hours");
+        assert!(!frame(&ctx,vec![],|ui|screen.show_returned_information(ui,&app,0),"Save returned hours").1);
     }
 
     fn load_active_record() -> (
@@ -2757,7 +2771,7 @@ pub(crate) mod tests {
         let result = save_current_row(&application, &schedule, &screen).unwrap();
         assert!(result.changed && result.candidate_invalidated);
         create_candidate(&application, &screen);
-        for state in ["submitted", "indeterminate"] {
+        for state in ["indeterminate"] {
             setup_connection(&application).execute("UPDATE payroll_timesheet_snapshot_states SET state = ?1 WHERE payroll_timesheet_id = ?2", rusqlite::params![state, id]).unwrap();
             screen.annual_leave.get_mut(&id).unwrap()[0].hours = 9.0;
             assert!(save_current_row(&application, &schedule, &screen).is_err());
@@ -3064,8 +3078,23 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn submitted_load_is_non_mutating_and_save_is_refused() {
-        assert_protected_load_is_read_only(SnapshotState::Submitted);
+    fn feature2_submitted_edit_save_resets_blue_and_preserves_submission() {
+        use crate::gui_controls::acceptance::{frame,click};
+        let (_dir,app,schedule,screen)=load_active_record();create_candidate(&app,&screen);
+        let record=screen.weeks[0].0.id;
+        setup_connection(&app).execute("UPDATE payroll_timesheet_snapshot_states SET state='submitted' WHERE payroll_timesheet_id=?1",[record]).unwrap();
+        let mut screen=PayrollTimesheetScreen::new();screen.load(&app,&schedule,"period").unwrap();screen.loaded=true;
+        let ctx=egui::Context::default();let label=format!("Save {}",screen.weeks[0].2);
+        assert!(!frame(&ctx,vec![],|ui|screen.show(ui,&app,&schedule,"period"),&label).1);
+        screen.weeks[0].1[0].worked_hours=3.;
+        screen.numeric_editor_texts.insert(NumericEditorKey::Worked(screen.weeks[0].1[0].id),"3".into());
+        let (pos,blue)=frame(&ctx,vec![],|ui|screen.show(ui,&app,&schedule,"period"),&label);assert!(blue);
+        click(&ctx,pos,|ui|screen.show(ui,&app,&schedule,"period"),&label);
+        assert!(!frame(&ctx,vec![],|ui|screen.show(ui,&app,&schedule,"period"),&label).1);
+        assert!(screen.status_message.contains("saved"),"{}",screen.status_message);
+        assert_eq!(app.payroll_timesheet_repository.get_weeks(record).unwrap()[0].worked_hours,3.);
+        assert_eq!(setup_connection(&app).query_row("SELECT COUNT(*) FROM payroll_submissions WHERE payroll_timesheet_id=?1",[record],|r|r.get::<_,i64>(0)).unwrap(),1);
+        let mut reopened=PayrollTimesheetScreen::new();reopened.load(&app,&schedule,"period").unwrap();assert_eq!(reopened.weeks[0].1[0].worked_hours,3.);
     }
 
     #[test]

@@ -15,7 +15,7 @@ impl DuplicateUi {
     pub fn refresh(&mut self, app: &Application, through: Option<NaiveDate>) -> Result<()> {
         self.through = through;
         let evidence = load(app)?;
-        let preflight = preflight(&open(app)?, &evidence)?;
+        let preflight = preflight(&*open(app)?, &evidence)?;
         self.pending = preflight
             .unresolved
             .iter()
@@ -146,7 +146,7 @@ impl DuplicateUi {
                         )
                     })
                     .collect::<Vec<_>>();
-                resolve_reviewed(&open(app)?, &load(app)?, &choices, &self.reviews)
+                resolve_reviewed(&*open(app)?, &load(app)?, &choices, &self.reviews)
             })();
             match result {
                 Ok(()) => {

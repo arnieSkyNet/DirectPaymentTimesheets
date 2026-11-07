@@ -343,7 +343,7 @@ fn add_raw_item(
 }
 
 /// Round payable duration only; source intervals and raw minutes stay untouched.
-fn payable_minutes(
+pub(crate) fn payable_minutes(
     minutes: i64,
     settings: &crate::config::PayrollConfig,
 ) -> Result<i64, PayRateAllocationError> {
@@ -473,7 +473,7 @@ fn snapshot_from_rate(
     }
 }
 
-fn select_manual_adjustment_rate(
+pub(crate) fn select_manual_adjustment_rate(
     pay_rates: &PayRateRepository,
     personal_assistant_id: i64,
     week_start: NaiveDate,

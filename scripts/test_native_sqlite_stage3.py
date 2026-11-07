@@ -34,6 +34,18 @@ class LocalProfile(unittest.TestCase):
     def test_genuine_local_profile_needs_no_github_identity(self):
         self.check(self.env())
 
+    def test_os_hostname_is_case_insensitive_but_environment_is_exact(self):
+        for node in ('IMOLLY', 'imolly', 'iMoLlY'):
+            self.check(self.env(), node=node)
+        for node in ('Molly', 'IMOLLY.example', ' IMOLLY', 'IMOLLY '):
+            with self.subTest(node=node), self.assertRaisesRegex(n.Refusal, 'unapproved_host'):
+                self.check(self.env(), node=node)
+        for value in ('Molly', 'imolly', 'iMoLlY', ' IMOLLY', 'IMOLLY '):
+            env = self.env()
+            env['DPT_NATIVE_SQLITE_HOST'] = value
+            with self.subTest(value=value), self.assertRaisesRegex(n.Refusal, 'unapproved_host'):
+                self.check(env)
+
     def test_local_host_architecture_pointer_and_risk_refusals(self):
         for kwargs in ({'node': 'Florence'}, {'system': 'Darwin'}, {'machine': 'ARM64'}, {'bits': 4}):
             with self.subTest(kwargs=kwargs), self.assertRaises(n.Refusal):
@@ -43,6 +55,34 @@ class LocalProfile(unittest.TestCase):
             del env[key]
             with self.subTest(key=key), self.assertRaises(n.Refusal):
                 self.check(env)
+
+    def test_every_github_variable_refuses_local_execution(self):
+        for key in ('GITHUB_ACTIONS', 'GITHUB_REF', 'GITHUB_TOKEN'):
+            env = self.env()
+            env[key] = 'synthetic'
+            with self.assertRaisesRegex(n.Refusal, 'local_github_environment_refused'):
+                self.check(env)
+
+    def test_local_child_has_no_github_or_sensitive_inheritance(self):
+        env = self.env()
+        env.update(PATH='unsafe', SMTP_PASSWORD='synthetic', AWS_ACCESS_KEY_ID='synthetic',
+                   DYLD_INSERT_LIBRARIES='unsafe', RUSTFLAGS='unsafe', HOME='unsafe', TEMP='unsafe')
+        with patch.dict(os.environ, env, clear=True):
+            child = n.fixture_env(Path('/private/synthetic'), 'normal', SHA)
+        self.assertFalse(any(key.startswith('GITHUB_') for key in child))
+        for key in ('PATH', 'SMTP_PASSWORD', 'AWS_ACCESS_KEY_ID', 'DYLD_INSERT_LIBRARIES', 'RUSTFLAGS', 'HOME'):
+            self.assertNotIn(key, child)
+        self.assertEqual(child['TEMP'], '/private/synthetic')
+        self.assertEqual(child['DPT_NATIVE_SQLITE_PROFILE'], 'molly-local')
+        self.assertEqual(child['DPT_NATIVE_SQLITE_HOST'], 'IMOLLY')
+        self.assertEqual(child['DPT_NATIVE_SQLITE_LOCAL_RISK'], 'Molly-disposable-synthetic-terminal-only')
+
+    def test_github_child_requires_actual_parent_values(self):
+        with patch.dict(os.environ, {'NATIVE_RUNNER': 'macos-15'}, clear=True):
+            with self.assertRaises(KeyError):
+                n.fixture_env(Path('/synthetic'), 'normal', SHA)
+
+
 
     def test_imolly_os_name_and_exact_environment_gate(self):
         for node in ('IMOLLY', 'imolly', 'iMolly'):
@@ -69,31 +109,6 @@ class LocalProfile(unittest.TestCase):
                        {'system': 'Linux'}, {'system': 'Darwin'}, {'bits': 4}):
             with self.subTest(kwargs=kwargs), self.assertRaisesRegex(n.Refusal, 'unsupported_platform'):
                 self.check(self.env(), **kwargs)
-
-    def test_every_github_variable_refuses_local_execution(self):
-        for key in ('GITHUB_ACTIONS', 'GITHUB_REF', 'GITHUB_TOKEN'):
-            env = self.env()
-            env[key] = 'synthetic'
-            with self.assertRaisesRegex(n.Refusal, 'local_github_environment_refused'):
-                self.check(env)
-
-    def test_local_child_has_no_github_or_sensitive_inheritance(self):
-        env = self.env()
-        env.update(PATH='unsafe', SMTP_PASSWORD='synthetic', AWS_ACCESS_KEY_ID='synthetic',
-                   DYLD_INSERT_LIBRARIES='unsafe', RUSTFLAGS='unsafe', HOME='unsafe', TEMP='unsafe')
-        with patch.dict(os.environ, env, clear=True):
-            child = n.fixture_env(Path('/private/synthetic'), 'normal', SHA)
-        self.assertFalse(any(key.startswith('GITHUB_') for key in child))
-        for key in ('PATH', 'SMTP_PASSWORD', 'AWS_ACCESS_KEY_ID', 'DYLD_INSERT_LIBRARIES', 'RUSTFLAGS', 'HOME'):
-            self.assertNotIn(key, child)
-        self.assertEqual(child['TEMP'], '/private/synthetic')
-        self.assertEqual(child['DPT_NATIVE_SQLITE_PROFILE'], 'molly-local')
-
-    def test_github_child_requires_actual_parent_values(self):
-        with patch.dict(os.environ, {'NATIVE_RUNNER': 'macos-15'}, clear=True):
-            with self.assertRaises(KeyError):
-                n.fixture_env(Path('/synthetic'), 'normal', SHA)
-
 
 class Receipts(unittest.TestCase):
     def test_stall_requires_ready_and_final_cleanup_receipt(self):
@@ -409,9 +424,18 @@ class WorkflowGuards(unittest.TestCase):
 
     def test_eight_case_contract_and_native_wal_witness_remain_explicit(self):
         self.assertEqual(n.CASES, ('normal', 'retry', 'unwind', 'terminal', 'panic_terminal', 'rollback', 'wal', 'stall'))
-        # The reviewed source is admitted from S, not copied into W/main.
-        self.assertRegex(n.REVIEWED_FIXTURE_SHA256, r'^[0-9a-f]{64}$')
+        # No real fixture fingerprint is approved by this reconciliation.
+        self.assertIsNone(n.REVIEWED_FIXTURE_SHA256)
         self.assertEqual(n.FIXTURE, 'tests/native_sqlite_terminal_fixtures.rs')
+
+    def test_unassigned_or_invalid_fingerprint_refuses_before_source_access(self):
+        for value in (None, '', '0' * 64, 'not-a-fingerprint'):
+            with self.subTest(value=value), patch.object(n, 'REVIEWED_FIXTURE_SHA256', value), patch.object(n.subprocess, 'check_output') as git, patch.object(n, 'source_inventory') as inventory, patch.object(n, 'digest') as digest:
+                with self.assertRaisesRegex(n.Refusal, 'unreviewed_fixture'):
+                    n.verify_source_fixture(Path('/synthetic'), SHA, {})
+                git.assert_not_called()
+                inventory.assert_not_called()
+                digest.assert_not_called()
 
 class MacTimeoutReceipt(unittest.TestCase):
     def exercise(self, *, cleanup_error=None, close_error=None):

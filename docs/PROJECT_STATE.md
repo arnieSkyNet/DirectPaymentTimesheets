@@ -1,15 +1,13 @@
 # DirectPaymentTimesheets project state
 
-This document describes the implementation on `main`. Source code, migrations and tests are the authority if this summary becomes stale.
+This document describes unreleased v1.0.7 on `security/v1.0.7-phase1`. Source code, migrations and tests are the authority if this summary becomes stale.
 
-The functionality below describes unreleased development 1.0.6/schema41. Published
-Linux/Windows v1.0.4 and macOS v1.0.5 do not include the Stage 1–8 changes. Historical
-stage headings retain their introduction schema numbers.
+The functionality below describes unreleased development 1.0.7/schema42. Published v1.0.6 packages remain the public downloads. Historical stage headings and dated acceptance reports retain their original versions, source commits and scope; they are not current-HEAD platform verification.
 
 ## Current release and platform
 
-- Development application version: `1.0.6`; published Linux/Windows: `1.0.4`; published macOS: `1.0.5`.
-- Database schema: version 41, upgraded through verified backups and isolated ordered migrations.
+- Development application version: `1.0.7`; published downloads: `1.0.6` for Linux, Windows and macOS.
+- Database schema: version 42, upgraded through verified backups and isolated ordered migrations.
 - Desktop UI: Rust with `eframe`/`egui`.
 - Persistence: SQLite through `rusqlite` (bundled SQLite).
 - Documents and integration: `printpdf`, PDF text extraction, ZIP import and SMTP via `lettre`.
@@ -85,7 +83,7 @@ Normal UI labels use Payroll Week, date range and pay date. The database still u
 
 Preparation is bound to the complete selected schedule and remembers payroll year, internal cycle, first-week date and pay date. Its PA list includes inclusive Start/Leaving date overlaps regardless of current status, plus any PA with an existing selected-period payroll record, even outside those dates.
 
-Unsent records and generated candidates are editable. Submitted and indeterminate records load their persisted timesheet, week and public-holiday values read-only, without reconciliation or load-time writes. Saving rechecks the operational selection and the schedule facts; a changed selection, missing schedule or materially re-imported schedule requires the screen to be reloaded.
+Unsent and submitted/settled timesheets support explicit editing and saved amendments. Protected records load retained values rather than silently recomputing history; in-flight/indeterminate delivery remains blocked. Save and replacement PDF generation are separate from email. Schema42 retains before/after preparation and generated versions; the latest successfully regenerated saved version governs subsequent reconciliation. Original submissions, PDFs and attempts remain intact. See [timesheet amendments](TIMESHEET-AMENDMENTS.md). Saving rechecks the operational selection and the schedule facts; a changed selection, missing schedule or materially re-imported schedule requires the screen to be reloaded.
 
 Regional calendar suggestions populate only newly created preparation. Existing drafts show missing/unexpected calendar dates without changing rows or hours. Cached published data supports offline use; unavailable England/Wales years use a labelled incomplete recurring fallback, while Scotland/Northern Ireland require manual review without cross-region substitution. Calendar coverage is not guaranteed complete. Review bindings exclude check timestamps and revalidate region/relevant dates/source under the production lock for publication and sending.
 
@@ -195,7 +193,7 @@ Stage 2 final-review corrections close the retained-view transfer gap: source/de
 
 ## Stage 4 shift change protection (1.0.6/schema38)
 
-Stage 4 introduced additive schema38; current development 1.0.6 now uses schema41. Semantic CSV headers support the verified Hours Keeper format and existing synthetic aliases regardless of column order. Content identity detects changed same-path exports. Shared review protects imported/internal counterparts and cross-midnight overlaps; original evidence, archival bytes and omitted rows remain retained. Review supports a payable-version choice, explicit separate shifts and audited deferral. New protected edits require prospective authorisation and the existing contextual financial correction workflow; pre-existing obligations are preserved. The established verified database/config backup and isolated upgrade installation remain mandatory; external business files need separate protection.
+Stage 4 introduced additive schema38; current development 1.0.7 now uses schema42. Semantic CSV headers support the verified Hours Keeper format and existing synthetic aliases regardless of column order. Content identity detects changed same-path exports. Shared review protects imported/internal counterparts and cross-midnight overlaps; original evidence, archival bytes and omitted rows remain retained. Review supports a payable-version choice, explicit separate shifts and audited deferral. New protected edits require prospective authorisation and the existing contextual financial correction workflow; pre-existing obligations are preserved. The established verified database/config backup and isolated upgrade installation remain mandatory; external business files need separate protection.
 
 
 ## Stage 5 startup reliability (1.0.6/schema38)
@@ -242,13 +240,72 @@ separate from proof of recipient inbox receipt. See the Stage 8 sections in
 
 ### SMTP security development status
 
-Development 1.0.6 now exposes required STARTTLS, implicit TLS and explicit plaintext
+Development 1.0.7 retains required STARTTLS, implicit TLS and explicit plaintext
 SMTP through shared production/test transport; published downloads are unchanged.
 Existing missing security settings remain legacy plaintext, and new remote
 configurations default to required STARTTLS. Certificate/hostname validation is
 mandatory with no downgrade. Phase-aware setup failures are not sent; ambiguous
-submission remains protected. Credentials and retained backup evidence are still
-unencrypted at rest. Platform hardware/trust-store and Windows ACL acceptance
+submission remains protected. Password/token secrets use native OS credential stores and opaque references in configuration/new backup copies. Historical plaintext copies are not erased. Payroll databases and retained attachment/recipient evidence are not application-encrypted. Platform hardware/trust-store and Windows ACL acceptance
 remain release requirements. See [SMTP security](DOMAIN.md#smtp-configuration-and-security).
 
 Annual-leave guidance now flags relevant structured sickness alongside legacy sickness hours for additional variable-hours review; it never adds sickness accrual figures or changes payroll evidence.
+
+
+## Phase 1 storage privacy (development 1.0.7; introduced at schema41)
+
+New application-managed directories use 0700 and files use 0600 on Unix. Windows
+creation supplies a protected DACL granting the current token user and SYSTEM;
+SQLite writable opens require a suitably private parent ACL because its sidecars
+inherit that directory's ACL. No existing file/directory permissions or ownership
+are repaired automatically. Application Settings offers a bounded, background,
+metadata-only **Assess Storage Permissions** report, distinguishing business
+folders that may intentionally be shared. Repair must be reviewed separately.
+
+Restore preview retains an explicitly private randomized directory throughout
+approval-plan ownership. Linux cleans the original directory only in a verified
+namespace using retained handles; unsafe parents and Windows/macOS retain
+private staging rather than delete by an unverified pathname. SQLite snapshots, migration copies, backup
+configuration, CSV archives, import staging, drawn signatures and filing copies
+are privately created. PDF/configuration publication uses randomized exclusive
+staging; deliberate replacements preserve existing access policy and refuse
+ownership changes. Completed filing moves retain the original document access policy after private
+staging. Shared business directories are not chmod'd or given private
+replacement ACLs. New business files are private by default; sharing requires a
+separate, deliberate access decision. No schema, email policy or document bytes
+are changed by this work. Published v1.0.6 downloads are unchanged.
+
+See [storage hardening and remaining limitations](SECURITY-HARDENING.md).
+
+Native Phase 1 verification is prepared on `security/v1.0.7-phase1` with a
+dedicated manual test workflow. Known-failing security assertions are evidence
+of open findings, not remediation. No native run, commit, push, package or release
+has been performed. See [verification and dispatch prerequisites](NATIVE-SECURITY-VERIFICATION.md).
+
+
+## Current v1.0.7 integration and remaining acceptance — 7 November 2026
+
+Microsoft personal-account device authorization, refresh and XOAUTH2 are implemented;
+organizational Microsoft 365 support is not. Real sign-in/provider authentication
+and refresh acceptance remain unverified. Native password/token storage and verified
+legacy migration have bounded historical platform evidence, not blanket current-HEAD
+acceptance. See [OAuth2](MICROSOFT-OAUTH2-SMTP.md), [credential storage](SMTP-CREDENTIAL-STORAGE.md)
+and the dated [acceptance record](EMAIL-SECURITY-ACCEPTANCE.md).
+
+Rounding supports 1/5/10/15/30/60-minute Up/Down choices (default 15 Up) at
+source allocation, including imported and completed logged work. Raw source identity,
+manual adjustments and submitted history are preserved. Public holidays use the
+GOV.UK HTTPS regional feed with last-good offline caching; substitute/exceptional
+published dates are not merged with recurring rules. Missing Scottish/NI cache
+years require manual review, not England/Wales substitution.
+
+Payroll Settings keeps rounding/region edits staged until configuration publication
+succeeds. Errors retain the dirty form/blue Save state and retry applies matching
+persisted/runtime rules. Provider and annual-leave stores can already have changed;
+see [save boundaries and proposed next step](SETTINGS-SAVE-CONSISTENCY.md).
+
+Packaging has seven platform/architecture targets and ten package formats; v1.0.6
+has ten published assets plus SHA256SUMS. No v1.0.7 package/release or same-HEAD
+cross-platform acceptance is established by local Linux regression results.
+Historical Windows/macOS credential and SQLite reports keep their original SHAs.
+Current native/provider/hardware/minimum-OS gates remain in [release builds](RELEASE-BUILDS.md).
+Word/DOCX payroll-preparation import remains deliberately deferred: payroll supplies PDFs.

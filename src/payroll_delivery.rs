@@ -171,7 +171,7 @@ fn transition(
 /// Caller refreshes addresses, eligibility, settings and reads all attachment bytes
 /// inside the immediate claim transaction. Transport receives those verified bytes.
 pub fn dispatch<V, S>(
-    db: &mut Connection,
+    db: &mut crate::database::DatabaseConnection,
     pa: i64,
     identity: Option<PayslipDeliveryIdentity<'_>>,
     approved: &Approval,
@@ -377,7 +377,7 @@ pub fn history(db: &Connection) -> Result<Vec<ReviewTarget>> {
 }
 
 pub fn review(
-    db: &mut Connection,
+    db: &mut crate::database::DatabaseConnection,
     key: &str,
     expected_evidence: &str,
     decision: &str,
@@ -464,6 +464,7 @@ pub fn review(
 
 #[cfg(test)]
 pub(crate) fn remove_schema_41_fixture(db: &Connection) {
+    crate::timesheet_amendments::remove_schema_42_fixture(db);
     let triggers=db.prepare("SELECT name FROM sqlite_master WHERE type='trigger' AND (name LIKE 'dpt41_%' OR name LIKE 'stage8_%')").unwrap().query_map([],|r|r.get::<_,String>(0)).unwrap().collect::<rusqlite::Result<Vec<_>>>().unwrap();
     for t in triggers {
         db.execute_batch(&format!(
@@ -481,7 +482,7 @@ mod tests {
     use crate::payroll_timesheet_email_repository::PayrollTimesheetEmailRepository;
     struct Fixture {
         dir: tempfile::TempDir,
-        db: Connection,
+        db: crate::database::DatabaseConnection,
     }
     impl Fixture {
         fn new() -> Self {
@@ -1292,7 +1293,7 @@ mod tests {
             db.query_row("SELECT version FROM schema_version", [], |r| r
                 .get::<_, i64>(0))
                 .unwrap(),
-            41
+            crate::database::CURRENT_SCHEMA_VERSION
         );
         assert_eq!(
             db.query_row(

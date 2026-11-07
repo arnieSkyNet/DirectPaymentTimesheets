@@ -1,14 +1,14 @@
 # DirectPaymentTimesheets database schema
 
-Current development is unreleased application 1.0.6 on `main`, schema41. Numbered
+Current development is unreleased application 1.0.7 on `security/v1.0.7-phase1`, schema42. Numbered
 schema sections retain historical migration milestones; they do not identify
 separate current schemas or publicly downloadable builds.
 
 ## Scope and versioning
 
-This is the implemented SQLite schema at version 41 (development application version `1.0.6`). It is derived from `create_schema` and migrations in `src/database.rs`; those migrations are authoritative.
+This is the implemented SQLite schema at version 42 (development application version `1.0.7`). It is derived from `create_schema` and migrations in `src/database.rs`; those migrations are authoritative.
 
-`schema_version` contains the current integer version. A new database begins at version 1 and receives each ordered migration through `CURRENT_SCHEMA_VERSION` 41. Existing databases receive a verified pre-upgrade database/configuration backup and an isolated migration chain before transactional installation. Migration 23 removes the short-lived revision-only tables introduced by migration 22 while retaining the operational legacy snapshot tables. Migration 24 adds an explicit contracted/variable hours basis to effective-dated Personal Assistant contracted-hours history while preserving existing records as contracted.
+`schema_version` contains the current integer version. A new database begins at version 1 and receives each ordered migration through `CURRENT_SCHEMA_VERSION` 42. Existing databases receive a verified pre-upgrade database/configuration backup and an isolated migration chain before transactional installation. Migration 23 removes the short-lived revision-only tables introduced by migration 22 while retaining the operational legacy snapshot tables. Migration 24 adds an explicit contracted/variable hours basis to effective-dated Personal Assistant contracted-hours history while preserving existing records as contracted.
 
 During unreleased schema-20 development, an earlier local database shape contained `direct_shifts` without soft-deletion columns or the audit table. Startup therefore performs an idempotent schema-20 compatibility check after normal migrations. When that exact incomplete shape is found, it transactionally rebuilds `direct_shifts` into the final constrained form while preserving IDs and row values, then creates the audit table/indexes. It does not fabricate historical audit events, and repeated startup does not duplicate existing audit rows.
 
@@ -356,7 +356,7 @@ Migration 25 → 26 transactionally creates an empty singleton settings table, p
 
 Both effective-from values are recurring `DD/MM` boundaries, not year-specific dates. Repository validation normalises day/month input and requires a date that exists every year (29 February is rejected). Different valid boundaries are permitted for the two groups. These dates are independent recurring rule effective dates, not annual-leave-year boundaries and not PA basis-change dates. Annual-leave guidance uses the single fixed April-to-March year: 2026/27 runs 01/04/2026 through 31/03/2027 inclusive. Differing rule dates are supported. The singleton has no historical numeric rule values; guidance, including historical years, uses the current saved/default values with this limitation stated in Details.
 
-An absent row loads defaults of `01/04`, 5.6 weeks, `01/04`, and 12.07 percent without writing to the database. Save Payroll Settings validates these inputs before any payroll writes, then saves the four values in one atomic SQLite statement after the existing payroll-settings save. The config/provider and annual-leave writes are not a shared transaction; failures are reported explicitly, including when the other payroll settings have already saved. There is no separate leave-year-start config field, rule creation, history, editing/deletion workflow, or confirmation machinery. No compatibility repair for earlier development-only schema-26 layouts is included; local development databases may be reset manually.
+An absent row loads defaults of `01/04`, 5.6 weeks, `01/04`, and 12.07 percent without writing to the database. Save Payroll Settings validates these inputs before any payroll writes, then saves provider and annual-leave values before publishing the staged configuration. Effective runtime rounding and holiday region change only after configuration publication succeeds. The config/provider and annual-leave writes are not a shared transaction: a failed configuration publication can leave provider/annual-leave details saved, while effective payroll rules stay unchanged. The error reports that partial result, and the form retains its edits and dirty Save state for retry. There is no separate leave-year-start config field, rule creation, history, editing/deletion workflow, or confirmation machinery. No compatibility repair for earlier development-only schema-26 layouts is included; local development databases may be reset manually.
 
 Personal Assistants have an optional Leaving date, stored as canonical `DD/MM/YYYY`. Schema 27 adds nullable `personal_assistants.leaving_date` without backfilling dates or altering historical data. A supplied date must be real and not precede Start date. Stored Active/Inactive status is never changed automatically. Ordinary selected-period payroll inclusion uses inclusive Start/Leaving date overlap with the four-week period, independent of current Active/Inactive status. Missing employment boundaries remain unbounded. Existing selected-period preparation records remain included regardless of status or employment dates. Annual-leave guidance applies Start and Leaving dates inclusively without changing employment status.
 
@@ -404,7 +404,7 @@ The table checks `end_date >= start_date`; repository validation additionally re
 
 ## Schema 31: cycle-independent PA payroll documents
 
-Migration 31 creates the following table and index in one transaction and advances `schema_version` to 31. It does not read, rewrite or migrate `payroll_timesheet_email_status`: existing payslip/timesheet rows and settlement semantics remain unchanged. There are no historical P60/P45 delivery associations to invent or backfill. The current development application is 1.0.6; schema 31 is the introduction point for this table, subsequently extended by schemas 33 and 35 below.
+Migration 31 creates the following table and index in one transaction and advances `schema_version` to 31. It does not read, rewrite or migrate `payroll_timesheet_email_status`: existing payslip/timesheet rows and settlement semantics remain unchanged. There are no historical P60/P45 delivery associations to invent or backfill. The current development application is 1.0.7/schema42; schema 31 is the introduction point for this table, subsequently extended by schemas 33 and 35 below.
 
 ### `imported_payroll_documents`
 
@@ -588,7 +588,7 @@ is no automatic retention cleanup.
 
 ## Schema 37: sickness protection and historical information corrections
 
-Stage 2 introduced schema37; current development 1.0.6 uses schema41. The existing verified pre-upgrade backup and isolated migration-chain installation apply to 36→37 and earlier supported databases. Migration37 transactionally rebuilds `personal_assistant_sickness_periods` with `INTEGER PRIMARY KEY AUTOINCREMENT`, preserving existing IDs, dates, PA references and the date index. It does not deduplicate existing records, backfill missing historic sickness dates, change legacy weekly hours or modify payroll settlement/submission records.
+Stage 2 introduced schema37; current development 1.0.7 uses schema42. The existing verified pre-upgrade backup and isolated migration-chain installation apply to 36→37 and earlier supported databases. Migration37 transactionally rebuilds `personal_assistant_sickness_periods` with `INTEGER PRIMARY KEY AUTOINCREMENT`, preserving existing IDs, dates, PA references and the date index. It does not deduplicate existing records, backfill missing historic sickness dates, change legacy weekly hours or modify payroll settlement/submission records.
 
 New tables:
 
@@ -635,7 +635,7 @@ The established verified WAL-safe backup and isolated installation cover 35→36
 
 ### Stage 5 startup validation (schema38 unchanged)
 
-Stage 5 introduced validation of critical table/column and schema38 write-guard metadata. Current development validates schema41 guards and required retention protections, then runs a bounded `quick_check(1)`. Its progress callback stops at approximately 100,000 VM operations or 250 ms; an individual filesystem I/O can exceed the callback budget. Budget exhaustion is not treated as corruption and unchecked pages are not certified. Detected corruption/missing protections is fatal without automatic repair. Verified backup, staged upgrade and transactional installation still perform their full checks.
+Stage 5 introduced validation of critical table/column and schema38 write-guard metadata. Current development validates schema42 guards and required retention protections, then runs a bounded `quick_check(1)`. Its progress callback stops at approximately 100,000 VM operations or 250 ms; an individual filesystem I/O can exceed the callback budget. Budget exhaustion is not treated as corruption and unchecked pages are not certified. Detected corruption/missing protections is fatal without automatic repair. Verified backup, staged upgrade and transactional installation still perform their full checks.
 
 Fresh empty databases are now staged and installed transactionally rather than applying the migration chain directly to live data. Unknown/nonempty databases are never treated as fresh. Existing upgrade backup/WAL/rollback/recovery semantics are unchanged. Configuration or graphics failure after a successful upgrade leaves that upgrade applied and reports the location of its pre-upgrade recovery folder. Business-folder availability does not bypass database or dispatch locks. No schema migration accompanies Stage5.
 
@@ -731,3 +731,21 @@ Employer timesheet CC is configuration, not a database column:
 `email.timesheet_employer_cc` defaults to true when absent. It applies only to
 production timesheet previews/dispatch, including corrected documents and resends.
 Changes invalidate pending approval; retained attempts never change their recipients.
+
+
+## Schema 42: retained timesheet amendments
+
+`timesheet_amendment_versions` is an append-only audit of explicit preparation
+saves and successfully generated replacements. Columns are `id`,
+`payroll_timesheet_id`, `event` (`save`/`generated`), nullable `document_id`,
+nullable `before_state`, required `after_state`, `recorded_at` and `actor`.
+Payloads retain preparation details and generated worked evidence, weekly totals,
+source fingerprints and correction applications. UPDATE/DELETE retention triggers
+and schema42 old-writer guards protect the audit. Original submission/document
+histories remain intact; saving invalidates the mutable PDF binding, and only
+successful regeneration advances generated authority. No new migration is part
+of this documentation update. See `src/timesheet_amendments.rs` and
+[TIMESHEET-AMENDMENTS.md](TIMESHEET-AMENDMENTS.md).
+
+Payroll Settings' configuration/provider/annual-leave save ordering and remaining
+partial-write cases are documented in [SETTINGS-SAVE-CONSISTENCY.md](SETTINGS-SAVE-CONSISTENCY.md).

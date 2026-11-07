@@ -1,0 +1,498 @@
+//! Standalone setup actions deliberately have no payroll/database dependency.
+use crate::{config::EmailConfig, email_service::ProductionSendError};
+use std::sync::mpsc::{self, Receiver, TryRecvError};
+
+/// View state only: no configuration migration or duplicated setting drafts.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub(crate) enum EmailSettingsTab {
+    #[default]
+    Smtp,
+    Test,
+    Templates,
+    Signature,
+}
+impl EmailSettingsTab {
+    pub const ALL: [Self; 4] = [Self::Smtp, Self::Test, Self::Templates, Self::Signature];
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Smtp => "SMTP Config",
+            Self::Test => "Test Email",
+            Self::Templates => "Templates",
+            Self::Signature => "Signature & Options",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) enum ExamplePreviewKind {
+    #[default]
+    Templates,
+    SmtpTest,
+}
+
+#[derive(Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) enum TestRecipient {
+    #[default]
+    Payroll,
+    Pa,
+}
+
+/// Local readiness only: never connects, authenticates, or sends.
+pub(crate) fn validate_standalone_test(
+    config: &EmailConfig,
+    recipient: Option<TestRecipient>,
+) -> Result<(), String> {
+    crate::microsoft_oauth::validate(config)?;
+    let recipient = recipient.ok_or("Select Payroll Test Address or PA Test Address.")?;
+    match config.smtp_transport.as_str() {
+        // The local transport deliberately uses localhost:25 without credentials.
+        "Local SMTP Server" => (),
+        "SMTP Server" => {
+            if config.smtp_host.trim().is_empty()
+                || config.smtp_host.trim().chars().any(|c| c.is_whitespace() || c.is_control())
+            {
+                return Err("Enter a valid SMTP host.".into());
+            }
+            if config.smtp_port == 0 {
+                return Err("Enter an SMTP port between 1 and 65535.".into());
+            }
+            if !config.smtp_username.trim().is_empty() && matches!(config.smtp_security, None | Some(crate::config::SmtpSecurity::Plaintext)) {
+                return Err("Authenticated SMTP requires STARTTLS or implicit TLS.".into());
+            }
+            // Match dispatch: an empty username selects an unauthenticated
+            // remote relay; a supplied username selects authentication.
+            if config.smtp_authentication == crate::config::SmtpAuthentication::Password && !config.smtp_username.trim().is_empty() {
+                if let Some(error) = &config.smtp_credential_error { return Err(error.clone()); }
+            }
+            if config.smtp_authentication == crate::config::SmtpAuthentication::Password && !config.smtp_username.trim().is_empty() && config.smtp_password.is_empty() {
+                return Err("Enter the SMTP password for the supplied username.".into());
+            }
+        }
+        _ => return Err("Select a supported SMTP transport.".into()),
+    }
+    crate::email_service::prepare_smtp_test_message(config, recipient)
+        .map(|_| ())
+        .map_err(|error| error.to_string())
+}
+
+#[derive(Default)]
+pub(crate) struct TestEmailTask {
+    pending: Option<Receiver<Result<(), ProductionSendError>>>,
+    started: Option<std::time::Instant>,
+    stalled_reported: bool,
+    #[cfg(test)]
+    forbid_real_start: bool,
+}
+// A watchdog reports uncertainty; it cannot safely cancel a Rust thread or
+// prove non-acceptance. Keep duplicate/close protection until termination.
+const TEST_SEND_WATCHDOG: std::time::Duration = std::time::Duration::from_secs(120);
+struct WorkerCompletion<F: FnOnce()> {
+    sender: Option<mpsc::Sender<Result<(), ProductionSendError>>>,
+    repaint: Option<F>,
+}
+impl<F: FnOnce()> WorkerCompletion<F> {
+    fn finish(&mut self, result: Result<(), ProductionSendError>) {
+        if let Some(sender) = self.sender.take() {
+            let _ = sender.send(result);
+        }
+    }
+}
+impl<F: FnOnce()> Drop for WorkerCompletion<F> {
+    fn drop(&mut self) {
+        // Drop/send the channel before waking the main viewport, even on unwind.
+        if let Some(sender) = self.sender.take() {
+            let _ = sender.send(Err(ProductionSendError::Uncertain(
+                "SMTP test worker terminated unexpectedly; acceptance is unknown.".into(),
+            )));
+        }
+        if let Some(repaint) = self.repaint.take() {
+            repaint();
+        }
+    }
+}
+impl TestEmailTask {
+    #[cfg(test)]
+    pub(crate) fn forbid_real_start_for_test(&mut self) {
+        self.forbid_real_start = true;
+    }
+    pub fn pending(&self) -> bool {
+        self.pending.is_some()
+    }
+    pub fn stalled(&self) -> bool {
+        self.pending() && self.stalled_reported
+    }
+    #[cfg(test)]
+    pub(crate) fn start_mock(
+        &mut self,
+        send: impl FnOnce() -> Result<(), ProductionSendError> + Send + 'static,
+        repaint: impl FnOnce() + Send + 'static,
+    ) -> Result<(), ProductionSendError> {
+        self.start_with(send, repaint)
+    }
+    #[cfg(test)]
+    pub(crate) fn report_stall_for_test(&mut self) -> Option<Result<(), ProductionSendError>> {
+        self.poll_at(self.started.unwrap() + TEST_SEND_WATCHDOG)
+    }
+    pub fn start(
+        &mut self,
+        config: EmailConfig,
+        recipient: TestRecipient,
+        repaint: impl FnOnce() + Send + 'static,
+    ) -> Result<(), ProductionSendError> {
+        #[cfg(test)]
+        assert!(!self.forbid_real_start, "Unexpected real SMTP start in navigation regression test");
+        if self.pending() {
+            return Err(ProductionSendError::NotSent(
+                "A test email is already in progress.".into(),
+            ));
+        }
+        let message = crate::email_service::prepare_smtp_test_message(&config, recipient)?;
+        self.start_with(
+            move || crate::email_service::send_prepared_test(&config, &message),
+            repaint,
+        )
+    }
+    fn start_with(
+        &mut self,
+        send: impl FnOnce() -> Result<(), ProductionSendError> + Send + 'static,
+        repaint: impl FnOnce() + Send + 'static,
+    ) -> Result<(), ProductionSendError> {
+        if self.pending() {
+            return Err(ProductionSendError::NotSent(
+                "A test email is already in progress.".into(),
+            ));
+        }
+        let (tx, rx) = mpsc::channel();
+        std::thread::Builder::new()
+            .name("smtp-test".into())
+            .spawn(move || {
+                let mut completion = WorkerCompletion {
+                    sender: Some(tx),
+                    repaint: Some(repaint),
+                };
+                let result = send();
+                completion.finish(result);
+            })
+            .map_err(|_| {
+                ProductionSendError::NotSent("Unable to start SMTP test worker.".into())
+            })?;
+        self.pending = Some(rx);
+        self.started = Some(std::time::Instant::now());
+        self.stalled_reported = false;
+        Ok(())
+    }
+    pub fn poll(&mut self) -> Option<Result<(), ProductionSendError>> {
+        self.poll_at(std::time::Instant::now())
+    }
+    fn poll_at(&mut self, now: std::time::Instant) -> Option<Result<(), ProductionSendError>> {
+        let result = match self.pending.as_ref()?.try_recv() {
+            Ok(result) => Some(result),
+            Err(TryRecvError::Empty) => {
+                if !self.stalled_reported && self.started.is_some_and(|start| now.saturating_duration_since(start) >= TEST_SEND_WATCHDOG) {
+                    self.stalled_reported = true;
+                    return Some(Err(ProductionSendError::Uncertain("SMTP test exceeded its 120-second UI watchdog. Worker is still active; acceptance is unknown. Duplicate sends and normal closure remain blocked until it terminates.".into())));
+                }
+                None
+            }
+            Err(TryRecvError::Disconnected) => Some(Err(ProductionSendError::Uncertain("Test worker stopped; SMTP acceptance is unknown. Do not assume the email was not sent.".into()))),
+        };
+        if result.is_some() {
+            self.pending = None;
+            self.started = None;
+            self.stalled_reported = false;
+        }
+        result
+    }
+}
+
+pub(crate) fn example_preview(
+    config: &crate::config::AppConfig,
+    signature: Option<&str>,
+) -> String {
+    let subject = config.payroll.email_subject_format
+        .replace("{Personal Assistant Name}", "Example Assistant")
+        .replace("{Personal Assistant DOB}", "Example DOB")
+        .replace("{Personal Assistant NI}", "Example NI")
+        .replace("{YYYYMMwWW}", "EXAMPLE-PERIOD");
+    let signature = signature.unwrap_or("Example Employer (fictional signature)");
+    format!("EXAMPLE PREVIEW — fictional details; nothing is sent or read from attachments.\nCurrent draft templates/signature are used where available.\n\nFrom: Example Employer <employer@example.invalid>\nTo: Example Recipient <recipient@example.invalid>\nCC/BCC: None\n\nTimesheet subject: {subject}\nTimesheet attachment: Example Timesheet.pdf (fictional, not opened)\n\n{}\n\n{}\n\nPayslip subject: Payslip for Week EXAMPLE\nPayslip attachment: Example Payslip.pdf (fictional, not opened)\n\n{}\n\n{}", &config.payroll.timesheet_email_body, signature, &config.payroll.payslip_email_body, signature)
+}
+
+/// Preview the actual standalone connection-test wording without opening a
+/// socket or requiring valid SMTP settings. Placeholders are explicitly marked.
+pub(crate) fn standalone_preview(config: &EmailConfig, recipient: TestRecipient) -> String {
+    let sender = if config.smtp_username.trim().parse::<lettre::Address>().is_ok() {
+        config.smtp_username.trim()
+    } else if !config.test_sender_address.trim().is_empty() {
+        config.test_sender_address.trim()
+    } else { "(sender not configured)" };
+    let recipient = match recipient {
+        TestRecipient::Payroll => config.payroll_test_email_address.trim(),
+        TestRecipient::Pa => config.pa_test_email_address.trim(),
+    };
+    let recipient = if recipient.is_empty() { "(test recipient not configured)" } else { recipient };
+    format!("TEST EMAIL PREVIEW — nothing is sent.\nMissing settings are marked below; sending validates all required settings.\n\nFrom: {sender}\nTo: {recipient}\nCC/BCC: None\nAttachments: None\n\nSubject: DirectPaymentTimesheets  SMTP Test\n\nThis is an attachment-free DirectPaymentTimesheets SMTP transport test. No payroll records were used or changed.")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn standalone_readiness_validates_only_selected_recipient_and_transport() {
+        let mut config = EmailConfig::default();
+        config.smtp_transport = "SMTP Server".into();
+        config.smtp_host = "smtp.example.invalid".into();
+        config.smtp_port = 587;
+        config.smtp_username = "sender@example.invalid".into();
+        config.smtp_password = "synthetic password".into();
+        config.payroll_test_email_address = "payroll@example.invalid".into();
+        config.pa_test_email_address = "not an address".into();
+        assert!(validate_standalone_test(&config, None).is_err());
+        assert!(validate_standalone_test(&config, Some(TestRecipient::Payroll)).is_ok());
+        assert!(validate_standalone_test(&config, Some(TestRecipient::Pa)).is_err());
+        config.pa_test_email_address = "pa@example.invalid".into();
+        assert!(validate_standalone_test(&config, Some(TestRecipient::Pa)).is_ok());
+        for mutation in 0..7 {
+            let mut bad = config.clone();
+            match mutation {
+                0 => bad.smtp_host.clear(),
+                1 => bad.smtp_host = "invalid host".into(),
+                2 => bad.smtp_port = 0,
+                3 => bad.smtp_username.clear(),
+                4 => bad.smtp_password.clear(),
+                5 => bad.smtp_transport = "unsupported".into(),
+                _ => bad.smtp_username = "login-without-sender".into(),
+            }
+            assert!(validate_standalone_test(&bad, Some(TestRecipient::Payroll)).is_err());
+        }
+        config.smtp_username = "non-email-login".into();
+        config.test_sender_address = "sender@example.invalid".into();
+        assert!(validate_standalone_test(&config, Some(TestRecipient::Payroll)).is_ok());
+        config.smtp_transport = "Local SMTP Server".into();
+        config.smtp_host.clear(); config.smtp_username.clear(); config.smtp_password.clear();
+        assert!(validate_standalone_test(&config, Some(TestRecipient::Pa)).is_ok());
+    }
+    #[test]
+    fn unauthenticated_remote_relay_requires_sender_and_preserves_tls_policy() {
+        let mut config = EmailConfig::default();
+        config.select_transport("SMTP Server".into());
+        config.smtp_host = "relay.example.invalid".into();
+        config.smtp_port = 2525;
+        config.smtp_username.clear();
+        config.smtp_password.clear();
+        config.test_sender_address = "sender@example.invalid".into();
+        config.payroll_test_email_address = "recipient@example.invalid".into();
+        assert_eq!(config.smtp_security, Some(crate::config::SmtpSecurity::RequiredStarttls));
+        for security in [crate::config::SmtpSecurity::RequiredStarttls, crate::config::SmtpSecurity::ImplicitTls] {
+            config.smtp_security = Some(security);
+            assert!(validate_standalone_test(&config, Some(TestRecipient::Payroll)).is_ok());
+            assert_eq!(config.smtp_security, Some(security));
+            assert_eq!(config.smtp_port,2525);
+        }
+        config.test_sender_address.clear();
+        assert!(validate_standalone_test(&config, Some(TestRecipient::Payroll)).is_err());
+        config.smtp_username="sender@example.invalid".into();
+        assert!(validate_standalone_test(&config, Some(TestRecipient::Payroll)).is_err());
+    }
+    #[test]
+    fn panicking_worker_notifies_repaint_and_reports_uncertainty() {
+        let mut task = TestEmailTask::default();
+        let (wake, notification) = mpsc::channel();
+        task.start_with(
+            || panic!("synthetic worker failure"),
+            move || {
+                wake.send(()).unwrap();
+            },
+        )
+        .unwrap();
+        notification
+            .recv_timeout(std::time::Duration::from_secs(2))
+            .unwrap();
+        assert!(matches!(
+            task.poll(),
+            Some(Err(ProductionSendError::Uncertain(_)))
+        ));
+        assert!(!task.pending());
+        assert!(task.poll().is_none());
+    }
+    #[test]
+    fn stalled_worker_reports_once_stays_protected_and_can_later_accept() {
+        let mut task = TestEmailTask::default();
+        let (release, wait) = mpsc::channel();
+        let (wake, notification) = mpsc::channel();
+        task.start_with(
+            move || {
+                wait.recv().unwrap();
+                Ok(())
+            },
+            move || {
+                wake.send(()).unwrap();
+            },
+        )
+        .unwrap();
+        let late = task.started.unwrap() + TEST_SEND_WATCHDOG;
+        assert!(matches!(
+            task.poll_at(late),
+            Some(Err(ProductionSendError::Uncertain(_)))
+        ));
+        assert!(task.stalled() && task.pending());
+        assert!(task.poll_at(late).is_none());
+        assert!(task
+            .start_with(|| panic!("duplicate worker"), || {})
+            .is_err());
+        release.send(()).unwrap();
+        notification
+            .recv_timeout(std::time::Duration::from_secs(2))
+            .unwrap();
+        assert!(matches!(task.poll(), Some(Ok(()))));
+        assert!(!task.pending() && !task.stalled());
+    }
+    #[test]
+    fn standalone_message_has_only_selected_test_envelope() {
+        let mut config = EmailConfig::default();
+        config.smtp_username = "sender@example.invalid".into();
+        config.payroll_test_email_address = "payroll-test@example.invalid".into();
+        config.pa_test_email_address = "pa-test@example.invalid".into();
+        for (target, address) in [
+            (TestRecipient::Payroll, "payroll-test@example.invalid"),
+            (TestRecipient::Pa, "pa-test@example.invalid"),
+        ] {
+            let message = crate::email_service::prepare_smtp_test_message(&config, target).unwrap();
+            assert_eq!(message.envelope().to().len(), 1);
+            assert_eq!(message.envelope().to()[0].to_string(), address);
+            let mime = String::from_utf8(message.formatted()).unwrap();
+            assert!(mime.contains("DirectPaymentTimesheets  SMTP Test"));
+            assert!(
+                !mime.contains("Cc:")
+                    && !mime.contains("Bcc:")
+                    && !mime.contains("Content-Disposition: attachment")
+                    && !mime.contains("multipart/mixed")
+            );
+        }
+        config.smtp_username = "non-email-login".into();
+        assert!(
+            crate::email_service::prepare_smtp_test_message(&config, TestRecipient::Payroll)
+                .is_err()
+        );
+        config.test_sender_address = "explicit@example.invalid".into();
+        assert!(
+            crate::email_service::prepare_smtp_test_message(&config, TestRecipient::Payroll)
+                .is_ok()
+        );
+        config.pa_test_email_address.clear();
+        assert!(
+            crate::email_service::prepare_smtp_test_message(&config, TestRecipient::Pa).is_err()
+        );
+    }
+    #[test]
+    fn invalid_sender_does_not_start_worker_and_valid_username_wins() {
+        let mut task = TestEmailTask::default();
+        let mut config = EmailConfig::default();
+        config.payroll_test_email_address = "recipient@example.invalid".into();
+        config.test_sender_address = "invalid sender".into();
+        assert!(task
+            .start(config.clone(), TestRecipient::Payroll, || panic!(
+                "invalid test started"
+            ))
+            .is_err());
+        assert!(!task.pending());
+        config.smtp_username = "username@example.invalid".into();
+        let message =
+            crate::email_service::prepare_smtp_test_message(&config, TestRecipient::Payroll)
+                .unwrap();
+        assert_eq!(
+            message.envelope().from().unwrap().to_string(),
+            "username@example.invalid"
+        );
+        let encoded = toml::to_string(&config).unwrap();
+        let decoded: EmailConfig = toml::from_str(&encoded).unwrap();
+        assert_eq!(decoded.test_sender_address, "invalid sender");
+        assert!(toml::from_str::<EmailConfig>("")
+            .unwrap()
+            .test_sender_address
+            .is_empty());
+    }
+    #[test]
+    fn lost_worker_is_uncertain_and_completion_is_consumed_once() {
+        let mut task = TestEmailTask::default();
+        let (sender, receiver) = mpsc::channel();
+        task.pending = Some(receiver);
+        drop(sender);
+        assert!(matches!(
+            task.poll(),
+            Some(Err(ProductionSendError::Uncertain(_)))
+        ));
+        assert!(!task.pending());
+        assert!(task.poll().is_none());
+    }
+
+    #[test]
+    fn preview_requires_no_configuration_or_files() {
+        let mut config = crate::config::AppConfig::default();
+        let preview = example_preview(&config, None);
+        assert!(preview.contains("example.invalid") && preview.contains("fictional"));
+        config.payroll.timesheet_email_body = "Unsaved draft body".into();
+        assert!(example_preview(&config, Some("Draft signature")).contains("Unsaved draft body"));
+        assert!(example_preview(&config, Some("Draft signature")).contains("Draft signature"));
+    }
+
+    #[test]
+    fn preview_does_not_replace_deliberately_empty_draft_fields_with_defaults() {
+        let mut config=crate::config::AppConfig::default();
+        config.payroll.email_subject_format.clear();config.payroll.timesheet_email_body.clear();config.payroll.payslip_email_body.clear();
+        let preview=example_preview(&config,Some(""));
+        assert!(preview.contains("Timesheet subject: \n"));
+        assert!(!preview.contains("fictional signature"));
+        let defaults=crate::config::AppConfig::default();
+        assert!(!preview.contains(defaults.payroll.timesheet_email_body.trim()));
+    }
+    #[test]
+    fn standalone_preview_uses_selected_recipient_and_never_credentials_or_signature() {
+        let mut config=EmailConfig::default();
+        config.smtp_password="PASSWORD_SECRET".into();config.microsoft_credential_ref=Some("TOKEN_REFERENCE".into());
+        config.smtp_username="sender@example.invalid".into();
+        config.payroll_test_email_address="payroll@example.invalid".into();config.pa_test_email_address="pa@example.invalid".into();
+        for (recipient,address) in [(TestRecipient::Payroll,"payroll@example.invalid"),(TestRecipient::Pa,"pa@example.invalid")] {
+            let preview=standalone_preview(&config,recipient);
+            assert!(preview.contains(&format!("To: {address}")));
+            assert!(preview.contains("From: sender@example.invalid") && preview.contains("Attachments: None"));
+            assert!(!preview.contains("PASSWORD_SECRET") && !preview.contains("TOKEN_REFERENCE"));
+        }
+        config.smtp_username.clear();config.test_sender_address="explicit@example.invalid".into();
+        assert!(standalone_preview(&config,TestRecipient::Pa).contains("From: explicit@example.invalid"));
+        config.test_sender_address.clear();config.pa_test_email_address.clear();
+        assert!(standalone_preview(&config,TestRecipient::Pa).contains("(sender not configured)"));
+        assert!(standalone_preview(&config,TestRecipient::Pa).contains("(test recipient not configured)"));
+    }
+    #[test]
+    fn asynchronous_worker_prevents_duplicates_and_reports_uncertainty() {
+        let mut task = TestEmailTask::default();
+        let (release, wait) = mpsc::channel();
+        task.start_with(
+            move || {
+                wait.recv().unwrap();
+                Err(ProductionSendError::Uncertain(
+                    "synthetic uncertain outcome".into(),
+                ))
+            },
+            || {},
+        )
+        .unwrap();
+        assert!(task.pending());
+        assert!(task.poll().is_none());
+        assert!(task
+            .start_with(|| panic!("duplicate submitted"), || {})
+            .is_err());
+        release.send(()).unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        loop {
+            if let Some(result) = task.poll() {
+                assert!(matches!(result, Err(ProductionSendError::Uncertain(_))));
+                break;
+            }
+            assert!(std::time::Instant::now() < deadline);
+            std::thread::yield_now();
+        }
+        assert!(!task.pending());
+    }
+}

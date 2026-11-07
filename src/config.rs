@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 
 use crate::error::AppError;
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AppConfig {
     #[serde(default)]
     pub theme: ApplicationTheme,
@@ -40,7 +40,7 @@ pub enum ApplicationTheme {
     AccessibleHighContrast,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FolderConfig {
     #[serde(default = "default_csv_import_folder")]
     pub csv_import: PathBuf,
@@ -98,7 +98,7 @@ fn default_payroll_information_folder() -> PathBuf {
     portable_business_folder("payroll-information")
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PdfConfig {
     #[serde(default = "default_regular_font")]
     pub regular_font: PathBuf,
@@ -148,7 +148,7 @@ impl Default for PdfConfig {
     }
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PayrollConfig {
     #[serde(default)]
     pub public_holiday_region: crate::public_holidays::PublicHolidayRegion,
@@ -271,7 +271,15 @@ impl SmtpSecurity {
     }
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SmtpAuthentication {
+    #[default]
+    Password,
+    MicrosoftOAuth2,
+}
+
+#[derive(Clone, Serialize, Deserialize)]
 pub struct EmailConfig {
     #[serde(default = "default_timesheet_employer_cc")]
     pub timesheet_employer_cc: bool,
@@ -293,13 +301,31 @@ pub struct EmailConfig {
     pub smtp_username: String,
 
     #[serde(default)]
+    pub smtp_authentication: SmtpAuthentication,
+    // Public application identifier and opaque OS-vault reference only.
+    #[serde(default)]
+    pub microsoft_client_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub microsoft_credential_ref: Option<String>,
+
+    #[serde(default, skip_serializing)]
     pub smtp_password: String,
+
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub smtp_credential_ref: Option<String>,
+    #[serde(skip)]
+    pub smtp_credential_error: Option<String>,
+    #[serde(skip)]
+    pub smtp_password_baseline: String,
 
     #[serde(default)]
     pub payroll_test_email_address: String,
 
     #[serde(default)]
     pub pa_test_email_address: String,
+
+    #[serde(default)]
+    pub test_sender_address: String,
 
     // Retained for compatibility with existing config.toml files. The active
     // production body continues to be reconciled from PayrollConfig.
@@ -361,9 +387,16 @@ impl Default for EmailConfig {
             smtp_host: default_smtp_host(),
             smtp_port: default_smtp_port(),
             smtp_username: String::new(),
+            smtp_authentication: SmtpAuthentication::Password,
+            microsoft_client_id: String::new(),
+            microsoft_credential_ref: None,
             smtp_password: String::new(),
+            smtp_credential_ref: None,
+            smtp_credential_error: None,
+            smtp_password_baseline: String::new(),
             payroll_test_email_address: String::new(),
             pa_test_email_address: String::new(),
+            test_sender_address: String::new(),
             timesheet_body: default_email_body(),
         }
     }
@@ -392,6 +425,9 @@ impl Default for AppConfig {
 
 impl AppConfig {
     pub fn load(path: &Path) -> Result<Self, AppError> {
+        #[cfg(all(windows, debug_assertions, feature = "windows-dev-isolation"))]
+        crate::development::validate_config_location(path)
+            .map_err(|e| crate::startup::StartupError::io(crate::startup::Stage::Configuration, path, &e))?;
         Self::load_with_retry(path, 0)
     }
 
@@ -403,6 +439,12 @@ impl AppConfig {
         let contents = match fs::read_to_string(path) {
             Ok(contents) => contents,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                #[cfg(all(windows, debug_assertions, feature = "windows-dev-isolation"))]
+                if crate::development::active() {
+                    return Err(StartupError::new(Stage::Configuration, Some(path),
+                        "Isolated development configuration disappeared; defaults were not created.",
+                        "Preserve the profile and investigate; no production fallback is permitted."));
+                }
                 // A dangling symlink is not an absent configuration file.
                 match fs::symlink_metadata(path) {
                     Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
@@ -454,6 +496,8 @@ impl AppConfig {
         };
         let source: toml::Value =
             toml::from_str(&contents).map_err(|e: toml::de::Error| invalid(e.span()))?;
+        crate::smtp_credentials::reject_oauth_secrets(&source)
+            .map_err(|error| StartupError::new(Stage::Configuration, Some(path), error, "Do not copy or share raw configuration contents."))?;
         validate_default_location(
             Some(&source),
             cfg!(windows),
@@ -462,12 +506,30 @@ impl AppConfig {
         let mut config: Self =
             toml::from_str(&contents).map_err(|e: toml::de::Error| invalid(e.span()))?;
         reconcile_legacy_timesheet_email_body(&mut config, &source);
+        #[cfg(all(windows, debug_assertions, feature = "windows-dev-isolation"))]
+        crate::development::validate_config(path, &config)
+            .map_err(|e| StartupError::io(Stage::Configuration, path, &e))?;
+        crate::smtp_credentials::load(&mut config.email, path, contents.as_bytes());
         Ok(config)
     }
 
-    pub fn save(&self, path: &Path) -> Result<(), AppError> {
+    /// Publish once and return the verified credential state represented by that
+    /// publication. Do not reload after publication: a subsequent read failure
+    /// must not turn an already completed configuration save into a failed save.
+    pub fn save(&self, path: &Path) -> Result<EmailConfig, AppError> {
         use crate::startup::{Stage, StartupError};
-        let contents = toml::to_string_pretty(self).map_err(|_| {
+        #[cfg(all(windows, debug_assertions, feature = "windows-dev-isolation"))]
+        {
+            crate::development::validate_config_location(path)
+                .and_then(|_| crate::development::validate_config(path, self))
+                .map_err(|e| StartupError::io(Stage::Configuration, path, &e))?;
+        }
+        let mut value = toml::Value::try_from(self).map_err(|_| StartupError::new(
+            Stage::Configuration, Some(path), "Configuration encoding failed.", "Existing settings retained."))?;
+        let reference = crate::smtp_credentials::prepare_save(&self.email)
+            .map_err(|e| StartupError::new(Stage::Configuration,Some(path),e,"Unlock the OS credential store and retry; existing settings were retained."))?;
+        crate::smtp_credentials::set_reference(&mut value, reference.clone());
+        let contents = toml::to_string_pretty(&value).map_err(|_| {
             StartupError::new(
                 Stage::Configuration,
                 Some(path),
@@ -475,25 +537,48 @@ impl AppConfig {
                 "Retain the existing configuration and report this application error.",
             )
         })?;
+        let mut email = self.email.clone();
+        email.smtp_credential_ref = reference;
+        email.smtp_credential_error = None;
+        if email.smtp_authentication == SmtpAuthentication::MicrosoftOAuth2 {
+            use zeroize::Zeroize;
+            email.smtp_password.zeroize();
+            email.smtp_password_baseline.zeroize();
+        } else {
+            email.smtp_password_baseline = email.smtp_password.clone();
+        }
         publish_config(path, contents.as_bytes(), true)
             .map_err(|e| StartupError::io(Stage::Configuration, path, &e))?;
-        Ok(())
+        Ok(email)
     }
 }
 
-fn publish_config(path: &Path, bytes: &[u8], replace: bool) -> std::io::Result<()> {
+pub(crate) fn publish_config(path: &Path, bytes: &[u8], replace: bool) -> std::io::Result<()> {
     use std::io::Write;
+    #[cfg(windows)]
+    let _publication = crate::private_storage::publication_guard(path)?;
+    #[cfg(windows)]
+    if !replace {
+        // A cooperating creator may have won while this caller waited. Refuse
+        // before allocating a stage; the load path then reads the winning file.
+        match fs::symlink_metadata(path) {
+            Ok(_) => return Err(std::io::Error::new(std::io::ErrorKind::AlreadyExists, "Configuration already exists")),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => (),
+            Err(error) => return Err(error),
+        }
+    }
     let parent = path
         .parent()
         .filter(|p| !p.as_os_str().is_empty())
         .unwrap_or(Path::new("."));
-    let mut pending = tempfile::NamedTempFile::new_in(parent)?;
+    let mut pending = crate::private_storage::tempfile_in(parent)?;
     pending.write_all(bytes)?;
     pending.as_file().sync_all()?;
     if replace {
-        pending.persist(path).map_err(|e| e.error)?;
+        crate::private_storage::preserve_access(pending.path(), path)?;
+        crate::private_storage::publish_tempfile(pending, path, true).map_err(|e| e.error)?;
     } else {
-        pending.persist_noclobber(path).map_err(|e| e.error)?;
+        crate::private_storage::publish_tempfile(pending, path, false).map_err(|e| e.error)?;
     }
     #[cfg(unix)]
     fs::File::open(parent)?.sync_all()?;

@@ -88,11 +88,22 @@ impl Application {
         })
     }
 
-    pub fn save_config(&self) -> Result<(), Box<dyn std::error::Error>> {
+    pub fn save_config(&mut self) -> Result<(), Box<dyn std::error::Error>> {
         let config_path = self.context.environment.data_dir.join("config.toml");
 
-        self.context.config.save(&config_path)?;
+        self.context.config.email = self.context.config.save(&config_path)?;
 
+        Ok(())
+    }
+
+    /// Keep effective settings unchanged until the candidate is published.
+    pub(crate) fn save_config_candidate(
+        &mut self,
+        mut candidate: crate::config::AppConfig,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let config_path = self.context.environment.data_dir.join("config.toml");
+        candidate.email = candidate.save(&config_path)?;
+        self.context.config = candidate;
         Ok(())
     }
 
@@ -507,73 +518,5 @@ impl Application {
         )
     }
 
-    #[allow(clippy::too_many_arguments)]
-    pub fn send_test_payroll_email(
-        &self,
-        sender_email: &str,
-        payroll_test_email: &str,
-        pa_test_email: Option<&str>,
-        personal_assistant_name: &str,
-        personal_assistant_dob: Option<&str>,
-        personal_assistant_ni: Option<&str>,
-        schedule: &crate::payroll_schedule_repository::PayrollSchedule,
-        attachment_path: &std::path::Path,
-        email_body: &str,
-        additional_note: Option<&str>,
-        email_signature: Option<&str>,
-    ) -> Result<(), Box<dyn std::error::Error>> {
-        let email_config = &self.context.config.email;
-        crate::email_service::send_test_payroll_email(
-            email_config,
-            sender_email,
-            payroll_test_email,
-            pa_test_email,
-            personal_assistant_name,
-            personal_assistant_dob,
-            personal_assistant_ni,
-            &crate::payroll_file_naming::payroll_period_code(schedule)?,
-            attachment_path,
-            email_body,
-            additional_note,
-            email_signature,
-            &self.context.config.payroll.email_subject_format,
-        )
-    }
 
-    #[allow(clippy::too_many_arguments)]
-    pub fn send_test_payslip_email(
-        &self,
-        sender_email: &str,
-        pa_test_email: &str,
-        personal_assistant_name: &str,
-        personal_assistant_dob: Option<&str>,
-        personal_assistant_ni: Option<&str>,
-        schedule: Option<&crate::payroll_schedule_repository::PayrollSchedule>,
-        attachment_paths: &[std::path::PathBuf],
-        attachment_filenames: &[String],
-        email_body: &str,
-        subject_template: &str,
-        additional_note: Option<&str>,
-        email_signature: Option<&str>,
-    ) -> Result<(), Box<dyn std::error::Error>> {
-        let email_config = &self.context.config.email;
-        crate::email_service::send_test_payslip_email(
-            email_config,
-            sender_email,
-            pa_test_email,
-            personal_assistant_name,
-            personal_assistant_dob,
-            personal_assistant_ni,
-            &schedule
-                .map(crate::payroll_file_naming::payroll_period_code)
-                .transpose()?
-                .unwrap_or_else(|| "Payroll documents".to_string()),
-            attachment_paths,
-            attachment_filenames,
-            email_body,
-            additional_note,
-            email_signature,
-            subject_template,
-        )
-    }
 }

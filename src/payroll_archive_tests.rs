@@ -2,7 +2,7 @@
 use super::*;
 use crate::payroll_timesheet_email_repository::EmailDeliveryState;
 
-pub(super) fn fixture() -> (tempfile::TempDir, Application) {
+pub(super) fn fixture() -> (crate::private_storage::PrivateTempDir, Application) {
     let (dir, mut app) = crate::payroll_timesheet_screen::tests::test_application();
     let root = temp_root(&dir);
     app.context.config.folders.payslip_folder = root.join("payslips");
@@ -11,7 +11,7 @@ pub(super) fn fixture() -> (tempfile::TempDir, Application) {
     app.payroll_timesheet_email_repository.connection.execute_batch("INSERT INTO personal_assistants(id,first_name,surname,employment_status,email) VALUES (4,'Fictional Middletest','Samplepa','Active','pa4@example.test'),(5,'Imaginary Middletwo','Fixturepa','Active','pa5@example.test');").unwrap();
     (dir, app)
 }
-fn temp_root(dir: &tempfile::TempDir) -> PathBuf {
+fn temp_root(dir: &crate::private_storage::PrivateTempDir) -> PathBuf {
     dir.path().canonicalize().unwrap()
 }
 fn append_raw_suffix(root: &Path, suffix: &str) -> PathBuf {
@@ -473,7 +473,7 @@ fn unregistered_lookalike_and_out_of_root_registered_paths_are_not_repaired() {
 #[cfg(windows)]
 #[test]
 fn checked_path_rejects_dot_components_in_verbatim_windows_paths() {
-    let dir = tempfile::tempdir().unwrap();
+    let dir = crate::private_storage::tempdir().unwrap();
     let root = temp_root(&dir);
     assert!(root.to_string_lossy().starts_with(r"\\?\"));
     let parent = append_raw_suffix(&root, r"\..\escape.pdf");
@@ -492,7 +492,7 @@ fn checked_path_rejects_dot_components_in_verbatim_windows_paths() {
 #[cfg(unix)]
 #[test]
 fn symlinked_ancestor_is_refused_even_for_missing_payroll_paths() {
-    let dir = tempfile::tempdir().unwrap();
+    let dir = crate::private_storage::tempdir().unwrap();
     let root = temp_root(&dir);
     let real = root.join("real");
     fs::create_dir(&real).unwrap();
