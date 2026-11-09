@@ -8,7 +8,7 @@ Current source is **unreleased v1.0.7, SQLite schema 42**, on `security/v1.0.7-p
 
 **Published release: 1.0.6 · Linux, Windows and macOS**
 
-**Already installed? Start with the [First-Time Setup Guide for v1.0.6](docs/FIRST-TIME-SETUP.md)** — employer and PA details, email, the provider's payroll schedule, hours and your first PDF timesheet.
+**Already installed? Start with the [First-Time Setup Guide for v1.0.7](docs/FIRST-TIME-SETUP.md)** — employer and PA details, email, the provider's payroll schedule, hours and your first PDF timesheet.
 
 The downloads below are published v1.0.6 packages for all supported platforms. They include the Stage 1–8 safeguards, secure SMTP settings and regional public-holiday support described here.
 Timesheet email selects only unsent current PDF versions by default. Sent versions

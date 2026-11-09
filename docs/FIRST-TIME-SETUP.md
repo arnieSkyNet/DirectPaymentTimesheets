@@ -1,634 +1,232 @@
-# First-Time Setup Guide — released v1.0.6
+# First-Time Setup Guide — v1.0.7
 
-For people who have **already installed Direct Payment Timesheets v1.0.6**. Checked against the released source on **15/10/2026**. The walkthrough describes v1.0.6; the final upgrade note explains v1.0.7 recovery differences.
+DirectPaymentTimesheets helps a Direct Payment employer record PA hours, prepare four-week payroll timesheets, send them to Payroll and distribute returned payslips. It does not calculate a complete payroll or replace your payroll provider's advice.
 
-The 68 numbered pictures show a fictional practice setup. Open **Show screenshots** beneath a step to see the relevant controls. Orange outlines highlight controls; `/demo` paths belong only to the practice environment. Never copy the pictures’ dates, rates, email addresses or dummy password into your own payroll.
+Use this guide with **v1.0.7, database schema 42**. Examples use UK dates, such as **09/11/2026**, and 24-hour times. Keep real payroll information private.
 
-You can stop after any saved step and return later. Clicking a navigation button does not necessarily save what you typed. Use the named **Save** button first. Scroll down if a button is below the visible part of the window.
+## 1. Install the right package
 
-**Before you send anything:** use the employer, employment details and payroll dates confirmed by your local authority or payroll provider. Examples below are fictional. Never copy example dates or rates into live payroll unless they are correct for you.
+Download only from the project's [official releases](https://github.com/arnieSkyNet/DirectPaymentTimesheets/releases). Choose an asset labelled **1.0.7** when it is published; a successful build or an older download is not a published v1.0.7 release. Check the release's checksums if supplied. Close every running copy before installing an upgrade.
 
-## Your route through setup
+| Computer | Package to choose |
+|---|---|
+| Windows Intel/AMD 64-bit | `DirectPaymentTimesheets-1.0.7-windows-x86_64-setup.exe` |
+| Windows ARM64 | `DirectPaymentTimesheets-1.0.7-windows-arm64-setup.exe` |
+| Linux Intel/AMD 64-bit | `direct-payment-timesheets_1.0.7_amd64.deb` or `DirectPaymentTimesheets-1.0.7-linux-x86_64.AppImage` |
+| 32-bit Raspberry Pi OS / ARMv7 | `direct-payment-timesheets_1.0.7_armhf.deb` or `DirectPaymentTimesheets-1.0.7-linux-armhf.AppImage` |
+| 64-bit Raspberry Pi OS / Linux ARM64 | `direct-payment-timesheets_1.0.7_arm64.deb` or `DirectPaymentTimesheets-1.0.7-linux-aarch64.AppImage` |
+| Intel Mac | `DirectPaymentTimesheets-1.0.7-macos-x86_64.dmg` |
+| Apple Silicon Mac | `DirectPaymentTimesheets-1.0.7-macos-arm64.dmg` |
 
-**Start with section 1 below**, then follow the numbered sections in order. You do not need to finish everything in one sitting. The expandable sections contain pictures or extra detail; open them when you need help with that step.
+Choose for the operating system's architecture, particularly on Raspberry Pi. The packages target Windows 10 or later; compatible desktop Linux based on Debian 12's libraries or newer; Intel macOS 11.4 or later; and Apple Silicon macOS 12.0 or later. Package builds do not establish every hardware/minimum-OS combination: consult the release notes and [platform validation limits](RELEASE-BUILDS.md).
 
-1. Gather the details listed in section 1, then open the application, check the version and save the employer.
-2. Save the payroll provider, then configure email and the Payroll Department address.
-3. Obtain and import the provider's Payroll Preparation Sheet PDF. Check its dates.
-4. Save each Personal Assistant (PA), then their dated hours basis and pay rate.
-5. Enter shifts **or** import Hours Keeper CSV files.
-6. Review and save Payroll Timesheet Preparation.
-7. Generate and check the PDF.
-8. Preview the email, optionally send a test, then deliberately send the real email.
+**Windows:** run the matching installer and launch **Direct Payments Timesheets** from the Start menu. Installation is per-user. The installer is unsigned: check its official origin before accepting any Windows warning. Do not run both architecture installers to create separate installations; they share the per-user installation.
 
-There is no setup wizard: you will open each named screen yourself. Save the PA before adding their pay rate and hours basis or importing their CSV hours. Import the payroll schedule before preparing or generating a timesheet. You can save employer and email settings earlier, but a timesheet test email must wait until you have generated a PDF.
+**Linux:** install the matching `.deb` with your package manager, for example `sudo apt install ./direct-payment-timesheets_1.0.7_amd64.deb` on an amd64 PC. Launch **Direct Payments Timesheets** from the desktop menu. For AppImage, make the downloaded file executable in its properties, then open it. AppImage still needs compatible desktop/graphics libraries and may need your distribution's FUSE support. Do not run the application with `sudo`.
 
-## 1. Have these details ready
+**macOS:** open the matching DMG, drag **Direct Payments Timesheets.app** to **Applications**, eject the disk and launch the installed copy. It is ad-hoc signed, not Apple-notarised. If blocked, use the macOS security approval process only for your verified official download; do not disable Gatekeeper globally or bypass a damaged-app/malware warning.
 
-Ask your local authority or payroll provider for anything you do not know:
+## 2. First launch, or upgrade from v1.0.6
 
-- The employer's name, address, contact details and DP account reference.
-- The **Payroll Department email address** used for timesheet submissions.
-- The correct four-weekly **Payroll Preparation Sheet PDF** for your payroll year.
-- Each PA's full name, employment start date, agreed hours basis and hourly pay, including any employer top-up and the dates those arrangements start.
-- Any other identification the provider requires, such as date of birth and National Insurance number.
-- Access to the email account you intend to send from, and its application-specific password where required.
+Check the header or **About** for application version **1.0.7** and database schema **42**. There is no requirement to create a PA or payroll record before testing email.
 
-**Success check:** you know who receives your timesheets and have the actual provider schedule. If either is missing, you can save other details, but stop before preparing or sending payroll.
+For an existing v1.0.6 installation:
 
-## 2. First launch and dates
+1. Close all application instances. Keep a recovery copy of your existing data and any external payroll files you need.
+2. Install and launch v1.0.7 using the same OS account and existing application data location.
+3. Before migrating schema 41 to 42, the application automatically creates and verifies a pre-upgrade database backup, including committed SQLite WAL data. It includes `config.toml` when present, with secure credential references instead of newly copied plaintext SMTP passwords.
+4. Let startup finish. If backup creation fails, the upgrade is blocked. If migration fails, retain the original database and verified recovery backup; read the error before retrying. Do not delete files or create an empty profile to hide the problem.
+5. Check employer/PA details, payroll periods, settings and email access before your next submission.
 
-1. Open **Direct Payments Timesheets** from your computer's application menu.
-2. Check the heading shows **DirectPaymentTimesheets v1.0.6**. The released database schema is **41**.
-3. Use **Dashboard** at the bottom to return to the main workflow.
-4. If you want dates shown as day/month/year, click **Settings**. Under **Calendar date display**, choose **DD/MM/YYYY — 09/09/2026**, then click **Save Application Settings**.
+Migration is **one-way**. Never launch v1.0.6 against the upgraded database. Recovery uses the pre-upgrade backup, through the reviewed restore process in section 13.
 
-Next, go to section 3 and click **Employer Maintenance** at the bottom of the application window. You do not need to enter hours or send a test email yet.
+The normal data location is `%LOCALAPPDATA%\DirectPaymentTimesheets` on Windows or `~/.directpaymenttimesheets` on Linux/macOS. Advanced installations may override it. Do not change the location during an upgrade unless you have deliberately prepared a separate recovery/test profile.
 
-Type dates such as `15/10/2026`: day first, month second, four-digit year. Use the actual date requested by each field.
+## 3. Find your way around and save changes
 
-**Success check:** the version is right and dates are readable. If startup reports a database or recovery problem, retain the message and ask for help. Do not delete or replace your database to try to fix it.
+Use the bottom navigation for **Dashboard**, **Employer Maintenance**, **Personal Assistant Maintenance** and **Payroll Settings**. The header provides **Settings**, **Email Settings**, **About** and **Exit**.
 
-> **You can do this later:** themes, fonts and most folder preferences. The existing folder settings can be used for first setup. You will check the CSV and PDF folder locations when you need them.
+Save each form before moving on. A highlighted Save control indicates unsaved changes; a success message confirms saving. If saving fails, read the message and retry after correcting the problem. Some screens have separate Save controls for separate records.
 
+Open **Settings** for **Application Settings**, with these tabs:
 
-<details>
-<summary>Show screenshots 01–04: first launch, version, dates and folders</summary>
+- **Appearance:** theme, date display, time controls and Dashboard button sizes. Choose `DD/MM/YYYY — 09/09/2026` if you prefer numeric UK dates.
+- **Folders:** CSV import, PDF output, email archive, payslip and payroll-information locations. Choose accessible folders you can recognise and back up.
+- **PDF Settings:** font files and sizes. Keep chosen font files available.
+- **Storage & Security:** storage privacy information and checks.
+- **Backup & Restore:** database/configuration recovery copies.
 
-![01. First launch. Check v1.0.6 and schema 41 before starting.](images/first-time-setup/01-first-launch.png)
+Use **Save Application Settings**. Saving folder paths does not create all the folders or prove they are usable; the relevant workflow checks its own locations. The email archive path is saved but currently has no production filing operation.
 
-![02. Confirm the release. About confirms application version 1.0.6 and database schema 41.](images/first-time-setup/02-about-version.png)
+## 4. Set up the employer and payroll rules
 
-![03. Choose UK dates. Select DD/MM/YYYY for day-first dates.](images/first-time-setup/03-date-display.png)
+In **Employer Maintenance**, enter the employer's details and click **Save Employer**. Add a signature with **Select Signature...** if required. Signature drawing is offered where a usable saved signature is missing; save the employer before relying on it in documents.
 
-![04. Keep folders together. These /demo folders belong only to the fictional screenshot session.](images/first-time-setup/04-folder-settings.png)
+Open **Payroll Settings**. Its five tabs are:
 
-</details>
+| Tab | What to set |
+|---|---|
+| **Payroll Provider** | Provider contact details and **Rounding Minutes** under Payroll Rules. The actual Payroll Department destination address is saved separately in Email Settings. |
+| **Pay Rates** | Optional **National / Standard Pay Rate Update** for creating effective-dated PA rates. Review the proposed changes; do not use a national rate as a substitute for checking each PA's agreed rate. |
+| **Holidays & Leave** | Public-holiday region and contracted/variable annual-leave settings. **Refresh holiday data** updates the calendar when a connection is available. |
+| **CSV Import** | Introductory rows to skip, hours calculation method, enabled columns and heading aliases. |
+| **Timesheet Footer** | Instructions/footer text and its font size on generated payroll timesheets. |
 
-## 3. Save the employer
+Click **Save Payroll Settings** after editing. The screen reports partial saves if provider/leave details saved but configuration could not be saved; retry to finish rather than assuming every setting changed.
 
-The employer is the person employing the PA, who may be the person receiving support.
+Payroll periods and week-commencing dates come from the imported four-week schedule. **Payroll Frequency** and **Start of Workweek** are retained preferences, labelled as not applied. Overtime calculation is not enabled by saving settings. Public-holiday identification does not automatically subtract worked hours or establish entitlement: check the PA's contract and your provider's instructions.
 
-1. Click **Employer Maintenance**.
-2. If there is no employer, click **New Employer**.
-3. Fill in **Employer Name**, **Email Address**, **DP Account**, **Telephone Number** and **Address** with your confirmed details.
-4. Fill in **Date of Birth** and **National Insurance Number** if required by your provider. Do not invent missing information.
-5. Click **Save Employer**.
+## 5. Add and maintain Personal Assistants
 
-Fictional examples for understanding the fields:
+In **Personal Assistant Maintenance**, choose **New Personal Assistant**, enter the PA's details and click **Save Personal Assistant**. Check names carefully: imported hours must resolve to the correct person. Add the PA's email address if payslips will be emailed.
 
-```text
-Employer Name: Morgan Example
-DP Account: SAMPLE-001
-Address: 10 Example Close
-         Exampletown
-Email Address: morgan@example.com
-```
+For each PA, maintain effective-dated **Contracted Weekly Hours** and **Pay Rates**, using **Save Hours Basis** and **Save Pay Rate** in their sections. Choose the correct contracted/variable hours basis and agreed rate dates. A later rate should be added with its proper effective date rather than changing historical evidence to force a result.
 
-`example.com` addresses in this guide are examples, not working mailboxes. For sending, use your actual email address, normally the account used for SMTP below.
+Add a signature if needed. Keep linked signature files available. Record status and leaving date correctly when someone departs; departure does not erase their payroll history. Departed PAs are excluded from current email recipient lists, while retained historical/final records have separate selection paths. Read filing messages after changing PA details or departure information; use **Resume incomplete filing** when offered rather than moving registered files by hand.
 
-**Success check:** the message says **Employer saved successfully.**
+## 6. Import your payroll schedule
 
-The form allows many details to be blank; saving alone does not establish that the record meets your provider's requirements. A non-empty, valid employer email address is needed for sending. Dates you enter must be valid dates.
+Obtain the provider's Payroll Prep Sheet before preparing the first cycle. On **Dashboard**, choose **Import Payroll Documents** and select the supported Payroll Prep Sheet PDF; ZIP imports can contain recognised payroll documents too. Although the file picker also offers Prep Sheet DOCX, Word Prep Sheet importing is not implemented in v1.0.7: obtain the PDF version. Follow any payroll-period selection/review and inspect the result for unsupported or unmatched documents.
 
-> **You can do this later:** email and PDF signatures are not needed simply to save an employer. Use signatures only with the person's permission. Without configured signatures, generated PDFs have blank boxes for handwritten signing; confirm your provider's signing requirements before submission.
+Use **View Payroll Schedule** to check the payroll year, four-week periods, week-commencing dates and pay dates. Select the intended operational payroll period on the Dashboard. Do not invent periods from the stored frequency preference or reuse an example schedule.
 
-<details>
-<summary>Optional: adding an email or PDF signature</summary>
+## 7. Record or import hours
 
-**Edit Email Signature** adds a typed sign-off to emails. The separate **Signature** area is a physical signature image for PDFs.
+### Enter shifts directly
 
-1. To use an existing image, click **Select Signature...**. It accepts PNG or JPEG images (`.png`, `.jpg`, `.jpeg`, `.jfif`, `.jpe`) that the application can read. Save the employer after selecting an image.
-2. To draw a signature, save the employer first, then click **Draw Signature...**. The drawing saves immediately.
+Choose **Enter Hours/Shifts** and select an active PA. Use **Clock in now** or **Clock in at…**, enter any break minutes and save notes with **Save Notes**, then finish with **Clock out now** or **Clock out at…**. The “at…” controls let you choose exact dates/times. Review the recorded shift before preparing payroll. These are source hours; payroll rounding and pay-rate allocation happen later.
 
-Images must contain genuine PNG or JPEG data, be non-empty and no larger than 8 MiB, with width and height no greater than 4096 pixels. Renaming another file type does not convert it.
+### Import CSV files
 
-</details>
+First open **Payroll Settings → CSV Import**:
 
+1. Set **CSV rows to skip** to the number of introductory rows before the heading row. The default is one; change it if your export starts with headings immediately.
+2. Map headings to PA, Start, End and the other enabled fields. Separate alternative headings with `|`.
+3. Choose one of the four hours methods:
 
-<details>
-<summary>Show screenshots 05–11: employer details and optional signature</summary>
+| Method | Hours used before payroll rounding |
+|---|---|
+| **CSV Worked Hours** | The exported Worked Hours value; no further break deduction |
+| **CSV Worked Hours minus Break** | Exported Worked Hours less Break |
+| **End minus Start (no break deduction)** | Elapsed time between Start and End |
+| **End minus Start minus Break** | Elapsed time less Break |
 
-![05. Create the employer. Choose New Employer when no employer exists.](images/first-time-setup/05-employer-empty.png)
+Required fields cannot be disabled. A break-deducting method requires an explicit Break on every row, including zero for no break. Otherwise an optional break does not reduce hours. Do not subtract a break twice. Disabled/unknown columns are ignored; omitted Rate/Amount values display as Missing and do not supply the PA's authoritative payroll rate.
 
-![06. Employer form. Enter confirmed details, then use Save Employer.](images/first-time-setup/06-new-employer.png)
+Save settings, put exports in the configured **CSV Import Folder**, then choose **Import Hours CSV** on the Dashboard. This scans the folder first; it is not a file-picker action. Review **Import Summary**, refused rows/files and any duplicate review. Use **View Imported Hours** to inspect the evidence. Changing parser settings affects new evidence, not the interpretation of previously retained imports.
 
-![07. Employer identity. Morgan Example, date of birth and NI number are fictional.](images/first-time-setup/07-employer-identity.png)
+### Clipboard fallback
 
-![08. Employer contact details. Use your actual sender email and confirmed DP account reference.](images/first-time-setup/08-employer-contact.png)
+After folder import, the application may list **Outstanding active Personal Assistants** for the selected period. Choose **Yes**, select the PA, then **Import from Clipboard**. Paste the CSV text, including the headings and introductory rows required by your saved settings, into the editor and click **Import**.
 
-![09. Employer address. Enter the complete address; this example address is fictional.](images/first-time-setup/09-employer-address.png)
+Every pasted row must identify the selected active PA unambiguously. Clipboard text is saved as a uniquely named CSV in the import folder and goes through the same importer. If import fails after saving, the CSV remains for review/retry. **Cancel** closes the editor; **Cancel remaining — import saved CSVs** finishes with CSVs already captured. This fallback is not a general arbitrary-text or spreadsheet-cell importer.
 
-![10. Employer saved. Look for Employer saved successfully.](images/first-time-setup/10-employer-saved.png)
+### Check configured rounding
 
-![11. Optional PDF signature. You can do this later: select or draw an authorised signature.](images/first-time-setup/11-employer-signature.png)
+In **Payroll Settings → Payroll Provider**, select the agreed increment and Up/Down direction. Available increments are 1, 5, 10, 15, 30 and 60 minutes. Rounding is applied **once per shift during payroll preparation**, not once to the four-week total and not while importing CSV evidence. For example, 7 hours 32 minutes becomes 7 hours 45 minutes with 15 Minutes Up, or 7 hours 30 minutes with 15 Minutes Down.
 
-</details>
+## 8. Prepare, generate and send timesheets
 
-## 4. Save the payroll provider
+1. Select the correct Dashboard payroll period and open **Payroll Timesheet Preparation**.
+2. Review each PA's worked hours, rates, leave, sickness, public holidays, mileage and notes. Check carried-forward/returned information where shown; returned hours do not silently replace outgoing payroll.
+3. Use the PA's **Save [PA name]** control. Resolve validation messages before continuing.
+4. Choose **Generate Payroll Timesheets** on the Dashboard. Review the PA selection, choose **Generate selected PAs** and follow any signature warnings to complete generation. Inspect the generated PDFs in the configured output location before sending.
+5. Choose **Email Payroll Timesheets**. Decide whether to add an additional note, review the PA selection, recipients and period, then confirm **Send**. Check the Payroll Department address and whether employer CC is enabled.
+6. Read the per-PA result and **Timesheet Email Status**. A generated PDF is not a submission; a successful application SMTP send records the submitted baseline. SMTP acceptance alone does not prove receipt by Payroll.
 
-1. Click **Payroll Settings**.
-2. Under **Payroll Provider**, enter **Provider Name** and the confirmed **Provider Email**, **Provider Telephone** and **Provider Address** where available.
-3. Under **Public holidays**, check the region: England and Wales, Scotland or Northern Ireland.
-4. Check **Rounding Minutes** with your provider. The initial setting is **15 minutes Up**; this can affect payable hours. Do not change it by guesswork.
-5. Click **Save Payroll Settings**.
+Do not repeatedly click Send after a timeout or uncertain result. The application retains uncertain delivery evidence and blocks unsafe retries. Reconcile the outcome with Payroll and use the offered documented review before further sending. Resends and larger batches require additional acknowledgement.
 
-**Success check:** the save completes without an error. Open **Email Settings**: the **Payroll Department** section should now offer an address field instead of **No Payroll Provider has been configured.**
+### Amend a submitted or settled timesheet
 
-**Provider Email and Payroll Department email address are separate fields.** Saving the general provider email does not set the timesheet submission address. Set that next.
+Open its period in **Payroll Timesheet Preparation**, make and save the supported amendments, generate a new PDF, inspect it and separately send it. Saving does not automatically regenerate, resend, change an old submitted PDF or erase prior submission/settlement history. An unchanged resend is different from sending an amended document. Keep Payroll informed so a replacement is not processed as an additional payment. An indeterminate delivery outcome must be resolved before editing/sending can safely continue.
 
-> **You can do this later:** the **National / Standard Pay Rate Update** bulk action and other advanced payroll preferences. Add the first PA's agreed rate individually in step 7. Public-holiday dates do not establish entitlement or automatically remove worked hours. Do not assume overtime is calculated: v1.0.6 does not implement overtime calculation.
+## 9. Import and send returned payslips
 
+Choose **Import Payroll Documents** for a provider ZIP or recognised PDF. The offered Prep Sheet DOCX option is not implemented; use a Prep Sheet PDF. Recognised payslips and supported P45/P60 documents are matched to maintained PAs; follow the period prompts where required. Inspect the import report and correct ambiguous/missing PA details rather than guessing. This is a provider-format importer, not unrestricted PDF/OCR recognition.
 
-<details>
-<summary>Show screenshots 12–15: provider, holidays, rounding and saving</summary>
+Choose **Email Payslips**. Review eligible PAs, the actual documents, destination addresses and any additional note, then confirm **Send**. The timesheet employer-CC option does not add that CC to PA payslip mail. Check **Payslip Delivery Status** and reconcile uncertain results before retrying. Keep imported originals and filed documents available; a registered filename alone cannot replace missing attachment bytes.
 
-![12. Payroll provider. Save the provider before entering the Payroll Department address.](images/first-time-setup/12-provider-form.png)
+## 10. Configure and test email
 
-![13. Public-holiday region. Choose the correct UK region; holiday dates do not establish entitlement.](images/first-time-setup/13-holiday-region.png)
+Open **Email Settings**. The four tabs are **SMTP Config**, **Test Email**, **Templates** and **Signature & Options**.
 
-![14. Check payroll rounding. The default is 15 Minutes Up; confirm the rule with your provider.](images/first-time-setup/14-rounding-options.png)
+- **SMTP Config:** transport, authentication, server/security and sign-in settings.
+- **Test Email:** test addresses, recipient selection and the standalone connection test.
+- **Templates:** timesheet subject and timesheet/payslip bodies. Use the offered insertion controls for supported fields.
+- **Signature & Options:** employer CC, Payroll Department destination and employer email signature.
 
-![15. Save Payroll Settings. Confirm Payroll settings saved before continuing.](images/first-time-setup/15-provider-saved.png)
+**Save Email Settings** saves SMTP settings, test addresses and templates. **Save Payroll Department Email** and **Save Employer Email Signature** are separate controls on **Signature & Options**. An employer email signature is separate from the image signature used on a PDF.
 
-</details>
+### Gmail, GMX and a local relay
 
-## 5. Configure email
+| Service | Transport / authentication | Host and port | Security |
+|---|---|---|---|
+| Gmail | **SMTP Server**; password authentication | `smtp.gmail.com`, 587 | **Required STARTTLS** |
+| GMX | **SMTP Server**; password authentication | `mail.gmx.com`, 587 | **Required STARTTLS** |
+| Existing local relay | **Local SMTP Server**; no credentials | Fixed `localhost`, 25 | Unencrypted local connection |
 
-Email settings tell the application how to send mail. They do not send anything merely because you save them.
+For Gmail/GMX use the full mailbox address as **Username** and an application-specific password where the provider requires it. Gmail normally requires 2-Step Verification for App Passwords; availability depends on account policy. GMX project account testing required **Allow POP3 and IMAP access** in the provider's account settings. Check your own account's current requirements. v1.0.7 does not provide Google OAuth sign-in.
 
-1. Click **Email Settings**.
-2. Set **Email transport** to **SMTP Server** for GMX or Gmail.
-3. Select **Required STARTTLS (usually port 587)** in the security list.
-4. Enter the host, port, username and password from the appropriate example below. Changing security does **not** change the port automatically.
-5. Set **Payroll test email address** to a mailbox you control. Set **PA test email address** only to another mailbox you control, or leave it blank for the timesheet test.
-6. Decide whether to keep **Send a CC copy of timesheet emails to the employer** selected.
-7. Under **Payroll Department**, enter the verified **Payroll Department email address**. Click **Save Payroll Department Email**.
-8. Click **Save Email Settings** for the SMTP settings, test addresses, copy preference and email templates.
+Changing SMTP security does not automatically correct the port. Do not select plaintext remote authentication as a workaround. The local transport neither installs a relay nor sends directly through your mailbox provider; an existing relay must accept localhost connections and secure onward delivery. Other SMTP providers can be configured using their supported settings.
 
-**Success check:** **Payroll Department email address saved.** and **Email settings saved.** appear after their respective saves. These are separate save operations.
+### Microsoft Outlook.com, Hotmail.com and Live.com
 
-**Keep passwords private.** v1.0.6 stores the SMTP password as readable text in `config.toml` and in backups. Do not share those files or include passwords in screenshots or requests for help.
+1. Under **SMTP Config**, select **SMTP Server**, then **Microsoft OAuth2**. This selects `smtp-mail.outlook.com`, port 587 and required STARTTLS. Enter the full mailbox address.
+2. Enter the **Microsoft public-client application ID** supplied for an appropriately registered application. If none has been provided, ask the application maintainer for registration instructions; do not invent an ID or paste a client secret. See [Microsoft registration requirements](MICROSOFT-OAUTH2-SMTP.md#app-registration-required-before-real-use).
+3. Click **Sign in / reconnect with Microsoft**. Open the displayed Microsoft link, enter the code shown by this application, sign in and review consent. Sign-in itself sends no email. Use only a code from your own sign-in attempt.
+4. After completion, click **Save Email Settings**, then send the standalone test below.
 
+This flow supports personal Microsoft accounts, not organisational Microsoft 365/shared-mailbox setups. Password/app-password fallback for these Microsoft services is blocked. Tokens are refreshed when needed; missing/revoked authorisation or failed secure-store access requires recovery/reconnection rather than a password fallback.
 
-<details>
-<summary>Show screenshots 16–20: SMTP transport, security, recipients and saves</summary>
+**Disconnect Microsoft account** removes the draft reference; save to keep that change. **Remove local Microsoft authorization…** is a separate confirmed cleanup that also affects profiles/backups sharing that authorisation. Neither action revokes Microsoft consent or tokens already held elsewhere; review Microsoft account permissions separately when needed.
 
-![16. Select SMTP Server. Choose SMTP Server for GMX or Gmail.](images/first-time-setup/16-email-transport.png)
+### Send a standalone test before payroll mail
 
-![17. Require STARTTLS. Select Required STARTTLS and set port 587 separately.](images/first-time-setup/17-smtp-security.png)
+In **Test Email**, enter **Payroll Test Address** or **PA Test Address**, select **Payroll** or **PA** under **Send to**, and click **Send Test Email**. It uses current draft settings. Save settings to retain them for later use.
 
-![18. Safe test recipients. For a test, use only mailboxes you control; these addresses are fictional.](images/first-time-setup/18-test-addresses.png)
+If the SMTP username is not an email address, open **Advanced SMTP Options** and set **Explicit Test Sender**. A valid email-shaped username is otherwise used as the sender.
 
-![19. Payroll Department address. Save the verified timesheet recipient with its own Save button.](images/first-time-setup/19-department-address.png)
+The standalone test has one selected recipient, no attachments, no CC/BCC and no payroll-history changes. It needs no PA, schedule or generated document. Check the recipient's inbox and junk folder separately: “SMTP accepted” is not proof of delivery. **Document email tests and previews** contains additional actions that do require eligible records/documents; these are optional and different from the standalone test.
 
-![20. Save Email Settings. Saving settings does not send a message.](images/first-time-setup/20-email-saved.png)
+## 11. Keep credentials secure
 
-</details>
+v1.0.7 keeps SMTP passwords and Microsoft tokens in **Windows Credential Manager**, **macOS Keychain** or a persistent **Linux Secret Service**. Saved configuration contains references, not newly saved plaintext passwords. Allow access to your own trusted credential store; on Linux ensure a persistent desktop keyring is available and unlocked.
 
-### GMX — account-tested settings
+Migration from legacy plaintext settings verifies secure storage before replacing the password field. A failed migration retains the original recoverable file and blocks authenticated sending. Old v1.0.6 backups may still contain plaintext passwords; upgrading does not erase historical copies.
 
-These settings and the account-access requirement were supplied from the project's **15/10/2026 account testing**; no new email was sent while preparing this guide.
+A copied database/configuration backup does not transport OS credentials to another account or computer. If the matching entry is missing, unlock/recover the store, re-enter the SMTP password or reconnect Microsoft. Clearing/changing a password does not automatically delete historical entries used by older backups. Do not share raw configuration, vault contents, payroll databases or authentication codes when asking for help.
 
-```text
-Email transport: SMTP Server
-Security: Required STARTTLS (usually port 587)
-SMTP Host: mail.gmx.com
-SMTP Port: 587
-SMTP Username: your full GMX email address
-SMTP Password: your GMX application-specific password
-```
+## 12. Keep a recovery copy
 
-1. Sign in to GMX in your web browser.
-2. In **Email Settings**, enable **Allow POP3 and IMAP access** and save the account setting. This was required in the project's account testing, even though this application sends through SMTP.
-3. Create or obtain a GMX application-specific password through your account security settings.
-4. Put that password in **SMTP Password**, and save the application's email settings.
+Open **Settings → Backup & Restore → Create Backup**. Keep the reported location safe.
 
-Use the complete GMX address as the username, including everything after `@`.
+The backup contains a verified SQLite snapshot, including committed WAL data, PAs, hours, payroll records/history and embedded PDF/attachment bytes. It also includes `config.toml` **when present**: appearance, folder paths, CSV settings, payroll/PDF/email preferences and credential references.
 
+It is not a complete profile backup. External PDFs, payslips, signatures, original CSV files, import/archive files, fonts and other filesystem content are not copied. Their known locations are listed in the recovery manifest. Protect external records separately where needed. OS credential-store secrets are not exported. Do not copy just an open SQLite main file and assume its WAL data is included.
 
-<details>
-<summary>Show screenshots 21: GMX example with dummy credentials</summary>
+## 13. Restore carefully
 
-![21. GMX SMTP example. Host mail.gmx.com; port 587; full account address and application-specific password.](images/first-time-setup/21-gmx-smtp.png)
+Close other application instances. In **Settings → Backup & Restore**, select a backup and choose **Restore Selected Backup...**. Review the affected data, enter the reason and explicitly acknowledge the rollback before confirming.
 
-</details>
+Restore validates the backup, migrates supported older data on an isolated copy and makes a safety backup of the current database/configuration first. Newer submissions or delivery evidence may leave the active database, so reconcile with Payroll to prevent duplicate processing. Unresolved email uncertainty blocks unsafe restore.
 
-### Gmail — use a Google App Password
+Configuration is replaced only if the selected backup includes it; otherwise current configuration is kept. External files and OS vault entries are not restored. Close and restart the application after restore. If database restoration succeeds but configuration publication fails, preserve the safety backup and follow the restart/recovery message. Do not use an older executable to overwrite schema-42 data. See [recovery details](DATABASE-SCHEMA.md#verified-startup-upgrades-and-legacy-restore).
 
-```text
-Email transport: SMTP Server
-Security: Required STARTTLS (usually port 587)
-SMTP Host: smtp.gmail.com
-SMTP Port: 587
-SMTP Username: your full Gmail address
-SMTP Password: your Google App Password
-```
+## 14. Common problems
 
-1. Sign in to the Google account you will send from.
-2. Turn on Google **2-Step Verification** first.
-3. Open the official [Google App Passwords page](https://myaccount.google.com/apppasswords).
-4. Create an App Password for this application and enter it as **SMTP Password**. Use the App Password, not your ordinary Google account password.
-5. Save the email settings.
+| Problem | What to check |
+|---|---|
+| No payroll period | Import the provider's Prep Sheet through **Import Payroll Documents**, then check **View Payroll Schedule**. |
+| No eligible PA/document | Check PA status, selected period, saved preparation, generation/import results and any unresolved delivery. Current recipient lists exclude departed PAs. |
+| CSV rejected or hours wrong | Check introductory rows, heading aliases, selected hours method, explicit breaks where required and unambiguous PA names. Inspect duplicate/error reports before importing again. |
+| PDF cannot be generated | Check configured output folder, font files, effective pay rates, preparation validation and signature messages. |
+| File path/storage warning | Check permissions and the configured location. Do not bypass ownership/ACL safeguards or run as administrator merely to suppress the warning. Preserve existing data before changing paths. |
+| Password/store error | Unlock the relevant store; check the saved account/server settings. Re-enter the password or reconnect if the entry is missing. No plaintext fallback is available. |
+| Microsoft sign-in fails | Check connectivity, public-client ID and personal-account support. A browser working does not prove the application's network/proxy route works. Read the displayed category; do not share codes or tokens. |
+| SMTP rejects authentication | Recheck account, application password or OAuth consent and provider SMTP policy. Do not weaken TLS to make authentication work. |
+| Send appears stalled or uncertain | Do not resend blindly. Check delivery status and reconcile with the recipient before using the documented review. |
+| Dates look different | Select the preferred display under **Settings → Appearance**. Check the actual date; examples in this guide are UK day/month/year. |
+| Save did not finish | Read the status message. Some settings have independent saves or partial-save messages; retry the failed part. |
+| Controls seem missing | Enlarge the window or use its scrollbars; narrow Dashboard layouts can scroll horizontally. |
 
-Google says App Passwords require 2-Step Verification. The option may be unavailable for work or school accounts, Advanced Protection, or accounts with verification set up only for security keys. If unavailable, ask the account administrator or use a compatible account; v1.0.6 has no **Sign in with Google** flow. Changing your Google account password revokes existing App Passwords. See [Google's App Password instructions](https://support.google.com/accounts/answer/185833).
-
-
-<details>
-<summary>Show screenshots 22: Gmail example with dummy credentials</summary>
-
-![22. Gmail SMTP example. Host smtp.gmail.com; use your full Gmail address and a Google App Password.](images/first-time-setup/22-gmail-smtp.png)
-
-</details>
-
-### Outlook.com, Hotmail.com and Live.com
-
-**Password-based SMTP failed with error 535 during the project's v1.0.6 testing** for Microsoft Outlook.com, Hotmail.com and Live.com accounts. Repeatedly entering the ordinary account password is not a supported solution. Microsoft OAuth2 support is **planned for v1.0.7**; it is not available in released v1.0.6, and the plan is not a promise of availability. Use a compatible sending account or an appropriately managed relay for v1.0.6.
-
-### Local SMTP relay — only if someone has already set it up
-
-> **You can do this later:** most users should use their email provider settings above.
-
-The **Local SMTP Server** transport uses **localhost, port 25, no encryption and no username or password**. It is compatible only with a relay already running on your own computer that accepts this connection and secures onward delivery. Choosing it does not install a relay or make an ordinary email account work. Ask the person managing the relay to confirm it is ready; otherwise choose **SMTP Server**. Do not select plaintext for GMX or Gmail.
-
-
-<details>
-<summary>Show screenshots 23: the optional local relay</summary>
-
-![23. Optional local relay. Local SMTP Server means unencrypted localhost:25 with no credentials.](images/first-time-setup/23-local-relay.png)
-
-</details>
-
-### Why you cannot test email yet
-
-**Test Timesheet Email** and **Test Payslip Email** are genuine v1.0.6 controls, but not simple connection-test buttons. They appear only when suitable PAs are available. The timesheet test also requires the employer's email, the selected imported period and a valid generated timesheet PDF. Return to [step 11](#11-preview-and-optionally-test-the-email) after generating the first PDF.
-
-> **You can do this later:** typed **Employer Email Signature**, subject changes and email body changes. Keep the defaults initially.
-
-<details>
-<summary>Optional: saving your email sign-off (screenshot 24)</summary>
-
-The email signature has its own **Save Employer Email Signature** button. Do not confuse it with a drawn PDF signature.
-
-![24. Optional email sign-off. You can do this later: save a typed email signature separately.](images/first-time-setup/24-email-signature.png)
-
-</details>
-
-## 6. Obtain, save and import the payroll schedule
-
-**Never guess payroll dates, calculate a replacement calendar yourself, or rename another file to make it look like a schedule.** The application needs the provider's actual schedule.
-
-### Get the right document onto this computer
-
-1. Ask your local authority or payroll provider for the **four-weekly Payroll Preparation Sheet PDF** for your payroll year. Explain that the application expects 13 periods with first-week, latest-posting and pay dates.
-2. If it arrives by email, open the attachment's download or save option. If it is on the provider's website, use its download link.
-3. Save the original PDF in a folder you can find, for example a folder called `Payroll schedules` inside **Documents**. Downloads may initially go to **Downloads**.
-4. In your computer's file manager — **File Explorer** on Windows, **Finder** on Mac, or **Files** on Linux — open that folder. Check you can see the saved `.pdf` file.
-5. Open the PDF. Confirm the provider, payroll year and schedule are right. Keep the original file unchanged.
-
-### Import the saved PDF
-
-1. Return to **Dashboard**.
-2. Click **Import Payroll Documents**.
-3. In the file window, open the folder where you saved the PDF. Select the actual PDF and confirm the file choice.
-4. Read the import result. Look for **13 schedule entries imported**, and check there is no Prep Sheet parsing failure. A file being stored does not by itself mean its schedule was imported.
-5. Click **View Payroll Schedule**. Select the relevant payroll year.
-6. Compare all 13 rows with the original PDF: first week commencing, latest posting date and pay date. Pay particular attention to the period for your first timesheet.
-7. Check the Dashboard's payroll-period selector and choose the intended period before entering payroll preparation. Historical and future periods can be selected deliberately; they are not necessarily the current period.
-
-**Success check:** the correct year and 13 matching periods are visible. You know the submission deadline and pay date for your intended period. Stop and ask the provider if the dates differ.
-
-For first setup, use the original provider PDF with readable text. Word `.docx` import is **not implemented**, even though it appears in the file chooser. Excel, schedule CSV files and scanned image-only PDFs are not supported schedule imports. Ask the provider for the readable PDF rather than converting or renaming a file yourself.
-
-<details>
-<summary>Extra detail: supported schedule files and import checks</summary>
-
-| File | Schedule import support |
-| --- | --- |
-| Provider Payroll Preparation Sheet PDF with readable text in the expected layout | Supported through **Import Payroll Documents**. This is the simplest first-time route. |
-| ZIP containing a recognised preparation-sheet PDF | Supported through the same button. For first setup, prefer the individual PDF; a mixed ZIP with ordinary payslips can need an already imported period. |
-| Word `.docx` | Listed in the file chooser, but Word preparation-sheet import is **not implemented**. Ask for the supported PDF. |
-| Excel, schedule CSV, image or scanned image-only PDF | No supported schedule-import procedure in v1.0.6. Hours Keeper CSV is a different import. Ask for the original readable PDF. |
-
-The PDF parser checks for `PAYROLL PREPARATION SHEET`, `PAY DAY EVERY FOUR (4) WEEKS` and a year such as `2026/27`. It expects exactly **13 rows**, each with three readable dates. Period starts must increase by exactly **28 days**; posting and pay dates cannot precede that period's start. A valid-looking PDF from a different provider can still have an incompatible layout.
-
-</details>
-
-An unchanged schedule can be re-imported. Import replaces that payroll year's schedule together, preserves other years, and rejects invalid input without replacing the existing schedule. Changes affecting prepared payroll history can be refused. Do not try to bypass that protection; ask for help with the exact message.
-
-
-<details>
-<summary>Show screenshots 25–31: schedule selection, import and verification</summary>
-
-![25. Import the provider schedule. Choose Import Payroll Documents for the provider preparation PDF.](images/first-time-setup/25-before-schedule-import.png)
-
-![26. Find the saved PDF. This Linux file chooser shows only the disposable demonstration files.](images/first-time-setup/26-schedule-file-chooser.png)
-
-![27. Choose the preparation sheet. Select the original provider PDF, then confirm the file choice.](images/first-time-setup/27-schedule-file-selected.png)
-
-![28. Check imported periods. Look for Payroll schedule entries imported: 13, not just a stored file count.](images/first-time-setup/28-schedule-import-result.png)
-
-![29. Verify all 13 periods. Compare every start, posting and pay date with the provider PDF.](images/first-time-setup/29-payroll-schedule.png)
-
-![30. Choose the payroll year. Use Payroll year to inspect the imported year.](images/first-time-setup/30-payroll-year.png)
-
-![31. Select the working period. Check the full date range and scheduled pay date before preparing payroll.](images/first-time-setup/31-period-selector.png)
-
-</details>
-
-## 7. Add the Personal Assistant and employment details
-
-1. Click **Personal Assistant Maintenance**, then **New Personal Assistant**.
-2. Enter **Given name(s)** and **Surname** exactly as used for that PA's Hours Keeper records. For a fictional example, use `Alex` and `Example`.
-3. Enter confirmed **DoB**, **NI No.**, **Email**, **Phone**, **Address** and **Postcode** as needed by your provider. A PA email is needed if you want their email copy; do not put an example address into live sending settings.
-4. Keep **Active** selected for a current employee. Enter their actual **Start date**. Leave **Leaving date** blank if they have not left.
-5. Click **Save Personal Assistant**. Select the saved PA under **Existing Assistants** if necessary.
-6. Under **Contracted Weekly Hours**, enter **Effective from** and choose **Hours basis**: **Contracted** for agreed weekly hours, or **Variable** for variable hours. For Contracted, enter the agreed **Weekly hours**, such as `20` if that is correct for this employment. Click **Save Hours Basis**.
-7. Under **Pay Rates**, enter **Effective date**, **Base hourly rate** and **Employer top-up rate**. Use numbers without a pound sign, for example `13.50` and `0.00`. Click **Save Pay Rate**.
-8. Check both saved histories. The dates must cover the work being included in your first timesheet, including earlier work if applicable. Use the real agreed effective dates, not automatically today's date.
-
-**Success check:** the PA appears in **Existing Assistants**, with saved hours-basis and pay-rate rows. The messages include **Contracted hours saved.** and **Pay rate saved.** after those saves. Repeat for each PA.
-
-**Check the numbers yourself:** the rate form can turn unparseable rate text into `0.0`; a successful save does not prove the amount is correct. Do not rely on it to check the agreed or legally applicable rate. Effective dates must be valid; Contracted hours require a non-empty weekly-hours value, while Variable does not require a weekly total. Blank optional personal dates are allowed; entered dates must be valid, and a leaving date cannot precede the start date.
-
-The application does not require every contact field to be filled before saving. Your provider may require more information than the form enforces. Complete the confirmed employment and pay details before submitting payroll.
-
-> **You can do this later:** PA signature, **Enable mileage** if no mileage is being claimed, and read-only annual-leave guidance. Signatures follow the employer image/drawing options above. Do not mark an employed PA Inactive as a setup shortcut: changing Active to Inactive also files their managed payroll documents into archive folders.
-
-
-<details>
-<summary>Show screenshots 32–42: PA, employment details, hours basis and pay rate</summary>
-
-![32. Create a PA. Choose New Personal Assistant.](images/first-time-setup/32-pa-empty.png)
-
-![33. PA details form. Save the PA before adding dated pay rates and hours basis.](images/first-time-setup/33-new-pa.png)
-
-![34. PA contact details. Alex Example and every personal detail shown here are fictional.](images/first-time-setup/34-pa-contact.png)
-
-![35. Employment dates. Keep a current employee Active; enter their actual Start date.](images/first-time-setup/35-pa-employment.png)
-
-![36. Select the saved PA. Select the PA under Existing Assistants to reveal their saved histories.](images/first-time-setup/36-pa-saved.png)
-
-![37. Enter weekly hours basis. Use the agreed effective date and contracted weekly hours, then Save Hours Basis.](images/first-time-setup/37-hours-basis-entry.png)
-
-![38. Check the saved hours row. The dated Contracted 20 row confirms this fictional hours basis was saved.](images/first-time-setup/38-hours-basis-saved.png)
-
-![39. Variable hours option. Choose Variable only where it matches the actual employment arrangement.](images/first-time-setup/39-variable-hours-option.png)
-
-![40. Enter the agreed pay rate. Use numbers without a pound sign and a date covering the work.](images/first-time-setup/40-pay-rate-entry.png)
-
-![41. Check the saved pay rate. Verify the saved base rate and top-up; a successful save does not validate the amount.](images/first-time-setup/41-pay-rate-saved.png)
-
-![42. Optional PA signature. You can do this later: add only an authorised signature.](images/first-time-setup/42-pa-signature.png)
-
-</details>
-
-## 8. Put hours into the application
-
-Choose the method that matches how the hours were recorded. Do not enter and import the same shift twice.
-
-### Option A: enter shifts directly
-
-1. On **Dashboard**, click **Enter Hours/Shifts** and select the correct PA.
-2. For an already completed shift, click **Clock in at…**. Choose the actual UK date and 24-hour start time, then **Use this time**.
-3. Enter any **Break minutes** and optional notes. Use **Save Notes** when saving those details for the running shift.
-4. Click **Clock out at…**, choose the actual end date and time, then **Use this time**. The end must be after the start; select the following date for an overnight shift where appropriate.
-5. Check **Shift history** shows the intended start, finish, break and worked time.
-
-For work happening now, **Clock in now** and **Clock out now** use the current time. Do not use them to represent a past shift. Payroll rounding is applied later; the shift records actual time.
-
-**Success check:** the shift is completed, with no unintended running clock-in. Correct mistakes through the shift-history controls before payroll preparation.
-
-
-<details>
-<summary>Show screenshots 43–48: exact shift entry, breaks and completion</summary>
-
-![43. Enter a past shift. Choose the PA, then Clock in at… for an exact past start.](images/first-time-setup/43-shifts-empty.png)
-
-![44. Exact clock-in time. Set day, month, year, hour and minute, then Use this time.](images/first-time-setup/44-clock-in-time.png)
-
-![45. Check the shift start. The running shift shows which PA and start time will be completed.](images/first-time-setup/45-running-shift.png)
-
-![46. Break and optional notes. Enter break minutes and save optional notes; clock-out saves the completed shift.](images/first-time-setup/46-shift-break-notes.png)
-
-![47. Exact clock-out time. Use the actual finish date and time, including the next date for overnight work.](images/first-time-setup/47-clock-out-time.png)
-
-![48. Check the completed shift. This fictional shift is 09:00–12:15 with a 15-minute break: 3 hours worked.](images/first-time-setup/48-completed-shift.png)
-
-</details>
-
-### Option B: import Hours Keeper CSV
-
-1. In Hours Keeper, export the relevant recorded hours as **CSV**. Transfer or download that file to this computer. Keep the original export.
-2. Click **Settings** and find **CSV Import Folder**. Note the full folder location. Use **Browse...** if you need to choose a folder you can find, then **Save Application Settings**.
-3. In your file manager, copy the `.csv` export into that exact folder. Keep only the CSV files you intend to import there: the button scans the folder, rather than opening a file chooser for a single CSV.
-4. Return to **Dashboard** and click **Import Hours CSV**. Files already in the folder are processed first.
-   If any active PAs are still outstanding, a **Yes/No** prompt lists them, even when some folder files succeeded. Choose **No** to keep just the folder results, or **Yes** to enter the remaining CSV exports from the clipboard.
-   When a working payroll period is selected, outstanding PAs are checked for that period; old imported CSVs left in the folder do not hide clipboard entry for later cycles.
-   Select an outstanding PA and click **Import from Clipboard**. This opens a separate dialog with a large editable text box; opening it does not read the clipboard. Click in the box and paste the complete supported description line, eight-column header and rows using **Ctrl+V**. Edit the text if needed, then click **Import**. Every row must belong to that selected PA. Invalid content stays in the dialog with an error so you can correct it. **Cancel** discards the unsaved text and returns to the outstanding list.
-   Each successful Import saves an ordinary CSV in the configured CSV Import Folder, using its date range, full PA name and **Clipboard** marker, and runs the existing importer. The PA then leaves the list and the combined Import Summary updates. When the list is complete, the dialog closes. **Cancel remaining — import saved CSVs** finishes early without discarding completed folder or clipboard imports. No preview or simulation step is involved.
-5. Read **Import Summary**. Check **Files succeeded**, **Rows imported**, **Rows skipped**, **Files refused**, **Files failed** and any error messages.
-6. Click **View Imported Hours**. Check the PA, dates, breaks and worked hours against the export. Resolve any duplicate or overlap review before preparing payroll.
-
-**Success check:** all expected shifts are associated with the right maintained PA, and no unexplained failures or skipped rows remain. Duplicate detection may correctly skip already imported content; do not assume skipped rows are new hours.
-
-The PA name must match exactly one maintained PA. **Worked Hours is imported as supplied**, not recalculated from start, end and break. Check it carefully. CSV rates and amounts are retained as source information; the saved PA pay-rate history is authoritative for payroll. The application keeps a timestamped archive of imported source files.
-
-<details>
-<summary>Extra detail: CSV format, sample file and validation rules</summary>
-
-The supported export is UTF-8 text with a non-empty first description line, followed by eight column headings. The standard headings are **Client Name, Start Time, End Time, Break Time, Worked Hours, Rate/h, Amount, Note**. Short aliases **PA, Start, End, Break, Worked, Rate, Amount, Note** are also accepted. All eight columns are required; Note may be blank.
-
-This copyable fictional example illustrates the format, not hours to submit:
-
-```csv
-Hours Keeper sample export
-Client Name,Start Time,End Time,Break Time,Worked Hours,Rate/h,Amount,Note
-Alex Example,15/10/2026 at 09:00,15/10/2026 at 12:00,0h 00m,3h 00m,13.50,40.50,Sample only
-```
-
-The importer accepts UK dates with `at` and a 24-hour time, with optional seconds; English month-name timestamps and ISO year-month-day timestamps with `at` are also supported. Break and worked durations must use `3h 00m` style: non-negative hours and minutes from 0 to 59. End time must be later than start time. Money must be a non-negative finite number, optionally prefixed with `£`.
-
-</details>
-
-
-<details>
-<summary>Show screenshots 49–54: CSV folder, import summary and source review</summary>
-
-![49. Find the CSV import folder. Copy the intended Hours Keeper CSV into the configured folder.](images/first-time-setup/49-csv-import-folder.png)
-
-![50. Import Hours CSV. The button scans the import folder; it does not ask for a single CSV file.](images/first-time-setup/50-import-hours-action.png)
-
-![51. Check the import summary. The demo imported four rows from one file, with no failures or skipped rows.](images/first-time-setup/51-hours-import-summary.png)
-
-![52. Review imported hours. Compare the PA, dates, worked time, rate and amount with the original export.](images/first-time-setup/52-imported-hours.png)
-
-![53. Filter by PA. Use the PA Name filter to inspect one assistant’s imported rows.](images/first-time-setup/53-imported-hours-filter.png)
-
-![54. Inspect original source evidence. Expand Source, notes and history to check the archived fictional CSV evidence.](images/first-time-setup/54-imported-source-details.png)
-
-</details>
-
-## 9. Review and save payroll preparation
-
-1. Return to **Dashboard**. Check the selected payroll period against the provider schedule again.
-2. Click **Payroll Timesheet Preparation**.
-3. Select the PA and activate their record if the screen asks you to activate it for editing.
-4. Check all four **W/c** (week commencing) rows and **Worked** totals against the recorded shifts. Payroll rounding can make payable totals differ from the original minutes.
-5. Add only confirmed **Annual Leave**, **Sick / SSP**, **Public Holiday** and **Travel Miles** information that applies. Use the relevant dated-entry controls. Payroll calculates SSP; do not guess a payment or entitlement.
-6. Check **Previous cycle hours** and any unresolved review actions. Do not invent earlier hours to make totals match.
-7. Add **Notes for Payroll Department** if needed; the limit is **256 characters**.
-8. Click the PA's **Save [name]** button, for example **Save Alex Example**. Repeat for other PAs.
-
-**Success check:** the preparation saves without errors, the four weeks match your period, and no unresolved payroll actions remain. The **W/c** rows are week-start dates; use the full date range in the period selector to check the period end. If an unsaved-changes prompt appears, choose **Save changes** to keep your work.
-
-> **You can do this later:** notes or claims that do not apply can stay blank. **Actual in-lieu hours awarded by Payroll** is for a figure returned by Payroll later; leave it blank until Payroll confirms it. Submitted timesheets can be reopened here: amend the hours, **Save**, regenerate the PDF, then explicitly email the corrected version. Earlier versions remain in the audit; the latest regenerated saved version supplies the reconciliation baseline. Unresolved delivery remains a separate safety condition; do not resend blindly.
-
-
-<details>
-<summary>Show screenshots 55–59: weekly preparation, optional sickness, notes and save</summary>
-
-![55. Payroll Timesheet Preparation. Check the selected period and all four week-commencing rows.](images/first-time-setup/55-preparation-overview.png)
-
-![56. Review weekly worked totals. The demo has 10 hours in week one and 6 in week two; check against your records.](images/first-time-setup/56-worked-hours-review.png)
-
-![57. Optional sickness-date review. Only enter confirmed sickness. Close this window if no sickness applies.](images/first-time-setup/57-optional-sickness-review.png)
-
-![58. Notes for Payroll Department. The demonstration-only note is within the 256-character limit.](images/first-time-setup/58-payroll-notes.png)
-
-![59. Save the prepared timesheet. Use Save Alex Example and check the success message.](images/first-time-setup/59-preparation-saved.png)
-
-</details>
-
-## 10. Generate and inspect your first PDF
-
-1. On **Dashboard**, check the period, then click **Generate Payroll Timesheets**.
-2. In **Generate payroll timesheets — select PAs**, select only the PAs you intend to generate. Review the period and public-holiday information.
-3. Click **Generate selected PAs**.
-4. If **Signature unavailable — choose how to continue** appears, read the reason. Use **Draw replacement...** only with permission, **Continue unsigned** if appropriate, or **Cancel generation**. Unsigned PDFs need the provider's agreed signing process.
-5. Read the production report for each selected PA. A failed or skipped PA is not a successfully generated timesheet.
-6. To find the file, click **Settings** and note **PDF Export Folder**. Open that folder in your file manager and locate the PDF for the PA and period. Open it in your PDF reader.
-7. Check employer and PA identity, period, all four weekly totals, pay rates, leave, sickness, mileage, notes and signatures as applicable. Compare against your records and the schedule.
-
-**Success check:** a readable PDF exists for the right PA and period, with correct information. Generating a PDF does not email it.
-
-If you find a mistake, correct the saved preparation or source details and generate again **before sending**. Changed represented data can make an earlier generated PDF stale; do not send an old copy from a folder as a workaround.
-
-
-<details>
-<summary>Show screenshots 60–62: PDF generation and genuine generated output</summary>
-
-![60. Select PAs for PDF generation. Choose the intended PA and Generate selected PAs; drawing a signature is optional.](images/first-time-setup/60-generation-selection.png)
-
-![61. Check generation results. Completed means the PDF was generated; it does not mean it was emailed.](images/first-time-setup/61-generation-result.png)
-
-![62. Review the generated PDF. Genuine v1.0.6 output in a separate PDF reader: check identity, weeks, totals and signatures.](images/first-time-setup/62-generated-pdf.png)
-
-</details>
-
-## 11. Preview and optionally test the email
-
-1. Click **Email Settings** and select the PA under **Email Preview**.
-2. Click **Preview Timesheet Email**. Check **From**, **To**, **CC**, **BCC**, **Subject**, **Attachment** and **Body**.
-3. Confirm the Payroll Department is the intended **To** recipient. The employer gets a CC if enabled; a supplied PA email is used as BCC. Correct saved addresses if needed, then preview again.
-
-**Preview never sends an email or updates sent status.** It does not prove the SMTP password works. A preview error may mean a required employer, provider, period or attachment is missing.
-
-> **You can do this later:** the optional test below. It is a real email transmission, separate from the preview and from a real payroll submission.
-
-1. Check **Payroll test email address** is a mailbox you control. The optional **PA test email address** must also be safe and under your control. Save the email settings.
-2. Under **Test Email**, choose the PA with a valid generated PDF for the selected period.
-3. Click **Test Timesheet Email** only when you intend to send that attachment to those test addresses.
-4. Look for **Test timesheet email sent.**, then check the receiving mailbox and its spam folder.
-
-The timesheet test uses the Payroll test address as **To**, optional PA test address as **BCC**, and **no employer CC**. It prefixes subject and body with **TEST:**. **It attaches the actual generated timesheet, which may contain personal information.** It does not create a harmless sample automatically. Use fictional data for a practice installation, or only appropriately authorised recipients for a real attachment. Test sending does not mark the real payroll submission as sent.
-
-**Test Payslip Email** needs existing eligible unsent payroll documents and the **PA test email address**. It is not needed to set up your first outgoing timesheet. It uses the test recipient, rather than the real PA, and does not mark those documents sent. Do not import payslips merely to obtain an SMTP test button.
-
-
-<details>
-<summary>Show screenshots 63–64: safe preview and optional test controls</summary>
-
-![63. Preview without sending. Check From, To, CC, BCC, subject, attachment and body before any real send.](images/first-time-setup/63-timesheet-email-preview.png)
-
-![64. Optional test controls. These buttons send actual test mail. They were not clicked for these screenshots.](images/first-time-setup/64-test-controls-not-used.png)
-
-</details>
-
-## 12. Send the real payroll email safely
-
-1. Confirm the reviewed PDF is final, any required signing is complete, and you are ready to submit by the provider's deadline.
-2. On **Dashboard**, confirm the period and click **Email Payroll Timesheets**.
-
-   Current email lists show Active PAs whose employment dates include today. For a departed PA’s final timesheet, payslip, P45 or other outstanding payroll document, explicitly enable **Include inactive/departed PAs for final or outstanding documents** on Dashboard (also available beside email previews). Select that PA deliberately and follow the usual document review and send confirmation. Departed PAs are never automatically selected. Turn the option off to return to current recipients; changing it cancels any pending email selection and preview. The option starts off each time the application opens. Historical records, retained PDFs and delivery history remain available, and normal integrity and duplicate-send checks still apply.
-3. In **Email payroll timesheets — select PAs**, check the selected PAs. Current unsent PDFs are selected by default; previously sent versions can be listed for a deliberate resend. Avoid selecting a resend for a first submission.
-4. Click **Continue to email notes**. Choose **No Additional Note**, or **Add Additional Note**, enter any needed note for each selected PA and click **Continue**.
-5. In **Confirm email batch**, check the period, PA list, first-send/resend counts, document details and **To / CC / BCC** addresses. Cancel if anything is wrong.
-6. Click **Send** once, only when you intend to send the real payroll email.
-7. Read the per-PA production result and **Timesheet Email Status**. Keep the PDF and delivery evidence. Follow your provider's procedure for confirming receipt.
-
-**Success check:** the intended submission is recorded as **Accepted by SMTP**, without failures or unresolved uncertainty. This means the mail server accepted it; it does **not** prove Payroll received it in their inbox. Receipt of your employer copy proves only receipt of that copy.
-
-If the result is uncertain or the application was interrupted during sending, **do not click Send again or send the PDF manually** until you have checked the evidence with Payroll or your mail administrator. An error can happen after acceptance. v1.0.6 blocks uncertain retries pending a documented delivery review. An intentional resend needs explicit acknowledgement and may cause duplicate payroll processing.
-
-> **You can do this later:** returned payslip import and **Email Payslips** belong to a later stage, after Payroll processes your submission. They are not needed to generate or send the first timesheet.
-
-
-<details>
-<summary>Show screenshots 65–68: recipient selection, confirmation and the unsent demo</summary>
-
-![65. Choose the email batch. Only select the PAs and current PDFs you intend to submit.](images/first-time-setup/65-email-pa-selection.png)
-
-![66. Optional additional email note. Choose No Additional Note if you have nothing to add.](images/first-time-setup/66-email-notes-choice.png)
-
-![67. Final check before Send. Check every recipient and the period. This demonstration stopped here and used Cancel.](images/first-time-setup/67-final-email-confirmation.png)
-
-![68. The demo remains unsent. Current PDF not sent confirms that generating and previewing did not submit payroll.](images/first-time-setup/68-unsent-status.png)
-
-</details>
-
-## Troubleshooting
-
-| What you see | What to do |
-| --- | --- |
-| No Payroll Provider has been configured | Save the provider in **Payroll Settings**, then return to **Email Settings** to save the separate Payroll Department address. |
-| No imported payroll schedules / no current period | Import the individual provider preparation PDF. Check the year and coverage. Select a known period deliberately if needed; never guess missing dates. |
-| Old “No imported payroll schedules are available” warning remains after a successful first import | If the schedule table contains the 13 verified rows, close and reopen the application, then recheck the intended period. The initial warning can remain stale in v1.0.6. |
-| PDF stored, but schedule import failed | Read the Prep Sheet parsing failure. Ask for a readable original PDF in the supported format. Stored information files are not proof of imported schedule entries. |
-| Expected 13 entries / missing four-weekly information | The document does not match the supported schedule layout. Ask the provider for the correct preparation sheet; do not edit dates to force acceptance. |
-| Word importing is not implemented | Obtain the supported PDF. A `.docx` entry in the file chooser does not mean Word parsing works. |
-| CSV finds no files | Check **CSV Import Folder** is the folder containing the actual `.csv` file and that you saved folder changes. |
-| CSV refused: PA missing or ambiguous | Compare the export name with the saved given name(s) and surname. Ensure there is exactly one matching PA. Do not add duplicate PA records to bypass the error. |
-| CSV timestamp, header or duration error | Keep the original export and read the reported row. Compare its structure with step 8. Do not rename a spreadsheet to `.csv`; obtain the supported export. |
-| Imported totals differ | Check Worked Hours in the export, duplicate/overlap reviews, period selection and rounding. Worked Hours is not recalculated from the clock times. |
-| Pay rate is missing, zero or unexpected | Check the saved PA rate history, numeric values and effective dates covering the work. CSV rates do not replace maintained rates. |
-| Test controls absent, or no attachment found | Finish saving an eligible PA, importing/selecting the period, saving preparation and generating the PDF. There is no standalone empty-install SMTP test. |
-| Authentication error 535 | Recheck full email username and application-specific password. For GMX check **Allow POP3 and IMAP access**. For Gmail check 2-Step Verification and App Password availability. Microsoft password-based SMTP failed in project testing; OAuth2 is absent from v1.0.6. |
-| SMTP connection or TLS error | Check internet access, exact host, port **587** and **Required STARTTLS** for GMX/Gmail. Do not disable encryption as a workaround. |
-| Local SMTP connection refused | A local relay must already be running on localhost:25. Use your provider's SMTP configuration if no relay has been arranged. |
-| Stale PDF / changed data | Save the correct preparation, generate again, inspect the new PDF and preview again. |
-| Amend an already submitted timesheet | Reopen its period in Payroll Preparation, amend hours, Save, regenerate and separately send the corrected PDF. For unresolved delivery, retain the message and reconcile its outcome before sending again. |
-
-When asking for help, provide the application version, screen, exact message and the step you reached. Remove passwords, names, National Insurance numbers, dates of birth and payroll attachments from anything shared publicly.
-
-## Keep a safe copy
-
-1. In **Settings**, click **Create Backup** when you are ready to keep a recovery copy.
-2. Protect that backup: **v1.0.6** backups contain database and configuration information, including the SMTP password. This historical warning does not describe v1.0.7 credential storage.
-3. Separately protect your PDFs, original exports, provider documents and signatures. The application's database/configuration backup does **not** copy those external files.
-
-### Before upgrading to v1.0.7
-
-The v1.0.7 schema-41-to-42 upgrade automatically creates a verified database recovery snapshot, including committed WAL data, PAs, hours, payroll history and embedded PDFs. It also includes `config.toml` when present, preserving saved preferences with secure credential references instead of plaintext SMTP passwords. Passwords and Microsoft tokens are held separately in the OS credential store; retain access to that store or re-enter your SMTP password/reconnect Microsoft after recovery. External documents, signatures and original CSV files remain outside this automatic backup, as described above.
-
-Schema migration is one-way. Use v1.0.7 **Restore Backup** to review and recover a supported pre-upgrade snapshot; it migrates the recovered data to schema 42 and creates a safety backup first. Do not launch v1.0.6 against the upgraded database. See [verified recovery and settings scope](DATABASE-SCHEMA.md#verified-startup-upgrades-and-legacy-restore).
-
-## Screenshot and verification notes
-
-**68 genuine screenshots are included:** 65 views of the released application, two views of its native Linux file chooser, and one view of its genuinely generated PDF in a separate PDF reader. They were captured from an unchanged source build of tag **v1.0.6**, commit `e157cbd754020e250806b07d40d0fd1a8e755938`, on **15/10/2026**. Only crops, orange outlines and numbered captions outside the captured UI were added. No UI controls or messages were invented, and no displayed values were retouched.
-
-All employer, PA, contact, employment and work records shown are fictional. The practice schedule was created solely to exercise the supported import format; obtain your own schedule from your provider. The practice environment had no access to production home directories or an external network. Every configured business folder, database, configuration, cache, log and generated file was contained in disposable storage. See the [capture and isolation record](images/first-time-setup/README.md).
-
-The Linux walkthrough covered first setup, schedule import, both hours-entry methods, saved preparation, PDF generation, preview and final email confirmation. **No Test Email or Send button was used.** The demonstration was cancelled and the current PDF remained unsent. Successful SMTP authentication, successful test-mail delivery, real payroll submission, other operating systems and optional signature drawing were not tested in this capture session. The GMX access requirement and Microsoft 535 results earlier in this guide remain the project account-testing observations supplied for **15/10/2026**.
-
-For maintainers, the released source evidence is in [navigation, email and Dashboard UI](https://github.com/arnieSkyNet/DirectPaymentTimesheets/blob/v1.0.6/src/gui.rs), [employer form](https://github.com/arnieSkyNet/DirectPaymentTimesheets/blob/v1.0.6/src/employer_screen.rs), [PA form](https://github.com/arnieSkyNet/DirectPaymentTimesheets/blob/v1.0.6/src/personal_assistant_screen.rs), [schedule parser and import tests](https://github.com/arnieSkyNet/DirectPaymentTimesheets/blob/v1.0.6/src/payroll_prep_sheet_import_service.rs), [CSV parser](https://github.com/arnieSkyNet/DirectPaymentTimesheets/blob/v1.0.6/src/csv_import.rs), [shift entry](https://github.com/arnieSkyNet/DirectPaymentTimesheets/blob/v1.0.6/src/enter_hours_screen.rs), [preparation](https://github.com/arnieSkyNet/DirectPaymentTimesheets/blob/v1.0.6/src/payroll_timesheet_screen.rs), [generation and delivery selection](https://github.com/arnieSkyNet/DirectPaymentTimesheets/blob/v1.0.6/src/payroll_production_workflow.rs) and [SMTP/test composition](https://github.com/arnieSkyNet/DirectPaymentTimesheets/blob/v1.0.6/src/email_service.rs).
+When requesting help, provide the application version, screen, action and redacted error message. Remove names, addresses, National Insurance numbers, payroll attachments and all authentication material.
