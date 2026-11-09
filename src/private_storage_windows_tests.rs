@@ -17,7 +17,15 @@ fn powershell(path: &Path, script: &str) -> String {
 }
 
 fn require_ntfs(root: &Path) {
-    assert_eq!(powershell(root, "$ErrorActionPreference='Stop'; (Get-Volume -FilePath $env:DPT_SYNTHETIC_PATH).FileSystem"), "NTFS", "Native security fixtures require NTFS; no silent skip");
+    assert_eq!(
+        powershell(root, r#"
+            $ErrorActionPreference='Stop'
+            $volume = [IO.Path]::GetPathRoot($env:DPT_SYNTHETIC_PATH)
+            if ($volume.StartsWith('\\?\')) { $volume = $volume.Substring(4) }
+            [IO.DriveInfo]::new($volume).DriveFormat
+        "#),
+        "NTFS", "Native security fixtures require NTFS; no silent skip"
+    );
 }
 
 fn broad_fixture(path: &Path) {
@@ -801,7 +809,13 @@ fn backup_and_restore_sources_refuse_unsafe_windows_ancestor_without_repair() {
     let (stage, staged) = crate::database_recovery::staged_backup(&parent).unwrap();
     staged.close().unwrap();
     drop(stage);
-    let backup_count = fs::read_dir(&backups).unwrap().count();
+    let backup_entries = || {
+        fs::read_dir(&backups)
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .collect::<std::collections::BTreeSet<_>>()
+    };
+    let before_backups = backup_entries();
 
     // Change only a disposable synthetic ancestor, keeping the database policy.
     broad_fixture(&ancestor);
@@ -819,7 +833,22 @@ fn backup_and_restore_sources_refuse_unsafe_windows_ancestor_without_repair() {
     assert_eq!(fs::read(&database).unwrap(), before);
     assert!(policy.matches(&database).unwrap());
     assert!(unsafe_policy.matches(&ancestor).unwrap());
-    assert_eq!(fs::read_dir(&backups).unwrap().count(), backup_count);
+    // Failed backup population intentionally retains a new private directory
+    // with an incomplete marker; it must never become eligible for restore.
+    let after_backups = backup_entries();
+    assert!(before_backups.is_subset(&after_backups));
+    let retained = after_backups.difference(&before_backups).collect::<Vec<_>>();
+    assert_eq!(retained.len(), 1);
+    assert!(platform::is_private(retained[0]).unwrap());
+    assert!(retained[0].join(".incomplete").is_file());
+    assert!(crate::backup_service::BackupService::validate(retained[0], &backups)
+        .unwrap_err()
+        .to_string()
+        .contains("incomplete"));
+    assert!(!crate::backup_service::BackupService::discover(&backups)
+        .unwrap()
+        .iter()
+        .any(|backup| &backup.path == retained[0]));
     assert_eq!(fs::read_dir(&parent).unwrap().count(), 1);
     assert!(!config.exists());
 }

@@ -162,7 +162,10 @@ mod development_gate_tests {
             (true, true, false, false),
             (true, true, true, cfg!(windows)),
         ] {
-            let mut command = std::process::Command::new("rustc");
+            // Packaging runs compiled tests in a separate target userspace. Use
+            // its explicitly selected native compiler, not an inherited rustup proxy.
+            let compiler = std::env::var_os("RUSTC").unwrap_or_else(|| "rustc".into());
+            let mut command = std::process::Command::new(compiler);
             command
                 .arg(
                     std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -178,11 +181,14 @@ mod development_gate_tests {
             if profile {
                 command.args(["--cfg", "dpt_development_build"]);
             }
-            let output = command.output().unwrap();
+            let output = command.output().expect(
+                "Development-gate test requires an executable native rustc (set RUSTC)",
+            );
             assert_eq!(
                 output.status.success(),
                 expected,
-                "{}",
+                "compiler status: {}; stderr: {}",
+                output.status,
                 String::from_utf8_lossy(&output.stderr)
             );
             if !expected {

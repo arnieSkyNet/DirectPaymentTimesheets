@@ -876,7 +876,19 @@ mod tests {
         let child = root.path().join("child");
         crate::private_storage::create_private_dir(&child).unwrap();
 
-        for error in source_reader_errors(&child.join("..")) {
+        // tempfile uses verbatim Windows paths. PathBuf::push normalizes `..`
+        // for that prefix, erasing the very traversal this negative test needs.
+        // Use the equivalent ordinary drive spelling only for this fixture.
+        #[cfg(windows)]
+        let child = {
+            let spelling = child.to_str().expect("Synthetic fixture path must be UTF-8");
+            PathBuf::from(spelling.strip_prefix(r"\\?\").unwrap_or(spelling))
+        };
+        let traversal = child.join("..");
+        assert!(traversal
+            .components()
+            .any(|c| c == std::path::Component::ParentDir));
+        for error in source_reader_errors(&traversal) {
             assert!(error.contains("Parent traversal in managed storage path"));
         }
 

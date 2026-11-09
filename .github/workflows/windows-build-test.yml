@@ -67,7 +67,7 @@ jobs:
             # Check application and tests without linking ARM64 test executables.
             cargo check --locked --target $target --bins --tests
           } else {
-            cargo test --locked --target $target
+            ./scripts/windows-package-tests.ps1 -Target $target
           }
           if ($LASTEXITCODE -ne 0) { throw 'Tests failed' }
           cargo build --release --locked --target $target

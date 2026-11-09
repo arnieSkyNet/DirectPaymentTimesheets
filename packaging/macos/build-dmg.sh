@@ -14,6 +14,11 @@ MACOSX_DEPLOYMENT_TARGET="$(python3 packaging/package.py macos-target "$TARGET")
 export MACOSX_DEPLOYMENT_TARGET DPT_INSTALLATION_KIND=macos
 export CARGO_TARGET_DIR="$PROJECT_ROOT/target/packages/$TARGET/macos"
 VERSION="$(python3 packaging/package.py version)"
+# /var is a system symlink. Raw tempfile fixtures must receive the physical
+# OS temporary root before SQLite opens them with SQLITE_OPEN_NOFOLLOW. Do not
+# canonicalize database inputs or weaken the application's no-follow policy.
+TMPDIR="$(python3 -c 'import os, tempfile; print(os.path.realpath(tempfile.gettempdir()))')"
+export TMPDIR
 cargo test --locked --target "$TARGET"
 cargo build --release --locked --target "$TARGET"
 OUTPUT_DIRECTORY="$PROJECT_ROOT/dist/$TARGET"

@@ -6,6 +6,10 @@ cd "$PROJECT_ROOT"
 # This script runs inside the target userspace, including ARMv7 under QEMU.
 # Do not let cached binaries for the wrong target be relabelled.
 [[ "$(dpkg --print-architecture)" == "$DEB_ARCH" ]] || { echo 'Packaging userspace does not match explicit target' >&2; exit 1; }
+# Tests run natively in the target userspace (ARMv7 under QEMU). Never invoke
+# a compiler from the build container or silently skip compiler-dependent tests.
+export RUSTC=/usr/bin/rustc
+"$RUSTC" --version
 export STRIP=strip SKIP_BUILD=1
 python3 - "$PROJECT_ROOT/target/packages/$TARGET/tests.jsonl" <<'PY'
 import json, subprocess, sys
