@@ -1,0 +1,37 @@
+name: Current macOS credential acceptance (manual only)
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  keychain:
+    timeout-minutes: 55
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-15-intel
+            architecture: x86_64
+          - runner: macos-15
+            architecture: arm64
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: '3.12'
+      - name: Install pinned test toolchain
+        shell: bash
+        run: rustup toolchain install 1.98.1 --profile minimal
+      - name: Verify current native credential lifecycle only
+        shell: bash
+        env:
+          DPT_EXPECTED_ARCH: ${{ matrix.architecture }}
+          DPT_EXPECTED_SHA: ${{ github.sha }}
+        run: python -I -B scripts/macos_current_keychain.py
