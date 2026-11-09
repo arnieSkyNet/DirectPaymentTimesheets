@@ -10,10 +10,59 @@ fn powershell(path: &Path, script: &str) -> String {
         .unwrap();
     assert!(
         output.status.success(),
-        "synthetic_fixture.powershell: code={:?}; class=command_failure",
-        output.status.code()
+        "synthetic_fixture.powershell: code={:?}; class=command_failure; {}",
+        output.status.code(),
+        owner_probe_failure_detail(&output.stdout)
     );
     String::from_utf8(output.stdout).unwrap().trim().into()
+}
+
+// Only fixed operation categories and a parsed numeric HRESULT may leave this
+// fixture. Raw stdout/stderr, paths, account names and SIDs remain private.
+fn owner_probe_failure_detail(stdout: &[u8]) -> String {
+    let Ok(text) = std::str::from_utf8(stdout) else {
+        return "operation=unclassified".into();
+    };
+    let fields = text.trim().split('|').collect::<Vec<_>>();
+    if fields.len() != 4 || fields[0] != "DPT_OWNER_QUERY" {
+        return "operation=unclassified".into();
+    }
+    let stage = match fields[1] {
+        "get_acl" => "get_acl",
+        "get_owner" => "get_owner",
+        "current_token" => "current_token",
+        "compare" => "compare",
+        _ => return "operation=unclassified".into(),
+    };
+    let class = match fields[2] {
+        "path_not_found" => "path_not_found",
+        "access_denied" => "access_denied",
+        "exception" => "exception",
+        _ => return "operation=unclassified".into(),
+    };
+    let Ok(code) = fields[3].parse::<i32>() else {
+        return "operation=unclassified".into();
+    };
+    format!("operation=owner_query; stage={stage}; class={class}; hresult={code}")
+}
+
+fn owner_probe_path(path: &Path) -> PathBuf {
+    use std::os::windows::ffi::{OsStrExt, OsStringExt};
+    // Only this synthetic Get-Acl query needs a provider-compatible spelling.
+    // Keep production paths verbatim and never canonicalize arbitrary inputs.
+    let query = match path.components().next() {
+        Some(std::path::Component::Prefix(prefix))
+            if matches!(prefix.kind(), std::path::Prefix::VerbatimDisk(_)) =>
+        {
+            let units = path.as_os_str().encode_wide().skip(4).collect::<Vec<_>>();
+            PathBuf::from(std::ffi::OsString::from_wide(&units))
+        }
+        _ => path.to_path_buf(),
+    };
+    // Refuse the query unless both spellings identify the same real object.
+    assert!(same_file::Handle::from_path(path).unwrap()
+        == same_file::Handle::from_path(&query).unwrap());
+    query
 }
 
 fn require_ntfs(root: &Path) {
@@ -54,14 +103,32 @@ fn phase1_windows_actual_new_object_owners_match_current_token() {
     write_new(&file, b"synthetic bytes").unwrap();
     for path in [root.path(), file.as_path()] {
         // Query the actual OS owner, rather than interpreting an OW ACE.
+        // Windows PowerShell's provider need not accept Rust's verbatim prefix.
+        let query = owner_probe_path(path);
         assert_eq!(
             powershell(
-                path,
+                &query,
                 r#"
             $ErrorActionPreference='Stop'
-            $owner = (Get-Acl -LiteralPath $env:DPT_SYNTHETIC_PATH).GetOwner([System.Security.Principal.SecurityIdentifier])
-            $current = [System.Security.Principal.WindowsIdentity]::GetCurrent().User
-            $owner.Equals($current)
+            $stage = 'get_acl'
+            try {
+                $acl = Get-Acl -LiteralPath $env:DPT_SYNTHETIC_PATH -ErrorAction Stop
+                $stage = 'get_owner'
+                $owner = $acl.GetOwner([System.Security.Principal.SecurityIdentifier])
+                $stage = 'current_token'
+                $current = [System.Security.Principal.WindowsIdentity]::GetCurrent().User
+                $stage = 'compare'
+                $owner.Equals($current)
+            } catch {
+                $category = 'exception'
+                if ($_.FullyQualifiedErrorId -like 'GetAcl_PathNotFound,*') {
+                    $category = 'path_not_found'
+                } elseif ($_.CategoryInfo.Category -eq [Management.Automation.ErrorCategory]::PermissionDenied) {
+                    $category = 'access_denied'
+                }
+                [Console]::Out.WriteLine(('DPT_OWNER_QUERY|{0}|{1}|{2}' -f $stage,$category,$_.Exception.HResult))
+                exit 1
+            }
         "#
             ),
             "True"

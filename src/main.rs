@@ -172,7 +172,8 @@ mod development_gate_tests {
                         .join("src/development_build_gate.rs"),
                 )
                 .args(["--crate-type", "lib", "--emit", "metadata", "-C"])
-                .arg(format!("debug-assertions={debug}"))
+                // Rust 1.63 (Debian's test compiler) accepts yes/no, not true/false.
+                .arg(format!("debug-assertions={}", if debug { "yes" } else { "no" }))
                 .arg("-o")
                 .arg(dir.path().join("gate.rmeta"));
             if feature {
