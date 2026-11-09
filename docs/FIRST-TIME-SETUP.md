@@ -1,6 +1,6 @@
 # First-Time Setup Guide — released v1.0.6
 
-For people who have **already installed Direct Payment Timesheets v1.0.6**. Checked against the released source on **15/10/2026**. This guide does not describe the unreleased v1.0.7 application.
+For people who have **already installed Direct Payment Timesheets v1.0.6**. Checked against the released source on **15/10/2026**. The walkthrough describes v1.0.6; the final upgrade note explains v1.0.7 recovery differences.
 
 The 68 numbered pictures show a fictional practice setup. Open **Show screenshots** beneath a step to see the relevant controls. Orange outlines highlight controls; `/demo` paths belong only to the practice environment. Never copy the pictures’ dates, rates, email addresses or dummy password into your own payroll.
 
@@ -614,8 +614,14 @@ When asking for help, provide the application version, screen, exact message and
 ## Keep a safe copy
 
 1. In **Settings**, click **Create Backup** when you are ready to keep a recovery copy.
-2. Protect that backup: it contains database and configuration information, including the SMTP password.
+2. Protect that backup: **v1.0.6** backups contain database and configuration information, including the SMTP password. This historical warning does not describe v1.0.7 credential storage.
 3. Separately protect your PDFs, original exports, provider documents and signatures. The application's database/configuration backup does **not** copy those external files.
+
+### Before upgrading to v1.0.7
+
+The v1.0.7 schema-41-to-42 upgrade automatically creates a verified database recovery snapshot, including committed WAL data, PAs, hours, payroll history and embedded PDFs. It also includes `config.toml` when present, preserving saved preferences with secure credential references instead of plaintext SMTP passwords. Passwords and Microsoft tokens are held separately in the OS credential store; retain access to that store or re-enter your SMTP password/reconnect Microsoft after recovery. External documents, signatures and original CSV files remain outside this automatic backup, as described above.
+
+Schema migration is one-way. Use v1.0.7 **Restore Backup** to review and recover a supported pre-upgrade snapshot; it migrates the recovered data to schema 42 and creates a safety backup first. Do not launch v1.0.6 against the upgraded database. See [verified recovery and settings scope](DATABASE-SCHEMA.md#verified-startup-upgrades-and-legacy-restore).
 
 ## Screenshot and verification notes
 

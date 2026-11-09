@@ -535,10 +535,10 @@ Normal startup (including `cargo run`) uses the configured application root; it
 is not a development database unless `DIRECTPAYMENTTIMESHEETS_HOME` is explicitly
 set. Before loading/saving configuration or creating external business folders,
 `database_recovery::initialise` obtains the dispatch OS lock and a SQLite writer
-reservation. Existing supported schema1–40 databases receive a separate verified database
+reservation. Existing supported schema1–41 databases receive a separate verified database
 and optional configuration snapshot before any upgrade. SQLite's backup API
 includes committed WAL data without copying a live main file alone. Integrity,
-complete schema/typed-row fingerprints and configuration bytes are verified and
+complete schema/typed-row fingerprints and secret-safe configuration bytes are verified and
 recovery files flushed. Backup creation/verification failure aborts startup
 without changing the original database. New empty databases need no original
 recovery snapshot; future schemas are refused.
@@ -577,7 +577,23 @@ signatures, CSV/archive files or fonts. Their manifest inventories configured
 business folders and registered document/signature paths without reading those
 business files. Complete application-data recovery needs a separate protected
 copy of the entire application root plus configured external folders/files. Raw
-configuration can contain credentials; backup directories are private on Unix.
+v1.0.6 configuration and historical backups can contain plaintext SMTP passwords;
+v1.0.7 backup/restore copies sanitize those passwords before writing configuration.
+Protect all backups as sensitive payroll records.
+
+Settings recovery follows their storage location:
+
+- **SQLite:** employer, PA and payroll-provider details, pay rates/contracted hours, annual-leave settings and payroll schedules/history are database records and are included with all other tables.
+- **`config.toml` (when present):** theme, Dashboard button sizing, date/time display controls, CSV parser/header mappings, configured folder paths, PDF font paths/sizes, payroll frequency/rounding/workweek/overtime/holiday region, email subjects/bodies/footer, SMTP connection/security/authentication options, test addresses, employer CC, Microsoft public client ID and opaque credential references. Referenced fonts and business files are not embedded in TOML. Unsaved UI edits are not backed up.
+- **OS credential store:** SMTP passwords and Microsoft OAuth tokens are not SQLite records or exported secrets. Legacy SMTP plaintext is written to a verified native-store entry and replaced by a reference before the backup configuration is written; inability to make that secret-safe copy blocks the upgrade. Windows uses Credential Manager, macOS Keychain, and Linux persistent Secret Service. A restored reference works only while its matching entry and account/server binding remain valid and the store is accessible. On another account/machine, or after missing/revoked credentials, re-enter the SMTP password or reconnect Microsoft; copying the backup alone does not transport credentials.
+
+Restore replaces saved configuration only when the selected backup contains
+`config.toml`; otherwise it preserves current configuration. Database migration
+is one-way: v1.0.7 Restore Backup stages a pre-upgrade snapshot through migration
+to schema 42, rather than downgrading it. Never open upgraded data in v1.0.6.
+The automatic database/configuration backup is the intended upgrade recovery
+scope; exclusion of external documents or original CSV files is not a migration
+failure or a reason to expand that scope.
 
 Retained PDF and attachment BLOBs inside SQLite are part of the verified database
 snapshot and restore, including schema41 bundle evidence. This does not recreate

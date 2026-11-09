@@ -574,7 +574,7 @@ impl ApplicationSettingsScreen {
 
     fn show_backup(&mut self, ui: &mut egui::Ui, application: &mut Application) {
         ui.heading("Backup");
-        ui.label("Create a verified database/configuration recovery copy, including committed WAL data. External PDFs, payslips, signatures and business folders are not copied; protect those separately. The recovery manifest lists their known locations.");
+        ui.label("Create a verified database/configuration recovery copy, including committed WAL data and embedded PDFs. External PDFs, payslips, signatures and business folders are not copied; protect those separately. The recovery manifest lists their known locations. Saved config.toml preferences are included when present; passwords and Microsoft tokens stay in the OS credential store. Recovery may require password re-entry or Microsoft reconnection.");
 
         if ui.button("Create Backup").clicked() {
             match application.create_backup() {
@@ -593,7 +593,7 @@ impl ApplicationSettingsScreen {
 
         ui.separator();
         ui.heading("Restore Backup");
-        ui.label("Select a DirectPaymentTimesheets backup directory to restore.");
+        ui.label("Select a DirectPaymentTimesheets backup directory to restore. Saved configuration is restored if included; otherwise current configuration is kept. OS credential-store entries are not restored.");
 
         let restore_clicked = ui
             .horizontal_wrapped(|ui| {
@@ -640,14 +640,14 @@ impl ApplicationSettingsScreen {
                 .default_width(600.0)
                 .resizable(true)
                 .show(ui.ctx(), |ui| {
-                    ui.heading("Destructive rollback: current database and settings will be replaced");
+                    ui.heading("Destructive rollback: current database will be replaced");
                     ui.colored_label(ui.visuals().warn_fg_color,"Newer payroll submissions, accepted sends and other evidence may be removed from the active database. This can cause duplicate payroll processing. They remain in the separate verified recovery copy.");
                     egui::ScrollArea::vertical().max_height(180.0).show(ui, |ui| {
                         for (table,count) in &plan.replaced_rows {
                             ui.label(format!("{count} current row(s) absent or different in the restored data: {table}"));
                         }
                     });
-                    ui.label("PDFs, payslips, signatures and other external business files are NOT restored. Protect/reconcile these separately. Close all other application instances before proceeding.");
+                    ui.label("External PDFs, payslips, signatures and original CSV files are NOT restored as filesystem files; embedded database PDFs are restored. Protect/reconcile external files separately. Close all other application instances before proceeding.");
                     ui.label("Document the reason and evidence for this rollback:");
                     ui.text_edit_multiline(&mut self.restore_reason);
                     ui.checkbox(&mut self.restore_acknowledged,"I explicitly authorise this reviewed rollback, including loss of the listed active evidence, and understand the duplicate-email risk.");

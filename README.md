@@ -61,7 +61,7 @@ Choose `armhf` for an `armhf` result, `arm64`/`aarch64` for `arm64`, or `amd64`/
 
 ## Install, build and run
 
-Before upgrading an existing installation, make an application backup and retain your payroll documents. Download packages only from this project's official GitHub release.
+Before upgrading an existing installation, make a database/configuration backup and retain your payroll documents. Download packages only from this project's official GitHub release.
 
 ### Linux
 
@@ -238,16 +238,16 @@ The Dashboard groups the workflow into three rows:
 
 ### Backup and restore
 
-- Verified consistent SQLite backups, including committed WAL data, optional `config.toml` and a recovery manifest listing known external business paths.
+- Verified consistent SQLite backups protect PAs, hours, payroll records/history and embedded PDFs, including committed WAL data. When present, `config.toml` is also included with saved application preferences and credential references; passwords and Microsoft tokens remain in the OS credential store. A recovery manifest lists known external business paths.
 - Before any schema upgrade, startup preserves a verified original recovery copy, runs migrations in isolation and installs transactionally. Backup failure aborts the upgrade.
 - Supported legacy backups restore through isolated migration. Review identifies current rows absent/different in restored data; a documented reason and explicit rollback acknowledgement are required. Changed data invalidates approval; unresolved email uncertainty blocks restore.
-- A separate verified pre-restore copy retains original submissions, delivery evidence and settings. Restore requires closing other instances and restarting afterward.
+- A separate verified pre-restore copy retains original submissions, delivery evidence and saved configuration when present. Restore replaces configuration only if the selected backup contains it. Password recovery requires the corresponding OS credential-store entry, or password re-entry; Microsoft may need reconnection. Restore requires closing other instances and restarting afterward.
 - External PDF, payslip, signature, CSV/archive and other business files are **not** copied/restored by database backup. Immutable submitted PDF and dispatch attachment bytes already retained inside SQLite **are included**, along with recipients and delivery evidence. These sensitive records increase database/backup size; no automatic retention cleanup is provided. Separately protect the complete application root and configured external folders/files before upgrade or rollback.
 
 `cargo run` uses normal configured data and automatically upgrades it. For a rehearsal,
 set `DIRECTPAYMENTTIMESHEETS_HOME` to an isolated copy **and** redirect its configured
 external folders; the root override alone does not isolate those paths. Do not use
-older 1.0.4/1.0.5 executables on upgraded data: their restore can replace newer
+older executables, including v1.0.6, on schema-42 data: their restore can replace newer
 schemas. Consult [recovery details](docs/DATABASE-SCHEMA.md#verified-startup-upgrades-and-legacy-restore)
 before the first launch or any rollback.
 
