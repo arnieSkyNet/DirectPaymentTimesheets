@@ -17,6 +17,41 @@ fn powershell(path: &Path, script: &str) -> String {
     String::from_utf8(output.stdout).unwrap().trim().into()
 }
 
+// Only the owner query needs the Core cmdlet environment verified by the native
+// diagnostic. Other NTFS/DACL fixtures retain their Windows PowerShell helper.
+const OWNER_QUERY_CORE_GUARD: &str = "$ErrorActionPreference='Stop'; if ($PSVersionTable.PSVersion.Major -lt 7 -or $PSVersionTable.PSEdition -ne 'Core') { exit 97 }";
+
+fn owner_query_command(path: &Path, script: &str) -> std::process::Command {
+    let mut command = std::process::Command::new("pwsh.exe");
+    command
+        .args(["-NoLogo", "-NoProfile", "-NonInteractive", "-Command"])
+        .arg(format!("{OWNER_QUERY_CORE_GUARD}\n{script}"))
+        .env("DPT_SYNTHETIC_PATH", path);
+    command
+}
+
+fn pwsh_owner_query(path: &Path, script: &str) -> String {
+    let output = owner_query_command(path, script)
+        .output()
+        .unwrap_or_else(|error| {
+            panic!(
+                "synthetic_fixture.pwsh_owner: class=shell_unavailable; code={:?}; kind={:?}",
+                error.raw_os_error(),
+                error.kind()
+            )
+        });
+    assert!(
+        output.status.success(),
+        "synthetic_fixture.pwsh_owner: code={:?}; class=required_query_failure; {}",
+        output.status.code(),
+        owner_probe_failure_detail(&output.stdout)
+    );
+    String::from_utf8(output.stdout)
+        .unwrap_or_else(|_| panic!("synthetic_fixture.pwsh_owner: class=invalid_utf8"))
+        .trim()
+        .into()
+}
+
 // Only fixed operation categories and a parsed numeric HRESULT may leave this
 // fixture. Raw stdout/stderr, paths, account names and SIDs remain private.
 fn owner_probe_failure_detail(stdout: &[u8]) -> String {
@@ -157,7 +192,7 @@ fn phase1_windows_actual_new_object_owners_match_current_token() {
         // Windows PowerShell's provider need not accept Rust's verbatim prefix.
         let query = owner_probe_path(path);
         assert_eq!(
-            powershell(
+            pwsh_owner_query(
                 &query,
                 include_str!("../scripts/windows-owner-query.ps1")
             ),

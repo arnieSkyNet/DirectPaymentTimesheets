@@ -156,16 +156,18 @@ try {
                 }
                 $success = $exitCode -eq 0 -and $probeLines.Count -eq 1 -and $probeLines[0] -eq 'True' -and
                     $null -ne $context -and $context.get_acl_cmdlet -and $context.security_module -and
-                    $context.filesystem_provider -and $context.bits -eq 64 -and $context.default_owner_is_user
+                    $context.filesystem_provider -and $context.bits -eq 64 -and $context.default_owner_is_user -and
+                    ($shell -ne 'powershell_core' -or ($context.ps_major -ge 7 -and $context.edition -eq 'Core'))
                 $failure = if ($probeLines.Count -eq 1) { Convert-DptFailure $probeLines[0] } else { @{classification='unclassified'} }
                 $native = [DptOwnerFixtureNative]::SameIdentity($ordinary,$verbatim) -and
                     [DptOwnerFixtureNative]::MatchesIdentity($ordinary,$object.identity) -and
                     [DptOwnerFixtureNative]::MatchesIdentity($verbatim,$object.identity) -and
                     [DptOwnerFixtureNative]::IsPrivate($ordinary) -and [DptOwnerFixtureNative]::IsPrivate($verbatim)
                 if (-not $native) { throw 'Mandatory native checks failed after query' }
-                # Ordinary paths reproduce the current Rust fixture and must pass.
-                # Verbatim queries are explicit provider comparisons, never fallbacks.
-                $rows += [ordered]@{ shell=$shell; object=$object.kind; style=$style; required=($style -eq 'ordinary');
+                # Core 7+ is the supported owner-query environment. Require both
+                # path styles for both objects; retain every Desktop diagnostic.
+                $rows += [ordered]@{ shell=$shell; object=$object.kind; style=$style; required=($shell -eq 'powershell_core');
+                    diagnostic_only=($shell -eq 'windows_powershell');
                     identity_owner_acl=$native; owner_query_passed=[bool]$success; exit_code=$exitCode;
                     stderr_present=($stderr.Length -gt 0); context=$context; failure=$failure }
             }
@@ -177,9 +179,14 @@ try {
     [ordered]@{ infrastructure_failure=$true; stage=$stage; hresult=[int]$_.Exception.HResult } | ConvertTo-Json -Compress | Write-Output
     exit 1
 }
-$complete = $rows.Count -eq 8 -and @($rows | Where-Object { $_.required }).Count -eq 4
-$passed = $complete -and @($rows | Where-Object { $_.required -and -not $_.owner_query_passed }).Count -eq 0
+$complete = $rows.Count -eq 8 -and @($rows | Where-Object { $_.required }).Count -eq 4 -and
+    @($rows | Where-Object { $_.diagnostic_only }).Count -eq 4
+$requiredFailures = @($rows | Where-Object { $_.required -and -not $_.owner_query_passed }).Count
+$diagnosticFailures = @($rows | Where-Object { $_.diagnostic_only -and -not $_.owner_query_passed }).Count
+$passed = $complete -and $requiredFailures -eq 0
 [ordered]@{ cases=$rows; complete_matrix=$complete; required_passed=$passed;
+    required_shell='powershell_core'; required_failures=$requiredFailures;
+    diagnostic_shell='windows_powershell'; diagnostic_failures=$diagnosticFailures;
     synthetic_objects_retained=$true; native_execution=$true } | ConvertTo-Json -Depth 8 | Write-Output
 if (-not $passed) { exit 1 }
 

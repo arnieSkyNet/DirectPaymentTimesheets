@@ -298,3 +298,79 @@ verifier's tiny C# Add-Type compilation remains necessary for the independent
 Win32 controls. Existing release workflows are unchanged. No workflow was
 triggered or monitored during review; native execution remains unverified and
 requires separate authorization. Historical recovery metadata is excluded.
+
+
+## Owner query uses the verified Core environment — run 42642480406
+
+Evidence: [completed native owner job 129246916868](https://github.com/arnieSkyNet/DirectPaymentTimesheets/actions/runs/42642480406/job/129246916868)
+at `cf6faa8658452253343354a9b6bb191c2ebaa12d`. Only the existing log was read;
+no Actions dispatch, rerun or monitoring occurred for this correction.
+
+The independent native Windows x64 identity/current-user-owner/private-DACL
+checks passed in all eight cases. All four PowerShell 7.6/Core/.NET 10 queries
+passed (directory/file, ordinary/verbatim paths), with get_acl_cmdlet=true and
+security_module=true. All four Windows PowerShell 5.1/Desktop/.NET 4 queries
+failed with get_acl_cmdlet=false and security_module=false. Both shells reported
+64-bit, filesystem context, current-user default ownership and enabled admin role.
+Thus the observed failure is the selected shell's command/module availability,
+not evidence that the fixture has insecure ownership or DACLs. The generic
+HRESULT was not used to infer this conclusion. Why this runner's 5.1 command
+module is unavailable was not established and no system/module repair is needed
+for the bounded owner-query fixture.
+
+### Narrow correction
+
+Only phase1_windows_actual_new_object_owners_match_current_token now invokes
+pwsh_owner_query. Its command builder requires pwsh.exe with NoLogo, NoProfile,
+NonInteractive and the unchanged shared query script. A guard requires Core 7+
+before running the query; an absent executable, wrong shell version, missing
+Get-Acl, nonzero exit, invalid UTF-8 or any result other than True fails closed.
+There is no fallback to Windows PowerShell or unconditional success. Spawn errors
+and malformed output use fixed/numeric redacted diagnostics. All other NTFS,
+DACL and publication fixtures retain their existing powershell.exe helper.
+
+The original same-file identity/path helper, exact owner-vs-current-token result
+and platform::is_private assertion are unchanged and remain mandatory. No
+production Windows ownership, ACL, SQLite or GUI logic changed. The shared query,
+native C# security checks, package wrapper and workflows are unchanged.
+
+In the standalone verifier, all four PowerShell Core cases are now required,
+including both spellings for both object kinds. The complete eight-case matrix
+still runs; all four Windows PowerShell rows are labelled diagnostic_only, retain
+their contexts/exception classifications and contribute to diagnostic_failures.
+The summary reports required_shell, required_failures, diagnostic_shell and
+diagnostic_failures explicitly. Four Core cases, four diagnostic rows and all
+native identity/owner/DACL checks remain necessary. Core version/edition is also
+validated. Native invariant, infrastructure and cleanup failures still fail
+closed; no security failure is reclassified as a harmless shell diagnostic.
+
+This supersedes the earlier ordinary-path-required role assignment. It does not
+remove or conceal the 5.1 failures and does not reopen the passed native security
+controls. The existing manual workflow continues to use the same standalone
+command; it was neither edited nor run here.
+
+### Focused local checks and remaining native verification
+
+Evidence: /tmp/dpts-pwsh-owner-42642480406/ (scratch). Nine tests passed in a
+small harness compiled from the actual command builder/executor and diagnostic
+parser: Core-only command/guard/environment construction, missing-shell
+fail-closed redaction, invalid-UTF-8 output redaction, and six existing
+parser/privacy tests. No application build
+or full Rust suite was run. Rust parsing and scoped preservation checks passed.
+The shell-selection command is inspected on Linux; PowerShell itself was not run.
+
+A replay of the published eight-case native JSON confirms four Core successes,
+four 5.1 failures explicitly counted, and passing identity/owner/DACL controls.
+Thirteen negative replay controls reject each failed required query, an incomplete
+matrix, and each failed native invariant. This is an evidence replay and policy
+check, not execution of the updated PowerShell script. Neither the updated Rust
+owner test nor the changed verifier aggregation has been executed natively yet.
+A separately authorized native check should run the standalone verifier and the
+single Rust owner fixture (using an appropriate cached test binary/build route),
+confirming required_passed=true together with diagnostic_failures=4 for this
+observed runner environment. Other environments may legitimately have usable
+5.1 commands; their diagnostic outcome is reported without changing Core gates.
+
+Recovery metadata, unrelated tracked files, worktrees and backups are preserved.
+No commit, push, Actions run, full suite, package build, release, production payroll
+or real credential-store operation occurred.
