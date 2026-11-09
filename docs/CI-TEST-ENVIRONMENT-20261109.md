@@ -167,3 +167,134 @@ report changed. All production security checks, Windows owner/ACL policy, SQLite
 safeguards, accepted GUI code, historical recovery metadata and existing worktrees
 remain unchanged. No commit, push, merge, Actions dispatch/rerun/monitoring, full
 build, package build, release, live payroll or native-vault access was performed.
+
+
+## Standalone Windows owner investigation — run 42627247019
+
+Base: `bcd6ff32c4a084c0af777934965be7128ce2b57e`; existing failed job
+[129194167358](https://github.com/arnieSkyNet/DirectPaymentTimesheets/actions/runs/42627247019/job/129194167358).
+Only the existing job log was inspected; no Actions run was triggered or monitored.
+The recorded outcome is 1149 passed, 1 failed, 7 ignored. The sole failure is the
+owner fixture at stage get_acl, category exception, HRESULT -2146233087.
+
+### What is established, and what is not
+
+The failure occurs before GetOwner/current-token comparison, on Get-Acl itself.
+The same-file assertion completed and the Rust fixture supplied the ordinary,
+identity-checked drive spelling. Removing the verbatim prefix did not fix this
+run, so a prefix-only explanation is insufficient. The package wrapper's private
+NTFS/default-owner preflight passed. The Rust helper invokes Windows PowerShell
+powershell.exe with NoProfile/NonInteractive; the package wrapper runs under
+PowerShell 7. These are different .NET/provider execution contexts.
+
+The recorded HRESULT does not determine the exception type or root cause.
+SystemException and wrappers can carry generic HRESULTs and inner exceptions;
+Microsoft's [SystemException implementation](https://github.com/dotnet/runtime/blob/main/src/libraries/System.Private.CoreLib/src/System/SystemException.cs)
+illustrates why the number alone is insufficient. The
+[Get-Acl implementation](https://github.com/PowerShell/PowerShell/blob/master/src/Microsoft.PowerShell.Security/security/AclCommands.cs)
+uses provider existence/security-descriptor operations. Current PowerShell source
+requests owner/group/access by default, with audit added only when selected;
+that is useful context, not proof about the installed Windows PowerShell 5.1
+implementation or evidence that this exception is a missing privilege.
+No raw exception type, inner exception or message was retained in the old marker.
+No permission repair, privilege enablement, shell substitution, Get-Acl fallback,
+owner exception or production-policy change is justified by that evidence.
+
+### Prepared changes
+
+- Extract the same owner query into scripts/windows-owner-query.ps1, included
+  directly by the Rust test and used verbatim by the standalone verifier. The
+  successful query and required True owner result are unchanged.
+- Add bounded redacted diagnostics: actual exception kinds (fixed allowlist),
+  up to four HRESULT levels, Win32 native codes where the exception really is
+  Win32Exception, and a fixed error-ID category. Preserve the legacy marker too.
+  No type is inferred from an HRESULT. Raw messages, ErrorRecords, paths, SIDs,
+  account names and stderr are never formatted into the public result.
+- Add scripts/verify-windows-owner-fixture.ps1 and the small supporting
+  scripts/windows-owner-fixture-native.cs. This is a synthetic diagnostic, not
+  a substitute for application/native platform sign-off. It requires x64 Windows,
+  PowerShell 7 and NTFS, and creates only new private random-named fixture objects.
+  It does not build the application or invoke Cargo or the package wrapper.
+- Reuse only the existing package wrapper's C# default-owner helper to match
+  the package job's child context. The verifier restores the prior default owner
+  in finally and changes no privileges, group membership or existing ACLs.
+- Independent Win32 reads check actual current-user ownership and a protected
+  current-user/System-only full-control DACL. Native file identity and privacy
+  are checked before and after each query. These checks never become optional.
+- Compare Windows PowerShell 5.1 and PowerShell 7, directory and file, ordinary
+  and verbatim spellings: eight query cases. Four ordinary-path cases reproduce
+  the current fixture requirement and must pass. Verbatim queries are explicitly
+  labelled provider comparisons; their outcomes cannot satisfy a failed required
+  query. A successful direct Win32 check cannot substitute for a failed Get-Acl.
+- Record only sanitized shell/runtime version numbers, process bitness, filesystem
+  provider/cmdlet/module booleans, current/default-owner equality and enabled admin
+  role status. Both stdout and stderr are captured; only stderr presence is public.
+  Bounded child shells are terminated on timeout. Synthetic objects are retained;
+  no cleanup/delete operation is provided.
+
+The mandatory same-file identity, exact current-token owner and private-ACL
+assertions in the existing Rust fixture remain unchanged. All production Windows
+owner/ACL/SQLite implementations, accepted GUI source and workflows are unchanged.
+
+### Proposed short native command (not run here)
+
+From a checkout containing these reviewed files on a windows-2022 x64 runner:
+
+```powershell
+pwsh -NoProfile -File scripts/verify-windows-owner-fixture.ps1
+```
+
+Only the small C# helper is compiled by Add-Type. No Rust application build,
+package build, full suite or native vault operation is involved. Output is a
+sanitized JSON report; nonzero exit means a required query or native invariant
+failed. A subsequent reviewed manual-only entry point is documented below;
+it has no automatic trigger. Execution needs separate authorization.
+
+Interpretation: differing shell results isolate the provider/runtime context;
+differing spelling results isolate path handling; successful Win32 owner/privacy
+with failing Get-Acl isolates the query layer without proving which internal
+provider operation failed. Inspect actual exception kinds, inner/native codes and
+fixed error-ID category before proposing a fix. If the bounded chain still ends
+in other/none or generic errors, the root cause remains unresolved. Never convert
+that uncertainty into a security bypass or a claimed pass.
+
+### Focused local validation
+
+Evidence: /tmp/dpts-owner-native-42627247019/ (scratch, not durable storage).
+The exact new diagnostic parser passed six tests, including legacy compatibility,
+inner codes/types, identical HRESULTs with different actual types, malformed fields,
+overflow, invalid UTF-8, private canaries and excessive output. The standalone C#
+helper compiled on Mono. Its pure descriptor validator passed two positive and
+nine unsafe controls (foreign owner, broad/reduced/denied/extra grants, unprotected,
+missing-user/System, empty/null DACL). No Win32 calls were executed on Linux.
+Initial scratch controls exposed Mono SDDL-parser limitations for empty/null DACL;
+those controls were constructed directly as RawSecurityDescriptor objects instead.
+The verifier's policy was not weakened. Rust syntax and wiring/privacy source
+checks passed. PowerShell parsing/execution and native file-identity/owner/provider
+behavior remain unverified because no PowerShell/Windows executor is available
+locally. No full application compilation or suite was performed.
+
+The original Get-Acl root cause remains unknown pending the native diagnostic.
+No production data, real credential store, existing directory ACL or unrelated
+worktree was accessed or modified. Historical recovery metadata is unchanged.
+No commit, push, merge, Actions, package build, tag or release was performed.
+
+
+## Manual-only owner verification entry point
+
+Prepared `.github/workflows/windows-owner-fixture.yml` during the subsequent
+review. Its only trigger is workflow_dispatch; the sole job uses windows-2022
+(the verifier additionally refuses non-x64 contexts), a five-minute timeout,
+contents:read, and checksum-pinned checkout with credentials not persisted.
+The only run command is:
+
+```powershell
+pwsh -NoProfile -File scripts/verify-windows-owner-fixture.ps1
+```
+
+There is no Rust compilation/suite, installer/package build, artifact upload,
+cache, publisher, release or automatic push/pull-request trigger. The standalone
+verifier's tiny C# Add-Type compilation remains necessary for the independent
+Win32 controls. Existing release workflows are unchanged. No workflow was
+triggered or monitored during review; native execution remains unverified and
+requires separate authorization. Historical recovery metadata is excluded.

@@ -23,8 +23,12 @@ fn owner_probe_failure_detail(stdout: &[u8]) -> String {
     let Ok(text) = std::str::from_utf8(stdout) else {
         return "operation=unclassified".into();
     };
+    if text.len() > 1024 {
+        return "operation=unclassified".into();
+    }
     let fields = text.trim().split('|').collect::<Vec<_>>();
-    if fields.len() != 4 || fields[0] != "DPT_OWNER_QUERY" {
+    let legacy = fields.len() == 4 && fields[0] == "DPT_OWNER_QUERY";
+    if !legacy && !(fields.len() == 16 && fields[0] == "DPT_OWNER_QUERY_V2") {
         return "operation=unclassified".into();
     }
     let stage = match fields[1] {
@@ -43,7 +47,54 @@ fn owner_probe_failure_detail(stdout: &[u8]) -> String {
     let Ok(code) = fields[3].parse::<i32>() else {
         return "operation=unclassified".into();
     };
-    format!("operation=owner_query; stage={stage}; class={class}; hresult={code}")
+    let base = format!("operation=owner_query; stage={stage}; class={class}; hresult={code}");
+    if legacy {
+        return base;
+    }
+    let kind = |value: &str| -> Option<&'static str> {
+        match value {
+            "none" => Some("none"),
+            "provider_invocation" => Some("provider_invocation"),
+            "cmdlet_invocation" => Some("cmdlet_invocation"),
+            "action_preference_stop" => Some("action_preference_stop"),
+            "runtime" => Some("runtime"),
+            "privilege_not_held" => Some("privilege_not_held"),
+            "unauthorized_access" => Some("unauthorized_access"),
+            "win32" => Some("win32"),
+            "directory_not_found" => Some("directory_not_found"),
+            "file_not_found" => Some("file_not_found"),
+            "io" => Some("io"),
+            "argument" => Some("argument"),
+            "not_supported" => Some("not_supported"),
+            "invalid_operation" => Some("invalid_operation"),
+            "system" => Some("system"),
+            "other" => Some("other"),
+            _ => None,
+        }
+    };
+    let types = [fields[4], fields[5], fields[7], fields[9]]
+        .into_iter()
+        .map(kind)
+        .collect::<Option<Vec<_>>>();
+    let Some(types) = types else {
+        return "operation=unclassified".into();
+    };
+    let numbers = [6, 8, 10, 11, 12, 13, 14]
+        .into_iter()
+        .map(|i| fields[i].parse::<i32>().ok())
+        .collect::<Option<Vec<_>>>();
+    let Some(numbers) = numbers else {
+        return "operation=unclassified".into();
+    };
+    let error_id = match fields[15] {
+        "get_acl_path_not_found" => "get_acl_path_not_found",
+        "get_acl_operation_not_supported" => "get_acl_operation_not_supported",
+        "get_acl_fail" => "get_acl_fail",
+        "other" => "other",
+        _ => return "operation=unclassified".into(),
+    };
+    format!("{base}; exception={}; inner1={}:{}; inner2={}:{}; inner3={}:{}; native_codes={},{},{},{}; error_id={error_id}",
+        types[0],types[1],numbers[0],types[2],numbers[1],types[3],numbers[2],numbers[3],numbers[4],numbers[5],numbers[6])
 }
 
 fn owner_probe_path(path: &Path) -> PathBuf {
@@ -108,28 +159,7 @@ fn phase1_windows_actual_new_object_owners_match_current_token() {
         assert_eq!(
             powershell(
                 &query,
-                r#"
-            $ErrorActionPreference='Stop'
-            $stage = 'get_acl'
-            try {
-                $acl = Get-Acl -LiteralPath $env:DPT_SYNTHETIC_PATH -ErrorAction Stop
-                $stage = 'get_owner'
-                $owner = $acl.GetOwner([System.Security.Principal.SecurityIdentifier])
-                $stage = 'current_token'
-                $current = [System.Security.Principal.WindowsIdentity]::GetCurrent().User
-                $stage = 'compare'
-                $owner.Equals($current)
-            } catch {
-                $category = 'exception'
-                if ($_.FullyQualifiedErrorId -like 'GetAcl_PathNotFound,*') {
-                    $category = 'path_not_found'
-                } elseif ($_.CategoryInfo.Category -eq [Management.Automation.ErrorCategory]::PermissionDenied) {
-                    $category = 'access_denied'
-                }
-                [Console]::Out.WriteLine(('DPT_OWNER_QUERY|{0}|{1}|{2}' -f $stage,$category,$_.Exception.HResult))
-                exit 1
-            }
-        "#
+                include_str!("../scripts/windows-owner-query.ps1")
             ),
             "True"
         );
