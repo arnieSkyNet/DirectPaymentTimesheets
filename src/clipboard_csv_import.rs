@@ -11,6 +11,7 @@ pub(crate) struct Session {
     pub paste_text: Option<String>,
     pub paste_focus: bool,
     import_dir: PathBuf,
+    config: crate::csv_import::CsvImportConfig,
 }
 impl Session {
     pub fn new(app: &Application, summary: &ImportSummary) -> Result<Self, Box<dyn Error>> {
@@ -34,6 +35,7 @@ impl Session {
             })
             .collect();
         Ok(Self {
+            config: app.context.config.csv_import.clone(),
             selected: outstanding.first().map_or(0, |pa| pa.id),
             outstanding,
             accepting: false,
@@ -48,6 +50,9 @@ impl Session {
         if !self.accepting {
             return Err("Choose Yes before pasting CSV.".into());
         }
+        if self.config != app.context.config.csv_import {
+            return Err("CSV import settings changed; cancel and restart import.".into());
+        }
         if self.import_dir != crate::paths::expand_path(&app.context.config.folders.csv_import) {
             return Err("Import folder changed; cancel and start Import Hours CSV again.".into());
         }
@@ -61,7 +66,7 @@ impl Session {
             .iter()
             .find(|p| p.id == pa.id)
             .ok_or("PA is no longer active; cancel and restart import.")?;
-        let rows = crate::csv_import::import_csv_bytes(text.as_bytes())?;
+        let rows = crate::csv_import::import_csv_with_config(text.as_bytes(), &app.context.config.csv_import)?;
         if rows.is_empty() {
             return Err("Clipboard CSV contains no shifts.".into());
         }
@@ -112,6 +117,9 @@ impl Session {
         Err("Could not allocate a nonconflicting clipboard CSV filename.".into())
     }
     pub fn finish(&self, app: &Application) -> Result<ImportSummary, Box<dyn Error>> {
+        if self.config != app.context.config.csv_import {
+            return Err("CSV import settings changed; cancel and restart import.".into());
+        }
         if self.import_dir != crate::paths::expand_path(&app.context.config.folders.csv_import) {
             return Err(
                 "Import folder changed; saved clipboard CSVs remain in the original folder.".into(),
@@ -358,5 +366,180 @@ mod tests {
         assert_eq!(summary.files_refused, 1);
         assert_eq!(summary.files_succeeded, 1);
         assert_eq!(summary.failure_messages.len(), 1);
+    }
+}
+
+#[cfg(test)]
+mod csv_settings_tests {
+    use super::*;
+    #[test]
+    fn clipboard_session_refuses_changed_interpretation_before_publishing() {
+        let (_dir, mut app) = crate::payroll_timesheet_screen::tests::test_application();
+        let session = Session::new(&app, &ImportSummary::default()).unwrap();
+        app.context.config.csv_import.introductory_rows = 0;
+        assert!(session
+            .finish(&app)
+            .err()
+            .unwrap()
+            .to_string()
+            .contains("settings changed"));
+    }
+    #[test]
+    fn clipboard_and_folder_share_custom_headings_and_elapsed_method() {
+        let (_dir, mut app) = crate::payroll_timesheet_screen::tests::test_application();
+        app.repository.connection().execute_batch("INSERT INTO personal_assistants(id,first_name,surname,employment_status) VALUES(1,'Example','PA','Active')").unwrap();
+        let input = crate::paths::expand_path(&app.context.config.folders.csv_import);
+        std::fs::create_dir_all(&input).unwrap();
+        app.context.config.csv_import.introductory_rows = 0;
+        app.context.config.csv_import.hours_method = crate::csv_import::HoursMethod::EndMinusStart;
+        app.context.config.csv_import.headings[0] = vec!["Employee".into()];
+        let text =
+            "End,Employee,Start,extra\n2 April 2026 at 09:34,Example PA,2 April 2026 at 09:00,x\n";
+        let mut session = Session::new(&app, &ImportSummary::default()).unwrap();
+        session.accepting = true;
+        session.save_paste(&app, text).unwrap();
+        assert_eq!(std::fs::read(&session.paths[0]).unwrap(), text.as_bytes());
+        let summary = session.finish(&app).unwrap();
+        assert_eq!(summary.rows_imported, 1, "{:?}", summary.failure_messages);
+        assert_eq!(app.repository.get_all_raw().unwrap()[0].worked_minutes, 34);
+    }
+}
+
+#[cfg(test)]
+mod four_method_tests {
+    use super::*;
+    use crate::csv_import::{CsvImportConfig, HoursMethod};
+    #[test]
+    fn saved_four_methods_match_folder_and_clipboard_and_retain_first_audit() {
+        for method in HoursMethod::ALL {
+            for clipboard in [false, true] {
+                let (_dir, mut app) = crate::payroll_timesheet_screen::tests::test_application();
+                app.repository.connection().execute_batch("INSERT INTO personal_assistants(id,first_name,surname,employment_status) VALUES(1,'Example','PA','Active')").unwrap();
+                let mut config = CsvImportConfig {
+                    introductory_rows: 0,
+                    hours_method: method,
+                    ..Default::default()
+                };
+                config.headings[0] = vec!["Employee".into()];
+                config.enabled[4] = method.uses_worked_hours();
+                config.enabled[5] = false;
+                config.enabled[6] = false;
+                config.enabled[7] = false;
+                app.context.config.csv_import = config.clone();
+                app.save_config().unwrap();
+                let saved = crate::config::AppConfig::load(
+                    &app.context.environment.data_dir.join("config.toml"),
+                )
+                .unwrap();
+                assert_eq!(saved.csv_import, config);
+                app.context.config = saved;
+                let input = crate::paths::expand_path(&app.context.config.folders.csv_import);
+                std::fs::create_dir_all(&input).unwrap();
+                let worked = if method.uses_worked_hours() {
+                    "0h 27m"
+                } else {
+                    "ignored invalid"
+                };
+                let text=format!("End,Employee,Start,Break,Worked,Rate,Note\n2 April 2026 at 09:34,Example PA,2 April 2026 at 09:00,0h 10m,{worked},invalid,ignored\n");
+                let summary = if clipboard {
+                    let mut session = Session::new(&app, &ImportSummary::default()).unwrap();
+                    session.accepting = true;
+                    session.save_paste(&app, &text).unwrap();
+                    session.finish(&app).unwrap()
+                } else {
+                    std::fs::write(input.join("folder.csv"), &text).unwrap();
+                    app.create_import_service().run().unwrap()
+                };
+                assert_eq!(summary.rows_imported, 1, "{:?}", summary.failure_messages);
+                let row = app.repository.get_all_raw().unwrap().remove(0);
+                let expected = match method {
+                    HoursMethod::WorkedHours => 27,
+                    HoursMethod::WorkedHoursMinusBreak => 17,
+                    HoursMethod::EndMinusStart => 34,
+                    HoursMethod::EndMinusStartMinusBreak => 24,
+                };
+                assert_eq!(row.worked_minutes, expected);
+                assert_eq!(
+                    std::fs::read(&summary.archived_paths[0]).unwrap(),
+                    text.as_bytes()
+                );
+                let audit: String = app
+                    .repository
+                    .connection()
+                    .query_row(
+                        "SELECT after_evidence FROM shift_change_events WHERE source='csv_import'",
+                        [],
+                        |r| r.get(0),
+                    )
+                    .unwrap();
+                let retained: crate::import_service::ImportInterpretation =
+                    toml::from_str(&audit).unwrap();
+                assert_eq!(retained.config, config);
+                assert_eq!(retained.source_fields[0].0, row.id);
+                assert_eq!(
+                    retained.source_fields[0].1,
+                    [
+                        true,
+                        true,
+                        true,
+                        true,
+                        method.uses_worked_hours(),
+                        false,
+                        false,
+                        false
+                    ]
+                );
+                // A copied file with identical bytes retains its first method/column flags.
+                app.context.config.csv_import = CsvImportConfig::default();
+                std::fs::write(input.join("copied.csv"), &text).unwrap();
+                let repeat = app.create_import_service().run().unwrap();
+                assert_eq!(repeat.rows_imported, 0, "{:?}", repeat.failure_messages);
+                assert_eq!(
+                    app.repository.get_all_raw().unwrap()[0].worked_minutes,
+                    expected
+                );
+            }
+        }
+    }
+    #[test]
+    fn missing_break_refuses_folder_atomically_and_clipboard_before_publication() {
+        for method in [
+            HoursMethod::WorkedHoursMinusBreak,
+            HoursMethod::EndMinusStartMinusBreak,
+        ] {
+            let (_dir, mut app) = crate::payroll_timesheet_screen::tests::test_application();
+            app.repository.connection().execute_batch("INSERT INTO personal_assistants(id,first_name,surname,employment_status) VALUES(1,'Example','PA','Active')").unwrap();
+            app.context.config.csv_import.hours_method = method;
+            let input = crate::paths::expand_path(&app.context.config.folders.csv_import);
+            std::fs::create_dir_all(&input).unwrap();
+            let text="period\nPA,Start,End,Worked,Break\nExample PA,2 April 2026 at 09:00,2 April 2026 at 09:34,0h 27m,0h 10m\nExample PA,2 April 2026 at 10:00,2 April 2026 at 10:34,0h 27m,\n";
+            let mut session = Session::new(&app, &ImportSummary::default()).unwrap();
+            session.accepting = true;
+            assert!(session.save_paste(&app, text).is_err());
+            assert!(session.paths.is_empty());
+            assert_eq!(std::fs::read_dir(&input).unwrap().count(), 0);
+            std::fs::write(input.join("invalid.csv"), text).unwrap();
+            let summary = app.create_import_service().run().unwrap();
+            assert_eq!(summary.files_refused, 1);
+            assert!(app.repository.get_all_raw().unwrap().is_empty());
+        }
+    }
+    #[test]
+    fn clipboard_session_detects_method_and_enabled_flag_changes() {
+        let (_dir, mut app) = crate::payroll_timesheet_screen::tests::test_application();
+        for method_change in [false, true] {
+            let session = Session::new(&app, &ImportSummary::default()).unwrap();
+            if method_change {
+                app.context.config.csv_import.hours_method = HoursMethod::WorkedHoursMinusBreak;
+            } else {
+                app.context.config.csv_import.enabled[5] = false;
+            }
+            assert!(session
+                .finish(&app)
+                .err()
+                .unwrap()
+                .to_string()
+                .contains("settings changed"));
+        }
     }
 }

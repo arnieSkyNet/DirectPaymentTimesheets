@@ -52,6 +52,16 @@ pub struct PersonalAssistant {
 }
 
 impl PersonalAssistant {
+    /// Ordinary entry/automatic sending requires current, explicit employment.
+    pub fn is_currently_active(&self) -> bool {
+        let today = chrono::Local::now().date_naive();
+        self.employment_status.as_deref() == Some("Active")
+            && self.employment_overlaps(today, today).unwrap_or(false)
+    }
+    pub fn employment_identity(&self) -> String {
+        format!("{:?}", (&self.employment_status, &self.start_date, &self.leaving_date))
+    }
+
     pub fn eligible_for_period(
         &self,
         start: chrono::NaiveDate,

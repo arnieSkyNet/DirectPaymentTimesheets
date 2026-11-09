@@ -4,6 +4,7 @@ struct ProductionChoice {
     id: i64,
     name: String,
     available: bool,
+    automatic: bool,
     detail: String,
     intent: Option<crate::timesheet_delivery::Intent>,
 }
@@ -59,6 +60,9 @@ fn draw_production_choices(
     ids: &mut Vec<i64>,
     unsent_only: bool,
 ) {
+    if choices.iter().any(|choice| !choice.automatic) {
+        ui.label("Bulk selection includes active PAs only. Retained/final recipients must be selected individually.");
+    }
     ui.horizontal_wrapped(|ui| {
         if ui
             .button(if unsent_only {
@@ -71,7 +75,7 @@ fn draw_production_choices(
             *ids = choices
                 .iter()
                 .filter(|c| {
-                    c.available && (!unsent_only || !c.intent.as_ref().is_some_and(|i| i.resend))
+                    c.available && c.automatic && (!unsent_only || !c.intent.as_ref().is_some_and(|i| i.resend))
                 })
                 .map(|c| c.id)
                 .collect();
@@ -115,13 +119,17 @@ impl DirectPaymentApp {
         schedule: &PayrollSchedule,
         sending: bool,
     ) -> Result<Vec<ProductionChoice>, Box<dyn std::error::Error>> {
+        self.production_choices_for_access(schedule, sending, false)
+    }
+    fn production_choices_for_access(&self, schedule: &PayrollSchedule, sending: bool, retained: bool) -> Result<Vec<ProductionChoice>, Box<dyn std::error::Error>> {
         use crate::payroll_evidence::lifecycle::{stage, Stage};
         let db = crate::payroll_evidence::open(&self.application)?;
         let start = crate::date_utils::parse_legacy(&schedule.first_week_commencing)?;
         let mut choices = Vec::new();
         for pa in self.application.personal_assistant_repository.get_all()? {
-            if sending && !self.email_pa_visible(&pa) { continue; }
             let has_record: bool = db.query_row("SELECT EXISTS(SELECT 1 FROM payroll_timesheets WHERE personal_assistant_id=?1 AND payroll_year=?2 AND cycle_number=?3)", rusqlite::params![pa.id,schedule.payroll_year,schedule.cycle_number], |r|r.get(0))?;
+            if retained && !has_record { continue; }
+            if !pa.is_currently_active() && (!retained || !has_record) { continue; }
             let eligibility =
                 pa.eligible_for_period(start, start + chrono::Duration::days(27), has_record);
             if matches!(eligibility, Ok(false)) {
@@ -189,6 +197,7 @@ impl DirectPaymentApp {
             })();
             choices.push(ProductionChoice {
                 id: pa.id,
+                automatic: pa.is_currently_active(),
                 name: format!("{} {}", pa.first_name, pa.surname),
                 available: readiness.is_ok(),
                 detail: readiness.unwrap_or_else(|e| e.to_string()),
@@ -367,10 +376,10 @@ impl DirectPaymentApp {
         Ok(report)
     }
 
-    fn signature_issues(
+    fn generation_signature_owners(
         &self,
         pending: &PendingGeneration,
-    ) -> Result<Vec<(crate::signature::Owner, String, String)>, Box<dyn std::error::Error>> {
+    ) -> Result<Vec<(crate::signature::Owner, String, Option<String>)>, Box<dyn std::error::Error>> {
         let mut owners = Vec::new();
         if let Some(employer) = self
             .application
@@ -398,6 +407,17 @@ impl DirectPaymentApp {
                 pa.signature,
             ));
         }
+        Ok(owners)
+    }
+
+    fn missing_generation_signatures(&self, pending: &PendingGeneration) -> Result<Vec<(crate::signature::Owner, String)>, Box<dyn std::error::Error>> {
+        Ok(self.generation_signature_owners(pending)?.into_iter()
+            .filter(|(_, _, path)| !matches!(crate::signature::checked_path(path.as_deref(), false), Ok(Some(_))))
+            .map(|(owner, name, _)| (owner, name)).collect())
+    }
+
+    fn signature_issues(&self, pending: &PendingGeneration) -> Result<Vec<(crate::signature::Owner, String, String)>, Box<dyn std::error::Error>> {
+        let owners = self.generation_signature_owners(pending)?;
         let mut issues = Vec::new();
         for (owner, name, path) in owners {
             if !pending.unsigned_signatures.contains(&owner) {
@@ -421,6 +441,7 @@ impl DirectPaymentApp {
         }
         let mut execute = false;
         let mut cancel = false;
+        let mut retained = false;
         if pending.review_signatures {
             // Decode once per review, then only refresh after a saved replacement.
             // Publication revalidates; a filesystem race cannot silently omit ink.
@@ -463,18 +484,16 @@ impl DirectPaymentApp {
             }
         } else {
             egui::Window::new("Generate payroll timesheets — select PAs").collapsible(false).show(ui.ctx(), |ui| {
+                retained = ui.button("Choose retained historical/final records...").clicked();
                 ui.label(&pending.period.display_label);
                 ui.label(format!("Holiday review: {} — {:?}. Stored preparation is retained; dates do not establish entitlement or automatically subtract worked hours.", pending.holiday_binding.region.label(), pending.holiday_binding.sources));
                 draw_production_choices(ui,&pending.choices,&mut pending.selected_ids,false);
                 ui.label("Optional: draw an authorised signature for this and future PDFs. Leaving signatures unconfigured keeps printable blank boxes.");
                 if let Ok(db)=crate::payroll_evidence::open(&self.application) {
-                    let mut people=Vec::new();
-                    if let Ok(employers)=self.application.employer_repository.get_all() {
-                        if let Some(e)=employers.into_iter().next() {people.push((crate::signature::Owner::Employer(e.id),format!("Employer {}",e.name)));}
-                    }
-                    if let Ok(pas)=self.application.personal_assistant_repository.get_all() {
-                        people.extend(pas.into_iter().filter(|p|pending.selected_ids.contains(&p.id)).map(|p|(crate::signature::Owner::Pa(p.id),format!("PA {} {}",p.first_name,p.surname))));
-                    }
+                    let people = match self.missing_generation_signatures(&pending) {
+                        Ok(people) => people,
+                        Err(error) => { self.status_message = error.to_string(); Vec::new() }
+                    };
                     for (owner,name) in people {
                         if ui.button(format!("Draw signature — {name}")).clicked() {
                             if let Err(e)=self.signature_drawing.open(owner,&db) {self.status_message=e.to_string();}
@@ -507,6 +526,17 @@ impl DirectPaymentApp {
                 Err(e) => self.status_message = format!("Generation refused: {e}"),
             }
         } else {
+            if retained {
+                match self.validated_generation_schedule(&pending).and_then(|schedule| {
+                    self.production_choices_for_access(&schedule, false, true)
+                }) {
+                    Ok(choices) => {
+                        pending.choices = choices;
+                        pending.selected_ids.clear();
+                    }
+                    Err(error) => self.status_message = error.to_string(),
+                }
+            }
             self.pending_generation = Some(pending);
         }
     }
@@ -519,6 +549,7 @@ impl DirectPaymentApp {
             return;
         };
         let mut cancel = false;
+        let mut retained = false;
         let payslips = matches!(batch.kind, PayrollEmailKind::Payslip);
         let max_width = (ui.ctx().content_rect().width() - 32.0).clamp(120.0, 720.0);
         egui::Window::new(if payslips { "Email payslips — select PAs" } else { "Email payroll timesheets — select PAs" })
@@ -532,6 +563,13 @@ impl DirectPaymentApp {
                 }
                 if payslips {
                     ui.label("Choose the PAs for this batch. Reviewed supplements marked Needs sending are included as shown. Each message goes to the PA, with a blind copy to the employer and no payroll department copy.");
+                }
+                if !payslips {
+                    if batch.retained_timesheets {
+                        ui.label("Retained historical/final timesheets: choose recipients individually. Departed PAs are excluded from automatic selection.");
+                    } else {
+                        retained = ui.button("Choose retained historical/final timesheets...").clicked();
+                    }
                 }
                 let previous_selection=batch.selected_personal_assistant_ids.clone();
                 draw_production_choices(
@@ -557,9 +595,8 @@ impl DirectPaymentApp {
                     ui.label("Select at least one Personal Assistant to continue.");
                 }
             });
-        if cancel {
-            self.clear_pending_email_batch();
-        }
+        if cancel { self.clear_pending_email_batch(); }
+        else if retained { self.begin_retained_timesheet_batch(); }
     }
     fn draw_production_report(&self, ui: &mut egui::Ui) {
         if let Some(report) = &self.production_report {

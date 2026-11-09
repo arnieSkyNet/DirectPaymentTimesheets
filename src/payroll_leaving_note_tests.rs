@@ -20,6 +20,7 @@ fn leaving_setup(
         [note],
     )
     .unwrap();
+    screen.historical_preparations = true;
     screen.reload();
     screen.load(&app, &schedule, "period").unwrap();
     (dir, app, schedule, screen)
@@ -67,6 +68,7 @@ fn leaving_note_outside_period_absent_or_nonblank_is_unchanged() {
             [],
         )
         .unwrap();
+    screen.historical_preparations = true;
     screen.reload();
     screen.load(&app, &schedule, "period").unwrap();
     assert_eq!(screen.weeks[0].0.payroll_department_notes, saved);
@@ -83,6 +85,7 @@ fn leaving_note_can_be_edited_deleted_and_saved_without_reappearing() {
         screen.save_current(&app).unwrap();
         assert_eq!(stored_note(&app, &screen.weeks[0].0), edited);
         assert!(!screen.has_unsaved_changes());
+        screen.historical_preparations = true;
         screen.reload();
         screen.load(&app, &schedule, "period").unwrap();
         assert_eq!(
@@ -111,6 +114,7 @@ fn leaving_note_navigation_save_discard_cancel_preserve_pa_isolation() {
                 [],
             )
             .unwrap();
+        screen.historical_preparations = true;
         screen.reload();
         screen.load(&app, &schedule, "period").unwrap();
         screen.request_pa(Some(1));
@@ -146,6 +150,7 @@ fn leaving_note_navigation_save_discard_cancel_preserve_pa_isolation() {
             UnsavedChoice::Discard => {
                 assert_eq!(stored_note(&app, &record), "");
                 assert_eq!(screen.selected_pa, Some(2));
+                screen.historical_preparations = true;
                 screen.reload();
                 screen.load(&app, &schedule, "period").unwrap();
                 screen.request_pa(Some(1));
@@ -182,6 +187,7 @@ fn leaving_note_save_invalidates_candidate_and_survives_reopen_without_touching_
             [],
         )
         .unwrap();
+    screen.historical_preparations = true;
     screen.reload();
     screen.load(&app, &schedule, "period").unwrap();
     assert!(screen.has_unsaved_changes());
@@ -206,6 +212,7 @@ fn leaving_note_save_invalidates_candidate_and_survives_reopen_without_touching_
         .unwrap();
     assert_eq!(saved.payroll_department_notes, leaving_text("20/08/2026"));
     assert_eq!(saved.actual_in_lieu_hours, Some(8.125));
+    screen.historical_preparations = true;
     screen.reload();
     screen.load(&app, &schedule, "period").unwrap();
     assert_eq!(
@@ -224,6 +231,7 @@ fn leaving_note_other_period_and_protected_preparations_remain_unchanged() {
     let second = insert_schedule(&app, "2026/27", 7, "07/09/2026", "02/10/2026");
     // Retained preparation remains eligible even though employment no longer overlaps.
     setup_connection(&app).execute("INSERT INTO payroll_timesheets (personal_assistant_id,payroll_year,cycle_number,created_at,updated_at) VALUES (1,'2026/27',7,'created','created')", []).unwrap();
+    screen.historical_preparations = true;
     screen.reload();
     screen.load(&app, &second, "second").unwrap();
     assert_eq!(screen.weeks[0].0.payroll_department_notes, "");
@@ -242,6 +250,7 @@ fn leaving_note_other_period_and_protected_preparations_remain_unchanged() {
             [],
         )
         .unwrap();
+        screen.historical_preparations = true;
         screen.reload();
         screen.load(&app, &schedule, "period").unwrap();
         assert_eq!(screen.weeks[0].0.payroll_department_notes, "");

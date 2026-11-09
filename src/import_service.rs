@@ -8,6 +8,15 @@ use crate::csv_import::{self, ParsedTimesheetRow};
 use crate::models::TimesheetEntry;
 use crate::repository::TimesheetRepository;
 
+#[derive(serde::Serialize, serde::Deserialize)]
+pub(crate) struct ImportInterpretation {
+    pub(crate) config: csv_import::CsvImportConfig,
+    pub(crate) supplied_fields: Vec<(u64, [bool; 8])>,
+    pub(crate) legacy: bool,
+    #[serde(default)]
+    pub(crate) source_fields: Vec<(i64, [bool; 8])>,
+}
+
 #[derive(Default)]
 pub struct ImportSummary {
     pub imported_pa_ids: Vec<i64>,
@@ -79,6 +88,7 @@ pub struct ImportService<'a> {
     repository: &'a TimesheetRepository,
     archive_dir: &'a Path,
     import_dir: PathBuf,
+    config: csv_import::CsvImportConfig,
 }
 
 impl<'a> ImportService<'a> {
@@ -91,7 +101,13 @@ impl<'a> ImportService<'a> {
             repository,
             archive_dir,
             import_dir,
+            config: Default::default(),
         }
+    }
+
+    pub fn with_config(mut self, config: csv_import::CsvImportConfig) -> Self {
+        self.config = config;
+        self
     }
 
     pub fn run(&self) -> Result<ImportSummary, Box<dyn Error>> {
@@ -142,10 +158,16 @@ impl<'a> ImportService<'a> {
                 summary.files_already_imported += 1;
                 // Only successfully recognized file contents count as covered;
                 // never infer a PA from a filename or historical database rows.
-                if let Ok(mut rows) = csv_import::import_csv_bytes(&bytes) {
-                    if self.resolve_personal_assistants(&mut rows, 0).is_ok() {
-                        summary.imported_pa_ids.extend(rows.iter().filter_map(|r| r.entry.personal_assistant_id));
-                        summary.covered_pa_dates.extend(rows.iter().filter_map(|r|r.entry.personal_assistant_id.map(|pa|(pa,r.start.date()))));
+                // Already imported bytes retain their stored interpretation even if
+                // headings/method/skip settings have since changed.
+                let db = self.repository.connection();
+                let mut stmt = db.prepare("SELECT DISTINCT t.personal_assistant_id,t.start_time FROM csv_import_rows r JOIN timesheets t ON t.id=r.source_id WHERE r.sha256=?1 AND t.personal_assistant_id IS NOT NULL")?;
+                let covered = stmt.query_map([&digest], |r| Ok((r.get::<_,i64>(0)?,r.get::<_,String>(1)?)))?;
+                for row in covered {
+                    let (pa, start) = row?;
+                    if let Some(start) = csv_import::parse_supported_timestamp(&start) {
+                        summary.imported_pa_ids.push(pa);
+                        summary.covered_pa_dates.push((pa, start.date()));
                     }
                 }
                 continue;
@@ -216,8 +238,22 @@ impl<'a> ImportService<'a> {
             .map_err(|e| FileFailure::failed(e, 0))?;
         tx.execute("UPDATE schema_version SET version=version", [])
             .map_err(|e| FileFailure::failed(e, 0))?;
-        let mut rows =
-            csv_import::import_csv_bytes(bytes).map_err(|error| FileFailure::refused(error, 0))?;
+        // Establish the original interpretation before parsing a legacy pathname.
+        // This only verifies the archived bytes already referenced by its audit.
+        crate::shift_changes::seed_legacy_path(&tx, path.to_string_lossy().as_ref())
+            .map_err(|e| FileFailure::refused(e, 0))?;
+        // The same bytes copied to a new pathname keep their first interpretation.
+        // Pre-Stage-1 content has no settings audit and uses the legacy parser.
+        let seen_hash: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM csv_import_contents WHERE sha256=?1)", [digest], |r| r.get(0)).map_err(|e| FileFailure::failed(e, 0))?;
+        let retained: Option<String> = {
+            use rusqlite::OptionalExtension;
+            tx.query_row("SELECT e.after_evidence FROM shift_change_events e JOIN csv_import_contents c ON c.import_audit_id=e.source_id WHERE e.source='csv_import' AND c.sha256=?1 ORDER BY e.id LIMIT 1", [digest], |r| r.get(0)).optional().map_err(|e| FileFailure::failed(e, 0))?
+        };
+        let interpretation = retained.as_deref().map(toml::from_str::<ImportInterpretation>).transpose().map_err(|e| FileFailure::refused(e,0))?;
+        let legacy = interpretation.as_ref().map_or(seen_hash, |i| i.legacy);
+        let config = interpretation.map(|i| i.config).unwrap_or_else(|| self.config.clone());
+        let mut rows = if legacy { csv_import::import_csv_bytes(bytes) } else { csv_import::import_csv_with_config(bytes, &config) }.map_err(|error| FileFailure::refused(error, 0))?;
+        let supplied_fields = rows.iter().map(|r| (r.source_row, r.supplied_fields)).collect();
         let row_count = rows.len() as i64;
         self.resolve_personal_assistants(&mut rows, row_count)?;
         let affected_pa_dates = rows
@@ -225,6 +261,7 @@ impl<'a> ImportService<'a> {
             .filter_map(|r| r.entry.personal_assistant_id.map(|id| (id, r.start.date())))
             .collect();
         let all_rows: Vec<_> = rows.iter().map(|r| r.entry.clone()).collect();
+        let mut parsed_rows = rows.clone();
         let (entries, rows_skipped) = self.classify_collisions(rows, row_count)?;
 
         let archive_path = archive::archive_csv_bytes(path, bytes, self.archive_dir)
@@ -238,8 +275,6 @@ impl<'a> ImportService<'a> {
             rows_processed: row_count,
             orphaned_archive: Some(archive_path.clone()),
         };
-        crate::shift_changes::seed_legacy_path(&tx, path.to_string_lossy().as_ref())
-            .map_err(&db_failure)?;
         let prior_max: i64 = tx
             .query_row("SELECT COALESCE(MAX(id),0) FROM timesheets", [], |r| {
                 r.get(0)
@@ -271,6 +306,20 @@ impl<'a> ImportService<'a> {
             prior_max,
         )
         .map_err(&db_failure)?;
+        // Reuse the existing immutable audit stream; no schema migration or
+        // modification of source rows/archives is needed for Stage 1 settings.
+        let audit: i64 = tx.query_row("SELECT MAX(id) FROM import_audit WHERE original_filename=?1 AND status='SUCCESS'", [path.to_string_lossy().as_ref()], |r| r.get(0)).map_err(|e| db_failure(Box::new(e)))?;
+        let new_ids = tx.prepare("SELECT id FROM timesheets WHERE id>?1 ORDER BY id").map_err(|e| db_failure(Box::new(e)))?
+            .query_map([prior_max], |r| r.get::<_,i64>(0)).map_err(|e| db_failure(Box::new(e)))?
+            .collect::<rusqlite::Result<Vec<_>>>().map_err(|e| db_failure(Box::new(e)))?;
+        let mut source_fields = Vec::new();
+        for id in new_ids {
+            let raw = crate::repository::get_raw_on(&tx, id).map_err(|e| db_failure(Box::new(e)))?.ok_or_else(|| db_failure("Missing imported source".into()))?;
+            let index = parsed_rows.iter().position(|row| existing_row_is_materially_identical(&raw, row)).ok_or_else(|| db_failure("Missing imported field provenance".into()))?;
+            source_fields.push((id, parsed_rows.remove(index).supplied_fields));
+        }
+        let interpretation = toml::to_string(&ImportInterpretation { config, supplied_fields, legacy, source_fields }).map_err(|e| db_failure(Box::new(e)))?;
+        tx.execute("INSERT INTO shift_change_events(source,source_id,before_evidence,after_evidence,reason,review_signature,recorded_at,actor) VALUES('csv_import',?1,'',?2,'CSV interpretation; omitted numeric fields normalize to zero; original bytes retained',?3,?4,'local_employer')", rusqlite::params![audit,interpretation,digest,import_time()]).map_err(|e| db_failure(Box::new(e)))?;
         tx.commit().map_err(|e| db_failure(Box::new(e)))?;
         Ok(FileImportResult {
             affected_pa_dates,
@@ -822,5 +871,132 @@ mod tests {
         assert_eq!(retry.files_already_imported, 0);
         assert_eq!(retry.rows_imported, 1);
         assert_eq!(count(&database_path, "timesheets"), 2);
+    }
+    #[test]
+    fn configurable_import_retains_archive_interpretation_and_existing_coverage() {
+        let (directory, _, repository) = setup(&[("Alex", "Smith")]);
+        let bytes = b"PA,Start,End,Break,Worked,ignored\nAlex Smith,27 July 2026 at 09:00,27 July 2026 at 09:34,0h 10m,0h 17m,x\n";
+        fs::write(directory.path().join("import/custom.csv"), bytes).unwrap();
+        let config = csv_import::CsvImportConfig {
+            introductory_rows: 0,
+            hours_method: csv_import::HoursMethod::EndMinusStart,
+            ..Default::default()
+        };
+        let archive = directory.path().join("archive");
+        let service = ImportService::new(&repository, directory.path().join("import"), &archive)
+            .with_config(config.clone());
+        let first = service.run().unwrap();
+        assert_eq!(first.rows_imported, 1, "{:?}", first.failure_messages);
+        assert_eq!(fs::read(&first.archived_paths[0]).unwrap(), bytes);
+        let row = repository.get_all_raw().unwrap().remove(0);
+        assert_eq!((row.worked_minutes, row.break_minutes), (34, 10));
+        let audit: String = repository
+            .connection()
+            .query_row(
+                "SELECT after_evidence FROM shift_change_events WHERE source='csv_import'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        let retained: ImportInterpretation = toml::from_str(&audit).unwrap();
+        assert_eq!(retained.config, config);
+        assert_eq!(
+            retained.supplied_fields[0].1,
+            [true, true, true, true, true, false, false, false]
+        );
+        // Current settings cannot reinterpret recognized bytes or remove PA coverage.
+        let changed = ImportService::new(&repository, directory.path().join("import"), &archive);
+        let repeat = changed.run().unwrap();
+        assert_eq!(repeat.files_already_imported, 1);
+        assert_eq!(repeat.imported_pa_ids.len(), 1);
+        assert_eq!(repeat.covered_pa_dates.len(), 1);
+        // Even a new pathname must retain the original method for the same bytes.
+        fs::write(directory.path().join("import/copied.csv"), bytes).unwrap();
+        let copy = changed.run().unwrap();
+        assert_eq!(copy.rows_imported, 0, "{:?}", copy.failure_messages);
+        assert_eq!(copy.rows_skipped, 1);
+        assert_eq!(repository.get_all_raw().unwrap().len(), 1);
+        assert_eq!(repository.get_all_raw().unwrap()[0].worked_minutes, 34);
+    }
+    #[test]
+    fn configurable_import_refuses_atomically_and_retains_conflicting_candidates() {
+        let (directory, _, repository) = setup(&[("Alex", "Smith")]);
+        let path = directory.path().join("import/minimal.csv");
+        let header = "period\nPA,Start,End,Worked\n";
+        let good = "Alex Smith,27 July 2026 at 09:00,27 July 2026 at 10:00,0h 34m\n";
+        fs::write(&path, format!("{header}{good}Alex Smith,bad,bad,0h 15m\n")).unwrap();
+        assert_eq!(run(&directory, &repository).files_refused, 1);
+        assert!(repository.get_all_raw().unwrap().is_empty());
+        fs::write(&path, format!("{header}{good}")).unwrap();
+        assert_eq!(run(&directory, &repository).rows_imported, 1);
+        fs::write(&path, format!("{header}{}", good.replace("34m", "35m"))).unwrap();
+        assert_eq!(run(&directory, &repository).rows_imported, 1);
+        assert_eq!(repository.get_all_raw().unwrap().len(), 2);
+        let evidence = crate::payroll_evidence::load_connection(repository.connection()).unwrap();
+        assert_eq!(crate::payroll_evidence::groups(&evidence).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn legacy_archives_and_copied_content_keep_worked_hours_under_new_settings() {
+        let (directory, _, repository) = setup(&[("Alex", "Smith")]);
+        let path = write_source(
+            &directory,
+            "legacy.csv",
+            &["Alex Smith,27 July 2026 at 09:00,27 July 2026 at 09:34,0h 10m,0h 17m,12,3.4,"],
+        );
+        let bytes = fs::read(&path).unwrap();
+        let mut rows = csv_import::import_csv_bytes(&bytes).unwrap();
+        rows[0].entry.personal_assistant_id = Some(1);
+        let archive = directory.path().join("archive/legacy.csv");
+        fs::write(&archive, &bytes).unwrap();
+        repository
+            .import_file_atomically(
+                &[rows.remove(0).entry],
+                "legacy",
+                path.to_str().unwrap(),
+                archive.to_str().unwrap(),
+                1,
+                0,
+            )
+            .unwrap();
+        fs::write(directory.path().join("import/copy.csv"), &bytes).unwrap();
+        let archive_root = directory.path().join("archive");
+        let config = csv_import::CsvImportConfig {
+            hours_method: csv_import::HoursMethod::EndMinusStart,
+            introductory_rows: 0,
+            ..Default::default()
+        };
+        let service =
+            ImportService::new(&repository, directory.path().join("import"), &archive_root)
+                .with_config(config);
+        let seeded = service.run_paths(&[path.clone()]).unwrap();
+        assert_eq!(seeded.rows_imported, 0, "{:?}", seeded.failure_messages);
+        assert_eq!(seeded.rows_skipped, 1);
+        let summary = service.run().unwrap();
+        assert_eq!(summary.rows_imported, 0, "{:?}", summary.failure_messages);
+        assert_eq!(summary.rows_skipped, 1);
+        assert_eq!(repository.get_all_raw().unwrap()[0].worked_minutes, 17);
+        assert_eq!(fs::read(archive).unwrap(), bytes);
+    }
+
+    #[test]
+    fn interpretation_audit_failure_rolls_back_rows_and_keeps_archive_recoverable() {
+        let (directory, _, repository) = setup(&[("Alex", "Smith")]);
+        write_source(
+            &directory,
+            "new.csv",
+            &["Alex Smith,27 July 2026 at 09:00,27 July 2026 at 10:00,0h 00m,0h 17m,12,3.4,"],
+        );
+        repository.connection().execute_batch("CREATE TRIGGER fail_interpretation BEFORE INSERT ON shift_change_events WHEN NEW.source='csv_import' BEGIN SELECT RAISE(ABORT,'synthetic interpretation audit failure'); END;").unwrap();
+        let result = run(&directory, &repository);
+        assert_eq!(result.files_failed, 1);
+        assert!(repository.get_all_raw().unwrap().is_empty());
+        assert_eq!(result.orphaned_archives.len(), 1);
+        assert!(result.orphaned_archives[0].is_file());
+        let contents: i64 = repository
+            .connection()
+            .query_row("SELECT COUNT(*) FROM csv_import_contents", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(contents, 0);
     }
 }

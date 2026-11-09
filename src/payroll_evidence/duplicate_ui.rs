@@ -4,6 +4,7 @@ use std::collections::BTreeMap;
 #[derive(Default)]
 pub struct DuplicateUi {
     pub pending: Vec<DuplicateGroup>,
+    source_money: BTreeMap<i64, (String, String)>,
     pub(crate) prepared: Option<Preflight>,
     selections: BTreeMap<String, String>,
     error: String,
@@ -13,6 +14,7 @@ pub struct DuplicateUi {
 }
 impl DuplicateUi {
     pub fn refresh(&mut self, app: &Application, through: Option<NaiveDate>) -> Result<()> {
+        self.source_money.clear();
         self.through = through;
         let evidence = load(app)?;
         let preflight = preflight(&*open(app)?, &evidence)?;
@@ -93,7 +95,17 @@ impl DuplicateUi {
                                     self.selections.insert(g.fingerprint.clone(), e.key());
                                     self.acknowledged=false;
                                 }
-                                if e.source=="imported" {if let Ok(db)=open(app){if let Ok(Some(raw))=crate::repository::get_raw_on(&db,e.id){ui.small(format!("Imported rate £{:.2}/h; amount £{:.2} (retained source values)",raw.hourly_rate,raw.amount));}}}
+                                if e.source=="imported" {
+                                    let (rate, amount) = self.source_money.entry(e.id).or_insert_with(|| {
+                                        let values = (|| -> Result<(String,String)> {
+                                            let db = open(app)?;
+                                            let raw = crate::repository::get_raw_on(&db,e.id)?.ok_or("Missing imported source")?;
+                                            Ok(crate::csv_import::evidence::source_metadata(&db,&raw)?.money(&raw))
+                                        })();
+                                        values.unwrap_or_else(|_| ("Unavailable".into(),"Unavailable".into()))
+                                    });
+                                    ui.small(format!("Imported rate {rate}; amount {amount} (retained source values)"));
+                                }
                                 if !e.notes.is_empty() {
                                     ui.label(&e.notes);
                                 }

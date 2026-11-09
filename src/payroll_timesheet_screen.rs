@@ -84,6 +84,19 @@ pub(crate) enum UnsavedChoice {
     Cancel,
 }
 
+fn preparation_employment_label(application: &Application, pa: i64) -> String {
+    use crate::personal_assistant_repository::PersonalAssistantRepository;
+    match PersonalAssistantRepository::get_by_id_on(&application.personal_assistant_repository.connection, pa) {
+        Ok(pa) => match pa.employment_status.as_deref() {
+            Some("Inactive") => "Departed PA".into(),
+            Some("Active") => "Active PA".into(),
+            Some(status) if !status.trim().is_empty() => format!("PA status: {status}"),
+            _ => "Employment status unavailable".into(),
+        },
+        Err(_) => "Employment status unavailable".into(),
+    }
+}
+
 pub struct PayrollTimesheetScreen {
     returned_hours_text: HashMap<i64, String>,
     returned_hours_status: HashMap<i64, String>,
@@ -104,6 +117,7 @@ pub struct PayrollTimesheetScreen {
     preflight_done: bool,
     last_frame: Option<u64>,
     loaded: bool,
+    historical_preparations: bool,
     cycle_number: i64,
     schedule: Option<PayrollSchedule>,
     bound_period: Option<BoundPayrollPeriod>,
@@ -142,6 +156,7 @@ impl PayrollTimesheetScreen {
             preflight_done: false,
             last_frame: None,
             loaded: false,
+            historical_preparations: false,
             cycle_number: 0,
             schedule: None,
             bound_period: None,
@@ -159,6 +174,11 @@ impl PayrollTimesheetScreen {
             status_message: "Payroll Timesheets not loaded.".to_string(),
             save_errors: HashMap::new(),
         }
+    }
+
+    pub fn open_active(&mut self) {
+        self.historical_preparations = false;
+        self.reload();
     }
 
     pub fn reload(&mut self) {
@@ -200,6 +220,19 @@ impl PayrollTimesheetScreen {
         operational_schedule: &PayrollSchedule,
         period_label: &str,
     ) {
+        let mut historical = self.historical_preparations;
+        ui.horizontal_wrapped(|ui| {
+            ui.selectable_value(&mut historical, false, "Active PAs");
+            ui.selectable_value(&mut historical, true, "Historical/final preparations");
+        });
+        if historical != self.historical_preparations {
+            if self.has_unsaved_changes() {
+                self.status_message = "Save or discard preparation edits before changing the PA view.".into();
+            } else {
+                self.historical_preparations = historical;
+                self.reload();
+            }
+        }
         if let Some(start) = parse_date(&operational_schedule.first_week_commencing) {
             let calendar = crate::public_holidays::for_application(application, start);
             ui.label(&calendar.status);
@@ -250,10 +283,15 @@ impl PayrollTimesheetScreen {
                         application,
                         operational_schedule,
                     ) {
-                        Ok(ids) => self
-                            .duplicate_ui
-                            .pending
-                            .retain(|g| g.candidates.iter().any(|e| ids.contains(&e.pa))),
+                        Ok(mut ids) => {
+                            if !self.historical_preparations {
+                                match application.personal_assistant_repository.get_all() {
+                                    Ok(pas) => ids.retain(|id|pas.iter().any(|pa|pa.id==*id && pa.is_currently_active())),
+                                    Err(error) => { ui.label(error.to_string()); return; }
+                                }
+                            }
+                            self.duplicate_ui.pending.retain(|g|g.candidates.iter().any(|e|ids.contains(&e.pa)));
+                        },
                         Err(e) => {
                             ui.label(e.to_string());
                             return;
@@ -366,7 +404,7 @@ impl PayrollTimesheetScreen {
             ui.horizontal(|ui| {
                 ui.heading(&self.weeks[record_index].2);
                 if active {
-                    ui.label("Active PA");
+                    ui.label(preparation_employment_label(application, pa));
                 } else if ui
                     .add_sized(
                         egui::vec2(240.0, ui.spacing().interact_size.y * 1.3),
@@ -1218,6 +1256,7 @@ impl PayrollTimesheetScreen {
         self.assistant_mileage_enabled.clear();
 
         for assistant in &assistants {
+            if !self.historical_preparations && !assistant.is_currently_active() { continue; }
             if !assistant.eligible_for_period(
                 first_week,
                 first_week + chrono::Duration::days(27),
@@ -2979,6 +3018,7 @@ pub(crate) mod tests {
              VALUES (2, '2026/27', 6, 'created', 'created')", [],
         ).unwrap();
         let mut screen = PayrollTimesheetScreen::new();
+        screen.historical_preparations = true;
         screen.load(&application, &schedule, "period").unwrap();
         let ids = screen
             .weeks
@@ -3017,6 +3057,7 @@ pub(crate) mod tests {
              VALUES (2, '2026/27', 6, 'created', 'created')", [],
         ).unwrap();
         let mut screen = PayrollTimesheetScreen::new();
+        screen.historical_preparations = true;
         screen.load(&application, &schedule, "period").unwrap();
         let names = screen
             .weeks
@@ -3693,4 +3734,25 @@ fn parse_actual_in_lieu(text: &str) -> Result<Option<f64>, String> {
         return Err("Enter finite, non-negative in-lieu hours".into());
     }
     Ok(Some(value))
+}
+
+#[cfg(test)]
+mod acceptance_gui_status_tests {
+    use super::*;
+    #[test]
+    fn acceptance_gui_employment_label_uses_current_maintained_status_not_selected_or_period_dates() {
+        let (_dir,app)=tests::test_application();
+        let db=&app.personal_assistant_repository.connection;
+        db.execute("INSERT INTO personal_assistants(first_name,surname,employment_status) VALUES('Synthetic','Departed','Inactive')",[]).unwrap();
+        let id=db.last_insert_rowid();
+        db.execute("UPDATE personal_assistants SET employment_status='Inactive',leaving_date='16/09/2026' WHERE id=?1",[id]).unwrap();
+        assert_eq!(preparation_employment_label(&app,id),"Departed PA");
+        db.execute("UPDATE personal_assistants SET leaving_date='16/09/2099' WHERE id=?1",[id]).unwrap();
+        assert_eq!(preparation_employment_label(&app,id),"Departed PA");
+        db.execute("UPDATE personal_assistants SET employment_status='Active' WHERE id=?1",[id]).unwrap();
+        assert_eq!(preparation_employment_label(&app,id),"Active PA");
+        db.execute("UPDATE personal_assistants SET employment_status=NULL WHERE id=?1",[id]).unwrap();
+        assert_eq!(preparation_employment_label(&app,id),"Employment status unavailable");
+        assert_eq!(preparation_employment_label(&app,-1),"Employment status unavailable");
+    }
 }

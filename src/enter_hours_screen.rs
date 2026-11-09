@@ -186,7 +186,7 @@ impl EnterHoursScreen {
         ui.add_space(8.0);
 
         if self.assistants.is_empty() {
-            ui.label("No maintained Personal Assistants are available.");
+            ui.label("No active Personal Assistants are available.");
             self.draw_status(ui);
             return;
         }
@@ -253,7 +253,7 @@ impl EnterHoursScreen {
     }
 
     fn load(&mut self, application: &Application) -> Result<(), Box<dyn std::error::Error>> {
-        self.assistants = application.personal_assistant_repository.get_all()?;
+        self.assistants = application.personal_assistant_repository.get_all()?.into_iter().filter(PersonalAssistant::is_currently_active).collect();
         if !self
             .assistants
             .iter()
@@ -1549,5 +1549,21 @@ mod tests {
         click(&ctx,pos,|ui|screen.show(ui,&app),"Save Notes");
         assert!(!frame(&ctx,vec![],|ui|screen.show(ui,&app),"Save Notes").1);
         assert_eq!(app.direct_shift_repository.get_running_for_pa(1).unwrap().unwrap().notes.as_deref(),Some("Synthetic note"));
+    }
+}
+
+#[cfg(test)]
+mod workflow_eligibility_tests {
+    use super::*;
+    #[test]
+    fn shift_logger_lists_only_current_active_pas_and_preserves_history() {
+        let (_dir,app)=crate::payroll_timesheet_screen::tests::test_application();
+        app.repository.connection().execute_batch("INSERT INTO personal_assistants(id,first_name,surname,employment_status,leaving_date) VALUES(1,'Active','Example','Active',NULL),(2,'Departed','Example','Inactive','01/01/2020'),(3,'Old active status','Example','Active','01/01/2020'),(4,'Unknown','Example',NULL,NULL)").unwrap();
+        let mut screen=EnterHoursScreen::new();screen.load(&app).unwrap();
+        assert_eq!(screen.assistants.iter().map(|pa|pa.id).collect::<Vec<_>>(),vec![1]);
+        app.repository.connection().execute("UPDATE personal_assistants SET employment_status='Inactive' WHERE id=1",[]).unwrap();
+        let before=crate::database_recovery::fingerprint(app.repository.connection()).unwrap();
+        screen.reload();screen.load(&app).unwrap();assert!(screen.assistants.is_empty());assert!(screen.selected_pa_id.is_none());
+        assert_eq!(crate::database_recovery::fingerprint(app.repository.connection()).unwrap(),before);
     }
 }

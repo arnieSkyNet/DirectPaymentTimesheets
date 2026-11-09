@@ -10,10 +10,16 @@ pub struct AppConfig {
     pub theme: ApplicationTheme,
 
     #[serde(default)]
+    pub dashboard_buttons: DashboardButtons,
+
+    #[serde(default)]
     pub date_display_format: crate::date_utils::DateDisplayFormat,
 
     #[serde(default)]
     pub hours_shift_date_time_spinner: bool,
+
+    #[serde(default)]
+    pub csv_import: crate::csv_import::CsvImportConfig,
 
     pub folders: FolderConfig,
 
@@ -25,6 +31,33 @@ pub struct AppConfig {
 
     #[serde(default)]
     pub email: EmailConfig,
+}
+
+/// Independent saved preferences; rendering also reserves enough height for the text.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct DashboardButtons {
+    #[serde(deserialize_with = "dashboard_height")]
+    pub height: f32,
+    #[serde(deserialize_with = "dashboard_font_size")]
+    pub font_size: f32,
+}
+impl Default for DashboardButtons {
+    fn default() -> Self { Self { height: 25.0, font_size: 13.0 } }
+}
+impl DashboardButtons {
+    pub fn normalised(self) -> Self {
+        Self {
+            height: if self.height.is_finite() { self.height.clamp(24.0, 52.0) } else { 25.0 },
+            font_size: if self.font_size.is_finite() { self.font_size.clamp(11.0, 18.0) } else { 13.0 },
+        }
+    }
+}
+fn dashboard_height<'de, D: serde::Deserializer<'de>>(d: D) -> Result<f32, D::Error> {
+    Ok(DashboardButtons { height: f32::deserialize(d)?, ..Default::default() }.normalised().height)
+}
+fn dashboard_font_size<'de, D: serde::Deserializer<'de>>(d: D) -> Result<f32, D::Error> {
+    Ok(DashboardButtons { font_size: f32::deserialize(d)?, ..Default::default() }.normalised().font_size)
 }
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -406,8 +439,10 @@ impl Default for AppConfig {
     fn default() -> Self {
         Self {
             theme: ApplicationTheme::default(),
+            dashboard_buttons: DashboardButtons::default(),
             date_display_format: Default::default(),
             hours_shift_date_time_spinner: false,
+            csv_import: Default::default(),
             folders: FolderConfig {
                 csv_import: default_csv_import_folder(),
                 pdf_output: default_pdf_output_folder(),
@@ -1112,5 +1147,26 @@ mod stage8_config_tests {
                 enabled
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod dashboard_button_config_tests {
+    use super::*;
+    #[test]
+    fn dashboard_buttons_preserve_legacy_defaults_and_roundtrip_independently() {
+        let mut value=toml::Value::try_from(AppConfig::default()).unwrap();
+        value.as_table_mut().unwrap().remove("dashboard_buttons");
+        let legacy:AppConfig=value.clone().try_into().unwrap();
+        assert_eq!(legacy.dashboard_buttons,DashboardButtons{height:25.0,font_size:13.0});
+        for settings in [DashboardButtons{height:52.0,font_size:11.0},DashboardButtons{height:24.0,font_size:18.0}] {
+            let mut config=legacy.clone();config.dashboard_buttons=settings;
+            let loaded:AppConfig=toml::from_str(&toml::to_string(&config).unwrap()).unwrap();
+            assert_eq!(loaded.dashboard_buttons,settings);
+        }
+        value.as_table_mut().unwrap().insert("dashboard_buttons".into(),toml::Value::try_from(DashboardButtons{height:999.0,font_size:-5.0}).unwrap());
+        let loaded:AppConfig=value.try_into().unwrap();
+        assert_eq!(loaded.dashboard_buttons,DashboardButtons{height:52.0,font_size:11.0});
+        assert_eq!(DashboardButtons{height:f32::NAN,font_size:f32::INFINITY}.normalised(),DashboardButtons::default());
     }
 }

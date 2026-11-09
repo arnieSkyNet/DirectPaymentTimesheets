@@ -159,6 +159,7 @@ impl Application {
             import_dir,
             &self.context.environment.archive_dir,
         )
+        .with_config(self.context.config.csv_import.clone())
     }
 
     pub fn get_timesheets(

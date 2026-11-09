@@ -61,6 +61,7 @@ pub struct Snapshot {
     pub inclusion_event: Option<i64>,
     pub excluded: bool,
     pub source_event: Option<i64>,
+    pub source_metadata: crate::csv_import::evidence::SourceMetadata,
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Change {
@@ -79,11 +80,13 @@ pub fn snapshot(db: &Connection, id: i64) -> Result<Snapshot> {
         [id],
         |r| r.get(0),
     )?;
+    let source_metadata = crate::csv_import::evidence::source_metadata(db, &entry.raw)?;
     Ok(Snapshot {
         entry,
         inclusion_event: inclusion.map(|x| x.0),
         excluded: inclusion.is_some_and(|x| x.1),
         source_event,
+        source_metadata,
     })
 }
 fn values(s: &Snapshot, change: &Change) -> Result<repository::EffectiveTimesheetValues> {
@@ -297,8 +300,15 @@ pub fn consistency_warning(s: &Snapshot) -> Option<String> {
     };
     let start = parse(&v.start_time)?;
     let end = parse(&v.end_time)?;
-    let expected = (end - start).num_minutes() - v.break_minutes;
-    (expected!=v.worked_minutes).then(||format!("Worked duration is independently authoritative: {} minutes; elapsed minus breaks is {expected} minutes. Check the source; no automatic recalculation.",v.worked_minutes))
+    let elapsed = (end - start).num_minutes();
+    let (expected, basis) = match s.source_metadata.method {
+        Some(crate::csv_import::HoursMethod::WorkedHours) => (elapsed - v.break_minutes, "elapsed minus breaks (CSV Worked Hours comparison)"),
+        Some(crate::csv_import::HoursMethod::WorkedHoursMinusBreak) => (elapsed - v.break_minutes, "elapsed minus breaks (CSV Worked Hours minus Break comparison)"),
+        Some(crate::csv_import::HoursMethod::EndMinusStartMinusBreak) => (elapsed - v.break_minutes, "End minus Start minus Break"),
+        Some(crate::csv_import::HoursMethod::EndMinusStart) => (elapsed, "End minus Start, without break deduction"),
+        None => return Some("Original CSV calculation method is unavailable; no current setting was substituted.".into()),
+    };
+    (expected != v.worked_minutes).then(|| format!("Worked duration is independently authoritative: {} minutes; {basis} is {expected} minutes. Check the source; no automatic recalculation.", v.worked_minutes))
 }
 #[cfg(test)]
 #[path = "imported_hours_tests.rs"]

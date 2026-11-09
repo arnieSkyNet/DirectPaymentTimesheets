@@ -19,6 +19,25 @@ struct Editor {
     token: Option<String>,
 }
 impl ImportedHoursUi {
+    fn cache_row(&mut self, db: &rusqlite::Connection, id: i64) {
+        if !self.rows.contains_key(&id) {
+            let row = imported_hours::snapshot(db, id)
+                .map(|snapshot| {
+                    let status = imported_hours::payable_status(db, &snapshot)
+                        .unwrap_or_else(|e| format!("Status unavailable: {e}"));
+                    (snapshot, status)
+                })
+                .map_err(|e| e.to_string());
+            self.rows.insert(id, row);
+        }
+    }
+    pub fn source_money(&mut self, db: &rusqlite::Connection, id: i64) -> (String, String) {
+        self.cache_row(db, id);
+        match self.rows.get(&id) {
+            Some(Ok((s, _))) => s.source_metadata.money(&s.entry.raw),
+            _ => ("Unavailable".into(), "Unavailable".into()),
+        }
+    }
     pub fn refresh(&mut self) {
         self.rows.clear();
         self.database_version = None;
@@ -62,16 +81,7 @@ impl ImportedHoursUi {
     }
     pub fn row(&mut self, ui: &mut egui::Ui, app: &Application, id: i64) {
         let db = app.repository.connection();
-        if !self.rows.contains_key(&id) {
-            let row = imported_hours::snapshot(db, id)
-                .map(|snapshot| {
-                    let status = imported_hours::payable_status(db, &snapshot)
-                        .unwrap_or_else(|e| format!("Status unavailable: {e}"));
-                    (snapshot, status)
-                })
-                .map_err(|e| e.to_string());
-            self.rows.insert(id, row);
-        }
+        self.cache_row(db, id);
         match self.rows.get(&id).cloned().expect("row inserted above") {
             Err(e) => {
                 ui.label(format!("Evidence review unavailable: {e}"));
@@ -123,7 +133,8 @@ impl ImportedHoursUi {
                     }
                 });
                 ui.collapsing(format!("Source, notes and history — imported:{id}"),|ui| {
-                    ui.label(format!("Original Hours Keeper evidence: {}; PA ID {:?}; {} – {}; break {}m; worked {}m; rate £{:.2}; amount £{:.2}; notes: {}",id,s.entry.raw.personal_assistant_id,s.entry.raw.start_time,s.entry.raw.end_time,s.entry.raw.break_minutes,s.entry.raw.worked_minutes,s.entry.raw.hourly_rate,s.entry.raw.amount,s.entry.raw.notes.as_deref().unwrap_or("(none)")));
+                    let (rate, amount) = s.source_metadata.money(&s.entry.raw);
+                    ui.label(format!("Original CSV evidence: {}; PA ID {:?}; {} – {}; break {}m; worked {}m; rate {}; amount {}; notes: {}",id,s.entry.raw.personal_assistant_id,s.entry.raw.start_time,s.entry.raw.end_time,s.entry.raw.break_minutes,s.entry.raw.worked_minutes,rate,amount,s.entry.raw.notes.as_deref().unwrap_or("(none)")));
                     ui.label(format!("Effective notes: {}",s.entry.effective.notes.as_deref().unwrap_or("(none)")));
                     match imported_hours::review(db,&s,&Change::Edit(TimesheetCorrectionProposal{start_time:s.entry.effective.start_time.clone(),end_time:s.entry.effective.end_time.clone(),break_minutes:s.entry.effective.break_minutes,worked_minutes:s.entry.effective.worked_minutes,notes:s.entry.effective.notes.clone()})) {
                         Ok(r)=>{ui.label(format!("Affected prepared/retained payroll cycles: {}",if r.description.is_empty(){"None prepared yet — allocated by shift start date"}else{&r.description}));}

@@ -667,13 +667,17 @@ fn historical_departed_and_retained_preparation_eligibility_use_existing_rules()
         DELETE FROM payroll_timesheets WHERE id=3;").unwrap();
     app.begin_generation();
     let pending = app.pending_generation.take().unwrap();
-    assert!(pending.selected_ids.contains(&1));
-    assert!(pending.selected_ids.contains(&2));
+    assert!(!pending.selected_ids.contains(&1));
+    assert!(!pending.selected_ids.contains(&2));
     assert!(!pending.choices.iter().any(|c| c.id == 3));
     assert_eq!(generate(&mut app, &[1, 2]).completed(), 2);
-    app.include_departed_email_pas = true; // Explicit final/historical timesheet send.
     let smtp = Smtp::new(&mut app);
-    let batch = email_batch(&mut app, &[1, 2]);
+    app.begin_retained_timesheet_batch();
+    let mut batch=app.pending_email_batch.take().unwrap();
+    batch.selected_personal_assistant_ids=vec![1,2];
+    batch.stage=EmailBatchNoteStage::ConfirmDispatch;
+    app.capture_email_confirmation(&mut batch).unwrap();
+    batch.resend_acknowledged=true;
     assert_eq!(
         app.dispatch_timesheet_selection(&batch)
             .unwrap()
@@ -2794,8 +2798,8 @@ mod recipient_layout_tests {
 
     fn choices(detail: &str) -> Vec<ProductionChoice> {
         vec![
-            ProductionChoice { id: 1, name: "Active Example".into(), available: true, detail: detail.into(), intent: None },
-            ProductionChoice { id: 2, name: "Unavailable Example".into(), available: false, detail: "No current document".into(), intent: None },
+            ProductionChoice { automatic: true, id: 1, name: "Active Example".into(), available: true, detail: detail.into(), intent: None },
+            ProductionChoice { automatic: false, id: 2, name: "Unavailable Example".into(), available: false, detail: "No current document".into(), intent: None },
         ]
     }
 
@@ -2917,5 +2921,230 @@ mod recipient_layout_tests {
         assert!(!batch.resend_acknowledged && batch.approved_selection.is_empty());
         assert_eq!(batch.stage, EmailBatchNoteStage::SelectRecipients);
         assert_eq!(db(&app).query_row("SELECT COUNT(*) FROM timesheet_delivery_attempts", [], |r| r.get::<_,i64>(0)).unwrap(), 0);
+    }
+}
+
+#[test]
+fn workflow_eligibility_departed_final_document_import_and_individual_send_ignore_departure_age() {
+    let (dir,mut app,_)=fixture();
+    db(&app).execute_batch("UPDATE personal_assistants SET start_date='01/01/2019',leaving_date='01/01/2020',employment_status='Inactive' WHERE id=1").unwrap();
+    app.operational_payroll_period.selected=None;
+    let path=dir.path().join("P45 for PA1 Test.pdf");std::fs::write(&path,b"%PDF-1.4 synthetic late final document").unwrap();
+    let original_pa=app.application.personal_assistant_repository.get_all().unwrap();
+    app.application.import_payroll_documents(&path,None).unwrap();
+    assert_eq!(app.unknown_supplements().unwrap().len(),1);
+    let docs=app.application.payroll_timesheet_email_repository.documents_for_pa(1).unwrap();assert_eq!(docs.len(),1);
+    app.application.payroll_timesheet_email_repository.reconcile_document(docs[0].id,true).unwrap();
+    let smtp=Smtp::new(&mut app);
+    app.begin_email_batch(PayrollEmailKind::Payslip);
+    let pending=app.pending_email_batch.as_ref().unwrap();
+    assert!(pending.selected_personal_assistant_ids.is_empty());
+    assert!(pending.choices.iter().any(|c|c.id==1&&c.available&&!c.automatic));
+    let mut batch=payslip_batch(&mut app,&[1]);
+    batch.volume_acknowledged=false;
+    assert_eq!(app.dispatch_payslip_selection(&batch).unwrap(),1);
+    assert_eq!(smtp.count(),1);
+    let envelopes=smtp.envelopes.lock().unwrap();
+    assert!(envelopes[0].iter().any(|r|r.contains("pa1@example.test")));
+    assert!(!envelopes[0].iter().any(|r|r.contains("payroll@example.test")));
+    assert_eq!(app.application.personal_assistant_repository.get_all().unwrap(),original_pa);
+    assert!(matches!(app.application.payroll_timesheet_email_repository.documents_for_pa(1).unwrap()[0].delivery_state,crate::payroll_timesheet_email_repository::EmailDeliveryState::Sent{..}));
+}
+
+#[test]
+fn workflow_eligibility_bulk_actions_never_select_departed_choices() {
+    use crate::gui_controls::acceptance::{frame,click};
+    let ctx=egui::Context::default();
+    let choices=vec![
+        ProductionChoice{id:1,name:"Current PA".into(),automatic:true,available:true,detail:"Ready".into(),intent:None},
+        ProductionChoice{id:2,name:"Departed PA".into(),automatic:false,available:true,detail:"Final document".into(),intent:None},
+    ];
+    for unsent in [false,true] {
+        let label=if unsent{"Select all unsent"}else{"Select all available"};let mut ids=vec![];
+        let(pos,_)=frame(&ctx,vec![],|ui|draw_production_choices(ui,&choices,&mut ids,unsent),label);
+        click(&ctx,pos,|ui|draw_production_choices(ui,&choices,&mut ids,unsent),label);assert_eq!(ids,vec![1]);
+        let(pos,_)=frame(&ctx,vec![],|ui|draw_production_choices(ui,&choices,&mut ids,unsent),"Departed PA");
+        click(&ctx,pos,|ui|draw_production_choices(ui,&choices,&mut ids,unsent),"Departed PA");assert_eq!(ids,vec![1,2]);
+    }
+}
+
+#[test]
+fn workflow_eligibility_status_change_invalidates_active_and_retained_timesheet_dispatch() {
+    for retained in [false,true] {
+        let (_dir,mut app,_)=fixture();assert_eq!(generate(&mut app,&[1]).completed(),1);
+        let smtp=Smtp::new(&mut app);
+        if retained {
+            db(&app).execute("UPDATE personal_assistants SET employment_status='Inactive' WHERE id=1",[]).unwrap();
+            app.begin_retained_timesheet_batch();
+        }else{app.begin_email_batch(PayrollEmailKind::Timesheet);}
+        let mut batch=app.pending_email_batch.take().unwrap();batch.selected_personal_assistant_ids=vec![1];batch.stage=EmailBatchNoteStage::ConfirmDispatch;
+        app.capture_email_confirmation(&mut batch).unwrap();
+        db(&app).execute("UPDATE personal_assistants SET leaving_date='01/01/2020' WHERE id=1",[]).unwrap();
+        assert!(app.dispatch_timesheet_selection(&batch).unwrap().entries.iter().any(|(_,_,outcome)|matches!(outcome,ProductionOutcome::Failed(_))));
+        assert_eq!(smtp.count(),0);
+        assert_eq!(db(&app).query_row("SELECT COUNT(*) FROM timesheet_delivery_attempts",[],|r|r.get::<_,i64>(0)).unwrap(),0);
+    }
+}
+
+#[test]
+fn workflow_eligibility_departed_payslip_status_or_recipient_change_forces_new_approval() {
+    for change in ["UPDATE personal_assistants SET leaving_date='01/01/2020' WHERE id=1", "UPDATE personal_assistants SET email='changed@example.test' WHERE id=1"] {
+        let (_dir,mut app,_)=payslip_selection_fixture();
+        db(&app).execute("UPDATE personal_assistants SET employment_status='Inactive' WHERE id=1",[]).unwrap();
+        let smtp=Smtp::new(&mut app);let batch=payslip_batch(&mut app,&[1]);
+        db(&app).execute_batch(change).unwrap();assert!(app.dispatch_payslip_selection(&batch).is_err());assert_eq!(smtp.count(),0);
+        assert_eq!(db(&app).query_row("SELECT COUNT(*) FROM payroll_bundle_attempts",[],|r|r.get::<_,i64>(0)).unwrap(),0);
+    }
+}
+
+#[test]
+fn workflow_eligibility_retained_departed_timesheet_resend_needs_acknowledgement() {
+    let (_dir,mut app,_)=fixture();assert_eq!(generate(&mut app,&[1]).completed(),1);
+    db(&app).execute("UPDATE personal_assistants SET employment_status='Inactive' WHERE id=1",[]).unwrap();
+    let smtp=Smtp::new(&mut app);
+    for resend in [false,true] {
+        app.begin_retained_timesheet_batch();let mut batch=app.pending_email_batch.take().unwrap();
+        assert!(batch.selected_personal_assistant_ids.is_empty());
+        assert_eq!(batch.choices.iter().find(|c|c.id==1).unwrap().intent.as_ref().unwrap().resend,resend);
+        batch.selected_personal_assistant_ids=vec![1];batch.stage=EmailBatchNoteStage::ConfirmDispatch;
+        app.capture_email_confirmation(&mut batch).unwrap();
+        if resend {
+            assert!(app.dispatch_timesheet_selection(&batch).is_err());assert_eq!(smtp.count(),1);
+            batch.resend_acknowledged=true;
+        }
+        assert_eq!(app.dispatch_timesheet_selection(&batch).unwrap().completed(),1);
+    }
+    assert_eq!(smtp.count(),2);
+    let conn=db(&app);
+    assert_eq!(conn.query_row("SELECT COUNT(*) FROM payroll_submissions",[],|r|r.get::<_,i64>(0)).unwrap(),1);
+    assert_eq!(conn.query_row("SELECT COUNT(*) FROM timesheet_delivery_attempts WHERE classification='resend' AND outcome='accepted'",[],|r|r.get::<_,i64>(0)).unwrap(),1);
+}
+
+#[test]
+fn workflow_eligibility_combined_synthetic_fixture_keeps_ordinary_and_retained_scopes_separate() {
+    let (dir,mut app,schedule)=fixture();
+    assert_eq!(generate(&mut app,&[1,2,3,4,5]).completed(),5);
+    db(&app).execute_batch("UPDATE personal_assistants SET employment_status='Inactive',leaving_date='01/01/2020' WHERE id IN (2,3); UPDATE personal_assistants SET leaving_date='01/01/2020' WHERE id=4; UPDATE personal_assistants SET start_date='01/01/2090' WHERE id=5;").unwrap();
+    for (id,kind) in [(2,"P45"),(4,"P60")] {
+        let source=dir.path().join(format!("{kind} for PA{id} Test.pdf"));
+        std::fs::write(&source,format!("%PDF-1.4 synthetic late document for PA{id}")).unwrap();
+        app.application.import_payroll_documents(&source,None).unwrap();
+    }
+    assert_eq!(app.unknown_supplements().unwrap().len(),2);
+    let ctx=egui::Context::default();
+    let labels=crate::payroll_settings_screen::tab_acceptance::draw(&ctx,1000.0,vec![],|ui|app.draw_timesheet_email_status(ui));
+    assert!(labels.contains_key("PA1 Test"));
+    assert!(!labels.contains_key("PA2 Test") && !labels.contains_key("PA3 Test") && !labels.contains_key("PA4 Test") && !labels.contains_key("PA5 Test"));
+    app.begin_email_batch(PayrollEmailKind::Timesheet);
+    assert_eq!(app.pending_email_batch.as_ref().unwrap().choices.iter().map(|c|c.id).collect::<Vec<_>>(),vec![1]);
+    app.begin_retained_timesheet_batch();
+    assert_eq!(app.pending_email_batch.as_ref().unwrap().choices.len(),5);
+    assert!(app.pending_email_batch.as_ref().unwrap().selected_personal_assistant_ids.is_empty());
+    assert_eq!(app.payslip_email_assistants().unwrap().iter().map(|p|p.id).collect::<Vec<_>>(),vec![1,2,4]);
+    // Optional export for native synthetic GUI checks; the ordinary regression
+    // runs entirely within its disposable private directory.
+    if let Ok(manifest)=std::env::var("DPT_DASHBOARD_SYNTHETIC_GUI") {
+        let manifest=std::path::PathBuf::from(manifest);
+        assert!(manifest.parent().unwrap().file_name().unwrap().to_string_lossy().starts_with("dpt-dashboard-policy-"));
+        app.application.save_config().unwrap();
+        let destination=dir.path().join("database.sqlite");assert!(!destination.exists());
+        db(&app).backup(rusqlite::DatabaseName::Main,&destination,None).unwrap();
+        use std::io::Write;
+        let mut output=std::fs::OpenOptions::new().create_new(true).write(true).open(manifest).unwrap();
+        write!(output,"{}",serde_json::json!({"profile":dir.path(),"synthetic_only":true,"schedule":schedule.id})).unwrap();
+        drop(app);
+        std::mem::forget(dir);
+    }
+}
+
+#[test]
+fn acceptance_gui_signature_buttons_follow_each_owners_usable_image() {
+    let (dir,mut app,_)=fixture();
+    let bytes=crate::signature::rasterize(&[vec![egui::pos2(0.1,0.5),egui::pos2(0.9,0.5)]]).unwrap();
+    let valid=dir.path().join("valid.png");std::fs::write(&valid,bytes).unwrap();
+    let invalid=dir.path().join("invalid.png");std::fs::write(&invalid,b"not a signature").unwrap();
+    let absent=dir.path().join("missing.png");
+    for (employer,pa,wanted) in [
+        (None,None,vec![crate::signature::Owner::Employer(1),crate::signature::Owner::Pa(1)]),
+        (Some(&valid),None,vec![crate::signature::Owner::Pa(1)]),
+        (None,Some(&valid),vec![crate::signature::Owner::Employer(1)]),
+        (Some(&valid),Some(&valid),vec![]),
+        (Some(&invalid),Some(&valid),vec![crate::signature::Owner::Employer(1)]),
+        (Some(&valid),Some(&absent),vec![crate::signature::Owner::Pa(1)]),
+    ] {
+        db(&app).execute("UPDATE employers SET employer_signature=?1 WHERE id=1",[employer.map(|p|p.to_str().unwrap())]).unwrap();
+        db(&app).execute("UPDATE personal_assistants SET signature=?1 WHERE id=1",[pa.map(|p|p.to_str().unwrap())]).unwrap();
+        app.begin_generation();let pending=app.pending_generation.as_mut().unwrap();pending.selected_ids=vec![1];
+        assert_eq!(app.missing_generation_signatures(app.pending_generation.as_ref().unwrap()).unwrap().into_iter().map(|v|v.0).collect::<Vec<_>>(),wanted);
+        let ctx=egui::Context::default();let mut labels=vec![];
+        fn scan(s:&egui::Shape,labels:&mut Vec<String>){match s{egui::Shape::Text(t)=>labels.push(t.galley.job.text.clone()),egui::Shape::Vec(v)=>for s in v{scan(s,labels)},_=>{}}}
+        for _ in 0..3 {
+            let output=ctx.run(Default::default(),|ctx|{egui::CentralPanel::default().show(ctx,|ui|app.draw_generation_selection(ui));});
+            labels.clear();for s in output.shapes{scan(&s.shape,&mut labels);}
+        }
+        assert_eq!(labels.iter().filter(|s|s.starts_with("Draw signature —")).count(),wanted.len());
+        assert!(labels.iter().any(|s|s=="Generate selected PAs"));
+    }
+}
+
+#[test]
+fn acceptance_gui_note_choices_keep_both_workflows_and_note_behaviour() {
+    use crate::gui_controls::acceptance::{frame,click};
+    for kind in [PayrollEmailKind::Timesheet,PayrollEmailKind::Payslip] {
+        for label in ["Add Additional Note","No Additional Note","Cancel"] {
+            let (_dir,mut app,_)=fixture();app.begin_email_batch(kind);
+            app.pending_email_batch.as_mut().unwrap().stage=EmailBatchNoteStage::ChooseAdditionalNote;
+            app.additional_notes_by_personal_assistant.insert(1,"retained draft".into());
+            let ctx=egui::Context::default();
+            let (pos,_)=frame(&ctx,vec![],|ui|app.draw_additional_note_prompt(ui),label);
+            click(&ctx,pos,|ui|app.draw_additional_note_prompt(ui),label);
+            match label {
+                "Add Additional Note"=>{
+                    assert_eq!(app.pending_email_batch.as_ref().unwrap().stage,EmailBatchNoteStage::EditAdditionalNotes);
+                    assert_eq!(app.additional_notes_by_personal_assistant.get(&1).unwrap(),"retained draft");
+                },
+                "No Additional Note"=>{
+                    assert_ne!(app.pending_email_batch.as_ref().unwrap().stage,EmailBatchNoteStage::ChooseAdditionalNote);
+                    assert!(app.additional_notes_by_personal_assistant.is_empty());
+                },
+                _=>{assert!(app.pending_email_batch.is_none());assert!(app.additional_notes_by_personal_assistant.is_empty());}
+            }
+            assert_eq!(db(&app).query_row("SELECT COUNT(*) FROM timesheet_delivery_attempts",[],|r|r.get::<_,i64>(0)).unwrap(),0);
+        }
+    }
+}
+
+#[test]
+fn acceptance_gui_note_prompt_wraps_inside_an_expanded_dashboard_for_both_workflows() {
+    fn scan(shape: &egui::Shape, labels: &mut Vec<(String, egui::Rect)>) {
+        match shape {
+            egui::Shape::Text(text) => labels.push((text.galley.job.text.clone(), text.galley.rect.translate(text.pos.to_vec2()))),
+            egui::Shape::Vec(shapes) => for shape in shapes { scan(shape, labels); },
+            _ => {}
+        }
+    }
+    for kind in [PayrollEmailKind::Timesheet, PayrollEmailKind::Payslip] {
+        for width in [1000.0, 600.0, 360.0] {
+            let (_dir, mut app, _) = fixture();
+            app.begin_email_batch(kind);
+            app.pending_email_batch.as_mut().unwrap().stage = EmailBatchNoteStage::ChooseAdditionalNote;
+            let ctx = egui::Context::default();
+            let mut labels = vec![];
+            for _ in 0..3 {
+                let output = ctx.run(egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(width, 800.0))),
+                    ..Default::default()
+                }, |ctx| { egui::CentralPanel::default().show(ctx, |ui| {
+                    ui.set_min_width(660.0);
+                    app.draw_additional_note_prompt(ui);
+                }); });
+                labels.clear();
+                for shape in output.shapes { scan(&shape.shape, &mut labels); }
+            }
+            for label in ["Add Additional Note", "No Additional Note", "Cancel"] {
+                let rect = labels.iter().find(|(text, _)| text == label).unwrap().1;
+                assert!(rect.left() >= 0.0 && rect.right() <= width, "{label} at {width}: {rect:?}");
+            }
+        }
     }
 }

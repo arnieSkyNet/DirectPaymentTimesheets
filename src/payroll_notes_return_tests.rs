@@ -186,6 +186,7 @@ fn payroll_notes_amendments_save_except_uncertain_delivery_and_returned_control_
             screen.save_current(&app).unwrap();
             assert_eq!(stored_note(&app,&record),"Amended payroll note");
         }
+        screen.historical_preparations = true;
         screen.reload();
         screen.load(&app, &schedule, "period").unwrap();
         let ctx = egui::Context::default();

@@ -58,7 +58,7 @@ struct DashboardStatusPanelStyle {
 }
 
 #[derive(Default)]
-struct DashboardWorkflowActions {
+pub(crate) struct DashboardWorkflowActions {
     enter_hours: bool,
     import_hours_csv: bool,
     view_imported_hours: bool,
@@ -115,6 +115,8 @@ struct PendingEmailBatch {
     stage: EmailBatchNoteStage,
     selected_personal_assistant_ids: Vec<i64>,
     choices: Vec<ProductionChoice>,
+    retained_timesheets: bool,
+    employment: HashMap<i64, String>,
     payroll_period: Option<CapturedOperationalPayrollPeriod>,
     operational_selection_revision: u64,
     approved: std::collections::HashMap<i64, crate::email_service::PayrollEmailPreview>,
@@ -248,7 +250,6 @@ pub struct DirectPaymentApp {
     additional_notes_by_personal_assistant: HashMap<i64, String>,
     note_enabled_personal_assistant_ids: HashSet<i64>,
     pending_email_batch: Option<PendingEmailBatch>,
-    include_departed_email_pas: bool,
     signature_drawing: crate::signature::DrawingUi,
     pending_generation: Option<PendingGeneration>,
     production_report: Option<ProductionReport>,
@@ -335,7 +336,6 @@ impl DirectPaymentApp {
             additional_notes_by_personal_assistant: HashMap::new(),
             note_enabled_personal_assistant_ids: HashSet::new(),
             pending_email_batch: None,
-            include_departed_email_pas: false,
             signature_drawing: Default::default(),
             pending_generation: None,
             production_report: None,
@@ -498,11 +498,7 @@ impl eframe::App for DirectPaymentApp {
             }
 
             ActiveScreen::PayrollSettings => {
-                if egui::ScrollArea::vertical()
-                    .show(ui, |ui| {
-                        self.payroll_settings_screen.show(ui, &mut self.application)
-                    })
-                    .inner
+                if self.payroll_settings_screen.show(ui, &mut self.application)
                 {
                     self.active_screen = ActiveScreen::EmailSettings;
                 }
@@ -536,12 +532,9 @@ impl eframe::App for DirectPaymentApp {
             }
 
             ActiveScreen::ApplicationSettings => {
-                let mut open_email_settings = false;
-                egui::ScrollArea::vertical().show(ui, |ui| {
-                    open_email_settings = self
-                        .application_settings_screen
-                        .show(ui, &mut self.application);
-                });
+                let open_email_settings = self
+                    .application_settings_screen
+                    .show(ui, &mut self.application);
                 if open_email_settings {
                     self.active_screen = ActiveScreen::EmailSettings;
                 }
@@ -831,6 +824,8 @@ impl DirectPaymentApp {
             } else {
                 EmailBatchNoteStage::ChooseAdditionalNote
             },
+            retained_timesheets: false,
+            employment: assistants.iter().map(|pa| (pa.id, pa.employment_identity())).collect(),
             choices,
             selected_personal_assistant_ids,
             payroll_period: schedule.as_ref().map(capture_operational_payroll_period),
@@ -873,18 +868,24 @@ impl DirectPaymentApp {
         }
         if matches!(stage, Some(EmailBatchNoteStage::ChooseAdditionalNote)) {
             ui.label("Additional note for this email batch?");
-            ui.horizontal(|ui| {
-                if ui.button("Add Additional Note").clicked() {
-                    if let Some(batch) = &mut self.pending_email_batch {
-                        batch.stage = EmailBatchNoteStage::EditAdditionalNotes;
+            ui.scope(|ui| {
+                // The dashboard can be wider than its viewport. Wrap these choices
+                // within the visible area even when that parent has expanded.
+                let visible_width = (ui.ctx().content_rect().right() - ui.cursor().left() - 24.0).max(120.0);
+                ui.set_max_width(ui.available_width().min(visible_width));
+                ui.horizontal_wrapped(|ui| {
+                    if additional_note_choice(ui, 190.0, "Add Additional Note") {
+                        if let Some(batch) = &mut self.pending_email_batch {
+                            batch.stage = EmailBatchNoteStage::EditAdditionalNotes;
+                        }
                     }
-                }
-                if ui.button("No Additional Note").clicked() {
-                    self.finish_email_notes(false);
-                }
-                if ui.button("Cancel").clicked() {
-                    self.clear_pending_email_batch();
-                }
+                    if additional_note_choice(ui, 180.0, "No Additional Note") {
+                        self.finish_email_notes(false);
+                    }
+                    if additional_note_choice(ui, 100.0, "Cancel") {
+                        self.clear_pending_email_batch();
+                    }
+                });
             });
         }
 
@@ -2114,26 +2115,28 @@ impl DirectPaymentApp {
         }
     }
 
-    // Sending visibility is separate from historical preparation eligibility.
-    fn current_email_pa(pa: &crate::models::PersonalAssistant) -> bool {
-        let today = chrono::Local::now().date_naive();
-        pa.employment_status.as_deref() == Some("Active")
-            && pa.employment_overlaps(today, today).unwrap_or(false)
-    }
+    fn current_email_pa(pa: &crate::models::PersonalAssistant) -> bool { pa.is_currently_active() }
 
-    fn email_pa_visible(&self, pa: &crate::models::PersonalAssistant) -> bool {
-        self.include_departed_email_pas || Self::current_email_pa(pa)
-    }
-
-    fn draw_email_pa_scope(&mut self, ui: &mut egui::Ui) {
-        if ui.checkbox(&mut self.include_departed_email_pas,
-            "Include inactive/departed PAs for final or outstanding documents").changed() {
-            self.clear_pending_email_batch();
-            self.email_preview = None;
-            self.preview_personal_assistant_id = None;
+    fn verify_recipient_employment(&self, pa: &crate::models::PersonalAssistant, batch: &PendingEmailBatch) -> Result<(), Box<dyn std::error::Error>> {
+        if batch.employment.get(&pa.id) != Some(&pa.employment_identity()) {
+            return Err("PA status changed; review the recipient selection".into());
         }
-        if self.include_departed_email_pas {
-            ui.label("Departed PAs must be selected deliberately. Existing document and delivery checks still apply.");
+        if matches!(batch.kind, PayrollEmailKind::Timesheet) && !batch.retained_timesheets && !pa.is_currently_active() {
+            return Err("PA status changed; review the recipient selection".into());
+        }
+        Ok(())
+    }
+
+    fn begin_retained_timesheet_batch(&mut self) {
+        self.begin_email_batch(PayrollEmailKind::Timesheet);
+        let result = self.selected_operational_payroll_schedule().and_then(|schedule| self.production_choices_for_access(&schedule, true, true));
+        match result {
+            Ok(choices) => if let Some(batch) = self.pending_email_batch.as_mut() {
+                batch.retained_timesheets = true;
+                batch.choices = choices;
+                batch.selected_personal_assistant_ids.clear();
+            },
+            Err(error) => { self.clear_pending_email_batch(); self.status_message = error.to_string(); }
         }
     }
 
@@ -2141,7 +2144,7 @@ impl DirectPaymentApp {
         &self,
     ) -> Result<Vec<crate::models::PersonalAssistant>, Box<dyn std::error::Error>> {
         let mut assistants = if self.operational_payroll_period.selected.is_some() {
-            self.selected_period_assistants()?
+            self.selected_period_assistants()?.into_iter().filter(Self::current_email_pa).collect()
         } else {
             Vec::new()
         };
@@ -2160,15 +2163,27 @@ impl DirectPaymentApp {
             } else {
                 false
             };
+            let retained_ordinary = if let Some(period) = self.operational_payroll_period.selected.as_ref() {
+                match self.application.payroll_schedule_repository.get_for_year_and_cycle(&period.payroll_year,period.cycle_number)? {
+                    Some(schedule) => {
+                        let root=crate::paths::expand_path(&self.application.context.config.folders.payslip_folder);
+                        let name=format!("{} {}",assistant.first_name,assistant.surname);
+                        match crate::payroll_file_naming::existing_payslip_path(&root,&name,&schedule) {
+                            Ok(path)=>path.try_exists()?,
+                            Err(_)=>true, // Preserve the unavailable choice and its specific safety diagnostic.
+                        }
+                    },
+                    None=>false,
+                }
+            } else {false};
             if !assistants
                 .iter()
                 .any(|selected| selected.id == assistant.id)
-                && (revised || self.application.payroll_timesheet_email_repository.documents_for_pa(assistant.id)?.iter().any(|d| !matches!(d.delivery_state, crate::payroll_timesheet_email_repository::EmailDeliveryState::Sent { .. })))
+                && (revised || retained_ordinary || self.application.payroll_timesheet_email_repository.documents_for_pa(assistant.id)?.iter().any(|d| !matches!(d.delivery_state, crate::payroll_timesheet_email_repository::EmailDeliveryState::Sent { .. })))
             {
                 assistants.push(assistant);
             }
         }
-        assistants.retain(|pa| self.email_pa_visible(pa));
         Ok(assistants)
     }
 
@@ -2178,7 +2193,7 @@ impl DirectPaymentApp {
     ) -> Result<Vec<crate::models::PersonalAssistant>, Box<dyn std::error::Error>> {
         match kind {
             PayrollEmailKind::Payslip => self.payslip_email_assistants(),
-            PayrollEmailKind::Timesheet => Ok(self.selected_period_assistants()?.into_iter().filter(|pa| self.email_pa_visible(pa)).collect()),
+            PayrollEmailKind::Timesheet => Ok(self.selected_period_assistants()?.into_iter().filter(Self::current_email_pa).collect()),
         }
     }
 
@@ -2669,12 +2684,13 @@ impl DirectPaymentApp {
         if let Some(text) = session.paste_text.as_mut() {
             egui::Modal::new(egui::Id::new("clipboard_csv_editor")).show(ctx, |ui| {
                 ui.set_width(700.0_f32.min(ctx.content_rect().width() - 40.0).max(240.0));
-                ui.heading("Import Hours Keeper CSV");
+                ui.heading("Import Hours CSV");
                 if let Some(pa) = session.outstanding.iter().find(|pa| pa.id == session.selected) {
                     ui.label(format!("Personal Assistant: {} {}", pa.first_name, pa.surname));
                 }
-                ui.label("Paste the complete CSV export below using Ctrl+V. You can edit it before importing. Include the description line, eight-column header and shift rows.");
-                ui.label("Header: Client Name,Start Time,End Time,Break Time,Worked Hours,Rate/H,Amount,Note");
+                for line in clipboard_csv_guidance(&self.application.context.config.csv_import) {
+                    ui.label(line);
+                }
                 egui::ScrollArea::vertical().max_height(340.0).show(ui, |ui| {
                     let response = ui.add(egui::TextEdit::multiline(text)
                         .id(egui::Id::new("clipboard_csv_text"))
@@ -2781,8 +2797,7 @@ impl DirectPaymentApp {
 
             ui.separator();
 
-            self.draw_email_pa_scope(ui);
-            let actions = draw_dashboard_workflow_actions(ui);
+            let actions = draw_dashboard_workflow_actions(ui, self.application.context.config.dashboard_buttons);
 
                 if actions.enter_hours {
                     self.enter_hours_screen.reload();
@@ -2812,7 +2827,7 @@ impl DirectPaymentApp {
                     }
                 }
                 if actions.prepare_timesheets {
-                    self.payroll_timesheet_screen.reload();
+                    self.payroll_timesheet_screen.open_active();
                     self.active_screen = ActiveScreen::PayrollTimesheet;
                 }
 
@@ -2935,7 +2950,6 @@ impl DirectPaymentApp {
     }
 
     fn draw_email_preview_controls(&mut self, ui: &mut egui::Ui) {
-        self.draw_email_pa_scope(ui);
         ui.heading("Document previews");
         let assistants = match self.payslip_email_assistants() {
             Ok(assistants) => assistants.into_iter().collect::<Vec<_>>(),
@@ -3181,7 +3195,7 @@ impl DirectPaymentApp {
         Box<dyn std::error::Error>,
     > {
         let mut unknown = Vec::new();
-        for pa in self.application.personal_assistant_repository.get_all()?.into_iter().filter(|pa| self.email_pa_visible(pa)) {
+        for pa in self.application.personal_assistant_repository.get_all()? {
             for doc in self
                 .application
                 .payroll_timesheet_email_repository
@@ -3306,9 +3320,10 @@ impl DirectPaymentApp {
                     };
                 Ok(ProductionChoice {
                     id: pa.id,
+                    automatic: pa.is_currently_active(),
                     name: format!("{} {}", pa.first_name, pa.surname),
                     available,
-                    detail,
+                    detail: if pa.is_currently_active() { detail } else { format!("Retained/final documents — select individually. {detail}") },
                     intent: None,
                 })
             })
@@ -3387,6 +3402,8 @@ impl DirectPaymentApp {
                 approved,
                 |_| {
                     let current_schedule = self.validated_schedule_for_email_batch(batch)?;
+                    let fresh = crate::personal_assistant_repository::PersonalAssistantRepository::get_by_id_on(self.application.repository.connection(), assistant.id)?;
+                    self.verify_recipient_employment(&fresh, batch)?;
                     self.payslip_approval(assistant.id, current_schedule.as_ref())
                 },
                 |p, bytes, message_id| {
@@ -3543,7 +3560,7 @@ impl DirectPaymentApp {
         let approval = crate::payroll_delivery::Approval::capture(
             bundle,
             preview,
-            self.email_settings_digest()?,
+            crate::payroll_delivery::digest(format!("{}:{}", self.email_settings_digest()?, assistant.employment_identity()).as_bytes()),
         )?;
         self.verify_attachment_approval(&approval)?;
         Ok(approval)
@@ -3593,6 +3610,8 @@ impl DirectPaymentApp {
         if matches!(batch.kind, PayrollEmailKind::Payslip) {
             let schedule = self.validated_schedule_for_email_batch(batch)?;
             for id in &batch.selected_personal_assistant_ids {
+                let pa = crate::personal_assistant_repository::PersonalAssistantRepository::get_by_id_on(self.application.repository.connection(), *id)?;
+                self.verify_recipient_employment(&pa, batch)?;
                 let approval = self.payslip_approval(*id, schedule.as_ref())?;
                 batch.approved.insert(*id, approval.preview.clone());
                 batch.approved_bundles.insert(*id, approval);
@@ -3631,6 +3650,7 @@ impl DirectPaymentApp {
                 crate::personal_assistant_repository::PersonalAssistantRepository::get_by_id_on(
                     &db, *id,
                 )?;
+            self.verify_recipient_employment(&pa, batch)?;
             approved.insert(*id, self.timesheet_preview(&schedule, &pa)?);
         }
         batch.approved = approved;
@@ -3652,6 +3672,8 @@ impl DirectPaymentApp {
         if matches!(batch.kind, PayrollEmailKind::Payslip) {
             let schedule = self.validated_schedule_for_email_batch(batch)?;
             for id in &batch.selected_personal_assistant_ids {
+                let pa = crate::personal_assistant_repository::PersonalAssistantRepository::get_by_id_on(self.application.repository.connection(), *id)?;
+                self.verify_recipient_employment(&pa, batch)?;
                 batch
                     .approved_bundles
                     .get(id)
@@ -3695,7 +3717,7 @@ impl DirectPaymentApp {
                 crate::personal_assistant_repository::PersonalAssistantRepository::get_by_id_on(
                     &db, *id,
                 )?;
-            if !self.email_pa_visible(&pa) { return Err("PA status changed; review the recipient selection".into()); }
+            self.verify_recipient_employment(&pa, batch)?;
             if batch.approved.get(id) != Some(&self.timesheet_preview(&schedule, &pa)?) {
                 return Err("Email contents or actual recipients changed".into());
             }
@@ -3708,7 +3730,7 @@ impl DirectPaymentApp {
         assistant: &crate::models::PersonalAssistant,
         batch: &PendingEmailBatch,
     ) -> Result<bool, Box<dyn std::error::Error>> {
-        if !self.email_pa_visible(assistant) { return Err("PA status changed; review the recipient selection".into()); }
+        self.verify_recipient_employment(assistant, batch)?;
         let intent = batch
             .choices
             .iter()
@@ -3750,7 +3772,7 @@ impl DirectPaymentApp {
                         .ok_or("Holiday calendar approval missing")?,
                 )?;
                 let fresh=crate::personal_assistant_repository::PersonalAssistantRepository::get_by_id_on(locked,assistant.id)?;
-                if !self.email_pa_visible(&fresh) { return Err("PA status changed during claim; review the recipient selection".into()); }
+                self.verify_recipient_employment(&fresh, batch)?;
                 let current_schedule = self
                     .validated_schedule_for_email_batch(batch)?
                     .ok_or("Period missing")?;
@@ -3793,7 +3815,7 @@ impl DirectPaymentApp {
         };
         let payroll_year = current_schedule.payroll_year.clone();
 
-        let assistants = match self.selected_period_assistants() {
+        let assistants = match self.email_assistants(PayrollEmailKind::Timesheet) {
             Ok(assistants) => assistants,
             Err(error) => {
                 ui.label(format!("Unable to load Personal Assistants: {}", error));
@@ -4725,89 +4747,107 @@ const WORKFLOW_COLUMN_WIDTHS: [f32; 3] = [225.0, 225.0, 185.0];
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum DashboardWorkflowLayout {
     AlignedColumns,
-    WrappedRows,
+    HorizontalScroll,
 }
 
+#[cfg(test)]
 fn dashboard_workflow_layout(
     available_width: f32,
     horizontal_spacing: f32,
 ) -> DashboardWorkflowLayout {
-    let aligned_width = WORKFLOW_COLUMN_WIDTHS.iter().sum::<f32>() + horizontal_spacing * 2.0;
+    dashboard_workflow_layout_for_columns(available_width, horizontal_spacing, WORKFLOW_COLUMN_WIDTHS)
+}
+
+fn dashboard_workflow_layout_for_columns(available_width: f32, horizontal_spacing: f32, columns: [f32; 3]) -> DashboardWorkflowLayout {
+    let aligned_width = columns.iter().sum::<f32>() + horizontal_spacing * 2.0;
     if available_width >= aligned_width {
         DashboardWorkflowLayout::AlignedColumns
     } else {
-        DashboardWorkflowLayout::WrappedRows
+        DashboardWorkflowLayout::HorizontalScroll
     }
 }
 
-fn draw_dashboard_workflow_actions(ui: &mut egui::Ui) -> DashboardWorkflowActions {
+pub(crate) fn draw_dashboard_workflow_actions(ui: &mut egui::Ui, settings: crate::config::DashboardButtons) -> DashboardWorkflowActions {
+    let settings = settings.normalised();
+    let columns = dashboard_column_widths(ui, settings);
     let mut actions = DashboardWorkflowActions::default();
-    let available_width = ui.available_width();
+    let width = ui.available_width().min(ui.clip_rect().width());
     let spacing = ui.spacing().item_spacing.x;
-
-    match dashboard_workflow_layout(available_width, spacing) {
-        DashboardWorkflowLayout::AlignedColumns => {
+    let visibility = match dashboard_workflow_layout_for_columns(width, spacing, columns) {
+        DashboardWorkflowLayout::AlignedColumns => egui::scroll_area::ScrollBarVisibility::AlwaysHidden,
+        DashboardWorkflowLayout::HorizontalScroll => egui::scroll_area::ScrollBarVisibility::VisibleWhenNeeded,
+    };
+    egui::ScrollArea::horizontal().id_salt("dashboard_workflow_horizontal")
+        .max_width(width).scroll_bar_visibility(visibility).show(ui, |ui| {
             egui::Grid::new("dashboard_workflow_actions")
                 .spacing([spacing, ui.spacing().item_spacing.y])
                 .show(ui, |ui| {
-                    actions.enter_hours = workflow_button(ui, 0, "Enter Hours/Shifts");
-                    actions.import_hours_csv = workflow_button(ui, 1, "Import Hours CSV");
-                    actions.view_imported_hours = workflow_button(ui, 2, "View Imported Hours");
+                    actions.enter_hours = workflow_button(ui, settings, columns, 0, "Enter Hours/Shifts");
+                    actions.import_hours_csv = workflow_button(ui, settings, columns, 1, "Import Hours CSV");
+                    actions.view_imported_hours = workflow_button(ui, settings, columns, 2, "View Imported Hours");
                     ui.end_row();
 
                     actions.prepare_timesheets =
-                        workflow_button(ui, 0, "Payroll Timesheet Preparation");
+                        workflow_button(ui, settings, columns, 0, "Payroll Timesheet Preparation");
                     actions.generate_timesheets =
-                        workflow_button(ui, 1, "Generate Payroll Timesheets");
-                    actions.email_timesheets = workflow_button(ui, 2, "Email Payroll Timesheets");
+                        workflow_button(ui, settings, columns, 1, "Generate Payroll Timesheets");
+                    actions.email_timesheets = workflow_button(ui, settings, columns, 2, "Email Payroll Timesheets");
                     ui.end_row();
 
                     actions.import_payroll_documents =
-                        workflow_button(ui, 0, "Import Payroll Documents");
-                    actions.email_payslips = workflow_button(ui, 1, "Email Payslips");
-                    actions.view_payroll_schedule = workflow_button(ui, 2, "View Payroll Schedule");
+                        workflow_button(ui, settings, columns, 0, "Import Payroll Documents");
+                    actions.email_payslips = workflow_button(ui, settings, columns, 1, "Email Payslips");
+                    actions.view_payroll_schedule = workflow_button(ui, settings, columns, 2, "View Payroll Schedule");
                     ui.end_row();
                 });
-        }
-        DashboardWorkflowLayout::WrappedRows => {
-            let widths = WORKFLOW_COLUMN_WIDTHS.map(|width| width.min(available_width));
-            ui.horizontal_wrapped(|ui| {
-                actions.enter_hours = sized_workflow_button(ui, widths[0], "Enter Hours/Shifts");
-                actions.import_hours_csv = sized_workflow_button(ui, widths[1], "Import Hours CSV");
-                actions.view_imported_hours =
-                    sized_workflow_button(ui, widths[2], "View Imported Hours");
-            });
-            ui.horizontal_wrapped(|ui| {
-                actions.prepare_timesheets =
-                    sized_workflow_button(ui, widths[0], "Payroll Timesheet Preparation");
-                actions.generate_timesheets =
-                    sized_workflow_button(ui, widths[1], "Generate Payroll Timesheets");
-                actions.email_timesheets =
-                    sized_workflow_button(ui, widths[2], "Email Payroll Timesheets");
-            });
-            ui.horizontal_wrapped(|ui| {
-                actions.import_payroll_documents =
-                    sized_workflow_button(ui, widths[0], "Import Payroll Documents");
-                actions.email_payslips = sized_workflow_button(ui, widths[1], "Email Payslips");
-                actions.view_payroll_schedule =
-                    sized_workflow_button(ui, widths[2], "View Payroll Schedule");
-            });
-        }
-    }
-
+        });
     actions
 }
 
-fn workflow_button(ui: &mut egui::Ui, column: usize, label: &str) -> bool {
-    sized_workflow_button(ui, WORKFLOW_COLUMN_WIDTHS[column], label)
+fn dashboard_column_widths(ui: &egui::Ui, settings: crate::config::DashboardButtons) -> [f32; 3] {
+    let labels = ["Payroll Timesheet Preparation", "Generate Payroll Timesheets", "Email Payroll Timesheets"];
+    std::array::from_fn(|i| {
+        let text = ui.painter().layout_no_wrap(labels[i].into(), egui::FontId::proportional(settings.font_size), egui::Color32::WHITE);
+        WORKFLOW_COLUMN_WIDTHS[i].max(text.size().x + ui.spacing().button_padding.x * 2.0 + 4.0)
+    })
+}
+fn workflow_button(ui: &mut egui::Ui, settings: crate::config::DashboardButtons, columns: [f32; 3], column: usize, label: &str) -> bool {
+    sized_workflow_button(ui, columns[column], label, settings)
 }
 
-fn sized_workflow_button(ui: &mut egui::Ui, width: f32, label: &str) -> bool {
-    ui.add_sized(
-        [width, ui.spacing().interact_size.y],
-        egui::Button::new(label),
-    )
-    .clicked()
+// Prominent choices use the dashboard palette with explicit pressed feedback.
+fn additional_note_choice(ui: &mut egui::Ui, width: f32, label: &str) -> bool {
+    // Allocate the button directly so horizontal_wrapped can move it as one item.
+    let previous = ui.style().clone();
+    let mut style = (*previous).clone();
+    style.animation_time = 0.0;
+    let widgets = &mut style.visuals.widgets;
+    for visual in [&mut widgets.inactive, &mut widgets.hovered] {
+        visual.weak_bg_fill = egui::Color32::from_rgb(185, 222, 250);
+        visual.bg_fill = egui::Color32::from_rgb(185, 222, 250);
+        visual.fg_stroke.color = egui::Color32::from_rgb(15, 40, 60);
+        visual.expansion = 0.0;
+    }
+    widgets.active.weak_bg_fill = egui::Color32::from_rgb(125, 190, 235);
+    widgets.active.bg_fill = egui::Color32::from_rgb(125, 190, 235);
+    widgets.active.fg_stroke.color = egui::Color32::from_rgb(15, 40, 60);
+    widgets.active.bg_stroke = egui::Stroke::new(2.0_f32, egui::Color32::from_rgb(15, 40, 60));
+    ui.set_style(style);
+    let clicked = ui.add_sized([width, 32.0], egui::Button::new(label).wrap_mode(egui::TextWrapMode::Extend)).clicked();
+    ui.set_style(previous);
+    clicked
+}
+
+fn sized_workflow_button(ui: &mut egui::Ui, width: f32, label: &str, settings: crate::config::DashboardButtons) -> bool {
+    ui.scope(|ui| {
+        ui.style_mut().animation_time = 0.0;
+        let hovered = &mut ui.visuals_mut().widgets.hovered;
+        hovered.expansion = 0.0;
+        hovered.weak_bg_fill = egui::Color32::from_rgb(185, 222, 250);
+        hovered.bg_fill = egui::Color32::from_rgb(185, 222, 250);
+        hovered.fg_stroke.color = egui::Color32::from_rgb(15, 40, 60);
+        ui.add_sized([width, settings.height.max(settings.font_size + ui.spacing().button_padding.y * 2.0)], egui::Button::new(egui::RichText::new(label).size(settings.font_size)).wrap_mode(egui::TextWrapMode::Extend)).clicked()
+    }).inner
 }
 
 fn dashboard_status_panel(
@@ -5042,13 +5082,14 @@ fn draw_timesheets(
                 .into_iter()
                 .filter(|entry| imported_entry_in_scope(entry, *all_cycles, scope))
             {
+                let (rate, amount) = imported_ui.source_money(app.repository.connection(), entry.id);
                 for (column, (text, width)) in [
                     entry.pa_name.clone(),
                     entry.start_time.clone(),
                     entry.end_time.clone(),
                     format_worked_time(entry.worked_minutes),
-                    format!("£{:.2}", entry.hourly_rate),
-                    format!("£{:.2}", entry.amount),
+                    rate,
+                    amount,
                 ]
                 .into_iter()
                 .zip(TIMESHEET_COLUMN_WIDTHS)
@@ -5213,6 +5254,32 @@ fn timesheet_sort_heading(
     }
 }
 
+fn clipboard_csv_guidance(config: &crate::csv_import::CsvImportConfig) -> [String; 5] {
+    use crate::csv_import::{HoursMethod, FIELD_NAMES};
+    let required = (0..8)
+        .filter(|&f| config.hours_method.requires(f))
+        .map(|f| format!("{} [{}]", FIELD_NAMES[f], config.headings[f].join(" | ")))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let optional = (0..8)
+        .filter(|&f| config.enabled[f] && !config.hours_method.requires(f))
+        .map(|f| FIELD_NAMES[f])
+        .collect::<Vec<_>>()
+        .join(", ");
+    let explanation = match config.hours_method {
+        HoursMethod::WorkedHours => "The supplied worked duration is authoritative.",
+        HoursMethod::WorkedHoursMinusBreak => "Subtract Break from CSV Worked Hours; Break must be present on every shift and cannot exceed either Worked Hours or elapsed shift duration.",
+        HoursMethod::EndMinusStart => "Use elapsed duration without break deduction. Worked Hours is not required.",
+        HoursMethod::EndMinusStartMinusBreak => "Subtract Break from elapsed shift duration; Break must be present on every shift and cannot exceed elapsed duration. Worked Hours is not required.",
+    };
+    [
+        "Paste the CSV with Ctrl+V, then review or edit it before importing. Format settings: Payroll Settings / CSV Import.".into(),
+        format!("Skip {} introductory line(s); the next line is the heading row. Columns may be in any order; disabled and unmapped columns are ignored.", config.introductory_rows),
+        format!("Required headings: {required}."),
+        format!("Optional enabled columns: {optional}. These may be omitted or blank. Use their configured heading aliases when present."),
+        format!("Hours method: {}. {explanation} Payroll rounding is applied once per shift in preparation.", config.hours_method.label()),
+    ]
+}
 fn imported_pa_names(timesheets: &[TimesheetEntry]) -> Vec<&str> {
     let mut names: Vec<_> = timesheets
         .iter()
@@ -5833,7 +5900,7 @@ mod payroll_return_schedule_selection_tests {
                     },
                     |ctx| {
                         egui::CentralPanel::default().show(ctx, |ui| {
-                            draw_dashboard_workflow_actions(ui);
+                            draw_dashboard_workflow_actions(ui, Default::default());
                         });
                     },
                 );
@@ -5851,7 +5918,7 @@ mod payroll_return_schedule_selection_tests {
                         .expect(label)
                         .1
                 });
-                if width > 800.0 {
+                {
                     assert!((positions[0].y - positions[1].y).abs() < 1.0);
                     assert!((positions[1].y - positions[2].y).abs() < 1.0);
                     assert!(positions[0].x < positions[1].x && positions[1].x < positions[2].x);
@@ -5872,7 +5939,7 @@ mod payroll_return_schedule_selection_tests {
     }
 
     #[test]
-    fn dashboard_workflow_uses_aligned_columns_only_when_they_fit() {
+    fn dashboard_workflow_scrolls_horizontally_only_when_columns_do_not_fit() {
         let spacing = 8.0;
         let required = WORKFLOW_COLUMN_WIDTHS.iter().sum::<f32>() + spacing * 2.0;
 
@@ -5882,7 +5949,7 @@ mod payroll_return_schedule_selection_tests {
         );
         assert_eq!(
             dashboard_workflow_layout(required - 1.0, spacing),
-            DashboardWorkflowLayout::WrappedRows
+            DashboardWorkflowLayout::HorizontalScroll
         );
     }
 
@@ -6809,7 +6876,7 @@ mod payroll_period_eligibility_tests {
                 "test-payroll@example.com".into();
             reconcile_test_supplements(&application);
             let mut app = DirectPaymentApp::new(application);
-            app.include_departed_email_pas = true; // Explicit historical/final-document access.
+
             if has_schedule {
                 app.operational_payroll_period.select(&current, None);
             } else {
@@ -7069,7 +7136,7 @@ mod payroll_period_eligibility_tests {
         application.import_payroll_documents(&path, None).unwrap();
         reconcile_test_supplements(&application);
         let mut app = DirectPaymentApp::new(application);
-        app.include_departed_email_pas = true; // Explicit historical/final-document access.
+
         app.operational_payroll_period.selected = None;
         app.preview_personal_assistant_id = Some(pa.id);
         app.load_email_preview(PayrollEmailKind::Payslip);
@@ -7160,7 +7227,7 @@ mod payroll_period_eligibility_tests {
                 assert_eq!(imported.payslips_imported, 0);
                 reconcile_test_supplements(&application);
                 let mut app = DirectPaymentApp::new(application);
-                app.include_departed_email_pas = true; // Explicit historical/final-document access.
+
                 app.operational_payroll_period.select(&current, None);
                 app.preview_personal_assistant_id = Some(pa.id);
                 app.load_email_preview(PayrollEmailKind::Payslip);
@@ -7255,7 +7322,7 @@ mod payroll_period_eligibility_tests {
                 .unwrap();
             reconcile_test_supplements(&application);
             let mut app = DirectPaymentApp::new(application);
-            app.include_departed_email_pas = true; // Explicit historical/final-document access.
+
             app.operational_payroll_period.select(&current, None);
             app.preview_personal_assistant_id = Some(1);
             app.load_email_preview(PayrollEmailKind::Payslip);
@@ -7402,7 +7469,7 @@ mod payroll_period_eligibility_tests {
             .import_payroll_return(&zip_path, &current)
             .unwrap();
         let mut app = DirectPaymentApp::new(application);
-        app.include_departed_email_pas = true; // Explicit historical/final-document access.
+
         app.operational_payroll_period.select(&current, None);
         assert!(!app
             .selected_period_assistants()
@@ -7474,12 +7541,12 @@ mod payroll_period_eligibility_tests {
         app.begin_email_batch(PayrollEmailKind::Timesheet);
         assert_eq!(app.pending_email_batch.as_ref().unwrap().choices.iter().map(|c|c.id).collect::<Vec<_>>(), vec![5]);
         assert_eq!(app.pending_email_batch.as_ref().unwrap().selected_personal_assistant_ids, vec![5]);
-        app.include_departed_email_pas = true;
-        app.begin_email_batch(PayrollEmailKind::Timesheet);
+
+        app.begin_retained_timesheet_batch();
         let batch = app.pending_email_batch.as_mut().unwrap();
         assert_eq!(batch.choices.iter().map(|c|c.id).collect::<Vec<_>>(), vec![1,3,5,8]);
         assert!(batch.choices.iter().all(|c|c.available && c.intent.is_some()));
-        assert_eq!(batch.selected_personal_assistant_ids, vec![5]);
+        assert!(batch.selected_personal_assistant_ids.is_empty());
         // The employer can deliberately select a departed PA's retained PDF.
         batch.selected_personal_assistant_ids = vec![1];
         batch.confirm_selection();
@@ -7488,7 +7555,7 @@ mod payroll_period_eligibility_tests {
         assert_eq!(db.query_row("SELECT COUNT(*) FROM timesheet_delivery_attempts",[],|r|r.get::<_,i64>(0)).unwrap(),0);
         assert_eq!(db.query_row("SELECT COUNT(*) FROM payroll_submissions",[],|r|r.get::<_,i64>(0)).unwrap(),0);
         assert_eq!(app.application.payroll_timesheet_repository.get_all_for_cycle(&historical.payroll_year, historical.cycle_number).unwrap().len(), count);
-        app.include_departed_email_pas = false;
+
         app.begin_email_batch(PayrollEmailKind::Timesheet);
         assert!(app.pending_email_batch.as_ref().unwrap().choices.iter().all(|c|c.id==5));
         // A status change after selection is rejected before a send attempt.
@@ -7511,9 +7578,9 @@ mod payroll_period_eligibility_tests {
         application.import_payroll_documents(&path,None).unwrap();
         let mut app = DirectPaymentApp::new(application);
         app.operational_payroll_period.selected = None;
-        assert!(app.payslip_email_assistants().unwrap().is_empty());
-        assert!(app.unknown_supplements().unwrap().is_empty());
-        app.include_departed_email_pas = true;
+        assert_eq!(app.payslip_email_assistants().unwrap().iter().map(|pa|pa.id).collect::<Vec<_>>(),vec![pa.id]);
+        assert_eq!(app.unknown_supplements().unwrap().len(),1);
+
         assert_eq!(app.unknown_supplements().unwrap().len(),1);
         reconcile_test_supplements(&app.application);
         app.begin_email_batch(PayrollEmailKind::Payslip);
@@ -7523,9 +7590,9 @@ mod payroll_period_eligibility_tests {
         assert_eq!(approval.bundle.document_ids.len(),1);
         assert_eq!(approval.bundle.email_types,vec!["p45"]);
         assert_eq!(app.application.payroll_timesheet_email_repository.connection.query_row("SELECT COUNT(*) FROM payroll_bundle_attempts",[],|r|r.get::<_,i64>(0)).unwrap(),0);
-        app.include_departed_email_pas = false;
-        assert!(app.payslip_email_assistants().unwrap().is_empty());
-        assert!(app.payslip_approval(pa.id,None).is_err());
+
+        assert_eq!(app.payslip_email_assistants().unwrap().iter().map(|pa|pa.id).collect::<Vec<_>>(),vec![pa.id]);
+        assert!(app.payslip_approval(pa.id,None).is_ok());
         assert_eq!(app.application.payroll_timesheet_email_repository.documents_for_pa(pa.id).unwrap().len(),1);
         assert_eq!(app.application.personal_assistant_repository.get_all().unwrap()[0].employment_status.as_deref(),Some("Inactive"));
         // Active status with an elapsed leaving date is still departed.
@@ -7548,7 +7615,7 @@ mod payroll_period_eligibility_tests {
             .execute_batch("UPDATE personal_assistants SET email='pa@example.test'")
             .unwrap();
         let mut app = DirectPaymentApp::new(application);
-        app.include_departed_email_pas = true; // Explicit historical/final-document access.
+
         for (schedule, expected) in [(&historical, vec![1, 3, 5, 8]), (&current, vec![2, 4, 5])] {
             app.operational_payroll_period.select(schedule, None);
             let selected = app.selected_period_assistants().unwrap();
@@ -7567,14 +7634,14 @@ mod payroll_period_eligibility_tests {
                 if matches!(kind, PayrollEmailKind::Timesheet) {
                     assert_eq!(
                         pending.choices.iter().map(|p| p.id).collect::<Vec<_>>(),
-                        expected
+                        selected.iter().filter(|pa|pa.is_currently_active()).map(|pa|pa.id).collect::<Vec<_>>()
                     );
                     assert!(pending.selected_personal_assistant_ids.is_empty());
                     assert!(pending.choices.iter().all(|p| !p.available));
                 } else {
                     assert_eq!(
                         pending.choices.iter().map(|p| p.id).collect::<Vec<_>>(),
-                        expected
+                        selected.iter().filter(|pa|pa.is_currently_active()).map(|pa|pa.id).collect::<Vec<_>>()
                     );
                     // Employment eligibility alone is not a sendable document.
                     assert!(pending.selected_personal_assistant_ids.is_empty());
@@ -7624,7 +7691,7 @@ mod payroll_period_eligibility_tests {
     {
         let (_dir, application, historical, _) = employment_period_fixture();
         let mut app = DirectPaymentApp::new(application);
-        app.include_departed_email_pas = true; // Explicit historical timesheet access.
+
         app.operational_payroll_period.select(&historical, None);
         app.payroll_timesheet_screen =
             load_period_for_eligibility_test(&app.application, &historical);
@@ -7653,7 +7720,7 @@ mod payroll_period_eligibility_tests {
                 .collect::<Vec<_>>(),
             vec![1, 3, 5, 8]
         );
-        app.begin_email_batch(PayrollEmailKind::Timesheet);
+        app.begin_retained_timesheet_batch();
         let pending = app.pending_email_batch.as_ref().unwrap();
         assert!(pending.choices.iter().any(|p| p.id == 1 && !p.available));
         assert!(!pending.selected_personal_assistant_ids.contains(&1));
@@ -7842,7 +7909,7 @@ mod standalone_email_ui_tests {
     fn changing_selection_removes_large_batch_acknowledgement() {
         let mut batch=PendingEmailBatch {
             kind:PayrollEmailKind::Payslip,stage:EmailBatchNoteStage::SelectRecipients,
-            selected_personal_assistant_ids:(1..=12).collect(),choices:Vec::new(),
+            selected_personal_assistant_ids:(1..=12).collect(),choices:Vec::new(),retained_timesheets:false,employment:Default::default(),
             payroll_period:None,operational_selection_revision:0,
             approved:Default::default(),approved_selection:Vec::new(),approved_bundles:Default::default(),approved_settings:String::new(),approved_holidays:None,
             resend_acknowledged:true,volume_acknowledged:true,
@@ -8649,7 +8716,7 @@ mod additional_note_database_error_tests {
     fn batch(kind: PayrollEmailKind, ids: Vec<i64>) -> PendingEmailBatch {
         PendingEmailBatch {
             kind, stage: EmailBatchNoteStage::EditAdditionalNotes,
-            selected_personal_assistant_ids: ids, choices: vec![], payroll_period: None,
+            selected_personal_assistant_ids: ids, choices: vec![], retained_timesheets:false,employment:Default::default(),payroll_period: None,
             operational_selection_revision: 0, approved: Default::default(),
             approved_selection: vec![], approved_bundles: Default::default(),
             approved_settings: String::new(), approved_holidays: None, resend_acknowledged: false,
@@ -8815,24 +8882,154 @@ mod clipboard_hours_ui_tests {
 
     #[test]
     fn editable_error_can_be_corrected_and_first_pa_imports_before_remaining_cancel() {
-        let (_dir,mut app)=fixture();app.begin_hours_csv_import();let ctx=egui::Context::default();
-        click(&ctx,&mut app,"Yes");click(&ctx,&mut app,"Import from Clipboard");draw(&ctx,&mut app,vec![]);
-        draw(&ctx,&mut app,vec![egui::Event::Paste("Description\nwrong header\n".into())]);
-        click(&ctx,&mut app,"Import");
-        assert!(app.clipboard_import.as_ref().unwrap().error.contains("expected 8 columns"));
-        ctx.memory_mut(|m|m.request_focus(egui::Id::new("clipboard_csv_text")));
-        draw(&ctx,&mut app,vec![egui::Event::Key{key:egui::Key::A,physical_key:None,pressed:true,repeat:false,modifiers:egui::Modifiers{ctrl:true,command:true,..Default::default()}},egui::Event::Paste(csv("First Example"))]);
-        assert_eq!(app.clipboard_import.as_ref().unwrap().paste_text.as_deref(),Some(csv("First Example").as_str()));
-        click(&ctx,&mut app,"Import");
-        let session=app.clipboard_import.as_ref().unwrap();
-        assert_eq!(session.outstanding.iter().map(|pa|pa.id).collect::<Vec<_>>(),vec![2]);
-        assert!(session.paste_text.is_none());assert!(session.paths.is_empty());
-        assert_eq!(app.application.get_timesheets().unwrap().len(),1);
-        assert_eq!(app.last_import.as_ref().unwrap().files_succeeded,1);
-        click(&ctx,&mut app,"Cancel remaining — import saved CSVs");
-        assert!(app.clipboard_import.is_none());
-        assert_eq!(app.last_import.as_ref().unwrap().files_succeeded,1,"cancel must not import/count a successful CSV twice");
-        assert_eq!(app.application.get_timesheets().unwrap().len(),1);
+        use crate::csv_import::{CsvImportConfig, HoursMethod};
+        let custom = |hours_method, introductory_rows| {
+            let mut config = CsvImportConfig {
+                hours_method,
+                introductory_rows,
+                ..Default::default()
+            };
+            for (field, name) in [(0, "Staff"), (1, "Begin"), (2, "Finish"), (4, "Paid")] {
+                config.headings[field] = vec![name.into()];
+            }
+            config
+        };
+        let cases = [
+            (CsvImportConfig::default(), csv("First Example"), 60),
+            (custom(HoursMethod::WorkedHours,0), "Extra,Staff,Finish,Paid,Begin\nignored,First Example,27/07/2026 at 09:34,0h 17m,27/07/2026 at 09:00\n".into(), 17),
+            (custom(HoursMethod::EndMinusStart,2), "Intro one\nIntro two\nFinish,Staff,Break,Begin,Extra\n27/07/2026 at 09:34,First Example,0h 10m,27/07/2026 at 09:00,ignored\n".into(), 34),
+        ];
+        for (config, corrected, expected_minutes) in cases {
+            let (_dir, mut app) = fixture();
+            app.application.context.config.csv_import = config.clone();
+            app.begin_hours_csv_import();
+            let ctx = egui::Context::default();
+            click(&ctx, &mut app, "Yes");
+            click(&ctx, &mut app, "Import from Clipboard");
+            draw(&ctx, &mut app, vec![]);
+            let malformed = format!(
+                "{}unmapped heading\n",
+                "Intro\n".repeat(config.introductory_rows)
+            );
+            draw(&ctx, &mut app, vec![egui::Event::Paste(malformed.clone())]);
+            click(&ctx, &mut app, "Import");
+            let session = app.clipboard_import.as_ref().unwrap();
+            assert!(
+                session.error.contains("missing required field"),
+                "{}",
+                session.error
+            );
+            assert_eq!(session.paste_text.as_deref(), Some(malformed.as_str()));
+            assert!(session.paths.is_empty());
+            assert_eq!(session.outstanding.len(), 2);
+            assert!(app.application.get_timesheets().unwrap().is_empty());
+            ctx.memory_mut(|m| m.request_focus(egui::Id::new("clipboard_csv_text")));
+            draw(
+                &ctx,
+                &mut app,
+                vec![
+                    egui::Event::Key {
+                        key: egui::Key::A,
+                        physical_key: None,
+                        pressed: true,
+                        repeat: false,
+                        modifiers: egui::Modifiers {
+                            ctrl: true,
+                            command: true,
+                            ..Default::default()
+                        },
+                    },
+                    egui::Event::Paste(corrected.clone()),
+                ],
+            );
+            assert_eq!(
+                app.clipboard_import.as_ref().unwrap().paste_text.as_deref(),
+                Some(corrected.as_str())
+            );
+            click(&ctx, &mut app, "Import");
+            let session = app.clipboard_import.as_ref().unwrap();
+            assert_eq!(
+                session
+                    .outstanding
+                    .iter()
+                    .map(|pa| pa.id)
+                    .collect::<Vec<_>>(),
+                vec![2]
+            );
+            assert!(session.paste_text.is_none());
+            assert!(session.paths.is_empty());
+            let raw = app.application.get_timesheets().unwrap();
+            assert_eq!(raw.len(), 1);
+            assert_eq!(raw[0].worked_minutes, expected_minutes);
+            let summary = app.last_import.as_ref().unwrap();
+            assert_eq!(summary.files_succeeded, 1);
+            assert_eq!(
+                std::fs::read(&summary.archived_paths[0]).unwrap(),
+                corrected.as_bytes()
+            );
+            click(&ctx, &mut app, "Cancel remaining — import saved CSVs");
+            assert!(app.clipboard_import.is_none());
+            assert_eq!(
+                app.last_import.as_ref().unwrap().files_succeeded,
+                1,
+                "cancel must not import/count a successful CSV twice"
+            );
+            assert_eq!(app.application.get_timesheets().unwrap().len(), 1);
+            app.begin_hours_csv_import();
+            assert_eq!(app.last_import.as_ref().unwrap().files_already_imported, 1);
+            assert_eq!(
+                app.application.get_timesheets().unwrap()[0].worked_minutes,
+                expected_minutes
+            );
+        }
+    }
+
+    #[test]
+    fn clipboard_guidance_describes_current_mappings_skip_count_and_method() {
+        use crate::csv_import::{CsvImportConfig, HoursMethod};
+        for method in HoursMethod::ALL {
+            let mut config = CsvImportConfig {
+                introductory_rows: 2,
+                hours_method: method,
+                ..Default::default()
+            };
+            config.headings[0] = vec!["Employee".into()];
+            config.headings[1] = vec!["Clock in".into()];
+            config.headings[2] = vec!["Clock out".into()];
+            config.headings[4] = vec!["Paid duration".into()];
+            let guidance = clipboard_csv_guidance(&config).join("\n");
+            assert!(guidance.contains("Skip 2 introductory line(s)"));
+            assert!(guidance.contains("PA [Employee], Start [Clock in], End [Clock out]"));
+            assert!(
+                guidance.contains("any order") && guidance.contains("unmapped columns are ignored")
+            );
+            assert!(guidance.contains("These may be omitted or blank"));
+            if method.deducts_break() { assert!(guidance.contains("Break [Break Time | Break]")); assert!(guidance.contains("every shift")); }
+            assert!(!guidance.contains("eight-column") && !guidance.contains("description line"));
+            if method.uses_worked_hours() {
+                assert!(guidance.contains("Worked Hours [Paid duration]"));
+                if !method.deducts_break() { assert!(guidance.contains("supplied worked duration is authoritative")); }
+            } else {
+                assert!(!guidance.contains("Worked Hours [Paid duration]"));
+                assert!(guidance.contains("Worked Hours is not required"));
+                if !method.deducts_break() { assert!(guidance.contains("without break deduction")); }
+            }
+            let (_dir, mut app) = fixture();
+            app.application.context.config.csv_import = config;
+            app.begin_hours_csv_import();
+            let ctx = egui::Context::default();
+            ctx.style_mut(|style| style.animation_time = 0.0);
+            click(&ctx, &mut app, "Yes");
+            click(&ctx, &mut app, "Import from Clipboard");
+            for _ in 0..2 {
+                draw(&ctx, &mut app, vec![]);
+            }
+            let rendered = draw(&ctx, &mut app, vec![]);
+            assert!(
+                rendered.contains("Clock in") && rendered.contains("Skip 2 introductory"),
+                "{rendered}"
+            );
+        }
     }
 
     #[test]
@@ -8851,4 +9048,110 @@ mod clipboard_hours_ui_tests {
         assert!(app.application.context.config.folders.csv_import.join("27-07-2026 to 27-07-2026 - First Example - Clipboard.csv").exists());
     }
 
+}
+
+#[cfg(test)]
+mod dashboard_hover_tests {
+    use super::*;
+    #[test]
+    fn nine_buttons_keep_single_line_labels_and_hover_reverts_in_the_next_frame() {
+        fn scan(shape:&egui::Shape,labels:&mut Vec<(String,egui::Rect,egui::Color32)>,blue:&mut usize) {
+            match shape {
+                egui::Shape::Text(t)=>{assert_eq!(t.galley.rows.len(),1);labels.push((t.galley.job.text.clone(),t.galley.rect.translate(t.pos.to_vec2()),t.override_text_color.unwrap_or(t.fallback_color)));},
+                egui::Shape::Rect(r)=>{if r.fill==egui::Color32::from_rgb(185,222,250){*blue+=1;assert!((r.rect.height()-25.0).abs()<1.0);}},
+                egui::Shape::Vec(v)=>for s in v{scan(s,labels,blue);},_=>{}
+            }
+        }
+        for width in [1000.0,600.0] {
+            let ctx=egui::Context::default();let mut first=egui::Pos2::ZERO;
+            for step in 0..5 {
+                let events=if step==3 {vec![egui::Event::PointerMoved(first)]}else if step==4{vec![egui::Event::PointerMoved(egui::pos2(width+50.0,850.0))]}else{vec![]};
+                let output=ctx.run(egui::RawInput{screen_rect:Some(egui::Rect::from_min_size(egui::Pos2::ZERO,egui::vec2(width,800.0))),events,..Default::default()},|ctx|{egui::CentralPanel::default().show(ctx,|ui|{draw_dashboard_workflow_actions(ui, Default::default());});});
+                let mut labels=vec![];let mut blue=0;for shape in output.shapes{scan(&shape.shape,&mut labels,&mut blue);}
+                assert_eq!(labels.len(),9);
+                let item=labels.iter().find(|(t,_,_)|t=="Enter Hours/Shifts").unwrap();first=item.1.center();
+                if step==3 {assert_eq!(blue,1);assert_eq!(item.2,egui::Color32::from_rgb(15,40,60));}
+                if step==4 {assert_eq!(blue,0,"Hover must revert immediately");}
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod dashboard_sizing_tests {
+    use super::*;
+    #[test]
+    fn dashboard_sizing_extremes_keep_nine_single_line_readable_labels() {
+        fn collect(shape:&egui::Shape, labels:&mut Vec<(String,egui::Rect)>) {
+            match shape {
+                egui::Shape::Text(t)=>{
+                    assert_eq!(t.galley.rows.len(),1);
+                    labels.push((t.galley.job.text.clone(),t.galley.rect.translate(t.pos.to_vec2())));
+                },
+                egui::Shape::Vec(v)=>for s in v {collect(s,labels)}, _=>{}
+            }
+        }
+        for height in [24.0,25.0,52.0] {
+            for font_size in [11.0,13.0,18.0] {
+                for width in [600.0,1000.0] {
+                    let settings=crate::config::DashboardButtons{height,font_size};
+                    let ctx=egui::Context::default();let mut labels=vec![];
+                    for _ in 0..3 {
+                        let output=ctx.run(egui::RawInput{screen_rect:Some(egui::Rect::from_min_size(egui::Pos2::ZERO,egui::vec2(width,800.0))),..Default::default()},|ctx|{
+                            egui::CentralPanel::default().show(ctx,|ui|{
+                                let columns=dashboard_column_widths(ui,settings);
+                                if width==1000.0 {assert_eq!(dashboard_workflow_layout_for_columns(ui.available_width(),ui.spacing().item_spacing.x,columns),DashboardWorkflowLayout::AlignedColumns);}
+                                draw_dashboard_workflow_actions(ui,settings);
+                            });
+                        });
+                        labels.clear();for shape in output.shapes {collect(&shape.shape,&mut labels);}
+                    }
+                    assert_eq!(labels.len(),9);
+                    for row in labels.chunks(3) {
+                        assert!(row[0].1.right()<row[1].1.left());
+                        assert!(row[1].1.right()<row[2].1.left());
+                        if width==1000.0 {assert!(row[2].1.right()<width);}
+                    }
+                    for rows in labels.chunks(3).collect::<Vec<_>>().windows(2) {
+                        assert!(rows[0][0].1.bottom()<rows[1][0].1.top());
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod acceptance_gui_note_style_tests {
+    use super::*;
+    #[test]
+    fn acceptance_gui_note_choices_are_blue_contrasting_and_fit_normal_and_narrow_widths() {
+        fn scan(s:&egui::Shape,labels:&mut Vec<egui::Rect>,blue:&mut usize) {
+            match s {
+                egui::Shape::Text(t)=>{
+                    assert_eq!(t.galley.rows.len(),1);
+                    assert_eq!(t.override_text_color.unwrap_or(t.fallback_color),egui::Color32::from_rgb(15,40,60));
+                    labels.push(t.galley.rect.translate(t.pos.to_vec2()));
+                },
+                egui::Shape::Rect(r) if r.fill==egui::Color32::from_rgb(185,222,250)=>{*blue+=1;assert!(r.rect.height()>=32.0);},
+                egui::Shape::Vec(v)=>for s in v{scan(s,labels,blue)},_=>{}
+            }
+        }
+        for width in [1000.0,600.0,360.0] {
+            let ctx=egui::Context::default();
+            for step in 0..3 {
+                let out=ctx.run(egui::RawInput{screen_rect:Some(egui::Rect::from_min_size(egui::Pos2::ZERO,egui::vec2(width,500.0))),..Default::default()},|ctx|{
+                    egui::CentralPanel::default().show(ctx,|ui|{ui.horizontal_wrapped(|ui|{
+                        additional_note_choice(ui,190.0,"Add Additional Note");
+                        additional_note_choice(ui,180.0,"No Additional Note");
+                        additional_note_choice(ui,100.0,"Cancel");
+                    });});
+                });
+                let mut labels=vec![];let mut blue=0;for s in out.shapes{scan(&s.shape,&mut labels,&mut blue);}
+                if step<2 {continue;}
+                assert_eq!(labels.len(),3);assert_eq!(blue,3);
+                for r in labels {assert!(r.left()>=0.0 && r.right()<=width);}
+            }
+        }
+    }
 }

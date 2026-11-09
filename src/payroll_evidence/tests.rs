@@ -1615,3 +1615,58 @@ fn carry_review_ui_rejects_stale_evidence_then_carries_without_resubmitting() {
             .any(|(text, _)| text == "Carry correction forward"));
     }
 }
+
+#[test]
+fn configurable_csv_methods_round_once_per_shift_without_rewriting_sources() {
+    for (method, raw, payable) in [
+        (crate::csv_import::HoursMethod::WorkedHours, 17, 30),
+        (crate::csv_import::HoursMethod::WorkedHoursMinusBreak, 7, 15),
+        (crate::csv_import::HoursMethod::EndMinusStartMinusBreak, 24, 30),
+        (crate::csv_import::HoursMethod::EndMinusStart, 34, 45),
+    ] {
+        let (_dir, mut app) = setup();
+        app.context.config.csv_import.hours_method = method;
+        app.context.config.payroll.rounding_minutes = 15;
+        app.context.config.payroll.rounding_direction = "Up".into();
+        let (record, weeks) = period(&app, 1, "2026-04-01", 1);
+        let input = crate::paths::expand_path(&app.context.config.folders.csv_import);
+        std::fs::create_dir_all(&input).unwrap();
+        let bytes=b"period\nPA,Start,End,Break,Worked\nExample PA,2 April 2026 at 09:00,2 April 2026 at 09:34,0h 10m,0h 17m\nExample PA,2 April 2026 at 10:00,2 April 2026 at 10:34,0h 10m,0h 17m\n";
+        std::fs::write(input.join("stage1.csv"), bytes).unwrap();
+        let imported = app.create_import_service().run().unwrap();
+        assert_eq!(imported.rows_imported, 2, "{:?}", imported.failure_messages);
+        let original = app.repository.get_all_raw().unwrap();
+        assert!(original.iter().all(|e| e.worked_minutes == raw));
+        for _ in 0..2 {
+            let result = reconciliation::calculate(&app, &record, &weeks, None).unwrap();
+            assert_eq!(result.week_totals_minutes, [2 * payable, 0, 0, 0]);
+            assert!(result
+                .snapshot_items
+                .iter()
+                .all(|i| i.worked_minutes == payable));
+            assert_eq!(
+                crate::pay_rate_allocation::format_total_minutes(result.week_totals_minutes[0]),
+                match payable { 15 => "0.5", 30 => "1", _ => "1.5" }
+            );
+        }
+        assert!(app
+            .repository
+            .get_all_raw()
+            .unwrap()
+            .iter()
+            .all(|e| e.worked_minutes == raw));
+        assert_eq!(std::fs::read(&imported.archived_paths[0]).unwrap(), bytes);
+        submit(&app, &record, &weeks);
+        let db = open(&app).unwrap();
+        let sid = lifecycle::latest(&db, record.id).unwrap().unwrap();
+        let submitted = lifecycle::items(&db, sid).unwrap();
+        app.context.config.csv_import.hours_method = crate::csv_import::HoursMethod::EndMinusStart;
+        app.context.config.payroll.rounding_direction = "Down".into();
+        assert!(reconciliation::calculate(&app, &record, &weeks, None).is_err());
+        assert_eq!(lifecycle::items(&db, sid).unwrap(), submitted);
+        assert!(reconciliation::changes(&app, &record)
+            .unwrap()
+            .components
+            .is_empty());
+    }
+}

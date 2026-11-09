@@ -1007,6 +1007,7 @@ pub(crate) fn load_period_for_eligibility_test(
     schedule: &PayrollSchedule,
 ) -> PayrollTimesheetScreen {
     let mut screen = PayrollTimesheetScreen::new();
+    screen.historical_preparations = true;
     screen.load(app, schedule, "period").unwrap();
     screen
 }
@@ -1322,4 +1323,17 @@ fn creation_guard_does_not_rewrite_or_block_reads_of_existing_historical_records
     assert_eq!(record.created_at, "historical");
     assert!(app.payroll_timesheet_repository.insert("2032/33", 1, 1, None, "new").is_err());
     assert_eq!(std::fs::read(&app.context.environment.database_path).unwrap(), before);
+}
+
+#[test]
+fn workflow_eligibility_ordinary_preparation_is_active_only_history_is_deliberate() {
+    let (_dir,app,period,_)=employment_period_fixture();
+    let mut screen=PayrollTimesheetScreen::new();screen.load(&app,&period,"ordinary").unwrap();
+    assert_eq!(screen.records.iter().map(|r|r.personal_assistant_id).collect::<Vec<_>>(),vec![5]);
+    screen.historical_preparations=true;screen.reload();screen.load(&app,&period,"historical").unwrap();
+    assert_eq!(screen.records.iter().map(|r|r.personal_assistant_id).collect::<Vec<_>>(),vec![1,3,5,8]);
+    let count=app.payroll_timesheet_repository.get_all_for_cycle(&period.payroll_year,period.cycle_number).unwrap().len();
+    screen.open_active();screen.load(&app,&period,"ordinary").unwrap();
+    assert_eq!(screen.records.iter().map(|r|r.personal_assistant_id).collect::<Vec<_>>(),vec![5]);
+    assert_eq!(app.payroll_timesheet_repository.get_all_for_cycle(&period.payroll_year,period.cycle_number).unwrap().len(),count);
 }

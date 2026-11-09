@@ -86,6 +86,7 @@ pub fn record_import(
         // Match all retained raw copies: duplicates within one export remain reviewable.
         let incoming = crate::csv_import::ParsedTimesheetRow {
             source_row: 0,
+            supplied_fields: [true; 8],
             start,
             end,
             entry: row.clone(),
@@ -437,6 +438,7 @@ pub fn seed_legacy_path(db: &Connection, path: &str) -> Result<()> {
         for row in &rows {
             let mut incoming = crate::csv_import::ParsedTimesheetRow {
                 source_row: row.source_row,
+                supplied_fields: row.supplied_fields,
                 start: row.start,
                 end: row.end,
                 entry: row.entry.clone(),
