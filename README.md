@@ -2,15 +2,15 @@
 
 Direct Payment Timesheets is a local desktop application for administering UK Direct Payment Personal Assistant timesheets and the four-week payroll-provider workflow. It imports externally recorded work, prepares payroll timesheets, generates the provider PDF, sends timesheets and payslips, imports payroll documents, and preserves the evidence represented by submitted payroll.
 
-Current source is **unreleased v1.0.7, SQLite schema 42**, on `security/v1.0.7-phase1`. It includes editable submitted/settled timesheets, separately generated replacement PDFs, Microsoft personal-account OAuth2, native credential storage, regional public holidays and configurable payroll rounding. See [current project state](docs/PROJECT_STATE.md) and [release readiness](docs/RELEASE-BUILDS.md). The **published v1.0.6 release** uses SQLite schema **41**. It is a single-user local desktop application for the documented Direct Payment payroll workflow, not a general-purpose payroll product.
+The latest stable release is **[v1.0.7](https://github.com/arnieSkyNet/DirectPaymentTimesheets/releases/tag/v1.0.7), SQLite schema 42**, published on 10 November 2026 for Linux, Windows and macOS. It includes editable submitted/settled timesheets, separately generated replacement PDFs, configurable folder/clipboard CSV import, Microsoft personal-account OAuth2, native credential storage, regional public holidays and configurable payroll rounding. The previous v1.0.6 release uses SQLite schema **41**. This is a single-user local desktop application for the documented Direct Payment payroll workflow, not a general-purpose payroll product.
 
 ## Download
 
-**Published release: 1.0.6 · Linux, Windows and macOS**
+**Latest stable release: v1.0.7 · Linux, Windows and macOS · SQLite schema 42**
 
 **Already installed? Start with the [First-Time Setup Guide for v1.0.7](docs/FIRST-TIME-SETUP.md)** — employer and PA details, email, the provider's payroll schedule, hours and your first PDF timesheet.
 
-The downloads below are published v1.0.6 packages for all supported platforms. They include the Stage 1–8 safeguards, secure SMTP settings and regional public-holiday support described here.
+The downloads below are the ten published v1.0.7 installation packages. They include the Stage 1–8 safeguards, audited timesheet amendments, configurable CSV import, native credential storage and Microsoft personal-account OAuth2 described here. All ten packages were built from commit `2ae393f` and passed the all-platform package verification; this does not establish every hardware or minimum-OS acceptance result. See the [release notes and known limitations](https://github.com/arnieSkyNet/DirectPaymentTimesheets/releases/tag/v1.0.7).
 Timesheet email selects only unsent current PDF versions by default. Sent versions
 remain visible for an explicitly acknowledged resend. Each production attempt is
 recorded; uncertain acceptance blocks retry until documented review.
@@ -19,33 +19,33 @@ Choose your computer and installed operating system below. On Linux, choose eith
 
 **Windows 10 and later — Intel/AMD 64-bit (x86-64)**
 
-[![Download Windows installer](https://img.shields.io/badge/Download%20Windows%20installer-v1.0.6-blue?logo=windows11&logoColor=white)](https://github.com/arnieSkyNet/DirectPaymentTimesheets/releases/download/v1.0.6/DirectPaymentTimesheets-1.0.6-windows-x86_64-setup.exe)<br>
+[![Download Windows installer](https://img.shields.io/badge/Download%20Windows%20installer-v1.0.7-blue?logo=windows11&logoColor=white)](https://github.com/arnieSkyNet/DirectPaymentTimesheets/releases/download/v1.0.7/DirectPaymentTimesheets-1.0.7-windows-x86_64-setup.exe)<br>
 
 **Windows 10 and 11 — ARM64 (native application)**
 
-[![Download Windows ARM64 installer](https://img.shields.io/badge/Download%20Windows%20ARM64%20installer-v1.0.6-blue?logo=windows11&logoColor=white)](https://github.com/arnieSkyNet/DirectPaymentTimesheets/releases/download/v1.0.6/DirectPaymentTimesheets-1.0.6-windows-arm64-setup.exe)<br>
+[![Download Windows ARM64 installer](https://img.shields.io/badge/Download%20Windows%20ARM64%20installer-v1.0.7-blue?logo=windows11&logoColor=white)](https://github.com/arnieSkyNet/DirectPaymentTimesheets/releases/download/v1.0.7/DirectPaymentTimesheets-1.0.7-windows-arm64-setup.exe)<br>
 
 **Linux — Intel/AMD 64-bit (x86-64 / amd64)**
 
-[![Download Linux .deb](https://img.shields.io/badge/Download%20Linux%20.deb-v1.0.6-blue?logo=debian&logoColor=white)](https://github.com/arnieSkyNet/DirectPaymentTimesheets/releases/download/v1.0.6/direct-payment-timesheets_1.0.6_amd64.deb)<br>
-[![Download Linux AppImage](https://img.shields.io/badge/Download%20Linux%20AppImage-v1.0.6-green?logo=linux&logoColor=white)](https://github.com/arnieSkyNet/DirectPaymentTimesheets/releases/download/v1.0.6/DirectPaymentTimesheets-1.0.6-linux-x86_64.AppImage)<br>
+[![Download Linux .deb](https://img.shields.io/badge/Download%20Linux%20.deb-v1.0.7-blue?logo=debian&logoColor=white)](https://github.com/arnieSkyNet/DirectPaymentTimesheets/releases/download/v1.0.7/direct-payment-timesheets_1.0.7_amd64.deb)<br>
+[![Download Linux AppImage](https://img.shields.io/badge/Download%20Linux%20AppImage-v1.0.7-green?logo=linux&logoColor=white)](https://github.com/arnieSkyNet/DirectPaymentTimesheets/releases/download/v1.0.7/DirectPaymentTimesheets-1.0.7-linux-x86_64.AppImage)<br>
 
 **Raspberry Pi / Linux — ARM32 (armhf, ARMv7)**
 
-[![Download ARM32 .deb](https://img.shields.io/badge/Download%20ARM32%20.deb-v1.0.6-blue?logo=debian&logoColor=white)](https://github.com/arnieSkyNet/DirectPaymentTimesheets/releases/download/v1.0.6/direct-payment-timesheets_1.0.6_armhf.deb)<br>
-[![Download ARM32 AppImage](https://img.shields.io/badge/Download%20ARM32%20AppImage-v1.0.6-green?logo=linux&logoColor=white)](https://github.com/arnieSkyNet/DirectPaymentTimesheets/releases/download/v1.0.6/DirectPaymentTimesheets-1.0.6-linux-armhf.AppImage)<br>
+[![Download ARM32 .deb](https://img.shields.io/badge/Download%20ARM32%20.deb-v1.0.7-blue?logo=debian&logoColor=white)](https://github.com/arnieSkyNet/DirectPaymentTimesheets/releases/download/v1.0.7/direct-payment-timesheets_1.0.7_armhf.deb)<br>
+[![Download ARM32 AppImage](https://img.shields.io/badge/Download%20ARM32%20AppImage-v1.0.7-green?logo=linux&logoColor=white)](https://github.com/arnieSkyNet/DirectPaymentTimesheets/releases/download/v1.0.7/DirectPaymentTimesheets-1.0.7-linux-armhf.AppImage)<br>
 
 **Raspberry Pi / Linux — ARM64 (arm64 / aarch64)**
 
-[![Download ARM64 .deb](https://img.shields.io/badge/Download%20ARM64%20.deb-v1.0.6-blue?logo=debian&logoColor=white)](https://github.com/arnieSkyNet/DirectPaymentTimesheets/releases/download/v1.0.6/direct-payment-timesheets_1.0.6_arm64.deb)<br>
-[![Download ARM64 AppImage](https://img.shields.io/badge/Download%20ARM64%20AppImage-v1.0.6-green?logo=linux&logoColor=white)](https://github.com/arnieSkyNet/DirectPaymentTimesheets/releases/download/v1.0.6/DirectPaymentTimesheets-1.0.6-linux-aarch64.AppImage)<br>
+[![Download ARM64 .deb](https://img.shields.io/badge/Download%20ARM64%20.deb-v1.0.7-blue?logo=debian&logoColor=white)](https://github.com/arnieSkyNet/DirectPaymentTimesheets/releases/download/v1.0.7/direct-payment-timesheets_1.0.7_arm64.deb)<br>
+[![Download ARM64 AppImage](https://img.shields.io/badge/Download%20ARM64%20AppImage-v1.0.7-green?logo=linux&logoColor=white)](https://github.com/arnieSkyNet/DirectPaymentTimesheets/releases/download/v1.0.7/DirectPaymentTimesheets-1.0.7-linux-aarch64.AppImage)<br>
 
 **macOS — Apple Silicon or Intel**
 
-[![Download Apple Silicon DMG](https://img.shields.io/badge/Download%20Apple%20Silicon%20DMG-v1.0.6-blue?logo=apple&logoColor=white)](https://github.com/arnieSkyNet/DirectPaymentTimesheets/releases/download/v1.0.6/DirectPaymentTimesheets-1.0.6-macos-arm64.dmg)<br>
-[![Download Intel DMG](https://img.shields.io/badge/Download%20Intel%20DMG-v1.0.6-blue?logo=apple&logoColor=white)](https://github.com/arnieSkyNet/DirectPaymentTimesheets/releases/download/v1.0.6/DirectPaymentTimesheets-1.0.6-macos-x86_64.dmg)<br>
+[![Download Apple Silicon DMG](https://img.shields.io/badge/Download%20Apple%20Silicon%20DMG-v1.0.7-blue?logo=apple&logoColor=white)](https://github.com/arnieSkyNet/DirectPaymentTimesheets/releases/download/v1.0.7/DirectPaymentTimesheets-1.0.7-macos-arm64.dmg)<br>
+[![Download Intel DMG](https://img.shields.io/badge/Download%20Intel%20DMG-v1.0.7-blue?logo=apple&logoColor=white)](https://github.com/arnieSkyNet/DirectPaymentTimesheets/releases/download/v1.0.7/DirectPaymentTimesheets-1.0.7-macos-x86_64.dmg)<br>
 
-[Installation instructions](#install-build-and-run) · [v1.0.6 release notes](https://github.com/arnieSkyNet/DirectPaymentTimesheets/releases/tag/v1.0.6) · [SHA256SUMS](https://github.com/arnieSkyNet/DirectPaymentTimesheets/releases/download/v1.0.6/SHA256SUMS) · [All releases](https://github.com/arnieSkyNet/DirectPaymentTimesheets/releases/)
+[Installation instructions](#install-build-and-run) · [v1.0.7 release notes](https://github.com/arnieSkyNet/DirectPaymentTimesheets/releases/tag/v1.0.7) · [SHA256SUMS](https://github.com/arnieSkyNet/DirectPaymentTimesheets/releases/download/v1.0.7/SHA256SUMS) · [All releases](https://github.com/arnieSkyNet/DirectPaymentTimesheets/releases/)
 
 ### Choosing a Linux or Raspberry Pi architecture
 
@@ -61,11 +61,13 @@ Choose `armhf` for an `armhf` result, `arm64`/`aarch64` for `arm64`, or `amd64`/
 
 ## Install, build and run
 
-Before upgrading an existing installation, make a database/configuration backup and retain your payroll documents. Download packages only from this project's official GitHub release.
+Before upgrading an existing installation, close every running copy, keep a database/configuration recovery copy and separately protect external payroll documents, signatures and other business files. Download packages only from this project's official GitHub release.
+
+When upgrading from v1.0.6, first launch automatically creates and verifies a pre-upgrade database backup, including committed WAL data, before migrating schema **41 to 42**. Configuration is included when present; OS credential-store secrets and external business files are not copied. Backup failure blocks the upgrade. Migration is one-way: **never run v1.0.6 against the upgraded database**. Check version 1.0.7/schema 42, settings and email access after startup. See the [First-Time Setup Guide](docs/FIRST-TIME-SETUP.md#2-first-launch-or-upgrade-from-v106) for the upgrade and recovery procedure.
 
 ### Linux
 
-The packages use a **Debian 12 / Bookworm baseline** (glibc 2.36), for compatible desktop Linux systems of the matching architecture. Older distributions are not supported merely by choosing AppImage. Compatible Ubuntu/Mint and Raspberry Pi OS installations need the corresponding system libraries and a working graphical desktop; this is not a headless application. See [release-build documentation](docs/RELEASE-BUILDS.md) for platform baselines and validation requirements.
+The packages use a **Debian 12 / Bookworm baseline** (glibc 2.36), for compatible desktop Linux systems of the matching architecture. Older distributions are not supported merely by choosing AppImage. Compatible Ubuntu/Mint and Raspberry Pi OS installations need the corresponding system libraries and a working graphical desktop; this is not a headless application. Hardware acceptance remains incomplete for current ARM32 graphics/window behaviour and ARM64 devices; QEMU and successful builds do not establish physical-device compatibility. See [release-build documentation](docs/RELEASE-BUILDS.md) for platform baselines and validation requirements.
 
 #### Debian / Ubuntu / Raspberry Pi OS `.deb`
 
@@ -73,11 +75,11 @@ Download the matching `.deb`. Open Terminal in the folder containing the downloa
 
 ```bash
 # Intel/AMD 64-bit PC:
-sudo apt-get install ./direct-payment-timesheets_1.0.6_amd64.deb
+sudo apt-get install ./direct-payment-timesheets_1.0.7_amd64.deb
 # ARM32 / 32-bit Raspberry Pi OS:
-sudo apt-get install ./direct-payment-timesheets_1.0.6_armhf.deb
+sudo apt-get install ./direct-payment-timesheets_1.0.7_armhf.deb
 # ARM64 / 64-bit Raspberry Pi OS:
-sudo apt-get install ./direct-payment-timesheets_1.0.6_arm64.deb
+sudo apt-get install ./direct-payment-timesheets_1.0.7_arm64.deb
 ```
 
 Run **only the command matching your download**. `apt-get` installs the declared dependencies. Then open **Direct Payments Timesheets** from the desktop application menu, or run `direct-payment-timesheets` in Terminal.
@@ -88,14 +90,14 @@ Download the matching AppImage and keep it somewhere convenient in your home fol
 
 ```bash
 # Intel/AMD 64-bit PC:
-chmod +x DirectPaymentTimesheets-1.0.6-linux-x86_64.AppImage
-./DirectPaymentTimesheets-1.0.6-linux-x86_64.AppImage
+chmod +x DirectPaymentTimesheets-1.0.7-linux-x86_64.AppImage
+./DirectPaymentTimesheets-1.0.7-linux-x86_64.AppImage
 # ARM32:
-chmod +x DirectPaymentTimesheets-1.0.6-linux-armhf.AppImage
-./DirectPaymentTimesheets-1.0.6-linux-armhf.AppImage
+chmod +x DirectPaymentTimesheets-1.0.7-linux-armhf.AppImage
+./DirectPaymentTimesheets-1.0.7-linux-armhf.AppImage
 # ARM64:
-chmod +x DirectPaymentTimesheets-1.0.6-linux-aarch64.AppImage
-./DirectPaymentTimesheets-1.0.6-linux-aarch64.AppImage
+chmod +x DirectPaymentTimesheets-1.0.7-linux-aarch64.AppImage
+./DirectPaymentTimesheets-1.0.7-linux-aarch64.AppImage
 ```
 
 No administrator installation is required. AppImage still relies on compatible host graphics/desktop services. If it reports a missing FUSE facility, follow your distribution's AppImage/FUSE guidance; do not run the application with `sudo`. Packaged ARM Linux builds default to software Mesa rendering automatically; no manual launcher edit is needed.
@@ -108,7 +110,7 @@ Choose by **Settings > System > About > System type**: Intel/AMD 64-bit uses the
 package does not establish completion of real-hardware acceptance testing; see
 [Windows validation](docs/RELEASE-BUILDS.md#windows).
 
-1. Download `DirectPaymentTimesheets-1.0.6-windows-x86_64-setup.exe` for Intel/AMD or `DirectPaymentTimesheets-1.0.6-windows-arm64-setup.exe` for ARM64 from the official release above.
+1. Download `DirectPaymentTimesheets-1.0.7-windows-x86_64-setup.exe` for Intel/AMD or `DirectPaymentTimesheets-1.0.7-windows-arm64-setup.exe` for ARM64 from the official release above.
 2. Open the downloaded file. The installer is unsigned. If SmartScreen displays **Windows protected your PC**, use **More info**, check that the filename matches your official download, then choose **Run anyway** only if you trust that download.
 3. Follow the installer prompts. Installation is per-user and does not require administrator access.
 4. Launch **Direct Payments Timesheets** from the Start menu.
@@ -117,17 +119,17 @@ Both Windows architectures use the same per-user application folder and uninstal
 
 ### macOS
 
-The v1.0.6 macOS packages require **macOS 11.4 Big Sur or later for Intel (x86_64)** and **macOS 12.0 Monterey or later for Apple Silicon (arm64)**. Minimum-OS hardware acceptance testing remains pending on both architectures, including an Intel Mac running exactly macOS 11.4. These are independently distributed builds, not Mac App Store applications.
+The v1.0.7 macOS packages require **macOS 11.4 Big Sur or later for Intel (x86_64)** and **macOS 12.0 Monterey or later for Apple Silicon (arm64)**. Minimum-OS hardware acceptance testing remains pending on both architectures, including an Intel Mac running exactly macOS 11.4. These are independently distributed builds, not Mac App Store applications.
 
 #### Choose the correct DMG
 
 1. Click the **Apple menu → About This Mac**.
-2. If it lists **Chip: Apple M1, M2, M3, M4** or another Apple M-series chip, choose `DirectPaymentTimesheets-1.0.6-macos-arm64.dmg`.
-3. If it lists an **Intel processor**, choose `DirectPaymentTimesheets-1.0.6-macos-x86_64.dmg`.
+2. If it lists **Chip: Apple M1, M2, M3, M4** or another Apple M-series chip, choose `DirectPaymentTimesheets-1.0.7-macos-arm64.dmg`.
+3. If it lists an **Intel processor**, choose `DirectPaymentTimesheets-1.0.7-macos-x86_64.dmg`.
 
 #### Copy the application into Applications
 
-1. Download the matching DMG from the project's official v1.0.6 release page.
+1. Download the matching DMG from the project's official v1.0.7 release page.
 2. Open **Finder → Downloads**, then double-click the downloaded `.dmg`. This opens a temporary disk containing the application and an **Applications** shortcut.
 3. Drag **Direct Payments Timesheets.app** onto the **Applications** shortcut. Finder may hide the `.app` extension. The spaces in the application name are intentional.
 4. Wait for copying to finish. If replacing an older copy, quit the old application first and confirm replacement only for the intended application.
@@ -175,7 +177,7 @@ Use disposable data for development as described under [Runtime data and configu
 
 ## Implemented functionality
 
-This section describes current **unreleased v1.0.7 (schema42)** source. The download links remain v1.0.6/schema41; development features below must not be assumed present in those older binaries. Historical stage/schema headings identify when features were introduced, not current acceptance results.
+This section describes **published v1.0.7 (schema 42)**, available through the download links above. Historical stage/schema headings identify when features were introduced; they do not change the current version or imply completion of hardware, native credential-store or live-provider acceptance.
 
 ### Records and settings
 
@@ -201,7 +203,7 @@ PA Maintenance includes effective-dated Contracted/Variable Hours Basis, Start/L
 - Select England and Wales (default), Scotland or Northern Ireland in Payroll Settings. GOV.UK holiday dates refresh in the background and can be refreshed manually; validated cached dates work offline. Coverage/fallback warnings remain visible. Existing drafts and historical PDFs are preserved, and identifying holidays never automatically subtracts worked hours.
 - Submitted timesheets can be amended, saved and regenerated without an unlocking approval. Earlier versions/submissions remain auditable; the latest regenerated saved version governs later reconciliation. Actual unresolved delivery remains protected, and edited PDFs must be regenerated before sending. See [timesheet amendments](docs/TIMESHEET-AMENDMENTS.md).
 
-Imported `worked_minutes` is parsed from the CSV Worked Hours field. It is not recalculated from Start Time/End Time and is not changed by the persisted rounding setting. For open payroll, selected evidence from both sources is converted to payable minutes using Payroll Settings rounding; original source minutes remain unchanged. The current default is 15 minutes Up. CSV rate and amount fields are retained as imported data but are not the authoritative payroll rate; maintained PA rate history is authoritative.
+By default, imported `worked_minutes` is parsed from the CSV Worked Hours field. Payroll Settings → CSV Import also supports Worked Hours minus Break, End minus Start, and End minus Start minus Break, with configurable heading aliases and enabled columns. Import preserves the selected interpretation and unrounded source minutes; later settings changes do not reinterpret historical imports. See [CSV import](docs/CSV-IMPORT.md). For open payroll, selected evidence from both sources is converted to payable minutes using Payroll Settings rounding; original source minutes remain unchanged. The current default is 15 minutes Up. CSV rate and amount fields are retained as imported data but are not the authoritative payroll rate; maintained PA rate history is authoritative.
 
 The Dashboard groups the workflow into three rows:
 
@@ -315,7 +317,9 @@ See [Payroll evidence and reconciliation](docs/PAYROLL-EVIDENCE.md) for storage,
 
 ## Documentation
 
-- [Project state](docs/PROJECT_STATE.md)
+- [First-Time Setup Guide for v1.0.7](docs/FIRST-TIME-SETUP.md)
+- [v1.0.7 release notes, verification and known limitations](https://github.com/arnieSkyNet/DirectPaymentTimesheets/releases/tag/v1.0.7)
+- [Project state (includes historical development checkpoints)](docs/PROJECT_STATE.md)
 - [Architecture](docs/ARCHITECTURE.md)
 - [Domain rules](docs/DOMAIN.md)
 - [Development guide](docs/DEVELOPMENT.md)
@@ -332,7 +336,7 @@ Third-party dependencies and bundled font components remain subject to their res
 Corrected payroll PDFs are handled through Personal Assistant Maintenance → **Replace payroll document…**: select the existing identity, choose an individual corrected PDF, review both hashes/history, and confirm. Original bytes, hashes and delivery evidence remain retained. Revision/hash filenames are internal; payroll emails use canonical recipient-visible filenames. A saved Active-to-Inactive transition files safely identified PA-owned timesheets and payroll PDFs directly into shared year-level `Archived` folders, without a PA subfolder. New documents for inactive PAs go there directly; reactivation does not restore historical files. A durable move journal supports post-commit cleanup retries. See [filing and replacement details](docs/ARCHITECTURE.md#inactive-pa-filing-and-registered-supplement-repair).
 
 
-Stage 2 introduced schema37 in development 1.0.6 (current development schema42) to protect sickness dates across payroll cycles. Changes require a reason and reviewed scope; protected cycles require authorised sickness-only corrections, and uncertain delivery remains blocked. Corrected historical PDFs preserve settled work and original evidence, display revised dates in the ordinary weekly table and explain the change in the notes area. Payroll assesses financial implications; the application does not calculate SSP or classify CSV notes as sickness. Upgrades retain verified database/config recovery; external business files need separate protection. See [Stage 2 workflow](docs/DEVELOPMENT.md#stage-2-sickness-protection-106schema37).
+Stage 2 introduced schema37 in development 1.0.6 (current release schema42) to protect sickness dates across payroll cycles. Changes require a reason and reviewed scope; protected cycles require authorised sickness-only corrections, and uncertain delivery remains blocked. Corrected historical PDFs preserve settled work and original evidence, display revised dates in the ordinary weekly table and explain the change in the notes area. Payroll assesses financial implications; the application does not calculate SSP or classify CSV notes as sickness. Upgrades retain verified database/config recovery; external business files need separate protection. See [Stage 2 workflow](docs/DEVELOPMENT.md#stage-2-sickness-protection-106schema37).
 
 ### Signature images and drawing (1.0.6)
 
@@ -367,7 +371,7 @@ supported. Neither external nor managed signature images are copied by database/
 backup: separately protect the complete data root and external business assets.
 
 
-Stage 4 introduced schema38 in development 1.0.6 (current development schema42) for CSV content identity and prospective shift review across Hours Keeper and Hours Shift. Changed files at the same pathname are detected; originals and omitted rows are retained. Overnight overlaps and moved counterparts require explicit payable-version/separate-shift review, with audited deferral available. New protected edits require authorisation and contextual financial correction; legacy obligations remain unchanged. Upgrades use the existing verified recovery process. See [Stage 4 development notes](docs/DEVELOPMENT.md#stage-4-shift-change-protection-106schema38).
+Stage 4 introduced schema38 in development 1.0.6 (current release schema42) for CSV content identity and prospective shift review across Hours Keeper and Hours Shift. Changed files at the same pathname are detected; originals and omitted rows are retained. Overnight overlaps and moved counterparts require explicit payable-version/separate-shift review, with audited deferral available. New protected edits require authorisation and contextual financial correction; legacy obligations remain unchanged. Upgrades use the existing verified recovery process. See [Stage 4 development notes](docs/DEVELOPMENT.md#stage-4-shift-change-protection-106schema38).
 
 
 ## Stage 5 startup reliability (1.0.6/schema38)
@@ -432,6 +436,8 @@ See [delivery review](docs/DOMAIN.md#reviewing-uncertain-delivery) for the revie
 
 ### SMTP security in v1.0.6
 
+This historical section describes v1.0.6. For the current release, see [v1.0.7 storage privacy and secure email](#v107-storage-privacy-and-secure-email).
+
 Published v1.0.6 supports required STARTTLS (normally 587), implicit TLS (normally
 465), and explicitly selected plaintext SMTP. New remote configurations default
 to required STARTTLS; existing configurations retain plaintext until reviewed.
@@ -439,14 +445,14 @@ TLS validates certificates and hostnames and never falls back to plaintext.
 Local relays remain compatible. Passwords are stored in plaintext configuration
 and backups. See [SMTP configuration and security](docs/DOMAIN.md#smtp-configuration-and-security)
 for warnings, platform trust requirements and delivery safeguards. All v1.0.6
-packages above include these transport modes; provider compatibility and platform
+packages included these transport modes; provider compatibility and platform
 trust requirements still need to be checked for each deployment.
 
 
-## Development 1.0.7: storage privacy
+## v1.0.7: storage privacy and secure email
 
-Unreleased development 1.0.7 adds private creation for payroll storage and recovery
+Published v1.0.7 adds private creation for payroll storage and recovery
 staging, plus **Settings → Application Settings → Assess Storage Permissions**.
 The assessment changes no existing permissions. Shared business directories and
-existing replacement access policies are preserved. Published v1.0.6 packages/download links are unchanged. Development SMTP now blocks plaintext authentication, stores password/token secrets in native OS stores, and supports Microsoft personal-account device authorization and refresh; live-provider acceptance remains incomplete. Gmail/GMX password SMTP and unauthenticated local relays retain their transport paths. See [Microsoft OAuth2](docs/MICROSOFT-OAUTH2-SMTP.md), [credential storage](docs/SMTP-CREDENTIAL-STORAGE.md) and [email acceptance](docs/EMAIL-SECURITY-ACCEPTANCE.md). See
+existing replacement access policies are preserved. The download links above now point to v1.0.7; historical v1.0.6 assets remain available under [previous releases](https://github.com/arnieSkyNet/DirectPaymentTimesheets/releases/tag/v1.0.6). v1.0.7 SMTP blocks plaintext authentication, stores password/token secrets in Windows Credential Manager, macOS Keychain or a persistent Linux Secret Service, and supports Microsoft personal-account device authorization and refresh; live-provider acceptance remains incomplete. Legacy password migration verifies secure storage before replacing the plaintext field; missing or locked credential stores block authenticated sending. Old backups may still contain plaintext passwords, and copying a database/configuration backup does not transport OS credentials. Microsoft OAuth2 requires a registered public-client application ID and supports personal Outlook.com/Hotmail.com/Live.com accounts with required STARTTLS, not organizational Microsoft 365 accounts. Gmail/GMX password SMTP and unauthenticated local relays retain their transport paths. See [Microsoft OAuth2](docs/MICROSOFT-OAUTH2-SMTP.md), [credential storage](docs/SMTP-CREDENTIAL-STORAGE.md) and [email acceptance](docs/EMAIL-SECURITY-ACCEPTANCE.md). See
 [security hardening](docs/SECURITY-HARDENING.md) for limits and separate repair review.
