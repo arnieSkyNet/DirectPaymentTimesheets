@@ -1,0 +1,57 @@
+name: Windows Rust owner fixture (manual only)
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  owner-test:
+    runs-on: windows-2022
+    timeout-minutes: 45
+    env:
+      RUSTUP_TOOLCHAIN: 1.98.1-x86_64-pc-windows-msvc
+      RUSTFLAGS: -C target-feature=+crt-static
+      CARGO_INCREMENTAL: '0'
+      CARGO_PROFILE_TEST_DEBUG: '0'
+      CARGO_TARGET_DIR: target/owner-fixture
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+      - name: Prepare pinned Windows x64 toolchain
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if (-not $IsWindows -or -not [Environment]::Is64BitProcess -or
+              $PSVersionTable.PSEdition -ne 'Core' -or $PSVersionTable.PSVersion.Major -lt 7) {
+            throw 'Windows x64 PowerShell Core 7+ required'
+          }
+          rustup toolchain install $env:RUSTUP_TOOLCHAIN --profile minimal --target x86_64-pc-windows-msvc
+          if ($LASTEXITCODE -ne 0) { throw 'Rust installation failed' }
+      - name: Run only the mandatory Rust owner fixture
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          $visualStudio = & $vswhere -latest -products '*' -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+          if (-not $visualStudio) { throw 'Visual Studio x64 C++ tools missing' }
+          & "$visualStudio\Common7\Tools\Launch-VsDevShell.ps1" -Arch amd64 -HostArch amd64 -SkipAutomaticLocation
+          # Reuse the private NTFS root, scoped token owner and restoration checks.
+          # Replace only its Cargo command in memory; never execute the full suite.
+          $wrapper = Get-Content -LiteralPath scripts/windows-package-tests.ps1 -Raw
+          $fullSuite = '& cargo test --locked --target $Target'
+          if (($wrapper.Split($fullSuite, [StringSplitOptions]::None).Count - 1) -ne 1) {
+            throw 'Expected exactly one package-test command'
+          }
+          $focused = @'
+          $test = 'private_storage::windows_verification_tests::phase1_windows_actual_new_object_owners_match_current_token'
+          $listed = & cargo test --locked --target $Target --bin direct_payment_timesheets $test -- --exact --list
+          if ($LASTEXITCODE -ne 0 -or @($listed | Where-Object { $_ -eq "${test}: test" }).Count -ne 1) {
+              throw 'Required owner fixture was not uniquely listed'
+          }
+          & cargo test --locked --target $Target --bin direct_payment_timesheets $test -- --exact
+          '@
+          $focusedWrapper = $wrapper.Replace($fullSuite, $focused)
+          & ([ScriptBlock]::Create($focusedWrapper)) -Target x86_64-pc-windows-msvc

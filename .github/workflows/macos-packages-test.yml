@@ -1,0 +1,57 @@
+name: macOS DMG (reusable, artifacts only)
+
+on:
+  workflow_dispatch:
+    inputs:
+      architecture:
+        type: choice
+        default: arm64
+        options: [arm64, x86_64]
+  workflow_call:
+    inputs:
+      architecture:
+        type: string
+        required: true
+      source_sha:
+        type: string
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  dmg:
+    runs-on: ${{ inputs.architecture == 'arm64' && 'macos-15' || 'macos-15-intel' }}
+    timeout-minutes: 120
+    env:
+      SOURCE_SHA: ${{ inputs.source_sha || github.sha }}
+      ARCHITECTURE: ${{ inputs.architecture }}
+      CARGO_BUILD_JOBS: '2'
+      CARGO_INCREMENTAL: '0'
+      CARGO_PROFILE_TEST_DEBUG: '0'
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          ref: ${{ env.SOURCE_SHA }}
+          persist-credentials: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: '3.12'
+      - name: Select pinned Rust and target
+        run: |
+          case "$ARCHITECTURE" in
+            arm64) target=aarch64-apple-darwin ;;
+            x86_64) target=x86_64-apple-darwin ;;
+            *) exit 1 ;;
+          esac
+          rustup toolchain install 1.98.1 --profile minimal --target "$target"
+          echo 'RUSTUP_TOOLCHAIN=1.98.1' >> "$GITHUB_ENV"
+          echo "TARGET=$target" >> "$GITHUB_ENV"
+      - name: Test, build and validate architecture-specific app and DMG
+        run: bash packaging/macos/build-dmg.sh
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: rehearsal-macos-${{ inputs.architecture }}-${{ env.SOURCE_SHA }}
+          path: dist/${{ env.TARGET }}/
+          if-no-files-found: error
+          retention-days: 30

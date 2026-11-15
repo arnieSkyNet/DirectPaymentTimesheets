@@ -1,0 +1,21 @@
+{
+  "schema": 1,
+  "mode": "compile-and-containment-only",
+  "source": "exact independently reviewed security commit; never branch checkout",
+  "rust_toolchain": "1.98.1",
+  "python": "3.12",
+  "runners": ["windows-2022", "macos-15-intel", "macos-15"],
+  "build": ["cargo", "test", "--locked", "--test", "native_sqlite_terminal_fixtures", "--no-run", "--message-format=json"],
+  "cargo_target": "native_sqlite_terminal_fixtures",
+  "inventory_arguments": ["--list", "--ignored"],
+  "inventory_nonempty_lines": ["native_child: test", "1 test, 0 benchmarks"],
+  "containment": ["python", "-B", "scripts/native_sqlite_terminal_checks.py", "--containment-only"],
+  "containment_opt_in": {"DPT_NATIVE_SQLITE_SAFE_CONTAINMENT": "1"},
+  "terminal_execution": false,
+  "root_diagnostics": false,
+  "build_timeout_seconds": 1800,
+  "inventory_timeout_seconds": 10,
+  "containment_step_timeout_seconds": 120,
+  "retry": false,
+  "upload": false
+}

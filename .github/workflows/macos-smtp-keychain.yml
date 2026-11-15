@@ -1,0 +1,72 @@
+name: macOS synthetic SMTP Keychain verification
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: macos-smtp-keychain-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  keychain:
+    # Historical review does not approve the reconciled source.
+    if: ${{ false }}
+    env:
+      SOURCE_REVIEW_APPROVED: 'false'
+      DPT_DEFAULT_BRANCH_REF: refs/heads/${{ github.event.repository.default_branch }}
+    timeout-minutes: 55
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-15
+            architecture: arm64
+          - runner: macos-15-intel
+            architecture: x86_64
+    runs-on: ${{ matrix.runner }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Require manual default-branch dispatch and source approval
+        env:
+          SELECTED_REF: ${{ github.ref }}
+          SELECTED_EVENT: ${{ github.event_name }}
+        run: |
+          set -euo pipefail
+          test "$SELECTED_EVENT" = workflow_dispatch
+          test "$SELECTED_REF" = "$DPT_DEFAULT_BRANCH_REF"
+          test "$SOURCE_REVIEW_APPROVED" = true
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          ref: ${{ github.sha }}
+          path: launcher
+          persist-credentials: false
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          # Candidate fixture context; execution remains blocked pending independent review.
+          ref: ${{ github.sha }}
+          path: harness
+          persist-credentials: false
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          # Independent pristine checkout of the same immutable dispatch identity.
+          ref: ${{ github.sha }}
+          path: source
+          persist-credentials: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: '3.12'
+      - name: Validate harness without accessing Keychain
+        run: python -I -B -m unittest discover -s launcher/scripts -p 'test_macos_smtp*.py' -v
+      - name: Verify immutable inputs and prepare test support
+        run: python -I -B launcher/scripts/macos_smtp_launcher.py launcher harness source
+      - name: Install pinned Rust
+        run: rustup toolchain install 1.98.1 --profile minimal
+      - name: Run synthetic native Keychain fixture
+        timeout-minutes: 45
+        env:
+          DPT_EXPECTED_ARCH: ${{ matrix.architecture }}
+        run: python -I -B harness/scripts/macos_smtp_checks.py source
+# Historical manifest/controller checks are preserved as evidence, not current approval.
+# Native execution stays disabled until the reconciled inputs and controller are reviewed.
+# Manual only, no repository secrets, cache, artifact uploads, packaging or release.

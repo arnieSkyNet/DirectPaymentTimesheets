@@ -1,0 +1,1002 @@
+use chrono::Local;
+use std::error::Error;
+use std::fs;
+use std::path::{Path, PathBuf};
+
+use crate::archive;
+use crate::csv_import::{self, ParsedTimesheetRow};
+use crate::models::TimesheetEntry;
+use crate::repository::TimesheetRepository;
+
+#[derive(serde::Serialize, serde::Deserialize)]
+pub(crate) struct ImportInterpretation {
+    pub(crate) config: csv_import::CsvImportConfig,
+    pub(crate) supplied_fields: Vec<(u64, [bool; 8])>,
+    pub(crate) legacy: bool,
+    #[serde(default)]
+    pub(crate) source_fields: Vec<(i64, [bool; 8])>,
+}
+
+#[derive(Default)]
+pub struct ImportSummary {
+    pub imported_pa_ids: Vec<i64>,
+    // Coverage includes unchanged files, unlike affected dates (new imports).
+    pub covered_pa_dates: Vec<(i64, chrono::NaiveDate)>,
+    pub affected_pa_dates: Vec<(i64, chrono::NaiveDate)>,
+    pub files_discovered: i64,
+    pub files_already_imported: i64,
+    pub files_processed: i64,
+    pub files_succeeded: i64,
+    pub files_refused: i64,
+    pub rows_processed: i64,
+    pub rows_imported: i64,
+    pub rows_skipped: i64,
+    pub files_failed: i64,
+    pub failure_messages: Vec<String>,
+    pub orphaned_archives: Vec<PathBuf>,
+    pub archived_paths: Vec<PathBuf>,
+}
+
+impl ImportSummary {
+    pub fn has_failures(&self) -> bool {
+        self.files_refused > 0 || self.files_failed > 0
+    }
+}
+
+#[derive(Clone, Copy)]
+enum FailureKind {
+    Refused,
+    Failed,
+}
+
+struct FileFailure {
+    kind: FailureKind,
+    message: String,
+    rows_processed: i64,
+    orphaned_archive: Option<PathBuf>,
+}
+
+struct FileImportResult {
+    affected_pa_dates: Vec<(i64, chrono::NaiveDate)>,
+    rows_processed: i64,
+    rows_imported: i64,
+    rows_skipped: i64,
+    archive_path: PathBuf,
+}
+
+impl FileFailure {
+    fn refused(error: impl std::fmt::Display, rows_processed: i64) -> Self {
+        Self {
+            kind: FailureKind::Refused,
+            message: error.to_string(),
+            rows_processed,
+            orphaned_archive: None,
+        }
+    }
+
+    fn failed(error: impl std::fmt::Display, rows_processed: i64) -> Self {
+        Self {
+            kind: FailureKind::Failed,
+            message: error.to_string(),
+            rows_processed,
+            orphaned_archive: None,
+        }
+    }
+}
+
+pub struct ImportService<'a> {
+    repository: &'a TimesheetRepository,
+    archive_dir: &'a Path,
+    import_dir: PathBuf,
+    config: csv_import::CsvImportConfig,
+}
+
+impl<'a> ImportService<'a> {
+    pub fn new(
+        repository: &'a TimesheetRepository,
+        import_dir: PathBuf,
+        archive_dir: &'a Path,
+    ) -> Self {
+        Self {
+            repository,
+            archive_dir,
+            import_dir,
+            config: Default::default(),
+        }
+    }
+
+    pub fn with_config(mut self, config: csv_import::CsvImportConfig) -> Self {
+        self.config = config;
+        self
+    }
+
+    pub fn run(&self) -> Result<ImportSummary, Box<dyn Error>> {
+        self.run_selected(None)
+    }
+
+    // Same guarded importer, limited to files just published by clipboard entry.
+    pub(crate) fn run_paths(&self, paths: &[PathBuf]) -> Result<ImportSummary, Box<dyn Error>> {
+        self.run_selected(Some(paths))
+    }
+
+    fn run_selected(&self, paths: Option<&[PathBuf]>) -> Result<ImportSummary, Box<dyn Error>> {
+        let _guard = crate::timesheet_delivery::production_lock(self.repository.connection())?;
+        let mut summary = ImportSummary::default();
+        let mut csv_files = Vec::new();
+        for entry in fs::read_dir(&self.import_dir)? {
+            let entry = entry?;
+            let path = entry.path();
+            if path
+                .extension()
+                .and_then(|value| value.to_str())
+                .is_some_and(|value| value.eq_ignore_ascii_case("csv"))
+            {
+                if paths.is_none_or(|paths| paths.contains(&path)) { csv_files.push(path); }
+            }
+        }
+        csv_files.sort();
+        if paths.is_some_and(|paths| paths.len() != csv_files.len()) {
+            return Err("A saved clipboard CSV is missing from the import folder; import stopped.".into());
+        }
+        summary.files_discovered = csv_files.len() as i64;
+
+        for path in csv_files {
+            let filename = path.to_string_lossy().into_owned();
+            let bytes = match fs::read(&path) {
+                Ok(bytes) => bytes,
+                Err(error) => {
+                    summary.files_failed += 1;
+                    summary
+                        .failure_messages
+                        .push(format!("{}: {error}", path.display()));
+                    continue;
+                }
+            };
+            let digest = crate::shift_changes::digest(&bytes);
+            if crate::shift_changes::content_seen(self.repository.connection(), &digest, &filename)?
+            {
+                summary.files_already_imported += 1;
+                // Only successfully recognized file contents count as covered;
+                // never infer a PA from a filename or historical database rows.
+                // Already imported bytes retain their stored interpretation even if
+                // headings/method/skip settings have since changed.
+                let db = self.repository.connection();
+                let mut stmt = db.prepare("SELECT DISTINCT t.personal_assistant_id,t.start_time FROM csv_import_rows r JOIN timesheets t ON t.id=r.source_id WHERE r.sha256=?1 AND t.personal_assistant_id IS NOT NULL")?;
+                let covered = stmt.query_map([&digest], |r| Ok((r.get::<_,i64>(0)?,r.get::<_,String>(1)?)))?;
+                for row in covered {
+                    let (pa, start) = row?;
+                    if let Some(start) = csv_import::parse_supported_timestamp(&start) {
+                        summary.imported_pa_ids.push(pa);
+                        summary.covered_pa_dates.push((pa, start.date()));
+                    }
+                }
+                continue;
+            }
+
+            summary.files_processed += 1;
+            match self.process_file(&path, &bytes, &digest) {
+                Ok(result) => {
+                    summary.files_succeeded += 1;
+                    summary.rows_processed += result.rows_processed;
+                    summary.rows_imported += result.rows_imported;
+                    summary.rows_skipped += result.rows_skipped;
+                    summary.archived_paths.push(result.archive_path);
+                    summary.imported_pa_ids.extend(result.affected_pa_dates.iter().map(|(id,_)| *id));
+                    summary.covered_pa_dates.extend(result.affected_pa_dates.iter().copied());
+                    summary.affected_pa_dates.extend(result.affected_pa_dates);
+                }
+                Err(failure) => {
+                    match failure.kind {
+                        FailureKind::Refused => summary.files_refused += 1,
+                        FailureKind::Failed => summary.files_failed += 1,
+                    }
+                    summary.rows_processed += failure.rows_processed;
+                    if let Some(path) = &failure.orphaned_archive {
+                        summary.orphaned_archives.push(path.clone());
+                    }
+                    let status = match failure.kind {
+                        FailureKind::Refused => "REFUSED",
+                        FailureKind::Failed => "FAILED",
+                    };
+                    let archive_filename = failure
+                        .orphaned_archive
+                        .as_deref()
+                        .map(|path| path.to_string_lossy().into_owned())
+                        .unwrap_or_default();
+                    let audit_result = self.repository.add_import_audit(
+                        &import_time(),
+                        &filename,
+                        &archive_filename,
+                        failure.rows_processed,
+                        0,
+                        0,
+                        status,
+                        Some(&failure.message),
+                    );
+                    let mut message = format!("{}: {}", path.display(), failure.message);
+                    if let Err(audit_error) = audit_result {
+                        message
+                            .push_str(&format!("; failed to record {status} audit: {audit_error}"));
+                    }
+                    summary.failure_messages.push(message);
+                }
+            }
+        }
+
+        Ok(summary)
+    }
+
+    fn process_file(
+        &self,
+        path: &Path,
+        bytes: &[u8],
+        digest: &str,
+    ) -> Result<FileImportResult, FileFailure> {
+        let db = self.repository.connection();
+        let tx = db
+            .unchecked_transaction()
+            .map_err(|e| FileFailure::failed(e, 0))?;
+        tx.execute("UPDATE schema_version SET version=version", [])
+            .map_err(|e| FileFailure::failed(e, 0))?;
+        // Establish the original interpretation before parsing a legacy pathname.
+        // This only verifies the archived bytes already referenced by its audit.
+        crate::shift_changes::seed_legacy_path(&tx, path.to_string_lossy().as_ref())
+            .map_err(|e| FileFailure::refused(e, 0))?;
+        // The same bytes copied to a new pathname keep their first interpretation.
+        // Pre-Stage-1 content has no settings audit and uses the legacy parser.
+        let seen_hash: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM csv_import_contents WHERE sha256=?1)", [digest], |r| r.get(0)).map_err(|e| FileFailure::failed(e, 0))?;
+        let retained: Option<String> = {
+            use rusqlite::OptionalExtension;
+            tx.query_row("SELECT e.after_evidence FROM shift_change_events e JOIN csv_import_contents c ON c.import_audit_id=e.source_id WHERE e.source='csv_import' AND c.sha256=?1 ORDER BY e.id LIMIT 1", [digest], |r| r.get(0)).optional().map_err(|e| FileFailure::failed(e, 0))?
+        };
+        let interpretation = retained.as_deref().map(toml::from_str::<ImportInterpretation>).transpose().map_err(|e| FileFailure::refused(e,0))?;
+        let legacy = interpretation.as_ref().map_or(seen_hash, |i| i.legacy);
+        let config = interpretation.map(|i| i.config).unwrap_or_else(|| self.config.clone());
+        let mut rows = if legacy { csv_import::import_csv_bytes(bytes) } else { csv_import::import_csv_with_config(bytes, &config) }.map_err(|error| FileFailure::refused(error, 0))?;
+        let supplied_fields = rows.iter().map(|r| (r.source_row, r.supplied_fields)).collect();
+        let row_count = rows.len() as i64;
+        self.resolve_personal_assistants(&mut rows, row_count)?;
+        let affected_pa_dates = rows
+            .iter()
+            .filter_map(|r| r.entry.personal_assistant_id.map(|id| (id, r.start.date())))
+            .collect();
+        let all_rows: Vec<_> = rows.iter().map(|r| r.entry.clone()).collect();
+        let mut parsed_rows = rows.clone();
+        let (entries, rows_skipped) = self.classify_collisions(rows, row_count)?;
+
+        let archive_path = archive::archive_csv_bytes(path, bytes, self.archive_dir)
+            .map_err(|error| FileFailure::failed(format!("archive failed: {error}"), row_count))?;
+        let db_failure = |error: Box<dyn Error>| FileFailure {
+            kind: FailureKind::Failed,
+            message: format!(
+                "Database import rolled back; recoverable orphan archive: {} ({error})",
+                archive_path.display()
+            ),
+            rows_processed: row_count,
+            orphaned_archive: Some(archive_path.clone()),
+        };
+        let prior_max: i64 = tx
+            .query_row("SELECT COALESCE(MAX(id),0) FROM timesheets", [], |r| {
+                r.get(0)
+            })
+            .map_err(|e| db_failure(Box::new(e)))?;
+        if let Err(error) = self.repository.import_file_atomically(
+            &entries,
+            &import_time(),
+            path.to_string_lossy().as_ref(),
+            archive_path.to_string_lossy().as_ref(),
+            row_count,
+            rows_skipped,
+        ) {
+            return Err(FileFailure {
+                kind: FailureKind::Failed,
+                message: format!(
+                    "database import rolled back after archiving; recoverable orphan archive: {} ({error})",
+                    archive_path.display()
+                ),
+                rows_processed: row_count,
+                orphaned_archive: Some(archive_path),
+            });
+        }
+        crate::shift_changes::record_import(
+            &tx,
+            digest,
+            path.to_string_lossy().as_ref(),
+            &all_rows,
+            prior_max,
+        )
+        .map_err(&db_failure)?;
+        // Reuse the existing immutable audit stream; no schema migration or
+        // modification of source rows/archives is needed for Stage 1 settings.
+        let audit: i64 = tx.query_row("SELECT MAX(id) FROM import_audit WHERE original_filename=?1 AND status='SUCCESS'", [path.to_string_lossy().as_ref()], |r| r.get(0)).map_err(|e| db_failure(Box::new(e)))?;
+        let new_ids = tx.prepare("SELECT id FROM timesheets WHERE id>?1 ORDER BY id").map_err(|e| db_failure(Box::new(e)))?
+            .query_map([prior_max], |r| r.get::<_,i64>(0)).map_err(|e| db_failure(Box::new(e)))?
+            .collect::<rusqlite::Result<Vec<_>>>().map_err(|e| db_failure(Box::new(e)))?;
+        let mut source_fields = Vec::new();
+        for id in new_ids {
+            let raw = crate::repository::get_raw_on(&tx, id).map_err(|e| db_failure(Box::new(e)))?.ok_or_else(|| db_failure("Missing imported source".into()))?;
+            let index = parsed_rows.iter().position(|row| existing_row_is_materially_identical(&raw, row)).ok_or_else(|| db_failure("Missing imported field provenance".into()))?;
+            source_fields.push((id, parsed_rows.remove(index).supplied_fields));
+        }
+        let interpretation = toml::to_string(&ImportInterpretation { config, supplied_fields, legacy, source_fields }).map_err(|e| db_failure(Box::new(e)))?;
+        tx.execute("INSERT INTO shift_change_events(source,source_id,before_evidence,after_evidence,reason,review_signature,recorded_at,actor) VALUES('csv_import',?1,'',?2,'CSV interpretation; omitted numeric fields normalize to zero; original bytes retained',?3,?4,'local_employer')", rusqlite::params![audit,interpretation,digest,import_time()]).map_err(|e| db_failure(Box::new(e)))?;
+        tx.commit().map_err(|e| db_failure(Box::new(e)))?;
+        Ok(FileImportResult {
+            affected_pa_dates,
+            rows_processed: row_count,
+            rows_imported: entries.len() as i64,
+            rows_skipped,
+            archive_path,
+        })
+    }
+
+    fn resolve_personal_assistants(
+        &self,
+        rows: &mut [ParsedTimesheetRow],
+        row_count: i64,
+    ) -> Result<(), FileFailure> {
+        for row in rows {
+            let matches = self
+                .repository
+                .resolve_personal_assistant_ids(&row.entry.pa_name)
+                .map_err(|error| FileFailure::failed(error, row_count))?;
+            match matches.as_slice() {
+                [id] => row.entry.personal_assistant_id = Some(*id),
+                [] => {
+                    return Err(FileFailure::refused(
+                        format!(
+                            "CSV row {}: PA {:?} does not match a maintained Personal Assistant",
+                            row.source_row, row.entry.pa_name
+                        ),
+                        row_count,
+                    ));
+                }
+                _ => {
+                    return Err(FileFailure::refused(
+                        format!(
+                            "CSV row {}: PA {:?} is ambiguous and matches {} maintained Personal Assistants",
+                            row.source_row,
+                            row.entry.pa_name,
+                            matches.len()
+                        ),
+                        row_count,
+                    ));
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn classify_collisions(
+        &self,
+        rows: Vec<ParsedTimesheetRow>,
+        row_count: i64,
+    ) -> Result<(Vec<TimesheetEntry>, i64), FileFailure> {
+        let existing_entries = self
+            .repository
+            .get_all_raw()
+            .map_err(|error| FileFailure::failed(error, row_count))?;
+        let mut entries = Vec::new();
+        let mut rows_skipped = 0;
+        for row in rows {
+            // Repeated exports of an exactly retained row are idempotent. New
+            // within-file candidates, including identical intervals, are kept.
+            if existing_entries
+                .iter()
+                .any(|existing| existing_row_is_materially_identical(existing, &row))
+            {
+                rows_skipped += 1;
+            } else {
+                entries.push(row.entry);
+            }
+        }
+        Ok((entries, rows_skipped))
+    }
+}
+
+pub(crate) fn existing_row_is_materially_identical(
+    existing: &TimesheetEntry,
+    incoming: &ParsedTimesheetRow,
+) -> bool {
+    let Some(start) = csv_import::parse_supported_timestamp(&existing.start_time) else {
+        return false;
+    };
+    let Some(end) = csv_import::parse_supported_timestamp(&existing.end_time) else {
+        return false;
+    };
+    material_fields_are_identical(
+        existing,
+        start,
+        end,
+        &incoming.entry,
+        incoming.start,
+        incoming.end,
+    )
+}
+
+fn material_fields_are_identical(
+    left: &TimesheetEntry,
+    left_start: chrono::NaiveDateTime,
+    left_end: chrono::NaiveDateTime,
+    right: &TimesheetEntry,
+    right_start: chrono::NaiveDateTime,
+    right_end: chrono::NaiveDateTime,
+) -> bool {
+    left.personal_assistant_id.is_some()
+        && left.personal_assistant_id == right.personal_assistant_id
+        && left_start == right_start
+        && left_end == right_end
+        && left.break_minutes == right.break_minutes
+        && left.worked_minutes == right.worked_minutes
+        && left.hourly_rate.to_bits() == right.hourly_rate.to_bits()
+        && left.amount.to_bits() == right.amount.to_bits()
+        && left.notes == right.notes
+}
+
+fn import_time() -> String {
+    Local::now().format("%Y-%m-%d %H:%M:%S").to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::database::create_schema;
+    use crate::payroll_worked_item_repository::PayrollWorkedItemRepository;
+    use rusqlite::params;
+    use tempfile::TempDir;
+
+    fn setup(names: &[(&str, &str)]) -> (TempDir, PathBuf, TimesheetRepository) {
+        let directory = TempDir::new().unwrap();
+        fs::create_dir(directory.path().join("import")).unwrap();
+        fs::create_dir(directory.path().join("archive")).unwrap();
+        let database_path = directory.path().join("database.sqlite");
+        let connection = crate::database::open(&database_path).unwrap();
+        create_schema(&connection).unwrap();
+        for (first_name, surname) in names {
+            connection
+                .execute(
+                    "INSERT INTO personal_assistants (
+                        first_name, surname, mileage_enabled
+                     ) VALUES (?1, ?2, 0)",
+                    params![first_name, surname],
+                )
+                .unwrap();
+        }
+        (
+            directory,
+            database_path,
+            TimesheetRepository::new(connection),
+        )
+    }
+
+    fn source(rows: &[&str]) -> Vec<u8> {
+        format!(
+            "period\nPA,Start,End,Break,Worked,Rate,Amount,Note\n{}\n",
+            rows.join("\n")
+        )
+        .into_bytes()
+    }
+
+    fn write_source(directory: &TempDir, name: &str, rows: &[&str]) -> PathBuf {
+        let path = directory.path().join("import").join(name);
+        fs::write(&path, source(rows)).unwrap();
+        path
+    }
+
+    fn run<'a>(directory: &'a TempDir, repository: &'a TimesheetRepository) -> ImportSummary {
+        ImportService::new(
+            repository,
+            directory.path().join("import"),
+            &directory.path().join("archive"),
+        )
+        .run()
+        .unwrap()
+    }
+
+    fn count(database_path: &Path, table: &str) -> i64 {
+        crate::database::open(database_path)
+            .unwrap()
+            .query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |row| {
+                row.get(0)
+            })
+            .unwrap()
+    }
+
+    #[test]
+    fn valid_mixed_pa_file_imports_atomically_and_archives_exact_bytes() {
+        let (directory, database_path, repository) = setup(&[("Alex", "Smith"), ("Jo", "Jones")]);
+        let path = write_source(
+            &directory,
+            "valid.csv",
+            &[
+                "  ALEX   SMITH ,27 July 2026 at 23:00:00,28 July 2026 at 01:00:00,0h 00m,1h 45m,£12.21,£21.37,",
+                "Jo Jones,28 July 2026 at 09:00:00,28 July 2026 at 10:00:00,0h 00m,1h 00m,£13.00,£13.00,",
+            ],
+        );
+        let expected = fs::read(path).unwrap();
+
+        let summary = run(&directory, &repository);
+
+        assert_eq!(summary.files_discovered, 1);
+        assert_eq!(summary.files_succeeded, 1);
+        assert_eq!(summary.rows_imported, 2);
+        let entries = repository.get_all_raw().unwrap();
+        assert_eq!(entries.len(), 2);
+        assert!(entries
+            .iter()
+            .all(|entry| entry.personal_assistant_id.is_some()));
+        assert_eq!(entries[0].worked_minutes, 105);
+        let archived: String = crate::database::open(&database_path)
+            .unwrap()
+            .query_row(
+                "SELECT archive_filename FROM import_audit WHERE status = 'SUCCESS'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(fs::read(archived).unwrap(), expected);
+        assert_eq!(count(&database_path, "import_audit"), 1);
+    }
+
+    #[test]
+    fn invalid_later_row_refuses_whole_file_and_later_file_still_succeeds() {
+        let (directory, database_path, repository) = setup(&[("Alex", "Smith")]);
+        write_source(
+            &directory,
+            "01_bad.csv",
+            &[
+                "Alex Smith,27 July 2026 at 09:00:00,27 July 2026 at 10:00:00,0h 00m,1h 00m,£12.00,£12.00,",
+                "Alex Smith,bad,28 July 2026 at 10:00:00,0h 00m,1h 00m,£12.00,£12.00,",
+            ],
+        );
+        write_source(
+            &directory,
+            "02_good.csv",
+            &["Alex Smith,29 July 2026 at 09:00:00,29 July 2026 at 10:00:00,0h 00m,1h 00m,£12.00,£12.00,"],
+        );
+
+        let summary = run(&directory, &repository);
+
+        assert_eq!(summary.files_refused, 1);
+        assert_eq!(summary.files_succeeded, 1);
+        assert_eq!(count(&database_path, "timesheets"), 1);
+    }
+
+    #[test]
+    fn missing_ambiguous_pas_refused_but_conflicting_candidates_retained() {
+        let (missing_dir, missing_db, missing_repo) = setup(&[("Alex", "Smith")]);
+        write_source(
+            &missing_dir,
+            "missing.csv",
+            &["Nobody Here,27 July 2026 at 09:00:00,27 July 2026 at 10:00:00,0h 00m,1h 00m,£12.00,£12.00,"],
+        );
+        assert_eq!(run(&missing_dir, &missing_repo).files_refused, 1);
+        assert_eq!(count(&missing_db, "timesheets"), 0);
+
+        let (ambiguous_dir, ambiguous_db, ambiguous_repo) =
+            setup(&[("Alex", "Smith"), (" alex ", " smith ")]);
+        write_source(
+            &ambiguous_dir,
+            "ambiguous.csv",
+            &["Alex Smith,27 July 2026 at 09:00:00,27 July 2026 at 10:00:00,0h 00m,1h 00m,£12.00,£12.00,"],
+        );
+        assert_eq!(run(&ambiguous_dir, &ambiguous_repo).files_refused, 1);
+        assert_eq!(count(&ambiguous_db, "timesheets"), 0);
+
+        let (collision_dir, collision_db, collision_repo) = setup(&[("Alex", "Smith")]);
+        write_source(
+            &collision_dir,
+            "collision.csv",
+            &[
+                "Alex Smith,27 July 2026 at 09:00:00,27 July 2026 at 10:00:00,0h 00m,1h 00m,£12.00,£12.00,",
+                "Alex Smith,27 July 2026 at 09:00:00,27 July 2026 at 11:00:00,0h 00m,2h 00m,£12.00,£24.00,corrected",
+            ],
+        );
+        assert_eq!(run(&collision_dir, &collision_repo).files_succeeded, 1);
+        assert_eq!(count(&collision_db, "timesheets"), 2);
+    }
+
+    #[test]
+    fn overlapping_export_skips_exact_existing_shift_and_imports_new_shift() {
+        let (directory, database_path, repository) = setup(&[("Alex", "Smith")]);
+        let existing = TimesheetEntry {
+            id: 0,
+            pa_name: "Alex Smith".to_string(),
+            personal_assistant_id: Some(1),
+            start_time: "27 July 2026 at 09:00:00".to_string(),
+            end_time: "27 July 2026 at 10:00:00".to_string(),
+            break_minutes: 0,
+            worked_minutes: 60,
+            hourly_rate: 12.0,
+            amount: 12.0,
+            notes: Some("historical".to_string()),
+        };
+        repository.insert(&existing).unwrap();
+        let existing_id = repository.get_all_raw().unwrap()[0].id;
+        write_source(
+            &directory,
+            "overlap.csv",
+            &[
+                " ALEX  SMITH ,27 July 2026 at 09:00:00,27 July 2026 at 10:00:00,0h 00m,1h 00m,£12.00,£12.00,historical",
+                "Alex Smith,28 July 2026 at 09:00:00,28 July 2026 at 10:30:00,0h 00m,1h 30m,£12.00,£18.00,new",
+            ],
+        );
+
+        let summary = run(&directory, &repository);
+
+        assert_eq!(summary.files_succeeded, 1);
+        assert_eq!(summary.rows_processed, 2);
+        assert_eq!(summary.rows_imported, 1);
+        assert_eq!(summary.rows_skipped, 1);
+        let entries = repository.get_all_raw().unwrap();
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0].id, existing_id);
+        let audit: (i64, i64, i64) = crate::database::open(&database_path)
+            .unwrap()
+            .query_row(
+                "SELECT rows_processed, rows_imported, rows_skipped
+                 FROM import_audit WHERE status = 'SUCCESS'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(audit, (2, 1, 1));
+    }
+
+    #[test]
+    fn corrected_effective_state_does_not_change_raw_import_collision_identity() {
+        use crate::repository::{TimesheetCorrectionProposal, LOCAL_CORRECTION_ACTOR_ID};
+
+        let (directory, _database_path, repository) = setup(&[("Alex", "Smith")]);
+        let raw_row = "Alex Smith,27 July 2026 at 09:00:00,27 July 2026 at 10:00:00,0h 00m,1h 00m,£12.00,£12.00,source";
+        write_source(&directory, "original.csv", &[raw_row]);
+        assert_eq!(run(&directory, &repository).rows_imported, 1);
+        let raw = repository.get_all_raw().unwrap().remove(0);
+        repository
+            .append_correction(
+                raw.id,
+                &TimesheetCorrectionProposal {
+                    start_time: "2026-07-27T09:00".to_string(),
+                    end_time: "2026-07-27T11:00".to_string(),
+                    break_minutes: 15,
+                    worked_minutes: 90,
+                    notes: Some("effective correction".to_string()),
+                },
+                LOCAL_CORRECTION_ACTOR_ID,
+                "2026-07-28T10:00:00Z",
+                None,
+            )
+            .unwrap();
+        write_source(&directory, "renamed-copy.csv", &[raw_row]);
+
+        let summary = run(&directory, &repository);
+
+        assert_eq!(summary.files_already_imported, 1);
+        assert_eq!(summary.files_succeeded, 1);
+        assert_eq!(summary.rows_imported, 0);
+        assert_eq!(summary.rows_skipped, 1);
+        assert_eq!(repository.get_all_raw().unwrap(), vec![raw]);
+        assert_eq!(
+            repository.get_all_effective().unwrap()[0]
+                .effective
+                .worked_minutes,
+            90
+        );
+    }
+
+    #[test]
+    fn exact_duplicate_candidates_within_file_are_retained_for_review() {
+        let (directory, database_path, repository) = setup(&[("Alex", "Smith")]);
+        let row = "Alex Smith,27 July 2026 at 09:00:00,27 July 2026 at 10:00:00,0h 00m,1h 00m,£12.00,£12.00,same";
+        write_source(&directory, "duplicates.csv", &[row, row]);
+
+        let summary = run(&directory, &repository);
+
+        assert_eq!(summary.files_succeeded, 1);
+        assert_eq!(summary.rows_processed, 2);
+        assert_eq!(summary.rows_imported, 2);
+        assert_eq!(summary.rows_skipped, 0);
+        assert_eq!(count(&database_path, "timesheets"), 2);
+    }
+
+    #[test]
+    fn archive_failure_writes_no_database_rows() {
+        let (directory, database_path, repository) = setup(&[("Alex", "Smith")]);
+        write_source(
+            &directory,
+            "valid.csv",
+            &["Alex Smith,27 July 2026 at 09:00:00,27 July 2026 at 10:00:00,0h 00m,1h 00m,£12.00,£12.00,"],
+        );
+        fs::remove_dir(directory.path().join("archive")).unwrap();
+        fs::write(directory.path().join("archive"), b"not a directory").unwrap();
+
+        let summary = run(&directory, &repository);
+
+        assert_eq!(summary.files_failed, 1);
+        assert_eq!(count(&database_path, "timesheets"), 0);
+
+        fs::remove_file(directory.path().join("archive")).unwrap();
+        fs::create_dir(directory.path().join("archive")).unwrap();
+        let retry = run(&directory, &repository);
+        assert_eq!(retry.files_succeeded, 1);
+        assert_eq!(count(&database_path, "timesheets"), 1);
+    }
+
+    #[test]
+    fn database_audit_failure_rolls_back_rows_leaves_orphan_and_retry_is_safe() {
+        let (directory, database_path, repository) = setup(&[("Alex", "Smith")]);
+        write_source(
+            &directory,
+            "valid.csv",
+            &["Alex Smith,27 July 2026 at 09:00:00,27 July 2026 at 10:00:00,0h 00m,1h 00m,£12.00,£12.00,"],
+        );
+        crate::database::open(&database_path)
+            .unwrap()
+            .execute_batch(
+                "CREATE TRIGGER fail_success_audit BEFORE INSERT ON import_audit
+                 WHEN NEW.status = 'SUCCESS' BEGIN SELECT RAISE(ABORT, 'test audit failure'); END;",
+            )
+            .unwrap();
+
+        let failed = run(&directory, &repository);
+        assert_eq!(failed.files_failed, 1);
+        assert_eq!(failed.orphaned_archives.len(), 1);
+        assert_eq!(count(&database_path, "timesheets"), 0);
+
+        crate::database::open(&database_path)
+            .unwrap()
+            .execute_batch("DROP TRIGGER fail_success_audit")
+            .unwrap();
+        let retried = run(&directory, &repository);
+        assert_eq!(retried.files_succeeded, 1);
+        assert_eq!(count(&database_path, "timesheets"), 1);
+    }
+
+    #[test]
+    fn later_insert_failure_rolls_back_every_row() {
+        let (directory, database_path, repository) = setup(&[("Alex", "Smith")]);
+        write_source(
+            &directory,
+            "01_fails.csv",
+            &[
+                "Alex Smith,27 July 2026 at 09:00:00,27 July 2026 at 10:00:00,0h 00m,1h 00m,£12.00,£12.00,",
+                "Alex Smith,28 July 2026 at 09:00:00,28 July 2026 at 10:00:00,0h 00m,1h 00m,£12.00,£12.00,FAIL",
+            ],
+        );
+        write_source(
+            &directory,
+            "02_succeeds.csv",
+            &["Alex Smith,29 July 2026 at 09:00:00,29 July 2026 at 10:00:00,0h 00m,1h 00m,£12.00,£12.00,"],
+        );
+        crate::database::open(&database_path)
+            .unwrap()
+            .execute_batch(
+                "CREATE TRIGGER fail_second_row BEFORE INSERT ON timesheets
+                 WHEN NEW.notes = 'FAIL' BEGIN SELECT RAISE(ABORT, 'test insert failure'); END;",
+            )
+            .unwrap();
+
+        let summary = run(&directory, &repository);
+
+        assert_eq!(summary.files_failed, 1);
+        assert_eq!(summary.files_succeeded, 1);
+        assert_eq!(count(&database_path, "timesheets"), 1);
+
+        crate::database::open(&database_path)
+            .unwrap()
+            .execute_batch("DROP TRIGGER fail_second_row")
+            .unwrap();
+        let retry = run(&directory, &repository);
+        assert_eq!(retry.files_succeeded, 1);
+        assert_eq!(retry.files_already_imported, 1);
+        assert_eq!(count(&database_path, "timesheets"), 3);
+    }
+
+    #[test]
+    fn existing_collision_preserves_entry_id_and_submitted_snapshot_membership() {
+        let (directory, database_path, repository) = setup(&[("Alex", "Smith")]);
+        let mut existing = TimesheetEntry {
+            id: 0,
+            pa_name: "Alex Smith".to_string(),
+            personal_assistant_id: Some(1),
+            start_time: "27 July 2026 at 09:00:00".to_string(),
+            end_time: "27 July 2026 at 10:00:00".to_string(),
+            break_minutes: 0,
+            worked_minutes: 60,
+            hourly_rate: 12.0,
+            amount: 12.0,
+            notes: None,
+        };
+        repository.insert(&existing).unwrap();
+        existing.id = repository.get_all_raw().unwrap()[0].id;
+        let connection = crate::database::open(&database_path).unwrap();
+        connection.execute("INSERT INTO payroll_timesheets (id, personal_assistant_id, payroll_year, cycle_number, created_at, updated_at) VALUES (10, 1, '2026 to 2027', 1, 'now', 'now')", []).unwrap();
+        connection.execute("INSERT INTO payroll_timesheet_snapshot_states (payroll_timesheet_id, state, pdf_path, pdf_sha256, generated_at) VALUES (10, 'submitted', 'x', 'digest', 'now')", []).unwrap();
+        connection.execute("INSERT INTO payroll_timesheet_worked_item_snapshots (payroll_timesheet_id, week_number, source_type, timesheet_id, work_date, worked_minutes, pay_rate_id, pay_rate_effective_date, total_hourly_rate, captured_at) VALUES (10, 1, 'imported_shift', ?1, '27/07/2026', 60, 1, '01/01/2026', 12.0, 'now')", [existing.id]).unwrap();
+        write_source(
+            &directory,
+            "collision.csv",
+            &[
+                "Alex Smith,27 July 2026 at 09:00:00,27 July 2026 at 11:00:00,0h 00m,2h 00m,£12.00,£24.00,changed",
+                "Alex Smith,28 July 2026 at 09:00:00,28 July 2026 at 10:00:00,0h 00m,1h 00m,£12.00,£12.00,new",
+            ],
+        );
+
+        let summary = run(&directory, &repository);
+
+        assert_eq!(summary.files_refused, 0);
+        assert_eq!(summary.rows_imported, 2);
+        assert_eq!(repository.get_all_raw().unwrap().len(), 3);
+        assert_eq!(repository.get_all_raw().unwrap()[0].id, existing.id);
+        let snapshots =
+            PayrollWorkedItemRepository::new(crate::database::open(&database_path).unwrap());
+        assert!(snapshots
+            .submitted_snapshot_timesheet_ids(10)
+            .unwrap()
+            .contains(&existing.id));
+    }
+
+    #[test]
+    fn failed_audit_is_best_effort_and_changed_successful_path_is_imported() {
+        let (directory, database_path, repository) = setup(&[("Alex", "Smith")]);
+        write_source(
+            &directory,
+            "01_bad.csv",
+            &["Nobody,bad,bad,broken,broken,bad,bad,"],
+        );
+        let good_path = write_source(
+            &directory,
+            "02_good.csv",
+            &["Alex Smith,27 July 2026 at 09:00:00,27 July 2026 at 10:00:00,0h 00m,1h 00m,£12.00,£12.00,"],
+        );
+        crate::database::open(&database_path)
+            .unwrap()
+            .execute_batch(
+                "CREATE TRIGGER fail_refused_audit BEFORE INSERT ON import_audit
+             WHEN NEW.status = 'REFUSED' BEGIN SELECT RAISE(ABORT, 'test failed audit'); END;",
+            )
+            .unwrap();
+
+        let summary = run(&directory, &repository);
+        assert_eq!(summary.files_refused, 1);
+        assert_eq!(summary.files_succeeded, 1);
+        assert!(summary.failure_messages[0].contains("failed to record REFUSED audit"));
+        assert_eq!(count(&database_path, "timesheets"), 1);
+
+        fs::write(
+            good_path,
+            source(&["Alex Smith,28 July 2026 at 09:00:00,28 July 2026 at 10:00:00,0h 00m,1h 00m,£12.00,£12.00,"]),
+        ).unwrap();
+        let retry = run(&directory, &repository);
+        assert_eq!(retry.files_already_imported, 0);
+        assert_eq!(retry.rows_imported, 1);
+        assert_eq!(count(&database_path, "timesheets"), 2);
+    }
+    #[test]
+    fn configurable_import_retains_archive_interpretation_and_existing_coverage() {
+        let (directory, _, repository) = setup(&[("Alex", "Smith")]);
+        let bytes = b"PA,Start,End,Break,Worked,ignored\nAlex Smith,27 July 2026 at 09:00,27 July 2026 at 09:34,0h 10m,0h 17m,x\n";
+        fs::write(directory.path().join("import/custom.csv"), bytes).unwrap();
+        let config = csv_import::CsvImportConfig {
+            introductory_rows: 0,
+            hours_method: csv_import::HoursMethod::EndMinusStart,
+            ..Default::default()
+        };
+        let archive = directory.path().join("archive");
+        let service = ImportService::new(&repository, directory.path().join("import"), &archive)
+            .with_config(config.clone());
+        let first = service.run().unwrap();
+        assert_eq!(first.rows_imported, 1, "{:?}", first.failure_messages);
+        assert_eq!(fs::read(&first.archived_paths[0]).unwrap(), bytes);
+        let row = repository.get_all_raw().unwrap().remove(0);
+        assert_eq!((row.worked_minutes, row.break_minutes), (34, 10));
+        let audit: String = repository
+            .connection()
+            .query_row(
+                "SELECT after_evidence FROM shift_change_events WHERE source='csv_import'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        let retained: ImportInterpretation = toml::from_str(&audit).unwrap();
+        assert_eq!(retained.config, config);
+        assert_eq!(
+            retained.supplied_fields[0].1,
+            [true, true, true, true, true, false, false, false]
+        );
+        // Current settings cannot reinterpret recognized bytes or remove PA coverage.
+        let changed = ImportService::new(&repository, directory.path().join("import"), &archive);
+        let repeat = changed.run().unwrap();
+        assert_eq!(repeat.files_already_imported, 1);
+        assert_eq!(repeat.imported_pa_ids.len(), 1);
+        assert_eq!(repeat.covered_pa_dates.len(), 1);
+        // Even a new pathname must retain the original method for the same bytes.
+        fs::write(directory.path().join("import/copied.csv"), bytes).unwrap();
+        let copy = changed.run().unwrap();
+        assert_eq!(copy.rows_imported, 0, "{:?}", copy.failure_messages);
+        assert_eq!(copy.rows_skipped, 1);
+        assert_eq!(repository.get_all_raw().unwrap().len(), 1);
+        assert_eq!(repository.get_all_raw().unwrap()[0].worked_minutes, 34);
+    }
+    #[test]
+    fn configurable_import_refuses_atomically_and_retains_conflicting_candidates() {
+        let (directory, _, repository) = setup(&[("Alex", "Smith")]);
+        let path = directory.path().join("import/minimal.csv");
+        let header = "period\nPA,Start,End,Worked\n";
+        let good = "Alex Smith,27 July 2026 at 09:00,27 July 2026 at 10:00,0h 34m\n";
+        fs::write(&path, format!("{header}{good}Alex Smith,bad,bad,0h 15m\n")).unwrap();
+        assert_eq!(run(&directory, &repository).files_refused, 1);
+        assert!(repository.get_all_raw().unwrap().is_empty());
+        fs::write(&path, format!("{header}{good}")).unwrap();
+        assert_eq!(run(&directory, &repository).rows_imported, 1);
+        fs::write(&path, format!("{header}{}", good.replace("34m", "35m"))).unwrap();
+        assert_eq!(run(&directory, &repository).rows_imported, 1);
+        assert_eq!(repository.get_all_raw().unwrap().len(), 2);
+        let evidence = crate::payroll_evidence::load_connection(repository.connection()).unwrap();
+        assert_eq!(crate::payroll_evidence::groups(&evidence).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn legacy_archives_and_copied_content_keep_worked_hours_under_new_settings() {
+        let (directory, _, repository) = setup(&[("Alex", "Smith")]);
+        let path = write_source(
+            &directory,
+            "legacy.csv",
+            &["Alex Smith,27 July 2026 at 09:00,27 July 2026 at 09:34,0h 10m,0h 17m,12,3.4,"],
+        );
+        let bytes = fs::read(&path).unwrap();
+        let mut rows = csv_import::import_csv_bytes(&bytes).unwrap();
+        rows[0].entry.personal_assistant_id = Some(1);
+        let archive = directory.path().join("archive/legacy.csv");
+        fs::write(&archive, &bytes).unwrap();
+        repository
+            .import_file_atomically(
+                &[rows.remove(0).entry],
+                "legacy",
+                path.to_str().unwrap(),
+                archive.to_str().unwrap(),
+                1,
+                0,
+            )
+            .unwrap();
+        fs::write(directory.path().join("import/copy.csv"), &bytes).unwrap();
+        let archive_root = directory.path().join("archive");
+        let config = csv_import::CsvImportConfig {
+            hours_method: csv_import::HoursMethod::EndMinusStart,
+            introductory_rows: 0,
+            ..Default::default()
+        };
+        let service =
+            ImportService::new(&repository, directory.path().join("import"), &archive_root)
+                .with_config(config);
+        let seeded = service.run_paths(&[path.clone()]).unwrap();
+        assert_eq!(seeded.rows_imported, 0, "{:?}", seeded.failure_messages);
+        assert_eq!(seeded.rows_skipped, 1);
+        let summary = service.run().unwrap();
+        assert_eq!(summary.rows_imported, 0, "{:?}", summary.failure_messages);
+        assert_eq!(summary.rows_skipped, 1);
+        assert_eq!(repository.get_all_raw().unwrap()[0].worked_minutes, 17);
+        assert_eq!(fs::read(archive).unwrap(), bytes);
+    }
+
+    #[test]
+    fn interpretation_audit_failure_rolls_back_rows_and_keeps_archive_recoverable() {
+        let (directory, _, repository) = setup(&[("Alex", "Smith")]);
+        write_source(
+            &directory,
+            "new.csv",
+            &["Alex Smith,27 July 2026 at 09:00,27 July 2026 at 10:00,0h 00m,0h 17m,12,3.4,"],
+        );
+        repository.connection().execute_batch("CREATE TRIGGER fail_interpretation BEFORE INSERT ON shift_change_events WHEN NEW.source='csv_import' BEGIN SELECT RAISE(ABORT,'synthetic interpretation audit failure'); END;").unwrap();
+        let result = run(&directory, &repository);
+        assert_eq!(result.files_failed, 1);
+        assert!(repository.get_all_raw().unwrap().is_empty());
+        assert_eq!(result.orphaned_archives.len(), 1);
+        assert!(result.orphaned_archives[0].is_file());
+        let contents: i64 = repository
+            .connection()
+            .query_row("SELECT COUNT(*) FROM csv_import_contents", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(contents, 0);
+    }
+}

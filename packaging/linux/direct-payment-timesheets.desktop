@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Direct Payments Timesheets
+Comment=Manage direct payment payroll timesheets
+Exec=direct-payment-timesheets
+Icon=direct-payment-timesheets
+Terminal=false
+Categories=Office;Finance;
+Keywords=timesheet;payroll;direct payments;
+StartupNotify=true

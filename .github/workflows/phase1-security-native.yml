@@ -1,0 +1,1524 @@
+name: Phase 1 native security verification
+run-name: Phase 1 security · ${{ github.ref_name }} · ${{ inputs.expected_sha }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      expected_sha:
+        description: Await independent source approval; dispatch only from the repository default branch
+        required: true
+        type: string
+      controlled_windows_root_diagnostics:
+        description: Opt in to synthetic Windows root diagnostics after native containment passes
+        required: false
+        default: false
+        type: boolean
+
+      verify_about_only:
+        description: Run only synthetic About read-only tests after containment prerequisites
+        required: false
+        default: false
+        type: boolean
+      compile_sqlite_containment_only:
+        description: Compile and list synthetic fixtures; run only containment controls
+        required: false
+        default: false
+        type: boolean
+      controlled_sqlite_terminal_tests:
+        description: Reserved; terminal execution is refused by this workflow
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+concurrency:
+  group: phase1-security-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  native:
+    # FreshStart source has no independently reviewed published identity yet.
+    if: ${{ false }}
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [windows-2022, macos-15, macos-15-intel]
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 90
+    env:
+      EXPECTED_SHA: '' # Unapproved; never infer approval from github.sha.
+      DISPATCH_SHA: ${{ github.sha }}
+      GIT_TERMINAL_PROMPT: '0'
+      CARGO_INCREMENTAL: '0'
+      CARGO_BUILD_JOBS: '2'
+      CARGO_PROFILE_TEST_DEBUG: '0'
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Require default-branch dispatch and independently approved source
+        env:
+          SELECTED_REF: ${{ github.ref }}
+          DEFAULT_BRANCH_REF: refs/heads/${{ github.event.repository.default_branch }}
+          SELECTED_EVENT: ${{ github.event_name }}
+          REQUESTED_SHA: ${{ inputs.expected_sha }}
+          SAFE_ONLY: ${{ inputs.compile_sqlite_containment_only }}
+          ABOUT_ONLY: ${{ inputs.verify_about_only }}
+          TERMINAL_REQUESTED: ${{ inputs.controlled_sqlite_terminal_tests }}
+          ROOT_REQUESTED: ${{ inputs.controlled_windows_root_diagnostics }}
+        run: |
+          set -euo pipefail
+          test "$SELECTED_EVENT" = workflow_dispatch
+          test "$SELECTED_REF" = "$DEFAULT_BRANCH_REF"
+          test "$TERMINAL_REQUESTED" = false
+          if [[ "$SAFE_ONLY" == true ]]; then test "$ROOT_REQUESTED" = false; fi
+          if [[ "$ABOUT_ONLY" == true ]]; then
+            test "$SAFE_ONLY" = false
+            test "$ROOT_REQUESTED" = false
+          fi
+          [[ "$REQUESTED_SHA" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$EXPECTED_SHA" =~ ^[0-9a-f]{40}$ ]]
+          test "$REQUESTED_SHA" = "$EXPECTED_SHA"
+          test "$DISPATCH_SHA" = "$EXPECTED_SHA"
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          # Immutable dispatch identity; the independent approval guard above must pass.
+          ref: ${{ github.sha }}
+          fetch-depth: 1
+          fetch-tags: false
+          persist-credentials: false
+      - name: Verify checkout identity and cleanliness
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+          test "$(git rev-parse HEAD)" = "$DISPATCH_SHA"
+          test -z "$(git status --porcelain=v1 --untracked-files=all)"
+      - name: Install the project's pinned native Rust toolchain
+        run: rustup toolchain install 1.98.1 --profile minimal
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: '3.12'
+      - name: Require synthetic harness guards and native Windows containment
+        id: synthetic_guards
+        if: ${{ !inputs.compile_sqlite_containment_only && !inputs.verify_about_only }}
+        env:
+          NATIVE_RUNNER: ${{ matrix.runner }}
+        run: |
+          set -euo pipefail
+          python -I -B - <<'PYTHON'
+          import os
+          import unittest
+          suite = unittest.defaultTestLoader.discover('scripts', pattern='test_phase1_security_checks.py')
+          def cases(node):
+              for item in node:
+                  if isinstance(item, unittest.TestSuite):
+                      yield from cases(item)
+                  else:
+                      yield item
+          tests = list(cases(suite))
+          windows = os.environ['NATIVE_RUNNER'] == 'windows-2022'
+          if windows:
+              if os.name != 'nt': raise SystemExit('Containment requires native Windows')
+              expected = {
+                  'test_phase1_security_checks.NativeContainmentTests.test_breakaway_is_refused',
+                  'test_phase1_security_checks.NativeContainmentTests.test_child_grandchild_timeout_releases_exclusive_handle',
+                  'test_phase1_security_checks.NativeContainmentTests.test_normal_exit_cleans_descendant',
+              }
+              if {test.id() for test in tests if '.NativeContainmentTests.' in test.id()} != expected: raise SystemExit('Containment fixture inventory mismatch')
+          if not tests: raise SystemExit('No harness guards discovered')
+          allowed = set() if windows else {
+              'test_phase1_security_checks.NativeContainmentTests.test_breakaway_is_refused',
+              'test_phase1_security_checks.NativeContainmentTests.test_child_grandchild_timeout_releases_exclusive_handle',
+              'test_phase1_security_checks.NativeContainmentTests.test_normal_exit_cleans_descendant',
+          }
+          class PrerequisiteResult(unittest.TextTestResult):
+              def addSkip(self, test, reason):
+                  super().addSkip(test, reason)
+                  if test.id() not in allowed or reason != 'Requires native Windows Job Objects':
+                      self.stop()
+          result = unittest.TextTestRunner(verbosity=2, failfast=True, resultclass=PrerequisiteResult).run(suite)
+          if result.shouldStop or not result.wasSuccessful() or result.testsRun != len(tests) or {test.id() for test, _ in result.skipped} != allowed:
+              raise SystemExit('Synthetic prerequisites refused')
+          PYTHON
+      - name: Compile and run isolated synthetic security tests
+        if: ${{ !inputs.compile_sqlite_containment_only && !inputs.verify_about_only && success() && steps.synthetic_guards.outcome == 'success' }}
+        env:
+          RUSTUP_TOOLCHAIN: '1.98.1'
+          NATIVE_RUNNER: ${{ matrix.runner }}
+          ROOT_DIAGNOSTICS_REQUESTED: ${{ inputs.controlled_windows_root_diagnostics }}
+        run: |
+          set -euo pipefail
+          # The approved harness activates root queries only for its scoped Phase 1 fixture.
+          # Compilation, other groups and production admission never activate diagnostics.
+          if [[ "$NATIVE_RUNNER" == windows-2022 && "$ROOT_DIAGNOSTICS_REQUESTED" == true ]]; then
+            env -u DPT_WINDOWS_ROOT_DIAGNOSTICS DPT_WINDOWS_SYNTHETIC_ROOT_DIAGNOSTICS=1 python -I -B scripts/phase1_security_checks.py
+          else
+            env -u DPT_WINDOWS_ROOT_DIAGNOSTICS -u DPT_WINDOWS_SYNTHETIC_ROOT_DIAGNOSTICS python -I -B scripts/phase1_security_checks.py
+          fi
+      - name: Compile synthetic SQLite fixture without execution
+        if: ${{ inputs.compile_sqlite_containment_only && success() }}
+        timeout-minutes: 30
+        env:
+          RUSTUP_TOOLCHAIN: '1.98.1'
+        run: |
+          set -euo pipefail
+          mkdir -p target
+          env -u RUSTC_WRAPPER -u RUSTC_WORKSPACE_WRAPPER -u RUSTFLAGS -u CARGO_ENCODED_RUSTFLAGS -u DPT_SYNTHETIC_SQLITE_TERMINAL_TESTS -u DPT_WINDOWS_ROOT_DIAGNOSTICS -u DPT_WINDOWS_SYNTHETIC_ROOT_DIAGNOSTICS cargo test --locked --test native_sqlite_terminal_fixtures --no-run --message-format=json > target/native-sqlite-build.jsonl
+      - name: Verify ignored inventory without executing fixtures
+        if: ${{ inputs.compile_sqlite_containment_only && success() }}
+        timeout-minutes: 1
+        run: |
+          python -I -B - <<'PYTHON'
+          import json, os, pathlib, subprocess
+          target = pathlib.Path('target').resolve()
+          records = [json.loads(line) for line in (target / 'native-sqlite-build.jsonl').read_text().splitlines()]
+          artifacts = [r for r in records if r.get('reason') == 'compiler-artifact' and r.get('target', {}).get('name') == 'native_sqlite_terminal_fixtures']
+          if len(artifacts) != 1: raise SystemExit('fixture_inventory_mismatch')
+          artifact = artifacts[0]
+          if artifact['target']['kind'] != ['test'] or artifact.get('profile', {}).get('test') is not True or not artifact.get('executable'): raise SystemExit('fixture_inventory_mismatch')
+          executable = pathlib.Path(artifact['executable']).resolve()
+          if not executable.is_relative_to(target) or not executable.is_file(): raise SystemExit('fixture_inventory_mismatch')
+          env = {k: os.environ[k] for k in ('SystemRoot', 'WINDIR', 'PATH', 'TEMP', 'TMP') if k in os.environ}
+          try:
+              result = subprocess.run([str(executable), '--list', '--ignored'], env=env, capture_output=True, text=True, timeout=10)
+          except (OSError, subprocess.TimeoutExpired):
+              raise SystemExit('fixture_inventory_unconfirmed') from None
+          if result.returncode or result.stderr or [s.strip() for s in result.stdout.splitlines() if s.strip()] != ['native_child: test', '1 test, 0 benchmarks']: raise SystemExit('fixture_inventory_mismatch')
+          print('native.sqlite: inventory_verified=true; terminal_executed=false')
+          PYTHON
+      - name: Require strict native containment only
+        id: strict_containment
+        if: ${{ (inputs.compile_sqlite_containment_only || inputs.verify_about_only) && success() }}
+        timeout-minutes: 2
+        env:
+          NATIVE_RUNNER: ${{ matrix.runner }}
+        run: |
+          python -I -B - <<'PYTHON'
+          import os, pathlib, runpy, sys
+          keep = ('SystemRoot', 'WINDIR', 'PATH', 'TEMP', 'TMP', 'EXPECTED_SHA', 'NATIVE_RUNNER', 'GITHUB_ACTIONS', 'GITHUB_REF')
+          env = {k: os.environ[k] for k in keep if k in os.environ}
+          env.update(DPT_NATIVE_SQLITE_SAFE_CONTAINMENT='1', DPT_SYNTHETIC_REPORT_RISK='disposable-synthetic-only')
+          os.environ.clear()
+          os.environ.update(env)
+          sys.path.insert(0, str(pathlib.Path('scripts').resolve()))
+          sys.argv = ['native_sqlite_terminal_checks.py', '--containment-only']
+          runpy.run_path('scripts/native_sqlite_terminal_checks.py', run_name='__main__')
+          PYTHON
+      - name: Discover and run only exact synthetic About tests
+        if: ${{ inputs.verify_about_only && success() && steps.strict_containment.outcome == 'success' }}
+        timeout-minutes: 30
+        env:
+          RUSTUP_TOOLCHAIN: '1.98.1'
+          NATIVE_RUNNER: ${{ matrix.runner }}
+        run: |
+          python -I -B - <<'PYTHON'
+          import json, os, platform, re, subprocess, sys, tempfile
+          from pathlib import Path
+          runners = {('Windows', 'AMD64'): 'windows-2022', ('Darwin', 'x86_64'): 'macos-15-intel', ('Darwin', 'arm64'): 'macos-15'}
+          key = (platform.system(), platform.machine())
+          if key not in runners or runners[key] != os.environ.get('NATIVE_RUNNER'): raise SystemExit('unsupported_platform')
+          windows = platform.system() == 'Windows'
+          expected = {
+              'gui::about_windows_database_tests::about_windows_unavailable_preserves_missing_and_refused_database',
+              'private_storage::platform::about_read_only_policy_tests::about_windows_dacl_assessor_refuses_untrusted_allow_without_repair',
+              'private_storage::windows_verification_tests::about_windows_foreign_root_owner_refusal_preserves_fixture',
+              'private_storage::windows_verification_tests::about_windows_missing_database_is_not_created',
+              'private_storage::windows_verification_tests::about_windows_reparse_database_ancestor_and_sidecars_are_refused',
+          } if windows else {
+              'database::about_read_only_tests::database_ancestor_and_sidecar_symlinks_are_refused',
+              'database::about_read_only_tests::live_wal_committed_metadata_remains_readable',
+              'database::about_read_only_tests::missing_database_is_not_created',
+              'database::about_read_only_tests::ordinary_access_is_read_only_and_preserves_database',
+              'gui::about_database_tests::about_displays_existing_schema_without_migration',
+              'gui::about_database_tests::about_preserves_unavailable_on_open_and_query_failure',
+          }
+          keep = ('SystemRoot', 'WINDIR', 'PATH', 'TEMP', 'TMP', 'HOME', 'USERPROFILE', 'CARGO_HOME', 'RUSTUP_HOME', 'SDKROOT', 'DEVELOPER_DIR', 'ProgramFiles', 'ProgramFiles(x86)', 'ProgramW6432', 'SystemDrive')
+          env = {k: os.environ[k] for k in keep if k in os.environ}
+          env.update(RUSTUP_TOOLCHAIN='1.98.1', CARGO_INCREMENTAL='0', CARGO_BUILD_JOBS='2', CARGO_PROFILE_TEST_DEBUG='0')
+          phases = ('entry', 'module_init', 'module_load', 'module_ready', 'pathname', 'vswhere', 'vsdevcmd', 'sdk', 'linker_metadata')
+          operations = ('join_path', 'full_path', 'get_item', 'attributes', 'parent')
+          status_order = [('vswhere','before'), ('vswhere','after'), ('json','before'), ('json','after'), ('instances','before'), ('instances','after')]
+          developer_success = [{'observation':'before'},{'observation':'completed','native_status':0,'stderr_present':False,'stderr_bounds_valid':True,'capture_valid':True},{'observation':'cleanup','leader_killed':False,'leader_reaped':True,'readers_stopped':True,'stop_reason':'none','stdout_bounds_valid':True,'total_bounds_valid':True,'cleanup_valid':True,'descendant_cleanup_confirmed':False},{'observation':'environment_validated'}]
+          def marker_snapshot(raw):
+              observed, count, last, pending, statuses = [], 0, None, None, []
+              bounded, sequence, malformed, unexpected = len(raw) <= 262144, True, False, False
+              failure = None
+              developer, developer_failure = [], None
+              for line in raw.decode('ascii', errors='replace').splitlines():
+                  if failure is not None or developer_failure is not None: sequence = False
+                  if line == 'DPT_MSVC_DEV:before':
+                      if developer or observed != list(phases[:7]) or statuses != [{'stage':stage,'edge':edge,'code':1 if stage == 'instances' and edge == 'after' else 0} for stage,edge in status_order] or pending is not None:
+                          sequence = False
+                          continue
+                      developer.append({'observation':'before'})
+                      continue
+                  result = re.fullmatch(r'DPT_MSVC_DEV:result:(completed|interrupted):(none|-?(?:0|[1-9][0-9]{0,9})):(0|1):(0|1):(0|1)', line)
+                  if result:
+                      status = None if result[2] == 'none' else int(result[2])
+                      if status is not None and not -2147483648 <= status <= 2147483647: malformed = True
+                      if result[4] == '0' and result[3] != '1': malformed = True
+                      if len(developer) != 1 or observed != list(phases[:7]) or pending is not None:
+                          sequence = False
+                          continue
+                      developer.append({'observation':result[1], 'native_status':status, 'stderr_present':result[3] == '1', 'stderr_bounds_valid':result[4] == '1', 'capture_valid':result[5] == '1'})
+                      continue
+                  cleanup = re.fullmatch(r'DPT_MSVC_DEV:cleanup:(0|1):(0|1):(0|1):(none|stream_overflow|timeout|cancelled|capture_failed|invocation_failed):(0|1):(0|1):(0|1)', line)
+                  if cleanup:
+                      if len(developer) != 2 or observed != list(phases[:7]) or pending is not None:
+                          sequence = False
+                          continue
+                      result = developer[1]
+                      killed, reaped, readers = cleanup[1] == '1', cleanup[2] == '1', cleanup[3] == '1'
+                      if (result['native_status'] is not None and not reaped) or (result['observation'] == 'completed') != reaped: malformed = True
+                      if killed and cleanup[4] == 'none': malformed = True
+                      developer.append({'observation':'cleanup', 'leader_killed':killed, 'leader_reaped':reaped, 'readers_stopped':readers, 'stop_reason':cleanup[4], 'stdout_bounds_valid':cleanup[5] == '1', 'total_bounds_valid':cleanup[6] == '1', 'cleanup_valid':cleanup[7] == '1', 'descendant_cleanup_confirmed':False})
+                      continue
+                  if line == 'DPT_MSVC_DEV:environment:validated':
+                      if developer != developer_success[:3] or observed != list(phases[:7]) or pending is not None:
+                          sequence = False
+                          continue
+                      developer.append({'observation':'environment_validated'})
+                      continue
+                  refusal = re.fullmatch(r'DPT_MSVC_DEV_FAILURE:(invocation_failed|status_unconfirmed|native_nonzero|unexpected_stderr|environment_capture_failed|environment_malformed|environment_duplicate|architecture_mismatch|tool_path_refused|stream_overflow|query_timeout|cancelled|cleanup_failed|invalid_decoding)', line)
+                  if refusal:
+                      classification = refusal[1]
+                      if observed != list(phases[:7]) or not developer or len(developer) > 3: sequence = False
+                      if len(developer) not in (1,3) or (len(developer) == 1 and classification != 'tool_path_refused'): sequence = False
+                      if len(developer) == 3:
+                          result, cleanup = developer[1:]
+                          status, reason = result['native_status'], cleanup['stop_reason']
+                          good_cleanup = cleanup['cleanup_valid'] and cleanup['readers_stopped']
+                          capture_bounded = result['stderr_bounds_valid'] and cleanup['stdout_bounds_valid'] and cleanup['total_bounds_valid']
+                          if classification == 'cleanup_failed':
+                              if cleanup['cleanup_valid'] or result['capture_valid']: sequence = False
+                          elif not good_cleanup: sequence = False
+                          if good_cleanup and not cleanup['leader_reaped'] and (cleanup['leader_killed'] or status is not None or classification not in ('invocation_failed','query_timeout','cancelled')): sequence = False
+                          if classification in ('stream_overflow','query_timeout','cancelled'):
+                              if reason != {'stream_overflow':'stream_overflow','query_timeout':'timeout','cancelled':'cancelled'}[classification] or result['capture_valid']: sequence = False
+                              if classification == 'stream_overflow' and capture_bounded: sequence = False
+                          elif classification == 'invocation_failed':
+                              if reason not in ('none','invocation_failed') or result['capture_valid']: sequence = False
+                              if reason == 'none' and (result['observation'] != 'interrupted' or status is not None): sequence = False
+                          elif classification == 'environment_capture_failed':
+                              if reason not in ('none','capture_failed'): sequence = False
+                              if reason == 'none' and (status != 0 or result['stderr_present']): sequence = False
+                          elif classification != 'cleanup_failed':
+                              if reason != 'none' or not capture_bounded or not cleanup['leader_reaped']: sequence = False
+                              if classification == 'status_unconfirmed' and status is not None: sequence = False
+                              if classification == 'native_nonzero' and (status is None or status == 0): sequence = False
+                              if classification == 'unexpected_stderr' and (status != 0 or not result['stderr_present']): sequence = False
+                              if classification in ('environment_malformed','environment_duplicate','architecture_mismatch','tool_path_refused','invalid_decoding') and (status != 0 or result['stderr_present']): sequence = False
+                              if classification in ('status_unconfirmed','native_nonzero','unexpected_stderr','invalid_decoding') and result['capture_valid']: sequence = False
+                              if classification in ('environment_duplicate','architecture_mismatch','tool_path_refused') and not result['capture_valid']: sequence = False
+                      developer_failure = classification
+                      continue
+                  refusal = re.fullmatch(r'DPT_MSVC_FAILURE:(invocation_failed|status_unconfirmed|native_nonzero):(none|-?(?:0|[1-9][0-9]{0,9}))', line)
+                  if refusal:
+                      classification, token = refusal[1], refusal[2]
+                      value = None if token == 'none' else int(token)
+                      if classification == 'native_nonzero':
+                          if value is None or value == 0 or not -2147483648 <= value <= 2147483647: malformed = True
+                      elif classification == 'status_unconfirmed' and value is not None: malformed = True
+                      elif value is not None and not -2147483648 <= value <= 2147483647: malformed = True
+                      if observed != list(phases[:6]) or statuses != [{'stage':'vswhere','edge':'before','code':0}] or pending is not None or count == 0: sequence = False
+                      failure = {'class':classification,'vswhere_native_status':value}
+                      continue
+                  if line.startswith('DPT_MSVC_PHASE:'):
+                      phase = line.removeprefix('DPT_MSVC_PHASE:')
+                      if phase not in phases: malformed = True
+                      elif len(observed) >= len(phases) or phase != phases[len(observed)]: sequence = False
+                      else: observed.append(phase)
+                      continue
+                  status = re.fullmatch(r'DPT_MSVC_STATUS:(vswhere|json|instances):(before|after):(-?[0-9]{1,10})', line)
+                  if status:
+                      stage, edge, value = status[1], status[2], int(status[3])
+                      if not -2147483648 <= value <= 4294967295: malformed = True
+                      elif len(statuses) >= len(status_order) or (stage,edge) != status_order[len(statuses)]: sequence = False
+                      elif edge == 'before' and value != 0: malformed = True
+                      else: statuses.append({'stage':stage, 'edge':edge, 'code':value})
+                      continue
+                  match = re.fullmatch(r'DPT_MSVC_OP:(join_path|full_path|get_item|attributes|parent):(before|after):([0-9]{1,2})', line)
+                  if not match or int(match[3]) >= 32:
+                      if line.startswith(('DPT_MSVC_OP:', 'DPT_MSVC_STATUS:', 'DPT_MSVC_DEV:', 'DPT_MSVC_DEV_FAILURE:')): malformed = True
+                      else: unexpected = True
+                      continue
+                  operation, edge, depth = match[1], match[2], int(match[3])
+                  count += 1
+                  if count > 4096: bounded = False
+                  if edge == 'before':
+                      if pending is not None: sequence = False
+                      pending = (operation, depth)
+                  else:
+                      if pending != (operation, depth): sequence = False
+                      pending = None
+                  last = {'operation':operation, 'edge':edge, 'depth':depth}
+              return {'phases':observed, 'last_operation':last, 'operation_count':count, 'operation_pending':pending is not None, 'statuses':statuses, 'markers_valid':bounded and sequence and not malformed and not unexpected, 'bounds_valid':bounded, 'sequence_valid':sequence, 'malformed_markers':malformed, 'unexpected_output':unexpected, 'failure':failure, 'developer':developer, 'developer_failure':developer_failure}
+          def native_code(error):
+              code = getattr(error, 'winerror', None)
+              return code if isinstance(code, int) and not isinstance(code, bool) else None
+          def linker_snapshot_diagnostics(stdout, stderr, completed):
+              # Evidence only: never used by identity acceptance. Input snapshots
+              # are capped before decoding; no path, message or matched text escapes.
+              # The existing Microsoft substring predicate remains an unresolved
+              # identity-assurance limitation; these flags are not security proof.
+              # Completed/reaped leader evidence does not prove descendant silence.
+              record = dict(classification='unknown', canonical_banner=False,
+                  usage_heading=False, options_structure=False, usage_signal=False,
+                  error_signal=False, warning_signal=False, diagnostic_family='none',
+                  unknown_output=True, malformed_output=False, decoding_checked=False,
+                  decoding_valid=False, stdout_present=False, stderr_present=False,
+                  stdout_bounds_valid=False, stderr_bounds_valid=False,
+                  snapshot_incomplete=True, snapshot_read_valid=True, parser_valid=True)
+              try:
+                  if type(stdout) is not bytes or type(stderr) is not bytes or type(completed) is not bool: raise ValueError()
+                  record.update(stdout_present=bool(stdout),stderr_present=bool(stderr),stdout_bounds_valid=len(stdout) <= 65536,stderr_bounds_valid=len(stderr) <= 262144,snapshot_incomplete=not completed)
+                  if not record['stdout_bounds_valid'] or not record['stderr_bounds_valid']:
+                      record.update(classification='malformed',malformed_output=True,snapshot_incomplete=True)
+                      return record
+                  record['decoding_checked'] = True
+                  try: texts = (stdout.decode('utf-8',errors='strict'),stderr.decode('utf-8',errors='strict'))
+                  except UnicodeError:
+                      record.update(classification='malformed',malformed_output=True)
+                      return record
+                  record['decoding_valid'] = True
+                  record['snapshot_incomplete'] |= any(text and not text.endswith(('\n','\r')) for text in texts)
+                  record['malformed_output'] = any(re.search(r'[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]',text) for text in texts)
+                  banner = r'(?im)^[ \t]{0,128}Microsoft \(R\) Incremental Linker Version [0-9]{1,5}(?:\.[0-9]{1,5}){1,4}[ \t]*\r?$'
+                  heading = r'(?im)^[ \t]{0,128}usage:[ \t]+LINK(?:\.exe)?[ \t]+\[options\][ \t]+\[files\](?:[ \t]+\[@commandfile\])?[ \t]*\r?$'
+                  record['canonical_banner'] = any(re.search(banner,text) is not None for text in texts)
+                  record['usage_heading'] = any(re.search(heading,text) is not None for text in texts)
+                  options = tuple(any(re.search(r'(?im)^[ \t]{0,128}/' + option + r'(?:[: \t]|\r?$)',text) is not None for text in texts) for option in ('OUT','MACHINE','NOLOGO'))
+                  record['options_structure'] = sum(options) >= 2
+                  record['usage_signal'] = record['canonical_banner'] and record['usage_heading'] and record['options_structure']
+                  # Usage prose mentioning errors/warnings is not a diagnostic.
+                  error = r'(?im)(?:\b(?:fatal[ \t]+)?error[ \t]+(?:LNK|C|CVT|U)[0-9]{4}\b|^[ \t]{0,128}LINK[ \t]*:[ \t]*(?:fatal[ \t]+)?error\b|^[^\r\n]{0,256}\bMicrosoft\b[^\r\n]{0,128}\berror\b)'
+                  warning = r'(?im)(?:\bwarning[ \t]+(?:LNK|C|CVT|U)[0-9]{4}\b|^[ \t]{0,128}LINK[ \t]*:[ \t]*warning\b|^[^\r\n]{0,256}\bMicrosoft\b[^\r\n]{0,128}\bwarning\b)'
+                  record['error_signal'] = any(re.search(error,text) is not None for text in texts)
+                  record['warning_signal'] = any(re.search(warning,text) is not None for text in texts)
+                  families = tuple(name for name,pattern in (
+                      ('link',r'(?i)\b(?:fatal[ \t]+error|error|warning)[ \t]+LNK[0-9]{4}\b'),
+                      ('msvc_other',r'(?i)\b(?:fatal[ \t]+error|error|warning)[ \t]+(?:C|CVT|U)[0-9]{4}\b'),
+                  ) if any(re.search(pattern,text) is not None for text in texts))
+                  diagnostic = record['error_signal'] or record['warning_signal']
+                  record['diagnostic_family'] = 'multiple' if len(families) > 1 else families[0] if families else 'microsoft_text' if diagnostic and any('Microsoft' in text for text in texts) else 'unknown' if diagnostic else 'none'
+                  record['unknown_output'] = (not record['usage_signal'] and not families) or record['malformed_output'] or record['snapshot_incomplete']
+                  record['classification'] = 'malformed' if record['malformed_output'] else 'unknown' if record['snapshot_incomplete'] else 'usage_and_diagnostic' if record['usage_signal'] and diagnostic else 'usage' if record['usage_signal'] else 'diagnostic' if families else 'unknown'
+              except Exception:
+                  # Parser faults are evidence failures, never acceptance changes.
+                  record.update(classification='parser_failed',parser_valid=False,unknown_output=True,malformed_output=True)
+              return record
+          def tool_query(args, env, timeout, discovery=False, query='setup_query'):
+              if query not in ('setup_query','absolute_linker_help','rust_host'): raise SystemExit('msvc_query_identifier_refused')
+              # Read only a bounded snapshot of regular-file output, including on
+              # failure. Never publish raw tool output or exception text.
+              with tempfile.TemporaryFile() as out, tempfile.TemporaryFile() as err:
+                  def evidence(classification, error=None, killed=False, reaped=False, exit_code=None):
+                      err.seek(0)
+                      raw = err.read(262145)
+                      snapshot = marker_snapshot(raw) if discovery else {}
+                      if discovery and not snapshot['markers_valid']:
+                          snapshot['failure'] = None
+                          snapshot['developer_failure'] = None
+                          for observation in snapshot['developer']:
+                              if 'native_status' in observation: observation['native_status'] = None
+                      record = {'class':classification, 'native_code':native_code(error), 'exit_code':exit_code, 'status_confirmed':isinstance(exit_code, int) and not isinstance(exit_code, bool), 'query':'msvc_discovery' if discovery else query, 'timed_out':classification in ('msvc_query_timeout','msvc_leader_kill_failed','msvc_leader_reap_timeout','msvc_leader_reap_failed'), 'deadline_seconds':timeout, 'leader_killed':killed, 'leader_reaped':reaped, 'descendant_cleanup_confirmed':False}
+                      record.update(snapshot)
+                      print(json.dumps(record, sort_keys=True))
+                      if query == 'absolute_linker_help' and not discovery:
+                          try:
+                              out.seek(0)
+                              diagnostic = linker_snapshot_diagnostics(out.read(65537),raw,classification == 'msvc_query_completed' and reaped)
+                          except Exception:
+                              diagnostic = linker_snapshot_diagnostics(b'',b'',False)
+                              diagnostic.update(classification='parser_failed',snapshot_read_valid=False,parser_valid=False,unknown_output=True,malformed_output=True)
+                          print(json.dumps({'class':'msvc_linker_snapshot','query':'absolute_linker_help'} | diagnostic, sort_keys=True))
+                  try:
+                      process = subprocess.Popen(args, env=env, stdout=out, stderr=err)
+                  except OSError as error:
+                      evidence('msvc_launch_failed', error)
+                      raise SystemExit('msvc_launch_failed') from None
+                  try:
+                      code = process.wait(timeout=timeout)
+                  except subprocess.TimeoutExpired:
+                      try: process.kill()
+                      except OSError as error:
+                          evidence('msvc_leader_kill_failed', error)
+                          raise SystemExit('msvc_leader_kill_failed') from None
+                      try: reaped_code = process.wait(timeout=5)
+                      except subprocess.TimeoutExpired:
+                          evidence('msvc_leader_reap_timeout', killed=True)
+                          raise SystemExit('msvc_leader_reap_timeout') from None
+                      except OSError as error:
+                          evidence('msvc_leader_reap_failed', error, killed=True)
+                          raise SystemExit('msvc_leader_reap_failed') from None
+                      confirmed = isinstance(reaped_code, int) and not isinstance(reaped_code, bool) and -2147483648 <= reaped_code <= 4294967295
+                      evidence('msvc_query_timeout', killed=True, reaped=True, exit_code=reaped_code if confirmed else None)
+                      raise SystemExit('msvc_query_timeout') from None
+                  except OSError as error:
+                      # Wait failure leaves leader state uncertain; fail closed.
+                      evidence('msvc_wait_failed', error)
+                      raise SystemExit('msvc_wait_failed') from None
+                  if not isinstance(code, int) or isinstance(code, bool) or not -2147483648 <= code <= 4294967295:
+                      evidence('msvc_status_unconfirmed', reaped=True)
+                      raise SystemExit('msvc_status_unconfirmed')
+                  evidence('msvc_discovery_refused' if discovery and code != 0 else 'msvc_query_completed', reaped=True, exit_code=code)
+                  out.seek(0)
+                  err.seek(0)
+                  stdout, stderr = out.read(65537), err.read(262145)
+                  if len(stdout) > 65536 or len(stderr) > 262144: raise SystemExit('msvc_output_limit')
+                  if discovery:
+                      snapshot = marker_snapshot(stderr)
+                      if snapshot['developer_failure'] is not None:
+                          if code != 1 or stdout or not snapshot['markers_valid']: raise SystemExit('msvc_marker_output_refused')
+                          raise SystemExit('msvc_developer_' + snapshot['developer_failure'])
+                      if snapshot['failure'] is not None:
+                          if code != 1 or stdout or not snapshot['markers_valid']: raise SystemExit('msvc_marker_output_refused')
+                          print(json.dumps(snapshot['failure'], sort_keys=True))
+                          raise SystemExit(snapshot['failure']['class'])
+                      if code != 0: raise SystemExit('msvc_discovery_refused')
+                      expected_statuses = [{'stage':stage,'edge':edge,'code':1 if stage == 'instances' and edge == 'after' else 0} for stage,edge in status_order]
+                      if not snapshot['markers_valid'] or snapshot['phases'] != list(phases) or snapshot['operation_pending'] or snapshot['operation_count'] == 0 or snapshot['statuses'] != expected_statuses or snapshot['developer'] != developer_success: raise SystemExit('msvc_marker_output_refused')
+                  return subprocess.CompletedProcess(args, code, stdout.decode('utf-8', errors='replace'), stderr.decode('utf-8', errors='replace'))
+          def discovery_transport(powershell, script, discovery_env):
+              try:
+                  # The fixed inline helper exceeds Windows' command-line limit.
+                  # Use a private local script file; do not override execution policy.
+                  # Windows 0700 temporary-directory ACL support starts at 3.12.4.
+                  if os.name == 'nt' and sys.version_info < (3,12,4): raise SystemExit('msvc_script_privacy_unconfirmed')
+                  with tempfile.TemporaryDirectory(prefix='dpt-msvc-script-') as directory:
+                      script_path = os.path.join(directory, 'discovery.ps1')
+                      with open(script_path, 'x', encoding='utf-8-sig', newline='\n') as source:
+                          source.write(script)
+                      candidate = os.path.abspath(script_path)
+                      while True:
+                          metadata = os.lstat(candidate)
+                          attributes = getattr(metadata, 'st_file_attributes', None)
+                          if os.name == 'nt' and (not isinstance(attributes, int) or isinstance(attributes, bool) or attributes & 0x400): raise SystemExit('msvc_script_path_refused')
+                          if os.path.islink(candidate): raise SystemExit('msvc_script_path_refused')
+                          parent = os.path.dirname(candidate)
+                          if parent == candidate: break
+                          candidate = parent
+                      return tool_query([powershell, '-NoProfile', '-NonInteractive', '-File', script_path], discovery_env, 30, discovery=True)
+              except OSError as error:
+                  print(json.dumps({'class':'msvc_discovery_os_error','native_code':native_code(error),'deadline_seconds':30,'leader_killed':False,'leader_reaped':False,'descendant_cleanup_confirmed':False}, sort_keys=True))
+                  raise SystemExit('msvc_discovery_os_error') from None
+          def windows_toolchain(base):
+              # Installed runner tools only. Capture configuration internally;
+              # never print developer-environment values or arbitrary PATH entries.
+              script = r'''
+          $ErrorActionPreference = 'Stop'
+          $PSModuleAutoLoadingPreference = 'None'
+          # Never publish PowerShell exception formatting on discovery refusal.
+          trap { exit 1 }
+          $discoveryClock = [Diagnostics.Stopwatch]::StartNew()
+          [Console]::Error.WriteLine('DPT_MSVC_PHASE:entry')
+          function Require-LocalAbsolute($path) {
+            if (!$path -or $path -notmatch '^[A-Za-z]:\\' -or $path.Substring(2) -match '[":%!?&|<>\r\n]' -or $path -match '(?:^|\\)(?:CON|PRN|AUX|NUL|COM[1-9¹²³]|LPT[1-9¹²³])(?:\.[^\\]*)?(?:\\|$)') { throw 'nonlocal_or_unsafe_path' }
+          }
+          function Trace-Operation($operation, $edge, [int]$depth) {
+            if ($operation -notin @('join_path','full_path','get_item','attributes','parent') -or $edge -notin @('before','after') -or $depth -lt 0 -or $depth -ge 32) { throw 'invalid_operation_record' }
+            [Console]::Error.WriteLine(('DPT_MSVC_OP:{0}:{1}:{2}' -f $operation,$edge,$depth))
+          }
+          function Trace-Status($stage, $edge, [long]$code) {
+            if ($stage -notin @('vswhere','json','instances') -or $edge -notin @('before','after') -or $code -lt -2147483648 -or $code -gt 4294967295) { throw 'invalid_status_record' }
+            [Console]::Error.WriteLine(('DPT_MSVC_STATUS:{0}:{1}:{2}' -f $stage,$edge,$code))
+          }
+          function Join-LocalPath($base, $child) {
+            Require-LocalAbsolute $base
+            if ([IO.Path]::IsPathRooted($child) -or $child -match '[":%!?&|<>\r\n]') { throw 'unsafe_child_path' }
+            Trace-Operation 'join_path' 'before' 0
+            $joined = [IO.Path]::Combine($base, $child)
+            Trace-Operation 'join_path' 'after' 0
+            Require-LocalAbsolute $joined
+            return $joined
+          }
+          function Require-PlainPath($path) {
+            Require-LocalAbsolute $path
+            Trace-Operation 'full_path' 'before' 0
+            $full = [IO.Path]::GetFullPath($path)
+            Trace-Operation 'full_path' 'after' 0
+            Require-LocalAbsolute $full
+            $root = $full.Substring(0,3)
+            $current = if ($full.Length -gt 3) { $full.TrimEnd('\') } else { $full }
+            $seen = @{}
+            for ($depth = 0; $depth -lt 32; $depth++) {
+              if ($seen.ContainsKey($current)) { throw 'path_cycle' }
+              $seen[$current] = $true
+              Trace-Operation 'attributes' 'before' $depth
+              $attributes = [IO.File]::GetAttributes($current)
+              Trace-Operation 'attributes' 'after' $depth
+              if ($null -eq $attributes -or ($attributes -band [IO.FileAttributes]::ReparsePoint)) { throw 'reparse_or_unconfirmed_path' }
+              if (($depth -gt 0 -or $current -eq $root) -and !($attributes -band [IO.FileAttributes]::Directory)) { throw 'non_directory_ancestor' }
+              if ($current -eq $root) { return $full }
+              Trace-Operation 'parent' 'before' $depth
+              $parent = [IO.Path]::GetDirectoryName($current)
+              Trace-Operation 'parent' 'after' $depth
+              Require-LocalAbsolute $parent
+              if ($parent.Length -ge $current.Length -or !$current.StartsWith(($parent.TrimEnd('\') + '\'), [StringComparison]::OrdinalIgnoreCase)) { throw 'path_nonprogress' }
+              $current = $parent
+            }
+            throw 'path_depth_exceeded'
+          }
+          function Require-PlainFile($path) {
+            $full = Require-PlainPath $path
+            Trace-Operation 'attributes' 'before' 0
+            $attributes = [IO.File]::GetAttributes($full)
+            Trace-Operation 'attributes' 'after' 0
+            if ($attributes -band ([IO.FileAttributes]::Directory -bor [IO.FileAttributes]::ReparsePoint)) { throw 'non_plain_file' }
+            return $full
+          }
+          [Console]::Error.WriteLine('DPT_MSVC_PHASE:module_init')
+          $expectedHome = [IO.Path]::Combine($env:SystemRoot, 'System32\WindowsPowerShell\v1.0')
+          if ((Require-PlainPath $PSHOME).TrimEnd('\') -ne (Require-PlainPath $expectedHome).TrimEnd('\')) { throw 'unexpected_powershell_home' }
+          $manifest = Require-PlainFile (Join-LocalPath $PSHOME 'Modules\Microsoft.PowerShell.Utility\Microsoft.PowerShell.Utility.psd1')
+          [Console]::Error.WriteLine('DPT_MSVC_PHASE:module_load')
+          $modules = @(Microsoft.PowerShell.Core\Import-Module -Name $manifest -PassThru -ErrorAction Stop)
+          if ($modules.Count -ne 1) { throw 'ambiguous_utility_module' }
+          $module = $modules[0]
+          if ($module.Name -ne 'Microsoft.PowerShell.Utility' -or $module.Path -ne $manifest -or $module.ModuleType -ne 'Manifest' -or $module.Version -ne [version]'3.1.0.0') { throw 'unexpected_utility_module' }
+          $fromJson = $module.ExportedCmdlets['ConvertFrom-Json']
+          $toJson = $module.ExportedCmdlets['ConvertTo-Json']
+          $addType = $module.ExportedCmdlets['Add-Type']
+          $engineIdentity = [System.Management.Automation.PSObject].Assembly.GetName()
+          foreach ($command in @($fromJson,$toJson,$addType)) {
+            if ($null -eq $command -or $command.CommandType -ne 'Cmdlet') { throw 'missing_json_cmdlet' }
+            $assembly = $command.ImplementingType.Assembly
+            $identity = $assembly.GetName()
+            if ($identity.Name -ne 'Microsoft.PowerShell.Commands.Utility' -or $identity.Version -ne $engineIdentity.Version -or [BitConverter]::ToString($identity.GetPublicKeyToken()) -ne [BitConverter]::ToString($engineIdentity.GetPublicKeyToken())) { throw 'unexpected_json_assembly' }
+            $location = Require-PlainFile $assembly.Location
+            $gacRoot = Join-LocalPath $env:SystemRoot 'Microsoft.NET\assembly\GAC_MSIL\Microsoft.PowerShell.Commands.Utility\'
+            if (!$location.StartsWith(($PSHOME.TrimEnd('\') + '\'), [StringComparison]::OrdinalIgnoreCase) -and !$location.StartsWith($gacRoot, [StringComparison]::OrdinalIgnoreCase)) { throw 'unexpected_json_assembly_path' }
+          }
+          if ($fromJson.Name -ne 'ConvertFrom-Json' -or $toJson.Name -ne 'ConvertTo-Json' -or $addType.Name -ne 'Add-Type') { throw 'unexpected_json_cmdlet' }
+          [Console]::Error.WriteLine('DPT_MSVC_PHASE:module_ready')
+          $pf = ${env:ProgramFiles(x86)}
+          if (!$pf) { throw 'missing_discovery_root' }
+          [Console]::Error.WriteLine('DPT_MSVC_PHASE:pathname')
+          $vswhere = Require-PlainFile (Join-LocalPath $pf 'Microsoft Visual Studio\Installer\vswhere.exe')
+          [Console]::Error.WriteLine('DPT_MSVC_PHASE:vswhere')
+          Trace-Status 'vswhere' 'before' 0
+          function Query-Vswhere($invoke) {
+            # Native commands update the global variable even inside this function.
+            # Null is an unconfirmed status, never a synthetic native exit sentinel.
+            $global:LASTEXITCODE = $null
+            try {
+              $raw = & $invoke 2>$null
+              $status = $global:LASTEXITCODE
+            } catch {
+              $status = $global:LASTEXITCODE
+              if ($status -isnot [int]) { $status = $null }
+              return @{classification='invocation_failed'; status=$status; raw=$null}
+            }
+            if ($status -isnot [int]) { return @{classification='status_unconfirmed'; status=$null; raw=$null} }
+            if ($status -ne 0) { return @{classification='native_nonzero'; status=$status; raw=$null} }
+            return @{classification=$null; status=0; raw=$raw}
+          }
+          # In-memory scriptblocks only: no executable, fixture or environment lookup.
+          # Exercise nested scope and stale global status before real discovery.
+          $global:LASTEXITCODE = 77
+          $mock = Query-Vswhere { throw 'synthetic_private_exception' }
+          if ($mock.classification -ne 'invocation_failed' -or $null -ne $mock.status) { exit 1 }
+          $mock = Query-Vswhere { $global:LASTEXITCODE = 23; throw 'synthetic_private_exception' }
+          if ($mock.classification -ne 'invocation_failed' -or $mock.status -ne 23 -or $null -ne $mock.raw) { exit 1 }
+          $global:LASTEXITCODE = 77
+          $mock = Query-Vswhere { $LASTEXITCODE = 0; 'synthetic' }
+          if ($mock.classification -ne 'status_unconfirmed' -or $null -ne $mock.status) { exit 1 }
+          $mock = Query-Vswhere { $global:LASTEXITCODE = '0'; 'synthetic' }
+          if ($mock.classification -ne 'status_unconfirmed' -or $null -ne $mock.status) { exit 1 }
+          foreach ($code in @(-2147483648,1,2147483647)) {
+            $mock = Query-Vswhere { $global:LASTEXITCODE = $code; 'synthetic' }
+            if ($mock.classification -ne 'native_nonzero' -or $mock.status -ne $code -or $null -ne $mock.raw) { exit 1 }
+          }
+          $mock = Query-Vswhere { $global:LASTEXITCODE = 0; 'synthetic' }
+          if ($null -ne $mock.classification -or $mock.status -ne 0 -or $mock.raw -ne 'synthetic') { exit 1 }
+          $env:PATH = Require-PlainPath (Join-LocalPath $env:SystemRoot 'System32')
+          $env:PATHEXT = '.COM;.EXE;.BAT;.CMD'
+          $query = Query-Vswhere { & $vswhere -products '*' -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -format json }
+          if ($null -ne $query.classification) {
+            $token = if ($null -eq $query.status) { 'none' } else { $query.status.ToString([Globalization.CultureInfo]::InvariantCulture) }
+            [Console]::Error.WriteLine(('DPT_MSVC_FAILURE:{0}:{1}' -f $query.classification,$token))
+            exit 1
+          }
+          Trace-Status 'vswhere' 'after' 0
+          $raw = $query.raw
+          Trace-Status 'json' 'before' 0
+          try { $instances = & $fromJson -InputObject ($raw -join "`n") }
+          catch { Trace-Status 'json' 'after' 1; throw 'vswhere_json_failed' }
+          Trace-Status 'json' 'after' 0
+          Trace-Status 'instances' 'before' 0
+          $instanceCount = if ($null -eq $instances) { 0 } else { @($instances).Count }
+          Trace-Status 'instances' 'after' $instanceCount
+          if ($instanceCount -ne 1) { throw 'ambiguous_or_missing_toolchain' }
+          $root = Require-PlainPath $instances[0].installationPath
+          $allowedRoots = @()
+          foreach ($candidateRoot in @($env:ProgramFiles, ${env:ProgramFiles(x86)}, $env:ProgramW6432)) { if ($candidateRoot) { $allowedRoots += $candidateRoot } }
+          $installationAllowed = $false
+          foreach ($candidateRoot in $allowedRoots) { if ($root.StartsWith((Join-LocalPath $candidateRoot 'Microsoft Visual Studio\'), [StringComparison]::OrdinalIgnoreCase)) { $installationAllowed = $true } }
+          if (!$installationAllowed) { throw 'untrusted_installation' }
+          $dev = Require-PlainFile (Join-LocalPath $root 'Common7\Tools\VsDevCmd.bat')
+          [Console]::Error.WriteLine('DPT_MSVC_PHASE:vsdevcmd')
+          function Refuse-Developer($classification) {
+            if ($classification -notin @('invocation_failed','status_unconfirmed','native_nonzero','unexpected_stderr','environment_capture_failed','environment_malformed','environment_duplicate','architecture_mismatch','tool_path_refused','stream_overflow','query_timeout','cancelled','cleanup_failed','invalid_decoding')) { exit 1 }
+            [Console]::Error.WriteLine(('DPT_MSVC_DEV_FAILURE:{0}' -f $classification))
+            exit 1
+          }
+          # Trusted inline helper; the Utility cmdlet/assembly was validated above.
+          $boundedSource = @'
+          using System;
+          using System.Collections.Generic;
+          using System.Diagnostics;
+          using System.IO;
+          using System.Text;
+          using System.Threading;
+
+          public static class DptBoundedDeveloper {
+              public const int Chunk = 4096, StreamLimit = 65536, TotalLimit = 98304;
+              public interface IChild {
+                  Stream Out { get; }
+                  Stream Err { get; }
+                  bool Wait(int milliseconds);
+                  void Kill();
+                  int Code { get; }
+                  void Close();
+              }
+              public sealed class Result {
+                  public string Classification, StopReason = "none";
+                  public int? NativeStatus;
+                  public bool Completed, StderrPresent, StderrBounds = true, StdoutBounds = true;
+                  public bool TotalBounds = true, CaptureValid = true, LeaderKilled, LeaderReaped, ReadersStopped = true, CleanupValid = true;
+                  public string[] Lines;
+                  internal int OutCount, ErrCount;
+                  internal bool Decoded;
+              }
+              private sealed class LaunchFailure : Exception {
+                  internal readonly Result Evidence;
+                  internal LaunchFailure(Result evidence) { Evidence = evidence; }
+              }
+              private sealed class State {
+                  internal readonly object Gate = new object();
+                  internal readonly byte[] OutBytes = new byte[StreamLimit], ErrBytes = new byte[StreamLimit];
+                  internal int OutCount, ErrCount;
+                  internal bool OutEof, ErrEof, StderrPresent, OutBounds = true, ErrBounds = true, TotalBounds = true;
+                  internal string StopReason = "none";
+              }
+              private static void Stop(State state, string reason) {
+                  lock (state.Gate) { if (state.StopReason == "none") state.StopReason = reason; }
+              }
+              private static void Drain(Stream stream, State state, bool stderr) {
+                  // The producer can provide an arbitrarily long line: every read still
+                  // targets this single fixed buffer. No line or ErrorRecord is created.
+                  byte[] chunk = new byte[Chunk];
+                  try {
+                      while (true) {
+                          lock (state.Gate) { if (state.StopReason != "none") return; }
+                          int read = stream.Read(chunk, 0, Chunk);
+                          if (read < 0 || read > Chunk) { Stop(state, "capture_failed"); return; }
+                          lock (state.Gate) {
+                              if (read == 0) { if (stderr) state.ErrEof = true; else state.OutEof = true; return; }
+                              if (stderr) state.StderrPresent = true;
+                              if (state.StopReason != "none") return;
+                              int used = stderr ? state.ErrCount : state.OutCount;
+                              bool streamOverflow = read > StreamLimit - used;
+                              bool totalOverflow = read > TotalLimit - state.OutCount - state.ErrCount;
+                              if (streamOverflow || totalOverflow) {
+                                  if (streamOverflow) { if (stderr) state.ErrBounds = false; else state.OutBounds = false; }
+                                  if (totalOverflow) state.TotalBounds = false;
+                                  state.StopReason = "stream_overflow";
+                                  return;
+                              }
+                              Buffer.BlockCopy(chunk, 0, stderr ? state.ErrBytes : state.OutBytes, used, read);
+                              if (stderr) state.ErrCount += read; else state.OutCount += read;
+                          }
+                      }
+                  } catch { Stop(state, "capture_failed"); }
+              }
+              public static Result Capture(Func<IChild> launch, int budgetMilliseconds, Encoding encoding, CancellationToken cancellation) {
+                  Result result = new Result();
+                  State state = new State();
+                  Stopwatch clock = Stopwatch.StartNew();
+                  IChild child;
+                  if (cancellation.IsCancellationRequested || budgetMilliseconds <= 0) {
+                      result.Classification = cancellation.IsCancellationRequested ? "cancelled" : "query_timeout";
+                      result.StopReason = cancellation.IsCancellationRequested ? "cancelled" : "timeout";
+                      result.CaptureValid = false;
+                      return result;
+                  }
+                  try { child = launch(); if (child == null) throw new InvalidOperationException(); }
+                  catch (LaunchFailure failure) { return failure.Evidence; }
+                  catch { result.Classification = "invocation_failed"; result.CaptureValid = false; return result; }
+                  Thread stdout = null, stderr = null;
+                  bool cleanup = true;
+                  try {
+                      Stream outStream = child.Out, errStream = child.Err;
+                      stdout = new Thread(delegate() { Drain(outStream, state, false); });
+                      stderr = new Thread(delegate() { Drain(errStream, state, true); });
+                      stdout.IsBackground = stderr.IsBackground = true;
+                      stdout.Start(); stderr.Start();
+                      while (true) {
+                          if (cancellation.IsCancellationRequested) { Stop(state, "cancelled"); break; }
+                          if (clock.ElapsedMilliseconds >= budgetMilliseconds) { Stop(state, "timeout"); break; }
+                          lock (state.Gate) {
+                              if (state.StopReason != "none") break;
+                              // Leader exit alone is insufficient: descendants may still
+                              // hold a pipe open. EOF on both streams is required.
+                              if (state.OutEof && state.ErrEof && child.Wait(0)) break;
+                          }
+                          Thread.Sleep(2);
+                      }
+                  } catch { Stop(state, "capture_failed"); }
+                  finally {
+                      try {
+                          if (!child.Wait(0)) {
+                              child.Kill();
+                              result.LeaderKilled = true;
+                          }
+                      } catch { cleanup = false; }
+                      try { result.LeaderReaped = child.Wait(2000); }
+                      catch { cleanup = false; }
+                      result.Completed = result.LeaderReaped;
+                      if (result.LeaderReaped) {
+                          try { result.NativeStatus = child.Code; } catch { result.NativeStatus = null; }
+                      }
+                      // A stream close can itself stall. Bound both close operations and
+                      // both reader joins; lingering helpers are reported, not certified.
+                      int closeFailed = 0;
+                      Thread closeOut = new Thread(delegate() { try { child.Out.Close(); } catch { Interlocked.Exchange(ref closeFailed, 1); } });
+                      Thread closeErr = new Thread(delegate() { try { child.Err.Close(); } catch { Interlocked.Exchange(ref closeFailed, 1); } });
+                      closeOut.IsBackground = closeErr.IsBackground = true;
+                      try {
+                          closeOut.Start(); closeErr.Start();
+                          if (!closeOut.Join(500) || !closeErr.Join(500)) result.ReadersStopped = false;
+                      } catch { result.ReadersStopped = false; }
+                      if (closeFailed != 0) cleanup = false;
+                      try { if (stdout != null && stdout.IsAlive && !stdout.Join(500)) result.ReadersStopped = false; }
+                      catch { result.ReadersStopped = false; }
+                      try { if (stderr != null && stderr.IsAlive && !stderr.Join(500)) result.ReadersStopped = false; }
+                      catch { result.ReadersStopped = false; }
+                      try { child.Close(); } catch { cleanup = false; }
+                  }
+                  lock (state.Gate) {
+                      result.StopReason = state.StopReason;
+                      result.StderrPresent = state.StderrPresent;
+                      result.StderrBounds = state.ErrBounds;
+                      result.StdoutBounds = state.OutBounds;
+                      result.TotalBounds = state.TotalBounds;
+                      result.OutCount = state.OutCount; result.ErrCount = state.ErrCount;
+                  }
+                  result.CleanupValid = cleanup && result.LeaderReaped && result.ReadersStopped;
+                  if (!result.CleanupValid) result.Classification = "cleanup_failed";
+                  else if (result.StopReason == "stream_overflow") result.Classification = "stream_overflow";
+                  else if (result.StopReason == "timeout") result.Classification = "query_timeout";
+                  else if (result.StopReason == "cancelled") result.Classification = "cancelled";
+                  else if (result.StopReason != "none") result.Classification = "environment_capture_failed";
+                  else if (!result.NativeStatus.HasValue) result.Classification = "status_unconfirmed";
+                  else if (result.NativeStatus.Value != 0) result.Classification = "native_nonzero";
+                  else if (result.StderrPresent) result.Classification = "unexpected_stderr";
+                  if (result.Classification != null) { result.CaptureValid = false; return result; }
+                  try {
+                      // Decoding is reachable only after bounded capture and confirmed EOF.
+                      Encoding strict = Encoding.GetEncoding(encoding.CodePage, EncoderFallback.ExceptionFallback, DecoderFallback.ExceptionFallback);
+                      result.Decoded = true;
+                      string text = strict.GetString(state.OutBytes, 0, state.OutCount);
+                      if (text.Length == 0 || text[text.Length - 1] != '\n') { result.Classification = "environment_malformed"; }
+                      else {
+                          List<string> lines = new List<string>();
+                          int start = 0;
+                          for (int i = 0; i < text.Length; i++) {
+                              if (text[i] != '\n') continue;
+                              if (lines.Count == 4096) { result.Classification = "environment_capture_failed"; break; }
+                              int length = i - start;
+                              if (length > 0 && text[i - 1] == '\r') length--;
+                              lines.Add(text.Substring(start, length));
+                              start = i + 1;
+                          }
+                          if (result.Classification == null) result.Lines = lines.ToArray();
+                      }
+                  } catch { result.Classification = "invalid_decoding"; }
+                  result.CaptureValid = result.Classification == null;
+                  return result;
+              }
+              private sealed class InstalledChild : IChild {
+                  private readonly Process process;
+                  internal InstalledChild(string executable, string arguments) {
+                      process = new Process();
+                      process.StartInfo = new ProcessStartInfo(executable, arguments) {
+                          UseShellExecute = false, CreateNoWindow = true,
+                          RedirectStandardOutput = true, RedirectStandardError = true
+                      };
+                      try { if (!process.Start()) throw new InvalidOperationException(); }
+                      catch {
+                          // Start can fail after association. Attempt leader cleanup before
+                          // disposing the handle; absence of an associated process is not
+                          // treated as proof of cleanup. Never expose exception text.
+                          Result failure = new Result();
+                          failure.Classification = "invocation_failed";
+                          failure.StopReason = "invocation_failed";
+                          failure.CaptureValid = false;
+                          bool disposed = true;
+                          try {
+                              if (!process.WaitForExit(0)) { process.Kill(); failure.LeaderKilled = true; }
+                              failure.LeaderReaped = process.WaitForExit(2000);
+                              failure.Completed = failure.LeaderReaped;
+                              if (failure.LeaderReaped) { try { failure.NativeStatus = process.ExitCode; } catch { } }
+                          } catch { }
+                          try { process.Dispose(); } catch { disposed = false; }
+                          failure.CleanupValid = disposed && failure.LeaderReaped;
+                          if (!failure.CleanupValid) failure.Classification = "cleanup_failed";
+                          throw new LaunchFailure(failure);
+                      }
+                  }
+                  public Stream Out { get { return process.StandardOutput.BaseStream; } }
+                  public Stream Err { get { return process.StandardError.BaseStream; } }
+                  public bool Wait(int milliseconds) { return process.WaitForExit(milliseconds); }
+                  public void Kill() { process.Kill(); }
+                  public int Code { get { return process.ExitCode; } }
+                  public void Close() { process.Dispose(); }
+              }
+              public static Result RunInstalled(string executable, string arguments, int budgetMilliseconds, int codePage) {
+                  return Capture(delegate() { return new InstalledChild(executable, arguments); }, budgetMilliseconds,
+                      Encoding.GetEncoding(codePage), CancellationToken.None);
+              }
+              private sealed class FakeStream : Stream {
+                  private readonly byte[] data;
+                  private long remaining;
+                  private int position;
+                  private readonly bool blocking;
+                  private readonly ManualResetEvent closed = new ManualResetEvent(false);
+                  internal int MaxRead, Reads, CloseDelay;
+                  internal bool CloseFails, ReadFails;
+                  internal Action OnRead;
+                  internal FakeStream(byte[] bytes) { data = bytes; }
+                  internal FakeStream(long generatedBytes, bool block) { remaining = generatedBytes; blocking = block; }
+                  public override int Read(byte[] buffer, int offset, int count) {
+                      Check(buffer.Length == Chunk && offset == 0 && count == Chunk, "read_allocation_bound");
+                      MaxRead = Math.Max(MaxRead, count); Reads++;
+                      if (ReadFails) throw new IOException();
+                      if (OnRead != null) OnRead();
+                      if (data != null) {
+                          int size = Math.Min(count, data.Length - position);
+                          Buffer.BlockCopy(data, position, buffer, offset, size); position += size; return size;
+                      }
+                      if (remaining > 0) {
+                          int size = (int)Math.Min(count, remaining);
+                          for (int i = 0; i < size; i++) buffer[offset + i] = (byte)'x';
+                          remaining -= size;
+                          return size;
+                      }
+                      if (blocking) closed.WaitOne();
+                      return 0;
+                  }
+                  protected override void Dispose(bool disposing) { if (CloseDelay > 0) Thread.Sleep(CloseDelay); closed.Set(); if (CloseFails) throw new IOException(); }
+                  internal bool WaitClosed(int milliseconds) { return closed.WaitOne(milliseconds); }
+                  public override bool CanRead { get { return true; } }
+                  public override bool CanSeek { get { return false; } }
+                  public override bool CanWrite { get { return false; } }
+                  public override long Length { get { throw new NotSupportedException(); } }
+                  public override long Position { get { throw new NotSupportedException(); } set { throw new NotSupportedException(); } }
+                  public override void Flush() { }
+                  public override long Seek(long offset, SeekOrigin origin) { throw new NotSupportedException(); }
+                  public override void SetLength(long value) { throw new NotSupportedException(); }
+                  public override void Write(byte[] bytes, int offset, int count) { throw new NotSupportedException(); }
+              }
+              private sealed class FakeChild : IChild {
+                  internal readonly FakeStream Output, Error;
+                  internal bool Exited = true, ReapFails, KillFails, CodeFails;
+                  internal int Status, Kills, Waits;
+                  internal FakeChild(FakeStream output, FakeStream error) { Output = output; Error = error; }
+                  public Stream Out { get { return Output; } }
+                  public Stream Err { get { return Error; } }
+                  public bool Wait(int milliseconds) { Check(milliseconds == 0 || milliseconds == 2000, "reap_bound"); Waits++; return Exited && !ReapFails; }
+                  public void Kill() { Kills++; if (KillFails) throw new IOException(); Exited = true; }
+                  public int Code { get { if (CodeFails) throw new IOException(); return Status; } }
+                  public void Close() { }
+              }
+              private static void Check(bool condition, string name) { if (!condition) throw new InvalidOperationException("bounded_mock_" + name); }
+              private static Result MockCapture(FakeChild child, int budget, CancellationToken cancellation) {
+                  Result result = Capture(delegate() { return child; }, budget, new UTF8Encoding(false, true), cancellation);
+                  Check(child.Output.MaxRead <= Chunk && child.Error.MaxRead <= Chunk, "fixed_reads");
+                  Check(result.OutCount <= StreamLimit && result.ErrCount <= StreamLimit && result.OutCount + result.ErrCount <= TotalLimit, "retained_limits");
+                  if (result.Classification != null) Check(result.Lines == null, "refusal_records_unreachable");
+                  return result;
+              }
+              public static void SelfTest() {
+                  byte[] valid = Encoding.UTF8.GetBytes("SYNTHETIC=a=b\r\n");
+                  for (int i = 0; i < 5; i++) {
+                      FakeChild child = new FakeChild(new FakeStream(1L << 30, false), new FakeStream(new byte[0])); child.Exited = false;
+                      Result result = MockCapture(child, 1000, CancellationToken.None);
+                      Check(result.Classification == "stream_overflow" && !result.StdoutBounds && !result.Decoded, "newline_free_overflow");
+                      Check(result.LeaderKilled && result.LeaderReaped && result.ReadersStopped && child.Kills == 1, "overflow_reap");
+                  }
+                  FakeChild both = new FakeChild(new FakeStream(60000, false), new FakeStream(60000, false)); both.Exited = false;
+                  using (ManualResetEvent outStarted = new ManualResetEvent(false))
+                  using (ManualResetEvent errStarted = new ManualResetEvent(false)) {
+                      both.Output.OnRead = delegate() { if (both.Output.Reads == 1) { outStarted.Set(); Check(errStarted.WaitOne(500), "stderr_concurrent"); } };
+                      both.Error.OnRead = delegate() { if (both.Error.Reads == 1) { errStarted.Set(); Check(outStarted.WaitOne(500), "stdout_concurrent"); } };
+                      Result simultaneous = MockCapture(both, 1000, CancellationToken.None);
+                      Check(simultaneous.Classification == "stream_overflow" && !simultaneous.TotalBounds && simultaneous.StdoutBounds && simultaneous.StderrBounds && !simultaneous.Decoded, "simultaneous_total_limit");
+                  }
+                  FakeChild totalChild = new FakeChild(new FakeStream(60000, false), new FakeStream(60000, false)); totalChild.Exited = false;
+                  Result total = MockCapture(totalChild, 1000, CancellationToken.None);
+                  Check(total.Classification == "stream_overflow" && !total.TotalBounds && total.StdoutBounds && total.StderrBounds && !total.Decoded, "simultaneous_total_limit");
+                  FakeChild errOverflow = new FakeChild(new FakeStream(new byte[0]), new FakeStream(1L << 30, false)); errOverflow.Exited = false;
+                  Result errorLimit = MockCapture(errOverflow, 1000, CancellationToken.None);
+                  Check(errorLimit.Classification == "stream_overflow" && errorLimit.StderrPresent && !errorLimit.StderrBounds && !errorLimit.Decoded, "stderr_limit");
+                  foreach (int code in new int[] { 0, 7, int.MinValue, int.MaxValue }) {
+                      FakeChild child = new FakeChild(new FakeStream(valid), new FakeStream(Encoding.ASCII.GetBytes("private"))); child.Status = code;
+                      Result result = MockCapture(child, 1000, CancellationToken.None);
+                      Check(result.Classification == (code == 0 ? "unexpected_stderr" : "native_nonzero") && result.NativeStatus == code && result.StderrPresent && !result.Decoded, "stderr_status");
+                  }
+                  FakeChild early = new FakeChild(new FakeStream(valid), new FakeStream(new byte[0]));
+                  Result success = MockCapture(early, 1000, CancellationToken.None);
+                  Check(success.Classification == null && success.NativeStatus == 0 && success.Lines[0] == "SYNTHETIC=a=b" && !success.LeaderKilled && success.LeaderReaped, "early_exit_drained");
+                  byte[] boundary = new byte[Chunk + 3];
+                  for (int i = 0; i < boundary.Length; i++) boundary[i] = (byte)'x';
+                  boundary[Chunk - 1] = 195; boundary[Chunk] = 169; boundary[Chunk + 1] = 13; boundary[Chunk + 2] = 10;
+                  FakeChild split = new FakeChild(new FakeStream(boundary), new FakeStream(new byte[0]));
+                  Result splitResult = MockCapture(split, 1000, CancellationToken.None);
+                  Check(splitResult.Classification == null && splitResult.Lines[0][Chunk - 1] == (char)233, "chunk_boundary_decode");
+                  byte[] manyLines = new byte[4097];
+                  for (int i = 0; i < manyLines.Length; i++) manyLines[i] = 10;
+                  FakeChild recordLimit = new FakeChild(new FakeStream(manyLines), new FakeStream(new byte[0]));
+                  Check(MockCapture(recordLimit, 1000, CancellationToken.None).Classification == "environment_capture_failed", "bounded_record_count");
+                  FakeChild partial = new FakeChild(new FakeStream(Encoding.ASCII.GetBytes("SYNTHETIC=partial")), new FakeStream(new byte[0]));
+                  Check(MockCapture(partial, 1000, CancellationToken.None).Classification == "environment_malformed", "partial_record");
+                  FakeChild invalid = new FakeChild(new FakeStream(new byte[] { 255, 10 }), new FakeStream(new byte[0]));
+                  Check(MockCapture(invalid, 1000, CancellationToken.None).Classification == "invalid_decoding", "strict_decode");
+                  FakeChild blocked = new FakeChild(new FakeStream(0, true), new FakeStream(0, true)); blocked.Exited = false;
+                  Result timeout = MockCapture(blocked, 20, CancellationToken.None);
+                  Check(timeout.Classification == "query_timeout" && timeout.LeaderKilled && timeout.LeaderReaped && timeout.ReadersStopped, "timeout_reap");
+                  FakeChild heldPipe = new FakeChild(new FakeStream(0, true), new FakeStream(0, true));
+                  Result held = MockCapture(heldPipe, 20, CancellationToken.None);
+                  Check(held.Classification == "query_timeout" && !held.LeaderKilled && held.LeaderReaped, "leader_exit_not_pipe_cleanup");
+                  using (CancellationTokenSource cancellation = new CancellationTokenSource()) {
+                      FakeChild child = new FakeChild(new FakeStream(0, true), new FakeStream(0, true)); child.Exited = false;
+                      child.Output.OnRead = delegate() { cancellation.Cancel(); };
+                      Result result = MockCapture(child, 1000, cancellation.Token);
+                      Check(result.Classification == "cancelled" && result.LeaderKilled && result.LeaderReaped && result.ReadersStopped, "cancel_reap");
+                  }
+                  FakeChild failedKill = new FakeChild(new FakeStream(0, true), new FakeStream(0, true)); failedKill.Exited = false; failedKill.KillFails = true;
+                  Result kill = MockCapture(failedKill, 20, CancellationToken.None);
+                  Check(kill.Classification == "cleanup_failed" && !kill.LeaderReaped && !kill.NativeStatus.HasValue, "kill_failure");
+                  FakeChild failedReap = new FakeChild(new FakeStream(valid), new FakeStream(new byte[0])); failedReap.ReapFails = true;
+                  Check(MockCapture(failedReap, 20, CancellationToken.None).Classification == "cleanup_failed", "reap_failure");
+                  FakeChild failedClose = new FakeChild(new FakeStream(valid), new FakeStream(new byte[0])); failedClose.Output.CloseFails = true;
+                  Check(MockCapture(failedClose, 1000, CancellationToken.None).Classification == "cleanup_failed", "pipe_cleanup_failure");
+                  FakeChild stalledClose = new FakeChild(new FakeStream(valid), new FakeStream(new byte[0])); stalledClose.Output.CloseDelay = 700;
+                  Result closeTimeout = MockCapture(stalledClose, 1000, CancellationToken.None);
+                  Check(closeTimeout.Classification == "cleanup_failed" && !closeTimeout.ReadersStopped && closeTimeout.LeaderReaped, "bounded_close_wait");
+                  Check(stalledClose.Output.WaitClosed(1000), "mock_close_released");
+                  FakeChild unknown = new FakeChild(new FakeStream(valid), new FakeStream(new byte[0])); unknown.CodeFails = true;
+                  Check(MockCapture(unknown, 1000, CancellationToken.None).Classification == "status_unconfirmed", "status_unknown");
+                  FakeChild failedRead = new FakeChild(new FakeStream(0, false), new FakeStream(new byte[0])); failedRead.Output.ReadFails = true;
+                  Result readFailure = MockCapture(failedRead, 1000, CancellationToken.None);
+                  Check(readFailure.Classification == "environment_capture_failed" && !readFailure.Decoded, "stream_read_failure");
+                  using (CancellationTokenSource cancellation = new CancellationTokenSource()) {
+                      cancellation.Cancel();
+                      Result cancelled = Capture(delegate() { throw new InvalidOperationException(); }, 1000, Encoding.UTF8, cancellation.Token);
+                      Check(cancelled.Classification == "cancelled" && !cancelled.NativeStatus.HasValue, "cancellation_before_launch");
+                  }
+                  Result launch = Capture(delegate() { throw new IOException(); }, 1000, Encoding.UTF8, CancellationToken.None);
+                  Check(launch.Classification == "invocation_failed" && !launch.NativeStatus.HasValue && !launch.LeaderReaped, "invocation_exception");
+                  Result partialStartEvidence = new Result { Classification = "invocation_failed", StopReason = "invocation_failed", CaptureValid = false, NativeStatus = int.MinValue, Completed = true, LeaderReaped = true };
+                  Result partialStart = Capture(delegate() { throw new LaunchFailure(partialStartEvidence); }, 1000, Encoding.UTF8, CancellationToken.None);
+                  Check(partialStart.Classification == "invocation_failed" && partialStart.NativeStatus == int.MinValue && partialStart.LeaderReaped, "partial_start_evidence");
+                  Result expired = Capture(delegate() { throw new InvalidOperationException(); }, 0, Encoding.UTF8, CancellationToken.None);
+                  Check(expired.Classification == "query_timeout" && !expired.NativeStatus.HasValue, "budget_before_launch");
+              }
+          }
+          '@
+          & $addType -TypeDefinition $boundedSource -Language CSharp -ErrorAction Stop
+          [DptBoundedDeveloper]::SelfTest()
+          function Parse-Developer($lines) {
+            $values = @{}
+            foreach ($line in $lines) {
+              if ($line -isnot [string] -or $line -match '[\x00-\x1f\x7f]') { return @{classification='environment_malformed'; values=$null} }
+              $separator = $line.IndexOf('=')
+              if ($separator -le 0) { return @{classification='environment_malformed'; values=$null} }
+              $key = $line.Substring(0,$separator)
+              if ($key -notmatch '^[A-Za-z_][A-Za-z0-9_()]*$') { return @{classification='environment_malformed'; values=$null} }
+              $key = $key.ToUpperInvariant()
+              if ($values.ContainsKey($key)) { return @{classification='environment_duplicate'; values=$null} }
+              $values[$key] = $line.Substring($separator + 1)
+            }
+            foreach ($key in @('PATH','INCLUDE','LIB','LIBPATH','VCTOOLSINSTALLDIR','VSINSTALLDIR','WINDOWSSDKDIR')) {
+              if (!$values[$key]) { return @{classification='environment_capture_failed'; values=$null} }
+            }
+            if ($values['VSCMD_ARG_TGT_ARCH'] -ne 'x64' -or $values['VSCMD_ARG_HOST_ARCH'] -ne 'x64') { return @{classification='architecture_mismatch'; values=$null} }
+            return @{classification=$null; values=$values}
+          }
+          function Assess-DeveloperTools($values, $installation, $require) {
+            try {
+              $tools = & $require $values['VCTOOLSINSTALLDIR']
+              if (!$tools.StartsWith(($installation.TrimEnd('\') + '\VC\Tools\MSVC\'), [StringComparison]::OrdinalIgnoreCase)) { throw 'untrusted_tools' }
+              if ((& $require $values['VSINSTALLDIR']).TrimEnd('\') -ne $installation.TrimEnd('\')) { throw 'installation_mismatch' }
+              return @{classification=$null; tools=$tools}
+            } catch { return @{classification='tool_path_refused'; tools=$null} }
+          }
+          function Developer-MockRegressions {
+            # Environment/path mocks only. Chunked stream mocks run in C#.
+            $good = @('PATH=synthetic','INCLUDE=synthetic','LIB=synthetic','LIBPATH=synthetic','VCTOOLSINSTALLDIR=C:\Synthetic\VC\Tools\MSVC\1','VSINSTALLDIR=C:\Synthetic','WINDOWSSDKDIR=C:\SyntheticSDK','VSCMD_ARG_TGT_ARCH=x64','VSCMD_ARG_HOST_ARCH=x64','SYNTHETIC=a=b')
+            $parsed = Parse-Developer $good
+            if ($null -ne $parsed.classification -or $parsed.values['SYNTHETIC'] -ne 'a=b') { exit 1 }
+            foreach ($record in @('no_separator','=unsafe','bad key=value',"BAD=line`nvalue")) {
+              $parsed = Parse-Developer ($good + @($record))
+              if ($parsed.classification -ne 'environment_malformed' -or $null -ne $parsed.values) { exit 1 }
+            }
+            $parsed = Parse-Developer ($good + @('path=duplicate'))
+            if ($parsed.classification -ne 'environment_duplicate') { exit 1 }
+            $parsed = Parse-Developer @('PATH=synthetic')
+            if ($parsed.classification -ne 'environment_capture_failed') { exit 1 }
+            $parsed = Parse-Developer ($good -replace '^VSCMD_ARG_TGT_ARCH=x64$', 'VSCMD_ARG_TGT_ARCH=x86')
+            if ($parsed.classification -ne 'architecture_mismatch') { exit 1 }
+            $values = (Parse-Developer $good).values
+            $assessed = Assess-DeveloperTools $values 'C:\Synthetic' { throw 'synthetic_private_path_refusal' }
+            if ($assessed.classification -ne 'tool_path_refused') { exit 1 }
+            $assessed = Assess-DeveloperTools $values 'C:\Other' { param($path) $path }
+            if ($assessed.classification -ne 'tool_path_refused') { exit 1 }
+            $assessed = Assess-DeveloperTools $values 'C:\Synthetic' { param($path) $path }
+            if ($null -ne $assessed.classification -or $assessed.tools -ne $values['VCTOOLSINSTALLDIR']) { exit 1 }
+          }
+          Developer-MockRegressions
+          [Console]::Error.WriteLine('DPT_MSVC_DEV:before')
+          try { $null = Require-PlainFile (Join-LocalPath $env:SystemRoot 'System32\cmd.exe') }
+          catch { Refuse-Developer 'tool_path_refused' }
+          # Preserve the native command string, quoting, PATH and selection policy.
+          $global:LASTEXITCODE = $null
+          # Preserve the original quoted /c command; bypass native enumeration.
+          $arguments = "/d /s /c `"`"$dev`" -arch=x64 -host_arch=x64 >nul && set`""
+          # Leave four seconds for bounded leader/reader cleanup inside the outer
+          # thirty-second discovery deadline; setup and mocks consume this budget.
+          $remaining = [Math]::Max(0,25000 - [int]$discoveryClock.ElapsedMilliseconds)
+          $captured = [DptBoundedDeveloper]::RunInstalled("$env:SystemRoot\System32\cmd.exe",$arguments,$remaining,[Console]::OutputEncoding.CodePage)
+          if ($captured.LeaderReaped -and $null -ne $captured.NativeStatus) { $global:LASTEXITCODE = $captured.NativeStatus }
+          $query = @{completed=$captured.Completed; status=$global:LASTEXITCODE; stderrPresent=$captured.StderrPresent; stderrBounds=$captured.StderrBounds; captureValid=$captured.CaptureValid; classification=$captured.Classification; lines=$captured.Lines}
+          $observation = if ($query.completed) { 'completed' } else { 'interrupted' }
+          $token = if ($null -eq $query.status) { 'none' } else { $query.status.ToString([Globalization.CultureInfo]::InvariantCulture) }
+          [Console]::Error.WriteLine(('DPT_MSVC_DEV:result:{0}:{1}:{2}:{3}:{4}' -f $observation,$token,[int]$query.stderrPresent,[int]$query.stderrBounds,[int]$query.captureValid))
+          [Console]::Error.WriteLine(('DPT_MSVC_DEV:cleanup:{0}:{1}:{2}:{3}:{4}:{5}:{6}' -f [int]$captured.LeaderKilled,[int]$captured.LeaderReaped,[int]$captured.ReadersStopped,$captured.StopReason,[int]$captured.StdoutBounds,[int]$captured.TotalBounds,[int]$captured.CleanupValid))
+          if ($null -ne $query.classification) { Refuse-Developer $query.classification }
+          try { $parsed = Parse-Developer $query.lines }
+          catch { Refuse-Developer 'environment_capture_failed' }
+          if ($null -ne $parsed.classification) { Refuse-Developer $parsed.classification }
+          $values = $parsed.values
+          $assessed = Assess-DeveloperTools $values $root { param($path) Require-PlainPath $path }
+          if ($null -ne $assessed.classification) { Refuse-Developer $assessed.classification }
+          $tools = $assessed.tools
+          [Console]::Error.WriteLine('DPT_MSVC_DEV:environment:validated')
+          [Console]::Error.WriteLine('DPT_MSVC_PHASE:sdk')
+          $sdk = Require-PlainPath $values['WINDOWSSDKDIR']
+          $sdkAllowed = $false
+          foreach ($candidateRoot in $allowedRoots) { if ($sdk.StartsWith((Join-LocalPath $candidateRoot 'Windows Kits\'), [StringComparison]::OrdinalIgnoreCase)) { $sdkAllowed = $true } }
+          if (!$sdkAllowed) { throw 'untrusted_sdk' }
+          foreach ($key in @('VCINSTALLDIR','WINDOWSSDKBINPATH','WINDOWSSDKVERBINPATH','UNIVERSALCRTSDKDIR')) {
+            if ($values[$key]) {
+              $candidate = Require-PlainPath $values[$key]
+              if (!$candidate.StartsWith(($root.TrimEnd('\') + '\'), [StringComparison]::OrdinalIgnoreCase) -and !$candidate.StartsWith(($sdk.TrimEnd('\') + '\'), [StringComparison]::OrdinalIgnoreCase) -and $candidate.TrimEnd('\') -ne $sdk.TrimEnd('\')) { throw 'untrusted_toolchain_variable' }
+            }
+          }
+          [Console]::Error.WriteLine('DPT_MSVC_PHASE:linker_metadata')
+          $link = Require-PlainFile (Join-LocalPath $tools 'bin\Hostx64\x64\link.exe')
+          $version = [Diagnostics.FileVersionInfo]::GetVersionInfo($link)
+          if ($version.CompanyName -ne 'Microsoft Corporation' -or $version.ProductName -notmatch 'Visual Studio' -or [string]::IsNullOrWhiteSpace($version.FileVersion)) { throw 'incompatible_linker' }
+          $keep = @('PATH','INCLUDE','LIB','LIBPATH','VSINSTALLDIR','VCINSTALLDIR','VCTOOLSINSTALLDIR','WINDOWSSDKDIR','WINDOWSSDKVERSION','WINDOWSSDKBINPATH','WINDOWSSDKVERBINPATH','UNIVERSALCRTSDKDIR','UCRTVERSION','VSCMD_ARG_TGT_ARCH','VSCMD_ARG_HOST_ARCH')
+          $envOut = @{}
+          foreach ($key in $keep) { if ($values.ContainsKey($key)) { $envOut[$key] = $values[$key] } }
+          @{environment=$envOut; linker=$link; root=$root; company=$version.CompanyName; product=$version.ProductName; version=$version.FileVersion} | & $toJson -Depth 3 -Compress
+          '''
+              # These trusted setup-tool deadlines do not prove descendant-tree
+              # cleanup; any timeout stops the step without retries or About tests.
+              powershell = os.path.join(base['SystemRoot'], 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe')
+              discovery_env = base | {'PATH':'', 'PATHEXT':'.COM;.EXE;.BAT;.CMD'}
+              discovery = discovery_transport(powershell, script, discovery_env)
+              if discovery.returncode: raise SystemExit('msvc_discovery_refused')
+              try:
+                  data = json.loads(discovery.stdout)
+              except (ValueError, TypeError): raise SystemExit('msvc_discovery_invalid') from None
+              if not isinstance(data, dict) or not all(isinstance(data.get(k), str) for k in ('linker','root','company','product','version')) or not isinstance(data.get('environment'), dict): raise SystemExit('msvc_discovery_invalid')
+              allowed = {'PATH','INCLUDE','LIB','LIBPATH','VSINSTALLDIR','VCINSTALLDIR','VCTOOLSINSTALLDIR','WINDOWSSDKDIR','WINDOWSSDKVERSION','WINDOWSSDKBINPATH','WINDOWSSDKVERBINPATH','UNIVERSALCRTSDKDIR','UCRTVERSION','VSCMD_ARG_TGT_ARCH','VSCMD_ARG_HOST_ARCH'}
+              config = data['environment']
+              if set(config) - allowed or any(not isinstance(v, str) for v in config.values()): raise SystemExit('msvc_environment_refused')
+              if any(not config.get(k) for k in ('PATH','INCLUDE','LIB','LIBPATH','VCTOOLSINSTALLDIR','WINDOWSSDKDIR')): raise SystemExit('msvc_environment_incomplete')
+              linker = Path(data['linker'])
+              root = Path(data['root'])
+              if not root.is_absolute() or not linker.is_absolute() or not linker.is_relative_to(root / 'VC' / 'Tools' / 'MSVC') or linker.parts[-4:] != ('bin', 'Hostx64', 'x64', 'link.exe') or data['company'] != 'Microsoft Corporation' or 'Visual Studio' not in data['product']: raise SystemExit('msvc_linker_refused')
+              if config.get('VSCMD_ARG_TGT_ARCH') != 'x64' or config.get('VSCMD_ARG_HOST_ARCH') != 'x64': raise SystemExit('msvc_architecture_refused')
+              config['PATH'] = str(linker.parent) + os.pathsep + config['PATH']
+              config['CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER'] = str(linker)
+              configured = base | config
+              try:
+                  # Documented no-argument usage query; zero status remains required.
+                  help_result = tool_query([str(linker)], configured, 5, query='absolute_linker_help')
+                  rust = tool_query(['rustc', '-vV'], configured, 5, query='rust_host')
+              except (OSError, subprocess.TimeoutExpired): raise SystemExit('msvc_identity_unconfirmed') from None
+              microsoft_banner_valid = 'Microsoft' in help_result.stdout + help_result.stderr
+              rust_host_valid = 'host: x86_64-pc-windows-msvc' in rust.stdout
+              print(json.dumps({'class':'msvc_identity_evaluated','microsoft_banner_valid':microsoft_banner_valid,'rust_host_valid':rust_host_valid}, sort_keys=True))
+              if help_result.returncode or not microsoft_banner_valid or rust.returncode or not rust_host_valid: raise SystemExit('msvc_identity_refused')
+              print(json.dumps({'class':'msvc_verified','product':data['product'],'version':data['version'],'host':'x86_64-pc-windows-msvc','target':'x86_64-pc-windows-msvc','discovery_code':discovery.returncode,'help_code':help_result.returncode,'rust_code':rust.returncode,'required_present':{k:bool(config.get(k)) for k in ('INCLUDE','LIB','LIBPATH','WINDOWSSDKDIR')}}, sort_keys=True))
+              return configured
+          def protocol_mock_transport(powershell, script, discovery_env):
+              # Installed only by scoped unittest patches; production always uses
+              # discovery_transport and has no switch to select this mock.
+              return tool_query(['synthetic'], discovery_env, 30, discovery=True)
+          regression_cases = tuple('vswhere_%02d' % i for i in range(24)) + tuple('developer_%02d' % i for i in range(50)) + ('transport_old_python','transport_missing','transport_boolean','transport_reparse','transport_symlink','transport_lstat_failed','transport_valid','identity_1100','identity_nonzero','identity_architecture','identity_status','identity_timeout','identity_cleanup','identity_banner','identity_missing_banner','identity_host','identity_valid')
+          regression_classes = ('invocation_failed','status_unconfirmed','native_nonzero','msvc_marker_output_refused','msvc_output_limit','msvc_discovery_refused','msvc_script_privacy_unconfirmed','msvc_script_path_refused','msvc_discovery_os_error','msvc_identity_refused','msvc_architecture_refused','msvc_launch_failed','msvc_query_timeout','msvc_wait_failed','msvc_status_unconfirmed','msvc_leader_kill_failed','msvc_leader_reap_timeout','msvc_leader_reap_failed','success','refusal','unallowlisted') + tuple('msvc_developer_' + value for value in ('invocation_failed','status_unconfirmed','native_nonzero','unexpected_stderr','environment_capture_failed','environment_malformed','environment_duplicate','architecture_mismatch','tool_path_refused','stream_overflow','query_timeout','cancelled','cleanup_failed','invalid_decoding'))
+          def regression_mismatch(case, expected, actual):
+              # Values are selected from fixed finite inventories, never exceptions.
+              if case not in regression_cases: case = 'unallowlisted'
+              if expected not in regression_classes: expected = 'unallowlisted'
+              if actual not in regression_classes: actual = 'unallowlisted'
+              print(json.dumps({'class':'discovery_regression_mismatch','case':case,'expected':expected,'actual':actual}, sort_keys=True), file=sys.stderr)
+              raise RuntimeError('discovery_regression_mismatch') from None
+          def discovery_protocol_regressions():
+              # Safe in-memory mocks: never launch PowerShell, linker or Cargo.
+              from unittest.mock import patch, Mock
+              prefix = b''.join(('DPT_MSVC_PHASE:' + phase + '\n').encode('ascii') for phase in phases[:6])
+              prefix += b'DPT_MSVC_OP:attributes:before:0\nDPT_MSVC_OP:attributes:after:0\nDPT_MSVC_STATUS:vswhere:before:0\n'
+              cases = []
+              for classification, tokens in (('invocation_failed', ('none','23')), ('status_unconfirmed', ('none',)), ('native_nonzero', ('-2147483648','1','2147483647'))):
+                  for token in tokens:
+                      cases.append((prefix + ('DPT_MSVC_FAILURE:' + classification + ':' + token + '\n').encode('ascii'), 1, b'', classification))
+              failure = b'DPT_MSVC_FAILURE:native_nonzero:1\n'
+              for raw, code, output in (
+                  (prefix + b'DPT_MSVC_FAILURE:native_nonzero:0\n', 1, b''),
+                  (prefix + b'DPT_MSVC_FAILURE:native_nonzero:2147483648\n', 1, b''),
+                  (prefix + b'DPT_MSVC_FAILURE:native_nonzero:-2147483649\n', 1, b''),
+                  (prefix.replace(b'DPT_MSVC_PHASE:vswhere\n', b'') + failure, 1, b''),
+                  (prefix + b'DPT_MSVC_OP:parent:before:0\n' + failure, 1, b''),
+                  (prefix + b'DPT_MSVC_STATUS:vswhere:after:1\n' + failure, 1, b''),
+                  (prefix + b'DPT_MSVC_FAILURE:status_unconfirmed:1\n', 1, b''),
+                  (prefix + b'DPT_MSVC_FAILURE:invocation_failed:2147483648\n', 1, b''),
+                  (prefix + b'DPT_MSVC_FAILURE:unknown:none\n', 1, b''),
+                  (prefix + failure + failure, 1, b''),
+                  (prefix + failure + b'private_exception_text\n', 1, b''),
+                  (prefix + failure, 0, b''), (prefix + failure, 1, b'private_stdout'),
+                  (failure, 1, b''), (prefix, 0, b''),
+                  (prefix + b'private_stderr\n', 1, b''),
+                  (prefix + b'x' * 262145, 1, b''), (prefix, 1, b'x' * 65537),
+              ): cases.append((raw, code, output, None))
+              import contextlib, io
+              if len(cases) != 24: raise RuntimeError('regression_case_inventory')
+              for index, (raw, code, output, expected_failure) in enumerate(cases):
+                  def launch(args, **kwargs):
+                      kwargs['stderr'].write(raw)
+                      kwargs['stdout'].write(output)
+                      return Mock(wait=Mock(return_value=code))
+                  printed = io.StringIO()
+                  with patch.object(tempfile,'TemporaryFile',side_effect=io.BytesIO), patch.dict(globals(),{'discovery_transport':protocol_mock_transport}), patch.object(subprocess, 'Popen', side_effect=launch) as child, patch.object(subprocess, 'run') as cargo, patch.object(json, 'loads', side_effect=RuntimeError('json_unreachable')) as consume, contextlib.redirect_stdout(printed):
+                      try: windows_toolchain({'SystemRoot':'C:\\Windows'})
+                      except SystemExit as refusal:
+                          if expected_failure is not None and str(refusal) != expected_failure: regression_mismatch('vswhere_%02d' % index, expected_failure, str(refusal))
+                      else: regression_mismatch('vswhere_%02d' % index,'refusal','success')
+                      if child.call_count != 1 or consume.called or cargo.called: raise RuntimeError('regression_downstream_reached')
+                  if any(secret in printed.getvalue() for secret in ('private_exception_text','private_stdout','private_stderr')): raise RuntimeError('regression_private_output')
+              success = prefix + b'DPT_MSVC_STATUS:vswhere:after:0\nDPT_MSVC_STATUS:json:before:0\nDPT_MSVC_STATUS:json:after:0\nDPT_MSVC_STATUS:instances:before:0\nDPT_MSVC_STATUS:instances:after:1\n'
+              success += b'DPT_MSVC_PHASE:vsdevcmd\nDPT_MSVC_DEV:before\nDPT_MSVC_DEV:result:completed:0:0:1:1\nDPT_MSVC_DEV:cleanup:0:1:1:none:1:1:1\nDPT_MSVC_DEV:environment:validated\n'
+              success += b''.join(('DPT_MSVC_PHASE:' + phase + '\n').encode('ascii') for phase in phases[7:])
+              with patch.object(tempfile,'TemporaryFile',side_effect=io.BytesIO), patch.object(subprocess, 'Popen', side_effect=launch), contextlib.redirect_stdout(io.StringIO()):
+                  raw, code, output = success, 0, b'{}'
+                  result = tool_query(['synthetic'], {}, 30, discovery=True)
+                  if result.returncode != 0 or result.stdout != '{}': raise RuntimeError('regression_native_zero')
+          discovery_protocol_regressions()
+          def developer_protocol_regressions():
+              # Run real refusal gates with fake processes; no native execution.
+              import contextlib, io
+              from unittest.mock import patch, Mock
+              prefix = b''.join(('DPT_MSVC_PHASE:' + phase + '\n').encode('ascii') for phase in phases[:7])
+              prefix += b'DPT_MSVC_OP:attributes:before:0\nDPT_MSVC_OP:attributes:after:0\n'
+              prefix += b''.join(('DPT_MSVC_STATUS:%s:%s:%d\n' % (stage,edge,1 if stage == 'instances' and edge == 'after' else 0)).encode('ascii') for stage,edge in status_order)
+              prefix += b'DPT_MSVC_DEV:before\n'
+              cases = []
+              def refusal(observation, status, stderr, bounds, capture, classification, stop='none', killed=0, reaped=1, readers=1, stdout_bounds=1, total_bounds=1, cleanup_valid=1):
+                  return prefix + ('DPT_MSVC_DEV:result:%s:%s:%d:%d:%d\nDPT_MSVC_DEV:cleanup:%d:%d:%d:%s:%d:%d:%d\nDPT_MSVC_DEV_FAILURE:%s\n' % (observation,status,stderr,bounds,capture,killed,reaped,readers,stop,stdout_bounds,total_bounds,cleanup_valid,classification)).encode('ascii')
+              cases.append((refusal('interrupted','none',0,1,0,'invocation_failed',reaped=0),'invocation_failed'))
+              cases.append((refusal('completed','none',0,1,0,'status_unconfirmed'),'status_unconfirmed'))
+              for status in ('-2147483648','1','2147483647'):
+                  for stderr in (0,1):
+                      cases.append((refusal('completed',status,stderr,1,0,'native_nonzero'),'native_nonzero'))
+              cases.append((refusal('completed','0',1,1,0,'unexpected_stderr'),'unexpected_stderr'))
+              cases.append((refusal('completed','0',0,1,0,'environment_capture_failed',stop='capture_failed'),'environment_capture_failed'))
+              cases.append((refusal('completed','0',0,1,1,'environment_capture_failed'),'environment_capture_failed'))
+              for classification in ('environment_malformed','environment_duplicate','architecture_mismatch','tool_path_refused'):
+                  cases.append((refusal('completed','0',0,1,1,classification),classification))
+              cases.append((refusal('completed','0',0,1,0,'invalid_decoding'),'invalid_decoding'))
+              for reason, classification in (('timeout','query_timeout'),('cancelled','cancelled')):
+                  cases.append((refusal('completed','1',0,1,0,classification,stop=reason,killed=1),classification))
+              for stderr, stderr_bounds, stdout_bounds, total_bounds in ((0,1,0,1),(1,0,1,1),(1,1,1,0)):
+                  cases.append((refusal('completed','1',stderr,stderr_bounds,0,'stream_overflow',stop='stream_overflow',killed=1,stdout_bounds=stdout_bounds,total_bounds=total_bounds),'stream_overflow'))
+              cases.append((refusal('interrupted','none',0,1,0,'cleanup_failed',stop='timeout',reaped=0,cleanup_valid=0),'cleanup_failed'))
+              cases.append((refusal('completed','1',0,1,0,'cleanup_failed',stop='stream_overflow',killed=1,readers=0,stdout_bounds=0,cleanup_valid=0),'cleanup_failed'))
+              cases.append((refusal('completed','-2147483648',0,1,0,'invocation_failed',stop='invocation_failed'),'invocation_failed'))
+              cases.append((refusal('interrupted','none',0,1,0,'cleanup_failed',stop='invocation_failed',reaped=0,cleanup_valid=0),'cleanup_failed'))
+              cases.append((prefix + b'DPT_MSVC_DEV_FAILURE:tool_path_refused\n','tool_path_refused'))
+              good = refusal('completed','0',0,1,1,'architecture_mismatch')
+              for raw in (
+                  good.replace(b'DPT_MSVC_DEV:before\n',b''),
+                  good.replace(b'DPT_MSVC_PHASE:vsdevcmd\n',b''),
+                  good.replace(b':completed:0:',b':completed:2147483648:'),
+                  good.replace(b':completed:0:',b':completed:-2147483649:'),
+                  good.replace(b':completed:0:',b':completed:none:'),
+                  good.replace(b':completed:0:',b':interrupted:0:'),
+                  good.replace(b':0:1:1\n',b':1:1:1\n'),
+                  good + b'DPT_MSVC_DEV:environment:validated\n',
+                  good + b'synthetic_private_stderr\n',
+                  good.replace(b'DPT_MSVC_DEV:before\n',b'DPT_MSVC_DEV:before\nDPT_MSVC_DEV:before\n'),
+                  prefix + b'DPT_MSVC_DEV_FAILURE:unknown\n',
+                  refusal('completed','1',1,1,1,'unexpected_stderr'),
+                  refusal('completed','1',0,1,0,'environment_capture_failed'),
+                  refusal('completed','0',0,0,1,'environment_capture_failed'),
+                  good.replace(b'DPT_MSVC_DEV:cleanup:0:1:1:none:1:1:1\n',b''),
+                  good.replace(b'DPT_MSVC_DEV:cleanup:0:1:1:none:1:1:1\n',b'DPT_MSVC_DEV:cleanup:0:0:1:none:1:1:1\n'),
+                  good.replace(b'DPT_MSVC_DEV:cleanup:0:1:1:none:1:1:1\n',b'DPT_MSVC_DEV:cleanup:0:1:0:none:1:1:1\n'),
+                  good.replace(b'DPT_MSVC_DEV:cleanup:0:1:1:none:1:1:1\n',b'DPT_MSVC_DEV:cleanup:0:1:1:unknown:1:1:1\n'),
+                  refusal('completed','0',0,1,1,'tool_path_refused').replace(b'DPT_MSVC_DEV:cleanup:0:1:1:none:1:1:1\n',b''),
+                  refusal('completed','0',0,1,0,'architecture_mismatch'),
+                  prefix + b'DPT_MSVC_DEV:result:completed:0:0:1:1\n',
+              ): cases.append((raw,None))
+              for marker in (b'DPT_MSVC_DEV:before\n',b'DPT_MSVC_DEV:result:completed:0:0:1:1\n',b'DPT_MSVC_DEV:environment:validated\n'):
+                  raw = prefix + marker * 5000
+                  snapshot = marker_snapshot(raw)
+                  if snapshot['markers_valid'] or len(snapshot['developer']) > 4: raise RuntimeError('developer_regression_marker_bounds')
+                  cases.append((raw,None))
+              if len(cases) != 50: raise RuntimeError('developer_regression_case_inventory')
+              for index, (raw, classification) in enumerate(cases):
+                  def launch(args, **kwargs):
+                      kwargs['stderr'].write(raw)
+                      return Mock(wait=Mock(return_value=1))
+                  printed = io.StringIO()
+                  with patch.object(tempfile,'TemporaryFile',side_effect=io.BytesIO), patch.dict(globals(),{'discovery_transport':protocol_mock_transport}), patch.object(subprocess,'Popen',side_effect=launch) as child, patch.object(subprocess,'run') as cargo, patch.object(json,'loads',side_effect=RuntimeError('json_unreachable')) as consume, contextlib.redirect_stdout(printed):
+                      try: windows_toolchain({'SystemRoot':'C:\\Windows'})
+                      except SystemExit as failure:
+                          if classification is not None and str(failure) != 'msvc_developer_' + classification: regression_mismatch('developer_%02d' % index, 'msvc_developer_' + classification, str(failure))
+                      else: regression_mismatch('developer_%02d' % index,'refusal','success')
+                      if child.call_count != 1 or cargo.called or consume.called: raise RuntimeError('developer_regression_downstream_reached')
+                  if 'synthetic_private_stderr' in printed.getvalue(): raise RuntimeError('developer_regression_private_output')
+              from pathlib import PureWindowsPath
+              success = prefix + b'DPT_MSVC_DEV:result:completed:0:0:1:1\nDPT_MSVC_DEV:cleanup:0:1:1:none:1:1:1\nDPT_MSVC_DEV:environment:validated\n'
+              success += b'DPT_MSVC_PHASE:sdk\nDPT_MSVC_PHASE:linker_metadata\n'
+              configuration = {'PATH':'synthetic','INCLUDE':'synthetic=a=b','LIB':'synthetic','LIBPATH':'synthetic','VCTOOLSINSTALLDIR':'C:\\Synthetic\\VC\\Tools\\MSVC\\1','WINDOWSSDKDIR':'C:\\SyntheticSDK','VSCMD_ARG_TGT_ARCH':'x64','VSCMD_ARG_HOST_ARCH':'x64'}
+              payload = {'root':'C:\\Synthetic','linker':'C:\\Synthetic\\VC\\Tools\\MSVC\\1\\bin\\Hostx64\\x64\\link.exe','company':'Microsoft Corporation','product':'Visual Studio synthetic','version':'synthetic','environment':configuration}
+              # Exercise production identity gates using byte-only fake processes.
+              for case, help_code, banner, host, accepted in (
+                  ('identity_1100',1100,b'Microsoft synthetic',b'host: x86_64-pc-windows-msvc',False),
+                  ('identity_nonzero',7,b'Microsoft synthetic',b'host: x86_64-pc-windows-msvc',False),
+                  ('identity_banner',0,b'incompatible synthetic',b'host: x86_64-pc-windows-msvc',False),
+                  ('identity_missing_banner',0,b'',b'host: x86_64-pc-windows-msvc',False),
+                  ('identity_host',0,b'Microsoft synthetic',b'host: incompatible synthetic',False),
+                  ('identity_valid',0,b'Microsoft synthetic',b'host: x86_64-pc-windows-msvc',True),
+              ):
+                  replies = [(json.dumps(payload).encode('ascii'),success,0),(banner,b'',help_code),(host,b'',0)]
+                  arguments = []
+                  def launch_success(args, **kwargs):
+                      arguments.append(args)
+                      output, markers, code = replies.pop(0)
+                      kwargs['stdout'].write(output)
+                      kwargs['stderr'].write(markers)
+                      return Mock(wait=Mock(return_value=code))
+                  printed = io.StringIO()
+                  with patch.object(tempfile,'TemporaryFile',side_effect=io.BytesIO), patch.dict(globals(),{'Path':PureWindowsPath,'discovery_transport':protocol_mock_transport}), patch.object(subprocess,'Popen',side_effect=launch_success) as child, patch.object(subprocess,'run') as cargo, contextlib.redirect_stdout(printed):
+                      try: configured = windows_toolchain({'SystemRoot':'C:\\Windows'})
+                      except SystemExit as failure:
+                          if accepted or str(failure) != 'msvc_identity_refused': regression_mismatch(case, 'success' if accepted else 'msvc_identity_refused', str(failure))
+                      else:
+                          if not accepted: regression_mismatch(case,'msvc_identity_refused','success')
+                          if configured['INCLUDE'] != 'synthetic=a=b': raise RuntimeError('developer_regression_valid_configuration')
+                      if child.call_count != 3 or cargo.called or replies or arguments[1] != [payload['linker']] or arguments[2] != ['rustc','-vV']: raise RuntimeError('identity_regression_query_or_downstream')
+                  records = [record for line in printed.getvalue().splitlines() if (record := json.loads(line)).get('class') != 'msvc_linker_snapshot']
+                  for record, query, code in zip(records[1:3],('absolute_linker_help','rust_host'),(help_code,0)):
+                      if record['query'] != query or record['exit_code'] != code or not record['status_confirmed'] or record['timed_out'] or not record['leader_reaped'] or record['deadline_seconds'] != 5: raise RuntimeError('identity_regression_evidence')
+                  if records[3] != {'class':'msvc_identity_evaluated','microsoft_banner_valid':case not in ('identity_banner','identity_missing_banner'),'rust_host_valid':case != 'identity_host'}: raise RuntimeError('identity_regression_validation')
+                  if any(value in printed.getvalue() for value in (payload['linker'],'incompatible synthetic','Microsoft synthetic','host:')): raise RuntimeError('identity_regression_private_output')
+              # Refuse before any later query or Cargo; discovery JSON is consumed
+              # once on successful discovery, never again after a subsequent refusal.
+              for case, expected in (
+                  ('identity_architecture','msvc_architecture_refused'),
+                  ('identity_status','msvc_status_unconfirmed'),
+                  ('identity_timeout','msvc_query_timeout'),
+                  ('identity_cleanup','msvc_leader_kill_failed'),
+              ):
+                  record = payload | {'environment':configuration | ({'VSCMD_ARG_TGT_ARCH':'arm64'} if case == 'identity_architecture' else {})}
+                  calls = []
+                  def launch_refusal(args, **kwargs):
+                      calls.append(args)
+                      if len(calls) == 1:
+                          kwargs['stdout'].write(json.dumps(record).encode('ascii'))
+                          kwargs['stderr'].write(success)
+                          return Mock(wait=Mock(return_value=0))
+                      if args != [payload['linker']] or len(calls) != 2: raise RuntimeError('identity_candidate_downstream_reached')
+                      process = Mock(wait=Mock(return_value=None))
+                      if case in ('identity_timeout','identity_cleanup'):
+                          process.wait.side_effect = [subprocess.TimeoutExpired('synthetic',5),0]
+                      if case == 'identity_cleanup': process.kill.side_effect = OSError()
+                      return process
+                  with patch.object(tempfile,'TemporaryFile',side_effect=io.BytesIO), patch.dict(globals(),{'Path':PureWindowsPath,'discovery_transport':protocol_mock_transport}), patch.object(subprocess,'Popen',side_effect=launch_refusal), patch.object(subprocess,'run') as cargo, patch.object(json,'loads',wraps=json.loads) as consume, contextlib.redirect_stdout(io.StringIO()):
+                      try: windows_toolchain({'SystemRoot':'C:\\Windows'})
+                      except SystemExit as failure:
+                          if str(failure) != expected: regression_mismatch(case,expected,str(failure))
+                      else: regression_mismatch(case,expected,'success')
+                      if cargo.called or consume.call_count != 1 or len(calls) != (1 if case == 'identity_architecture' else 2): raise RuntimeError('identity_candidate_downstream_reached')
+          developer_protocol_regressions()
+          def developer_script_regressions():
+              # Fully virtual filesystem: test real transport without host ancestry
+              # or native execution. The production function is never replaced here.
+              import contextlib, io, posixpath
+              from types import SimpleNamespace
+              from unittest.mock import patch, Mock
+              class Directory:
+                  def __init__(self, **kwargs): pass
+                  def __enter__(self): return '/synthetic/temporary'
+                  def __exit__(self, *args): pass
+              class Source(io.StringIO):
+                  def __exit__(self, *args): pass
+              for case, version, attributes, symlink, expected in (
+                  ('transport_old_python',(3,12,3),0,False,'msvc_script_privacy_unconfirmed'),
+                  ('transport_missing',(3,12,4),None,False,'msvc_script_path_refused'),
+                  ('transport_boolean',(3,12,4),True,False,'msvc_script_path_refused'),
+                  ('transport_reparse',(3,12,4),0x400,False,'msvc_script_path_refused'),
+                  ('transport_symlink',(3,12,4),0,True,'msvc_script_path_refused'),
+                  ('transport_lstat_failed',(3,12,4),'missing',False,'msvc_discovery_os_error'),
+                  ('transport_valid',(3,12,4),0,False,None),
+              ):
+                  source = Source()
+                  path = SimpleNamespace(join=posixpath.join,abspath=lambda value:value,dirname=posixpath.dirname,islink=lambda value:symlink and value == '/synthetic')
+                  def metadata(value):
+                      if attributes == 'missing': raise OSError()
+                      return SimpleNamespace(st_file_attributes=0 if case == 'transport_reparse' and value != '/synthetic' else attributes)
+                  virtual_os = SimpleNamespace(name='nt',path=path,lstat=metadata)
+                  with patch.dict(globals(),{'os':virtual_os,'sys':SimpleNamespace(version_info=version,stderr=sys.stderr),'tempfile':SimpleNamespace(TemporaryDirectory=Directory),'open':lambda *args,**kwargs:source}), patch.object(subprocess,'Popen') as child, patch.object(subprocess,'run') as cargo, patch.object(json,'loads') as consume, patch.dict(globals(),{'tool_query':Mock(return_value=Mock(returncode=0))}) as namespace, contextlib.redirect_stdout(io.StringIO()):
+                      query = namespace['tool_query']
+                      try: discovery_transport('synthetic-powershell','fixed-script',{})
+                      except SystemExit as error:
+                          if expected is None or str(error) != expected: regression_mismatch(case,expected or 'success',str(error))
+                      else:
+                          if expected is not None: regression_mismatch(case,expected,'success')
+                      if child.called or cargo.called or consume.called or query.call_count != (1 if expected is None else 0): raise RuntimeError('script_regression_downstream_reached')
+                      if expected is None and (source.getvalue() != 'fixed-script' or query.call_args.args[0] != ['synthetic-powershell','-NoProfile','-NonInteractive','-File','/synthetic/temporary/discovery.ps1'] or query.call_args.args[2] != 30 or query.call_args.kwargs != {'discovery':True}): raise RuntimeError('script_regression_transport_changed')
+              # Fixed diagnostic identifiers/classifications also refuse private text.
+              for case, expected, actual in (('vswhere_00','invocation_failed','msvc_script_path_refused'),('private-path','private-expected','private-actual')):
+                  printed = io.StringIO()
+                  with contextlib.redirect_stderr(printed):
+                      try: regression_mismatch(case,expected,actual)
+                      except RuntimeError: pass
+                  record = json.loads(printed.getvalue())
+                  if len(printed.getvalue()) > 256 or record != {'class':'discovery_regression_mismatch','case':case if case in regression_cases else 'unallowlisted','expected':expected if expected in regression_classes else 'unallowlisted','actual':actual if actual in regression_classes else 'unallowlisted'}: raise RuntimeError('regression_diagnostic_allowlist')
+          developer_script_regressions()
+          def identity_query_regressions():
+              import contextlib, io
+              from unittest.mock import patch, Mock
+              for query in ('absolute_linker_help','rust_host'):
+                  for failure, expected, killed, reaped in (
+                      ('timeout','msvc_query_timeout',True,True),
+                      ('kill','msvc_leader_kill_failed',False,False),
+                      ('reap','msvc_leader_reap_timeout',True,False),
+                      ('launch','msvc_launch_failed',False,False),
+                      ('wait','msvc_wait_failed',False,False),
+                      ('status','msvc_status_unconfirmed',False,True),
+                      ('boolean','msvc_status_unconfirmed',False,True),
+                      ('oversized','msvc_status_unconfirmed',False,True),
+                      ('negative','msvc_status_unconfirmed',False,True),
+                  ):
+                      process = Mock()
+                      if failure in ('status','boolean','oversized','negative'): process.wait.return_value = {'status':None,'boolean':True,'oversized':4294967296,'negative':-2147483649}[failure]
+                      elif failure == 'wait': process.wait.side_effect = OSError()
+                      else: process.wait.side_effect = [subprocess.TimeoutExpired('synthetic',5),subprocess.TimeoutExpired('synthetic',5) if failure == 'reap' else 0]
+                      if failure == 'kill': process.kill.side_effect = OSError()
+                      printed = io.StringIO()
+                      with patch.object(tempfile,'TemporaryFile',side_effect=io.BytesIO), patch.object(subprocess,'Popen',side_effect=OSError() if failure == 'launch' else None,return_value=process), patch.object(subprocess,'run') as cargo, patch.object(json,'loads') as consume, contextlib.redirect_stdout(printed):
+                          try: tool_query(['synthetic'],{},5,query=query)
+                          except SystemExit as error:
+                              if str(error) != expected: raise RuntimeError('identity_query_regression_classification') from None
+                          else: raise RuntimeError('identity_query_regression_refusal_missing')
+                          if cargo.called or consume.called: raise RuntimeError('identity_query_regression_downstream')
+                      records = [json.loads(line) for line in printed.getvalue().splitlines()]
+                      record = records[0]
+                      if len(records) != (2 if query == 'absolute_linker_help' else 1): raise RuntimeError('identity_query_regression_snapshot_schema')
+                      if record['query'] != query or record['class'] != expected or record['status_confirmed'] != (failure == 'timeout') or record['exit_code'] != (0 if failure == 'timeout' else None) or record['leader_killed'] != killed or record['leader_reaped'] != reaped or record['descendant_cleanup_confirmed'] or record['timed_out'] != (failure in ('timeout','kill','reap')) or len(printed.getvalue()) > 2048: raise RuntimeError('identity_query_regression_evidence')
+              for status in (-2147483648,0,1100,4294967295):
+                  with patch.object(tempfile,'TemporaryFile',side_effect=io.BytesIO), patch.object(subprocess,'Popen',return_value=Mock(wait=Mock(return_value=status))), contextlib.redirect_stdout(io.StringIO()):
+                      if tool_query(['synthetic'],{},5,query='absolute_linker_help').returncode != status: raise RuntimeError('identity_query_regression_numeric_status')
+          identity_query_regressions()
+          def linker_snapshot_regressions():
+              import contextlib, io
+              from unittest.mock import patch, Mock
+              usage = b'Microsoft (R) Incremental Linker Version 14.44.35217.0\r\nusage: LINK [options] [files] [@commandfile]\r\n  /OUT:synthetic\r\n  /MACHINE:X64\r\n'
+              diagnostic = b'LINK : fatal error LNK1100: synthetic_private_message\r\n'
+              cases = (
+                  (usage,b'','usage',True,False,'none'),
+                  (usage + b'  /ERRORREPORT reports internal errors to Microsoft\n',b'','usage',True,False,'none'),
+                  (b'',b'LINK : warning LNK4099: synthetic_private_message\n','diagnostic',False,False,'link'),
+                  (usage,diagnostic,'usage_and_diagnostic',True,True,'link'),
+                  (b'',b'unrelated Microsoft error synthetic_private_message\n','unknown',False,True,'microsoft_text'),
+                  (b'',diagnostic,'diagnostic',False,True,'link'),
+                  (b'synthetic_private_unknown\n',b'','unknown',False,False,'none'),
+                  (b'\xff\n',b'','malformed',False,False,'none'),
+                  (b'',b'','unknown',False,False,'none'),
+                  (b'x' * 65537,b'','malformed',False,False,'none'),
+                  (b'',b'x' * 262145,'malformed',False,False,'none'),
+                  (usage + b'partial',b'','unknown',True,False,'none'),
+              )
+              schema = set(linker_snapshot_diagnostics(b'',b'',True))
+              for out,err,classification,usage_flag,error_flag,family in cases:
+                  record = linker_snapshot_diagnostics(out,err,True)
+                  if set(record) != schema or record['classification'] != classification or record['usage_signal'] != usage_flag or record['error_signal'] != error_flag or record['diagnostic_family'] != family: raise RuntimeError('linker_snapshot_regression_classification')
+                  published = json.dumps(record,sort_keys=True)
+                  if len(published) > 1024 or 'synthetic_private' in published or any(not isinstance(value,(str,bool)) for value in record.values()): raise RuntimeError('linker_snapshot_regression_schema')
+              if linker_snapshot_diagnostics(usage,b'',False)['classification'] != 'unknown': raise RuntimeError('linker_snapshot_regression_incomplete')
+              with patch.object(re,'search',side_effect=RuntimeError('synthetic_private_exception')):
+                  failed = linker_snapshot_diagnostics(usage,b'',True)
+              if failed['classification'] != 'parser_failed' or failed['parser_valid'] or not failed['unknown_output'] or 'synthetic_private' in json.dumps(failed): raise RuntimeError('linker_snapshot_regression_parser_failure')
+              # Snapshot diagnostics must not alter return status, limits or refusal.
+              for code in (0,1100,7,None):
+                  def launch(args, **kwargs):
+                      kwargs['stdout'].write(usage)
+                      return Mock(wait=Mock(return_value=code))
+                  for forced in ('usage','parser_failed'):
+                      printed = io.StringIO()
+                      evidence = linker_snapshot_diagnostics(usage,b'',True) | {'classification':forced,'parser_valid':forced != 'parser_failed'}
+                      with patch.object(tempfile,'TemporaryFile',side_effect=io.BytesIO), patch.object(subprocess,'Popen',side_effect=launch), patch.object(subprocess,'run') as cargo, patch.object(json,'loads') as consume, patch.dict(globals(),{'linker_snapshot_diagnostics':Mock(return_value=evidence)}), contextlib.redirect_stdout(printed):
+                          try: result = tool_query(['synthetic'],{},5,query='absolute_linker_help')
+                          except SystemExit as failure:
+                              if code is not None or str(failure) != 'msvc_status_unconfirmed': raise RuntimeError('linker_snapshot_regression_acceptance') from None
+                          else:
+                              if code is None or result.returncode != code: raise RuntimeError('linker_snapshot_regression_status')
+                          if cargo.called or consume.called: raise RuntimeError('linker_snapshot_regression_downstream')
+                      records = [json.loads(line) for line in printed.getvalue().splitlines()]
+                      if len(records) != 2 or records[1]['class'] != 'msvc_linker_snapshot' or records[1]['query'] != 'absolute_linker_help': raise RuntimeError('linker_snapshot_regression_published_schema')
+          linker_snapshot_regressions()
+          if windows:
+              env.pop('SDKROOT', None)
+              env.pop('DEVELOPER_DIR', None)
+              env = windows_toolchain(env)
+          listing_args = ['cargo', 'test', '--locked', '--bin', 'direct_payment_timesheets', 'about_', '--', '--list']
+          execution_args = ['cargo', 'test', '--locked', '--bin', 'direct_payment_timesheets', 'about_', '--', '--test-threads=1']
+          try:
+              listing = subprocess.run(listing_args, env=env, capture_output=True, text=True, timeout=1200)
+          except (OSError, subprocess.TimeoutExpired): raise SystemExit('about_inventory_unconfirmed') from None
+          names = [line[:-6] for line in listing.stdout.splitlines() if line.endswith(': test')]
+          if listing.returncode:
+              print(listing.stderr, file=sys.stderr)
+              raise SystemExit('about_inventory_compilation_failed')
+          if len(names) != len(expected) or set(names) != expected: raise SystemExit('about_inventory_mismatch')
+          # Plain trusted Cargo execution is step-bounded; no descendant cleanup
+          # claim is made on timeout. Stop the job; do not retry or run later tests.
+          try:
+              result = subprocess.run(execution_args, env=env, capture_output=True, text=True, timeout=300)
+          except (OSError, subprocess.TimeoutExpired): raise SystemExit('about_execution_unconfirmed_cleanup') from None
+          print(result.stdout)
+          summary = re.findall(r'test result: ok[.] (\d+) passed; (\d+) failed; (\d+) ignored;', result.stdout)
+          # libtest emits "test NAME ... ok"; reject duplicate/absent/ignored cases.
+          completed = re.findall(r'^test (.+) \.\.\. ok$', result.stdout, re.M)
+          if result.returncode or summary != [(str(len(expected)), '0', '0')] or len(completed) != len(expected) or set(completed) != expected: raise SystemExit('about_tests_failed_or_incomplete')
+          if windows:
+              print('about: class=refusal_ui_evaluator_verified; positive_ordinary_wal_verified=false; staging_cleanup_verified=false')
+          else:
+              print('about: class=ordinary_and_live_wal_verified; pathname_confinement_verified=false')
+          PYTHON
+      - name: Explain the verification boundary
+        if: always()
+        run: |
+          echo 'Native verification is not remediation or release approval.' >> "$GITHUB_STEP_SUMMARY"
+          echo 'Inspect compilation, every test group, and known failing assertions in docs/NATIVE-SECURITY-VERIFICATION.md.' >> "$GITHUB_STEP_SUMMARY"
+# No push/PR/tag/release/workflow_call trigger, publisher, packaging, cache,
+# secrets, deployment environment, artifact upload or production application run.

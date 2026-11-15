@@ -1,0 +1,364 @@
+# DirectPaymentTimesheets architecture
+
+This describes unreleased development 1.0.7 on `security/v1.0.7-phase1`, schema42. Stage/schema
+headings identify historical introductions. Published v1.0.6 packages remain separate; see [downloads](../README.md#download).
+
+## Shape of the application
+
+DirectPaymentTimesheets is a local Rust desktop application. `main.rs` wires modules and calls `application::run`. Startup orchestration lives in `application.rs`, `Application::initialise` and context/environment code, including database initialisation and `eframe`/`egui` launch. There is no server process or web API.
+
+The main layers are:
+
+```text
+egui screens and dialogs
+        |
+GUI/application orchestration
+        |
+domain services and file/PDF/email adapters
+        |
+repositories
+        |
+SQLite + configured filesystem locations
+```
+
+The GUI owns navigation and stable selection state. `Application` exposes repositories and service operations without putting SQL, SMTP, PDF internals or backup implementation directly in widgets.
+
+## Runtime environment
+
+`AppEnvironment` uses `DIRECTPAYMENTTIMESHEETS_HOME` when set, otherwise `%LOCALAPPDATA%/DirectPaymentTimesheets` on Windows or `~/.directpaymenttimesheets` on Unix. It creates the internal data, import, archive, backup, log, template and cache directories and locates `database.sqlite`. `config.toml` is stored in the data root.
+
+`AppConfig` is TOML/Serde data split into theme, folder, PDF, payroll and email sections. Serde's normal unknown-field handling permits obsolete keys in old files. Missing newer fields use defaults. Annual-leave rule values are an exception to TOML settings: they live in the singleton SQLite `annual_leave_settings` table. A compatibility reconciliation preserves the legacy timesheet email body when the newer payroll template is absent.
+
+Configured business paths may point outside the data root. `email_archive` is currently persisted without a production consumer, and Payroll Return information deliberately uses the separate payroll-information path. Startup probes configured business roots in a background worker; warnings preserve paths and leave Settings accessible. Saving configuration does not create business roots. Schedule-derived path creation is deliberately late: for example, a future payroll-year directory is created only when a PDF or Payroll Return file is actually written.
+
+## SQLite and repositories
+
+`database.rs` creates the original schema and applies ordered migrations through `CURRENT_SCHEMA_VERSION` 42. In the unreleased v1.0.7 ownership candidate, each repository owns a `DatabaseConnection` retaining its rusqlite connection and existing storage guards. Query helpers borrow the underlying connection; transactions and backup handles borrow their owners. Backup destinations are opened explicitly, and restore/startup/migration connections retain shared staging ownership. Schema-changing work belongs in a migration; this ownership work changes no schema or payroll calculation. Safe in-memory failure admission and normal shutdown/restart protections are implemented. Selected Windows native ownership checks have passed. On 1 November 2026, [macOS acceptance run 41305531150](https://github.com/arnieSkyNet/DirectPaymentTimesheets/actions/runs/41305531150) compiled the application and passed 43 exact safe tests on each of Intel and Apple Silicon for candidate `d9b046bed1739843f854e57968ab5ce9947b26ce`, using controller `1afde972f46f0f66438952bbd56e6e8ec0aa1d6c`. Remaining Windows scope, interactive GUI acceptance and the documented native failure limitations remain separate; emergency termination remains deliberately inactive. These are historical candidate results, not current-HEAD platform verification. See [SQLite ownership status](SQLITE-CONNECTION-OWNERSHIP.md).
+
+Principal persisted areas are:
+
+- imported `timesheets` with stable row identity and import audit data;
+- employer, PA and payroll-provider maintenance;
+- effective-dated PA pay rates and contracted hours;
+- multi-year payroll schedules;
+- payroll timesheets, four weekly preparation rows and individual public-holiday rows;
+- per-timesheet email status;
+- schema-19 manual adjustments, worked-item snapshots and snapshot state/digest metadata;
+- dated annual leave, SQLite annual-leave settings and structured sickness periods;
+- duplicate decisions, immutable submissions, corrections and verified legacy settlement;
+- schema31 cycle-independent P60/P45 documents, schema33 delivery-history reconciliation, schema34 file-cleanup journalling, schema35 superseded documents/current payslip revisions, and schema36 timesheet document/attempt/review evidence; and
+- schema38 CSV identity/provenance and shift reviews, schema39 filing recovery intents, schema40 imported-hours inclusion history, schema41 immutable PA bundle attachment/transport/review evidence, and schema42 append-only timesheet amendment versions.
+
+Repositories isolate queries and identity rules. Important compound identities use payroll year plus internal cycle number, not row ID alone. Dates are currently stored as text in existing formats, so repository methods parse and compare calendar dates explicitly where ordering must be chronological.
+
+## Schedule architecture
+
+`PayrollScheduleRepository` owns schedule import/replacement and resolution:
+
+- validated 13-cycle imports replace only one payroll year in a transaction;
+- all imported years coexist;
+- `resolve_for_date` searches inclusive 28-day windows across every year and rejects gaps/ambiguity;
+- lookup by `(payroll_year, cycle_number)` re-fetches a complete schedule before operations; and
+- predecessor resolution uses dates and an exact 28-day boundary, allowing cross-year cycle 13 to cycle 1 rollover.
+
+Payroll Prep Sheet PDF extraction is implemented; DOCX is recognised but deliberately deferred because payroll currently supplies PDFs. A schedule's `payslips_sent` state is retained when the same cycle is re-imported with unchanged material dates. A changed cycle receives reset sent state when replacement is safe, while changed dates are refused if prepared payroll history already exists for that year.
+
+The Dashboard operational selector stores the stable `(payroll_year, cycle_number)` key. A complete schedule is re-fetched before generation, preview/test email, status and other operational actions. Production batches additionally capture the first-week and pay dates to detect a materially changed re-import.
+
+Payroll Return and View Payroll Schedule intentionally have independent selector state. Viewing/importing a future year cannot change the operational period.
+
+## Payroll preparation architecture
+
+`PayrollTimesheetScreen` receives a complete operational schedule and stores a private bound identity with its key and material dates. It does not independently choose today's schedule. Its display set combines inclusive Start/Leaving date overlap independent of current status with PAs already represented by a payroll-timesheet row in the selected period, including records outside those dates.
+
+Existing submitted/settled records load retained values without silently recomputing history, but allow explicit saved amendments and replacement PDF generation. Actual in-flight/indeterminate delivery remains protected. Schema42 records append-only save/generated versions; original documents, submissions and attempts remain immutable. See [timesheet amendments](TIMESHEET-AMENDMENTS.md). Editable records follow the shared source-labelled reconciliation service against effective imported evidence, completed direct shifts, duplicate decisions, submission membership, outstanding corrections and manual adjustments. Preparation baselines are compared before writes so that:
+
+- opening unchanged data does not invalidate a candidate or update timestamps;
+- a material reconciliation change invalidates the candidate before persistence;
+- save changes to weeks, manual hours, leave, sick/SSP, holiday rows or mileage invalidate a stale PDF candidate first; and
+- selection/schedule/state validation happens before any save mutation.
+
+The screen retains `Local::now()` only for persisted timestamps, not payroll-period selection.
+
+## Worked-item and effective-date model
+
+`pay_rate_allocation` builds a reconciled integer-minute representation used by PDF preparation and schema-19 snapshots. Imported shifts retain TimesheetEntry ID, work/start date and minutes, and resolve the newest pay-rate row effective at that date. Manual adjustments are separate persisted items; imported source rows are never rewritten.
+
+CSV `worked_minutes` comes directly from the imported worked-duration field; import does not recalculate it from start/end values or apply the persisted rounding setting. Successful source files are copied to `archive/YYYY/MM/` with timestamped names and recorded in `import_audit`.
+
+Snapshot items distinguish imported work, late previous-cycle work, manual adjustments and opaque legacy aggregates. Ordinary allocated items require rate evidence. Legacy pre-schema-19 aggregates allow nullable work/rate fields precisely because the original details cannot be reconstructed.
+
+Late-shift detection uses only a successfully submitted snapshot as membership evidence. Generated candidates never establish that baseline. Contracted hours use a separate effective-dated lookup per week commencing date and do not participate in pay or worked-minute reconciliation.
+
+## PDF candidate lifecycle
+
+`PdfGenerator` renders the provider form from reconciled preparation data and configured fonts. Weekly Hours Worked contains only the final hours value; rate portions stay internal.
+
+`payroll_snapshot_service::publish_candidate` coordinates output safely:
+
+1. create the resolved parent directory if necessary;
+2. generate to a temporary path;
+3. persist the candidate snapshot/state and SHA-256 digest association;
+4. reconcile required database aggregates; and
+5. publish/rename the final file.
+
+Failures clean up or invalidate candidate state so a new PDF is not silently paired with old evidence. Production send verifies the file path/digest, sends it, then freezes the submitted baseline. Only reliably established non-acceptance releases the candidate for a fresh approval. Generic SMTP errors, interrupted claims and failures persisting a potentially accepted result retain protected `indeterminate` state. SMTP acceptance does not prove recipient inbox receipt.
+
+## File naming and storage
+
+`payroll_file_naming` is shared by producers and consumers. PAYE week derives from `pay_date` and the 6 April tax-year boundary. Period code uses the first-week month plus PAYE week. Timesheet and payslip generation, attachment lookup and subject substitution therefore agree.
+
+Payroll-year directory normalisation recognises a final `YYYY to YYYY` component. Such a component is replaced for another schedule year rather than nested. Generic PDF output roots intentionally remain flat; payslip and payroll-information storage is year-aware. Unknown Payroll Return information files go to the payroll-information folder with collision-safe names, not the email archive.
+
+## Email architecture
+
+`email_service` composes previews and performs SMTP transport. Production timesheets retain To payroll department, optional default-enabled CC employer and BCC PA when available. The dedicated payslip composer uses To PA, BCC employer, no CC and no payroll department recipient; previews and production share it. Ordinary and combined payslip subjects use `Payslip for Week <PAYE week>` from the captured schedule; standalone supplement subjects use `Payroll documents - {Personal Assistant Name}` with neutral body wording. MIME attachment names are canonical names derived from structured type/year/PA/schedule data, never stored revision/hash basenames. Test functions use only configured test addresses and add test markers; payslip test email uses the same canonical filename logic and goes to the configured PA test address.
+
+The GUI's `PendingEmailBatch` captures its kind/stage, selected PA IDs, an optional selected schedule key, material schedule dates and operational-selection revision; final confirmation also captures resolved recipient addresses, settings and immutable attachment approval. The existing confirmation window is the production safety boundary. Final dispatch re-fetches and validates the captured schedule and rejects a changed global selection. It never substitutes today's schedule. Timesheet dispatch also preserves candidate digest/state verification; payslip/document dispatch uses the shared selector for an optional ordinary payslip plus reconciled Needs sending P60/P45; eligible standalone documents do not require an ordinary payslip. Before production payslip/document SMTP, selected ordinary-payslip status and document-ID states are durably marked indeterminate; explicit SMTP rejection restores unsent state, successful SMTP is followed by definitive sent state, and any crash or failed final write leaves restart-safe uncertainty that refuses automatic resend. Preview and test sends do not touch this state. PA payroll email also includes PAs with unsent imported P60/P45, regardless of employment eligibility. Their document IDs and delivery states are independent of the selected cycle. A batch without a selected schedule can send these documents alone.
+
+## Backup and restore architecture
+
+`BackupService` owns discovery, creation, validation and restore. The GUI supplies configured paths and displays confirmation/status only.
+
+Creation uses `rusqlite::backup::Backup`, copies config when present and writes a human-readable identity manifest. Validation confines selection to recognised timestamp directories under the backup root, rejects unsafe links, opens the database read-only, requires one `integrity_check` result equal to `ok` case-insensitively, and checks the DirectPaymentTimesheets schema/version. Restore prepares and migrates a recognised backup in isolation, reviews changed/absent current rows and binds approval to live, selected and staged data/configuration. A reason and destructive rollback acknowledgement are mandatory; unresolved delivery uncertainty blocks restore. A separately verified original recovery copy and decision manifest are flushed before transactional SQL installation under the production OS lock and SQLite writer reservation. Config is restored only when present; its installation is separate from database commit. Close other instances and restart after restore, including a post-commit config-install failure. See [recovery safeguards](DATABASE-SCHEMA.md#verified-startup-upgrades-and-legacy-restore).
+
+## UI structure
+
+The Dashboard coordinates imports, operational period selection, generation, email and navigation. Dedicated screens cover employer, PA, payroll provider/settings, Payroll Timesheet Preparation, Application Settings and Email Settings. Long preparation/settings content uses vertical scroll areas. View Payroll Schedule selects an imported year without changing application state beyond the view.
+
+## Testing boundaries
+
+Unit and integration-style module tests use temporary directories and SQLite databases. Safety-critical tests cover migration 19, schedule transactions/resolution, period-bound operations, candidate state transitions/digests, preparation read-only/stale-save behaviour, effective dates, return paths, backup/restore and historical PA eligibility. Tests must not use the real data root.
+
+## Deliberate boundaries
+
+The current architecture does not provide accounts, authentication or shared multi-user workflows, an overtime engine, scheduled/cloud backups, retention cleanup or arbitrary SQLite restore. Cross-process OS locks coordinate sensitive operations between cooperating local instances; they are not an authenticated access-control system. These are limitations, not partially implemented promises.
+
+
+## Schema-28 reconciliation extension
+
+`payroll_evidence` supplies the source model, transitive overlap grouping, versioned duplicate decisions, immutable submission history and signed correction ledger. `duplicate_ui` and `review_ui` provide consolidated selection and contextual review over that logic. The existing snapshot candidate/submitted/indeterminate model remains the current payroll-timesheet preparation/attachment slot; append-only submission tables preserve earlier successful sends across explicit resubmission. This is separate from schema35 ordinary payslip document revisions. Final settlement uses the existing per-PA payslip delivery rule. See [PAYROLL-EVIDENCE.md](PAYROLL-EVIDENCE.md) for the complete implemented workflow and audit model.
+
+
+## Payroll document import and delivery
+
+Import Payroll Documents opens and classifies the source before requesting a period. Each ordinary payslip is resolved independently: an explicit filename tax year and exact provider “for Week N for” form can identify a single stored schedule through the existing PAYE-week calculation. Otherwise, choices are restricted by the known year and/or week. For yearless documents, only periods whose first week has started are plausible; a future recurring Week 50 is not evidence of the year of a returned payslip. A chooser appears only for unresolved payslips with plausible stored candidates. The displayed choices must be applicable to all payslips needing that choice; incompatible groups require separate imports. Exact matches and archival documents are independent of this choice.
+
+When there is no plausible stored cycle, an ordinary payslip is filed as archival evidence, preserving its useful provider filename after prefix stripping. It creates no schedule, cycle status, document-delivery record or settlement. With an explicit tax year it goes to `<Payslip base>/<YYYY to YYYY>/PA <id>/<cleaned filename>`; without one it goes to `<Payslip base>/PA <id>/<cleaned filename>`. The base removes any trailing configured `YYYY to YYYY` component. These PA areas contain no cycle directory and are outside the flat canonical email lookup `<Payslip base>/<schedule year>/Payslip for Week N for <name>.pdf`. No automatic emailing or promotion of archival files is implemented. The import result reports separate archival counts and this email limitation.
+
+ZIPs are checked for unsafe paths/names, symlinks or non-regular entries, encryption, entry-count/size/total-expansion/compression-ratio limits and conflicting destinations. An invalid archive container is refused before import. For a valid container, entries are classified and validated independently, staged, and published without clobbering; a failure for one item is reported while other valid items can succeed. The UI reports per-category counts, per-entry failures, and recovery paths where publication succeeded but a later registration or prep-sheet parse failed. This mixed workflow is deliberately not one cross-resource transaction.
+
+PA matching is token/boundary based after case and separator normalisation, and requires exactly one maintained PA. Ambiguous or incomplete ownership is rejected rather than guessed. P45/P60 must be PDFs matching exactly one PA and one type. A non-PDF containing a PA name is rejected rather than stored as shared information. P30, bank-transfer, quarter-end and other non-PA information is shared information, not a PA supplement.
+
+P60/P45 continue using `imported_payroll_documents` on the email repository's connection. Active supplements are stored directly in their own payroll-year directory, or the yearless base when no year is known; they never create PA-ID directories. Inactive supplements go directly in that directory's shared `Archived` folder. Filenames retain metadata from the P45/P60 heading, remove its unmatched closing bracket and supplied PA-name spans, and append the maintained full name once; numeric revision suffixes remain metadata. Their document IDs and delivery states remain cycle-independent. A P60's year, a prep sheet's year, the current date or Dashboard selection is never borrowed to date another document. Information files use their own explicit filename tax year when available, otherwise the configured information root. Prep sheets use the existing parser and update their own schedule year. P30, bank-transfer slips, memos and general files never enter PA email. Collisions never overwrite different bytes, and `[1]` remains filename data.
+
+
+Mixed bundles protect the ordinary payslip status and specific P60/P45 IDs in one SQLite transaction before SMTP. Explicit SMTP rejection restores unsent states together; success marks them sent together. Failed final persistence leaves indeterminate states that block automatic resend. Already-sent ordinary payslips are excluded from later document emails. Schedule completion and payroll settlement continue to consult only ordinary payslip status. Standalone P60/P45 bundles bypass the configured subject template and use neutral subject/body wording independent of Dashboard dates; ordinary and combined bundles use `Payslip for Week <week>` from the captured schedule and the configured payslip body. Email Payroll Timesheets retains its configurable timesheet subject. For payroll attachments, MIME filenames are generated from structured document type/year and PA/schedule identity; internal revision/hash storage basenames are never used as recipient-visible names. P45 imports never update employment data.
+
+Information imports reuse identical content at the original or any existing numbered destination, including beyond suffix gaps; different bytes get a collision-safe filename. Reimporting that variant reuses it rather than creating another copy. `[1]` is ordinary filename content, not a collision suffix to strip.
+
+Individual files and mixed ZIPs use the same staging and no-clobber publication. Results distinguish imported, already-present, archival and failed items. Prep sheets are stored, then parsed through the existing per-year transactional schedule importer; parsing failure is reported separately from successful file storage. The overall mixed workflow is not one filesystem/database transaction. Published files may remain after registration/parser failure, with paths and errors reported for recovery.
+
+The test path uses this same read-only selection and validation followed only by test transport, never production transitions. See [Email rules](DOMAIN.md#email) for recipient, composition and state guarantees. User-triggered GitHub update checking in `update_check` reports versions and installation guidance; it does not download or install updates.
+
+
+## Inactive PA filing and registered supplement repair
+
+A saved Active-to-Inactive transition initiates a complete safely identified PA document filing plan. It covers registered P45/P60s (including superseded versions), ordinary and unassociated payslips, durable payslip revisions, current timesheet PDFs, and historical on-disk timesheet evidence linked by snapshot/submission records. Exact application-generated timesheet filenames with unique maintained ownership are also recognised. Existing payroll-year metadata/directories determine the year; unregistered generated timesheets without reliable year evidence use the PDF base's `Archived` directory. Documents are placed directly in each document root's year-level `Archived`, never inside a PA-name or PA-number subdirectory.
+
+Shared P30/information/prep sheets, generic CSV archives, arbitrary unregistered files, external signature assets and database-embedded evidence are not moved. A shared, altered or out-of-root registered timesheet refuses filing. Historical records whose bytes were replaced by later generated bytes retain their original digest and embedded evidence; path relocation changes location metadata only. Missing historical files are not recreated. Ambiguous ownership is not guessed.
+
+Schema34 cleanup covers both payslip and PDF roots. Deactivation deliberately saves PA details independently of per-document filing; it has never committed all documents and PA status in one transaction. In schema39 the inactive save and a durable scan request commit together, then each document has a durable pre-publication intent and independent registration transaction. Supplement/revision/snapshot/submission location updates commit together for that document. Hashes, submission facts, history declarations, sent timestamps and embedded bytes do not change. Originals are removed only after commit and re-verification. Failed cleanup remains journalled and retryable; failed rollback cleanup reports extra copies. Unix directories are synced. Filesystems must support hard links within the destination directory; Windows directory fsync is not performed. Power loss cannot provide perfect cross-resource atomicity.
+
+Saving unrelated edits to an already inactive PA does not initiate another archival pass, but may finish committed cleanup. Repair normalises verified registered supplement names/legacy paths and finishes journalled cleanup; it does not initiate new archival. Name edits retain the current active/Archived directory while normalising verified owned filenames; an Active-to-Inactive transition initiates archival. Reactivation never restores files. Incoming new or corrected documents for an already inactive PA are filed directly in Archived without changing employment status.
+
+Timesheet preview/send reads the durable snapshot path, including after archival or later regeneration. Revised payslips use their durable current path/hash; legacy ordinary payslips retain active/Archived canonical lookup. Unassociated evidence stays excluded from automatic payslip email.
+
+## Explicit payroll document corrections (schema35)
+
+Personal Assistant Maintenance → **Replace payroll document…** lists the saved PA's current supplements and available ordinary payslip periods. The user selects the intended existing document, chooses an individual PDF, reviews the PA/type/year/cycle, old delivery evidence, both paths and SHA-256 hashes, then deliberately confirms. ZIP corrections must first be extracted for individual review. Filename PA/type and any supplied year/week must agree; missing metadata requires the user's explicit identity confirmation. The application does not infer identity from PDF contents.
+
+Import never overwrites changed bytes. A supplement variant with the same PA/type/year (or uncertain year) is refused and directed to replacement instead of creating an accidental second current document. P45 and P60 remain independent. Import refuses revised ordinary identities and directs them to the same workflow. Legacy active/Archived duplicate detection prevents correction imports from bypassing conflicts after reactivation.
+
+`payroll_replacement` takes a write transaction, rechecks the reviewed source, current identity, old digest and delivery state, publishes a synced immutable hash-named revision without clobbering, then commits the current identity switch. It retains old bytes in place, so no deletion journal is necessary for replacement itself. A failed transaction removes only this attempt's new publication; a pre-commit crash may leave an extra verified copy that retry can reuse. Conflicts are refused.
+
+Ordinary legacy evidence is adopted lazily on first explicit replacement: the old PDF path/hash and cycle delivery marker are captured in `payslip_revisions`; the new revision is current and unsent. The cycle's sent marker and schedule completion flag are cleared for the new bytes, while the old revision retains its original marker, including indeterminate. Subsequent delivery transitions update the current revision and cycle together. A stale selected attachment cannot send after replacement, and current revision hashes are checked before delivery.
+
+Supplements retain their original registration and history; `superseded_by` links to the new current registration. Every corrected supplement starts with `history_state=unknown` and NULL `sent_at`. Nothing converts an unknown P45 to sent, external or needs_sending. The normal history-review UI must be used before the corrected supplement can be emailed. Superseded documents are excluded from automatic selection and reconciliation but remain available to filing and historical inspection. All prior rows are preserved by migration without filesystem access.
+
+
+## Timesheet production safety (schema36)
+
+`timesheet_delivery` owns stable document identity, immutable bytes, atomic intent
+claims, frozen submission payloads and audited uncertainty review. A database
+writer lock validates current document/routing/classification before claiming;
+a unique unresolved-attempt index blocks competing sends. An OS file lock spans
+transport and finalisation, preventing another instance from reviewing an active
+attempt. No database transaction is held during SMTP. Crashes leave durable
+uncertainty; OS locks release automatically. Accepted first sends archive the
+claimed payload once. Resends append attempts against the existing submission.
+`email_service` builds production MIME from the same approved bytes and returns
+conservative accepted/non-accepted/uncertain evidence. Preview/test paths retain their existing semantics; Stage 8 extends conservative transport handling to payslip/P45/P60 bundles. Published older binaries lack a future
+schema check, so schema36 write guards require a connection function that only
+compatible application connections register.
+
+
+## Recovery and maintenance safety (1.0.6/current schema)
+
+`database_recovery` backs up and verifies the original database/configuration
+before upgrades, migrates on an isolated copy and installs with one live SQLite
+transaction. `BackupService` preserves committed WAL content, verifies complete
+schema/typed-row fingerprints and inventories external business paths without
+copying their files. Supported legacy restore is reviewed on an isolated migrated
+copy. Exact-input approval, a reason and rollback acknowledgement are mandatory;
+unresolved delivery evidence blocks restoration. Newer evidence survives any
+approved rollback in the separate verified recovery snapshot and its decision
+manifest. Maintenance uses the dispatch OS lock and a live writer reservation. Production
+payslip/P45/P60 bundles share that lock without changing routing or delivery rules.
+See DATABASE-SCHEMA.md for recovery boundaries and partial config-install failure.
+Published old binaries lack these protections; ordinary SQL guards cannot block
+their backup-API restore. Close them and never target upgraded production data.
+
+Byte-identical generation preserves immutable document/submission identity and
+sent status. After successful PDF publication it updates only the current registered
+snapshot location, allowing recovery at a new output destination even when the
+former file is missing. Failed identical publication retains the old registration.
+
+
+## Stage 2 sickness safety (schema37)
+
+`src/sickness_service.rs` owns reviewed insert/edit/delete transactions, cross-cycle lifecycle checks, scoped projections, duplicate/stale-edit protection, audit and immutable sickness snapshots. The editor never performs direct sickness repository mutations in production. Generation holds the existing OS dispatch lock before reading PDF inputs and through publication; sickness mutation, production sending, restore and migration use the same lock plus database writer reservations. Correction generation reuses retained worked membership/totals and rejects changed payroll totals instead of recalculating settled work. Candidate registration binds structured sickness evidence to immutable document identity; attempt and submission snapshots copy that exact capture.
+
+The original submission/PDF and settlement remain protected when a sickness-only replacement is authorised. The correction uses existing reconciliation decisions and safeguarded email first-send/resend handling. Per-cycle overrides preserve full protected sickness ranges during explicitly scoped editable-only changes. Database/config recovery includes the new tables; external business documents/signatures retain their existing separate recovery requirements. See [schema37](DATABASE-SCHEMA.md#schema-37-sickness-protection-and-historical-information-corrections).
+
+
+## Stage 5 startup orchestration
+
+`main` returns an explicit failure status and reports a structured `startup::StartupError` through a native dialog independent of eframe, retaining stderr fallback. Error text uses curated explanations, safe paths and recovery guidance; underlying TOML/SQL/graphics payloads are not displayed. Native dialog availability is platform-dependent; an error-only eframe window is a fallback before main-GUI startup. It is not retried after a graphics failure. Presentation is tested through injected functions, without starting a desktop.
+
+`AppContext` performs the single database initialisation before loading configuration; `Application` then opens repositories, and `application::run` opens eframe without repeating migration/locking. Existing-database upgrades retain verified backup, isolated migrations and transactional verified installation. Fresh databases also stage before installation. Current-schema validation checks critical table/column and write-guard metadata, then runs `quick_check(1)` with a 100,000-VM-operation/250-ms callback budget. Exhausting that budget is not corruption and does not certify unchecked pages; backup/upgrade integrity checks remain full.
+
+Configuration loading distinguishes genuine absence from inaccessible/malformed files and dangling symlinks. A synced same-directory temporary file is published without overwrite; concurrent creators load the winning configuration. Explicit configuration saves also publish atomically. Business-folder checks are read-only/background operations; workflows retain their existing operation-specific filesystem validation and late output creation. Settings changes refresh folder checks; unavailable unrelated folders do not gate saving configuration or internal shifts.
+
+
+## Recover incomplete filing (Stage 6, schema39)
+
+Personal Assistant Maintenance shows persistent scan/document/legacy-cleanup status
+and offers **Resume incomplete filing** without an employment-status toggle. A
+non-blocking startup summary and persistent banner expose pending operations.
+Ordinary inactive saves do not initiate another archive pass; reactivation leaves
+Archived history in place. Explicit resume recovers captured operations. If a PA
+reactivated before a scan completed, an unplanned rescan is refused because it
+could archive new active-employment files; no employment status is changed.
+
+Deactivation intent captures the previous maintained identity and configured roots.
+Unavailable roots, failed directory entries and individual document errors remain
+pending while available roots/documents proceed. Paths are never reset/replaced.
+Registration binds exact retained row membership/historical facts independently of
+relocated path fields. Recovery requires this metadata plus expected digests; a
+restored older database never causes orphan adoption. Keep both copies and the
+verified recovery backup when metadata or publication provenance is inconsistent.
+
+No-clobber publication retains a private staging hard link until cleanup completes.
+An existing archive destination must be the same filesystem object as that retained
+publication, with appropriate durable progress, not merely identical bytes. Changed
+sources/destinations, missing provenance or partial staging copies require review;
+originals are never deleted to force recovery. Completed intents remain as evidence.
+
+Lock order is **production OS lock → SQLite writer reservation → filesystem work**.
+PA Save already owns the signature/production lock and calls the lock-held filing
+entry point; Repair, Resume, replacement and Payroll Return import acquire it once.
+This avoids nested acquisition and excludes live SMTP, generation, migration and
+restore across cooperating application instances. Legacy cleanup also holds a writer
+reservation through verification/deletion. Unresolved PA delivery uncertainty blocks
+filing/replacement until established audited reconciliation; ordinary contact edits
+and reactivation remain available with document cleanup deferred. Unrelated payroll
+remains available. Repair uses per-document durable intent after validated planning; name edits retain
+their transactional save and refuse orphan destinations without provenance.
+Resume completes captured filing/repair intents and committed cleanup, not arbitrary
+unregistered files or unauthorised PA renaming.
+
+Payroll Return import now syncs the destination directory before registration on
+Unix. Windows directory fsync remains unsupported; hard-link-capable destination
+filesystems are still required. No cross-resource power-loss guarantee is claimed.
+
+## Imported-hours correction UI (Stage 7, schema40)
+
+View Imported Hours retains raw PA filtering, ordering, cycle scope and scrolling,
+with effective values, breaks/notes, source archive identity, source eligibility and
+correction history beside the original data. A review action beside each PA name
+opens the editor even on narrow windows; horizontal scrolling exposes the additional
+evidence while retaining the Dashboard vertical scroll. Edit/Revert/Exclude/Restore capture
+raw values, latest correction/inclusion events and source audit identity. Reviews
+include original, effective, proposed and retained submission cycles plus duplicate
+counterparts. Saving acquires the production OS lock before an immediate SQLite
+transaction and repeats stale-version, uncertainty and authorisation checks.
+No PA reassignment is performed.
+
+Edits share the existing append-only correction implementation. Exclusion is an
+independent ledger, not a fabricated zero-hour edit. Restoring evidence re-enters
+cross-source duplicate review. Submitted/settled totals, correction obligations and
+original PDFs remain unchanged; financial consequences use existing preparation
+reconciliation/resubmission/carry-forward decisions. Changed unsent candidates are
+invalidated, with retained document bytes untouched. Notes-only changes that do not
+change PDF/payroll evidence retain the existing freshness semantics.
+
+Internal history uses bounded twelve-record pages and literal date/time/note search.
+Deletion compares displayed expected values inside the writer transaction and
+checks retained submission cycles as well as current dates. Protected deletion
+remains refused. UI evidence caches refresh on same-connection changes and external
+SQLite data-version changes; mutation validation never trusts cached values.
+
+
+## Stage 8 email approval and reconciliation
+
+`payroll_delivery` adds an immutable PA bundle ledger alongside the existing
+`timesheet_delivery` history. `PendingEmailBatch` captures exact previews, settings
+fingerprints, attachment identities, SHA-256 hashes and bytes before final
+confirmation. Both the in-memory configuration and saved configuration file are
+fingerprinted. Confirmation shows actual To, CC and BCC recipients and PA bundle
+attachment hashes. Dispatch rejects changed selection, schedule, recipients,
+settings, eligible document set, history or bytes. The common OS lock plus immediate
+SQLite claim transaction repeats validation against current registry identity.
+MIME uses those verified bytes; SMTP never reopens attachment paths.
+
+The production SMTP adapter returns typed accepted, reliably not-sent or uncertain
+outcomes. Generic errors never establish non-acceptance. `payroll_delivery` records
+transport evidence separately from final status, so accepted transport followed by
+a failed database write remains protected and reviewable. Approved unrelated PA
+bundles can continue after an individual dispatch failure; accepted progress remains
+recorded. The old test/compatibility delivery API also keeps generic errors protected.
+
+Dashboard → Timesheet Email Status exposes timesheet and payslip/P45/P60 attempt
+history and legacy uncertainty. Review shows PA, document type/identity, SHA-256,
+known recipients, Message-ID, transport result, timestamps and previous decisions;
+it does not display retained PDF contents or the private email body. A reason,
+application reviewer identity (`local_employer`), timestamp and final confirmation
+are required. Acceptance/external sending, confirmed-not-sent and still-uncertain
+are distinct audited decisions. Inconclusive review retains the sending block.
+History is append-only; resolution does not send email or alter historical payroll.
+
+Settings → Email Settings has **Send a CC copy of timesheet emails to the employer**,
+enabled by default for old and new installations. Timesheets remain To Payroll and
+optionally BCC PA. Only employer CC can be disabled. Payslip/P45/P60 remain To PA,
+BCC employer with no Payroll or CC recipients. An employer copy permits monitoring;
+SMTP acceptance and receipt of that copy do not establish another recipient's inbox
+receipt. Stage 8 uses schema41 and keeps application version 1.0.6.
+
+Legacy orphan/retired payslip revision uncertainty is also reviewable. A review of a
+retired revision never rewrites a later cycle settlement. Known current-revision
+delivery evidence remains authoritative even if its cycle-status record is missing.
+
+### Secure SMTP dispatch
+
+Production, preview and test adapters share `email_service::dispatch_message`.
+It establishes one lettre native-TLS SMTP connection, performs required TLS and
+remote authentication, then submits the immutable message on that connection.
+Connection/TLS/authentication failures precede submission and are definitely not
+sent. After submission starts, only explicit SMTP rejection proves non-acceptance;
+other errors remain uncertain. Final DATA acceptance is recorded without depending
+on QUIT or claiming inbox receipt. Server-provided diagnostic text is never retained.
+Optional `EmailConfig.smtp_security` preserves missing legacy fields as plaintext;
+new configurations use required STARTTLS for remote mode. Local mode remains
+localhost:25 without credentials. Authenticated remote SMTP requires TLS; Microsoft personal-account OAuth2 supplies XOAUTH2 and refresh, while other providers retain password authentication. Native OS stores hold secrets; configuration/backup copies retain opaque references. No transport-specific schema change is required; current schema42 is for amendment history. See [OAuth2](MICROSOFT-OAUTH2-SMTP.md) and [credential storage](SMTP-CREDENTIAL-STORAGE.md).
+See [security settings and storage limitations](DOMAIN.md#smtp-configuration-and-security).
