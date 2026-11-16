@@ -1,0 +1,144 @@
+{
+  "schema": 1,
+  "exceptions": [
+    {
+      "id": "RUSTSEC-2026-0187",
+      "package": "lopdf",
+      "versions": [
+        "0.35.0"
+      ],
+      "review_by": "2027-02-16",
+      "rationale": "Only printpdf 0.8.2 depends on this version. Production renders PDFs; imported PDFs go through pdf-extract 0.12.1/lopdf 0.42.0. PdfDocument::parse calls occur only in tests reading generated synthetic output. Keep renderer/layout stable; reassess if any input path calls printpdf PDF parsing. This exception does not approve arbitrary PDF parsing with 0.35."
+    },
+    {
+      "id": "RUSTSEC-2026-0367",
+      "package": "zip",
+      "versions": [
+        "2.4.2"
+      ],
+      "review_by": "2027-02-16",
+      "rationale": "Production never calls ZipArchive::extract or ZipStreamReader::extract. archive.rs validates paths, rejects symlinks/special entries, validates declared size/ratio/count and streams with a hard output cap into private staging. No archive permissions are applied. Keep supported compression formats; revisit if an extract API is introduced."
+    },
+    {
+      "id": "RUSTSEC-2026-0368",
+      "package": "zip",
+      "versions": [
+        "2.4.2"
+      ],
+      "review_by": "2027-02-16",
+      "rationale": "Production never calls ZipArchive::extract or ZipStreamReader::extract. archive.rs validates paths, rejects symlinks/special entries, validates declared size/ratio/count and streams with a hard output cap into private staging. No archive permissions are applied. Keep supported compression formats; revisit if an extract API is introduced."
+    },
+    {
+      "id": "RUSTSEC-2026-0369",
+      "package": "zip",
+      "versions": [
+        "2.4.2"
+      ],
+      "review_by": "2027-02-16",
+      "rationale": "Production never calls ZipArchive::extract or ZipStreamReader::extract. archive.rs validates paths, rejects symlinks/special entries, validates declared size/ratio/count and streams with a hard output cap into private staging. No archive permissions are applied. Keep supported compression formats; revisit if an extract API is introduced."
+    },
+    {
+      "id": "RUSTSEC-2026-0429",
+      "package": "zip",
+      "versions": [
+        "2.4.2"
+      ],
+      "review_by": "2027-02-16",
+      "rationale": "Production never calls ZipArchive::extract or ZipStreamReader::extract. archive.rs validates paths, rejects symlinks/special entries, validates declared size/ratio/count and streams with a hard output cap into private staging. No archive permissions are applied. Keep supported compression formats; revisit if an extract API is introduced."
+    },
+    {
+      "id": "RUSTSEC-2026-0097",
+      "package": "rand",
+      "versions": [
+        "0.7.3"
+      ],
+      "review_by": "2027-02-16",
+      "rationale": "Build-only phf_generator 0.8 dependency; no custom logger recursively calling thread_rng. No application use of this rand version. A PHF/HTML renderer major migration would change unrelated rendering dependencies. Revisit logger/build graph changes."
+    },
+    {
+      "id": "RUSTSEC-2025-0057",
+      "package": "fxhash",
+      "versions": [
+        "0.2.1"
+      ],
+      "review_by": "2027-02-16",
+      "rationale": "Maintenance-status advisory, not a demonstrated vulnerability. Transitive renderer/GUI/keyring dependency; retain current GUI, PDF and credential-store integrations instead of an unvalidated major-stack migration. Monitor upstream replacements and new security advisories. This exact-version exception expires and does not cover other advisory IDs."
+    },
+    {
+      "id": "RUSTSEC-2023-0019",
+      "package": "kuchiki",
+      "versions": [
+        "0.8.1"
+      ],
+      "review_by": "2027-02-16",
+      "rationale": "Maintenance-status advisory, not a demonstrated vulnerability. Transitive renderer/GUI/keyring dependency; retain current GUI, PDF and credential-store integrations instead of an unvalidated major-stack migration. Monitor upstream replacements and new security advisories. This exact-version exception expires and does not cover other advisory IDs."
+    },
+    {
+      "id": "RUSTSEC-2024-0436",
+      "package": "paste",
+      "versions": [
+        "1.0.15"
+      ],
+      "review_by": "2027-02-16",
+      "rationale": "Maintenance-status advisory, not a demonstrated vulnerability. Transitive renderer/GUI/keyring dependency; retain current GUI, PDF and credential-store integrations instead of an unvalidated major-stack migration. Monitor upstream replacements and new security advisories. This exact-version exception expires and does not cover other advisory IDs."
+    },
+    {
+      "id": "RUSTSEC-2024-0370",
+      "package": "proc-macro-error",
+      "versions": [
+        "1.0.4"
+      ],
+      "review_by": "2027-02-16",
+      "rationale": "Maintenance-status advisory, not a demonstrated vulnerability. Transitive renderer/GUI/keyring dependency; retain current GUI, PDF and credential-store integrations instead of an unvalidated major-stack migration. Monitor upstream replacements and new security advisories. This exact-version exception expires and does not cover other advisory IDs."
+    },
+    {
+      "id": "RUSTSEC-2026-0206",
+      "package": "rustybuzz",
+      "versions": [
+        "0.20.1"
+      ],
+      "review_by": "2027-02-16",
+      "rationale": "Maintenance-status advisory, not a demonstrated vulnerability. Transitive renderer/GUI/keyring dependency; retain current GUI, PDF and credential-store integrations instead of an unvalidated major-stack migration. Monitor upstream replacements and new security advisories. This exact-version exception expires and does not cover other advisory IDs."
+    },
+    {
+      "id": "RUSTSEC-2026-0192",
+      "package": "ttf-parser",
+      "versions": [
+        "0.15.2",
+        "0.25.1"
+      ],
+      "review_by": "2027-02-16",
+      "rationale": "Maintenance-status advisory, not a demonstrated vulnerability. Transitive renderer/GUI/keyring dependency; retain current GUI, PDF and credential-store integrations instead of an unvalidated major-stack migration. Monitor upstream replacements and new security advisories. This exact-version exception expires and does not cover other advisory IDs."
+    },
+    {
+      "id": "RUSTSEC-2026-0371",
+      "package": "zbus_names",
+      "versions": [
+        "3.0.0",
+        "4.3.4"
+      ],
+      "review_by": "2027-02-16",
+      "rationale": "Maintenance-status advisory, not a demonstrated vulnerability. Transitive renderer/GUI/keyring dependency; retain current GUI, PDF and credential-store integrations instead of an unvalidated major-stack migration. Monitor upstream replacements and new security advisories. This exact-version exception expires and does not cover other advisory IDs."
+    },
+    {
+      "id": "RUSTSEC-2026-0370",
+      "package": "zvariant",
+      "versions": [
+        "4.2.0",
+        "5.13.1"
+      ],
+      "review_by": "2027-02-16",
+      "rationale": "Maintenance-status advisory, not a demonstrated vulnerability. Transitive renderer/GUI/keyring dependency; retain current GUI, PDF and credential-store integrations instead of an unvalidated major-stack migration. Monitor upstream replacements and new security advisories. This exact-version exception expires and does not cover other advisory IDs."
+    },
+    {
+      "id": "RUSTSEC-2026-0372",
+      "package": "zvariant_derive",
+      "versions": [
+        "4.2.0",
+        "5.13.1"
+      ],
+      "review_by": "2027-02-16",
+      "rationale": "Maintenance-status advisory, not a demonstrated vulnerability. Transitive renderer/GUI/keyring dependency; retain current GUI, PDF and credential-store integrations instead of an unvalidated major-stack migration. Monitor upstream replacements and new security advisories. This exact-version exception expires and does not cover other advisory IDs."
+    }
+  ]
+}

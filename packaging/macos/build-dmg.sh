@@ -77,8 +77,12 @@ codesign --verify --deep --strict --verbose=2 "$APP"
 codesign -dv "$APP" 2> "$BUILD_ROOT/signature.txt"
 grep -q 'Signature=adhoc' "$BUILD_ROOT/signature.txt"
 ln -s /Applications "$STAGE/Applications"
-OUTPUT_FILE="$OUTPUT_DIRECTORY/DirectPaymentTimesheets-${VERSION}-macos-${ARCH}.dmg"
+PUBLISH_FILE="$OUTPUT_DIRECTORY/DirectPaymentTimesheets-${VERSION}-macos-${ARCH}.dmg"
+mkdir -p "$BUILD_ROOT/candidate"
+OUTPUT_FILE="$BUILD_ROOT/candidate/DirectPaymentTimesheets-${VERSION}-macos-${ARCH}.dmg"
 hdiutil create -volname "Direct Payments Timesheets $VERSION" -srcfolder "$STAGE" -ov -format UDZO "$OUTPUT_FILE"
+VERIFIED_SHA="$(python3 packaging/package.py snapshot-artifact "$OUTPUT_FILE" "$BUILD_ROOT/verified/$(basename "$OUTPUT_FILE")")"
+OUTPUT_FILE="$BUILD_ROOT/verified/$(basename "$OUTPUT_FILE")"
 hdiutil verify "$OUTPUT_FILE"
 # Inspect the actual downloadable image without launching its contents.
 MOUNT="$BUILD_ROOT/mount"
@@ -90,8 +94,8 @@ xcrun vtool -show-build "$MOUNT/Direct Payments Timesheets.app/Contents/MacOS/di
 python3 packaging/package.py macos "$TARGET" "$MOUNT/Direct Payments Timesheets.app/Contents/Info.plist" "$BUILD_ROOT/mounted-deployment.txt"
 codesign --verify --deep --strict "$MOUNT/Direct Payments Timesheets.app"
 [[ "$(lipo -archs "$MOUNT/Direct Payments Timesheets.app/Contents/MacOS/direct_payment_timesheets")" == "$ARCH" ]]
-test -f "$MOUNT/Direct Payments Timesheets.app/Contents/Resources/DejaVu-LICENSE.txt"
+python3 packaging/package.py verify-notice-stage "$MOUNT/Direct Payments Timesheets.app/Contents/Resources"
 test -L "$MOUNT/Applications"
 hdiutil detach "$MOUNT"
 trap 'rm -rf -- "$BUILD_ROOT"' EXIT
-python3 packaging/package.py record "$OUTPUT_FILE" "$TARGET" macos
+python3 packaging/package.py promote-verified "$OUTPUT_FILE" "$PUBLISH_FILE" "$TARGET" macos "$VERIFIED_SHA"

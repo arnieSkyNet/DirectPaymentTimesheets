@@ -1,0 +1,79 @@
+{
+  "source_sha": "995c3c8cf179dd522d595c20bbacce40a9b29304",
+  "build_run": "43763642406",
+  "verified_date": "2026-11-16",
+  "scope": "Local payload SHA256 agrees with complete manifest and per-package JSON sidecars; baseline only, not current remediation acceptance",
+  "packages": [
+    {
+      "file": "direct-payment-timesheets_1.0.7_arm64.deb",
+      "target": "aarch64-unknown-linux-gnu",
+      "installation_kind": "deb",
+      "sha256": "54eef3aa897d156e41b729050e90d96a07e289e8361b04781fe275fb94edc28e",
+      "bytes": 8871584
+    },
+    {
+      "file": "DirectPaymentTimesheets-1.0.7-linux-aarch64.AppImage",
+      "target": "aarch64-unknown-linux-gnu",
+      "installation_kind": "appimage",
+      "sha256": "a0648c5e08a78bd93daa549c168dea4e10adba9ae7a165844d8d955e96b0a833",
+      "bytes": 14920200
+    },
+    {
+      "file": "DirectPaymentTimesheets-1.0.7-linux-armhf.AppImage",
+      "target": "armv7-unknown-linux-gnueabihf",
+      "installation_kind": "appimage",
+      "sha256": "c8c6d04dda86a21498b933ed11324c10ee92249ac2343cd39f0ec6edd088993f",
+      "bytes": 14122372
+    },
+    {
+      "file": "direct-payment-timesheets_1.0.7_armhf.deb",
+      "target": "armv7-unknown-linux-gnueabihf",
+      "installation_kind": "deb",
+      "sha256": "038611d7c1f58f84f277a459869326f58c363f4eee5e76df71e35798f412e74a",
+      "bytes": 8635304
+    },
+    {
+      "file": "DirectPaymentTimesheets-1.0.7-macos-x86_64.dmg",
+      "target": "x86_64-apple-darwin",
+      "installation_kind": "macos",
+      "sha256": "bced6485385b9acf00fb1bfc4c7f1db0c0173eeef1b0abb6f813fdb96f2ce7c1",
+      "bytes": 13814161
+    },
+    {
+      "file": "direct-payment-timesheets_1.0.7_amd64.deb",
+      "target": "x86_64-unknown-linux-gnu",
+      "installation_kind": "deb",
+      "sha256": "efc0b9c9648ea1fbb24b5572cf7d64ca08a38fb2472ebfdbf479c8625e899642",
+      "bytes": 10003412
+    },
+    {
+      "file": "DirectPaymentTimesheets-1.0.7-linux-x86_64.AppImage",
+      "target": "x86_64-unknown-linux-gnu",
+      "installation_kind": "appimage",
+      "sha256": "e272050d805ea8924e71573966a8f35537687a0ff9032b8172ff9d1a5228326e",
+      "bytes": 15964664
+    },
+    {
+      "file": "DirectPaymentTimesheets-1.0.7-windows-arm64-setup.exe",
+      "target": "aarch64-pc-windows-msvc",
+      "installation_kind": "windows",
+      "sha256": "370beb629795375463991490d3a1e380888c1d02639aa43bba935ffd58de0b9d",
+      "bytes": 7356318
+    },
+    {
+      "file": "DirectPaymentTimesheets-1.0.7-windows-x86_64-setup.exe",
+      "target": "x86_64-pc-windows-msvc",
+      "installation_kind": "windows",
+      "sha256": "900381ca80117afe95c9137d4dfc8807af19b1a763ee71eff675ed7a139f78aa",
+      "bytes": 8071029
+    },
+    {
+      "file": "DirectPaymentTimesheets-1.0.7-macos-arm64.dmg",
+      "target": "aarch64-apple-darwin",
+      "installation_kind": "macos",
+      "sha256": "99d6c11134a47cdb17fec3a57b3a4b8f8fdbb0af36a193014dff490d38ecc0e1",
+      "bytes": 13068651
+    }
+  ],
+  "content_inspection": "Read-only dpkg-deb/unsquashfs/7z listings succeeded for all ten packages; notices present; no database/configuration/PDF/CSV/EML/DOCX/PEM/P12 payload paths found. This is not native execution or current-remediation acceptance."
+}

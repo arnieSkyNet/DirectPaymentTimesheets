@@ -79,7 +79,7 @@ fn read_only_open_does_not_register_or_migrate() {
     let owner = crate::database::open_read_only_owned(&path, Some(staging.clone())).unwrap();
     assert!(owner
         .connection()
-        .is_readonly(rusqlite::DatabaseName::Main)
+        .is_readonly(rusqlite::MAIN_DB)
         .unwrap());
     assert!(owner
         .connection()
@@ -264,4 +264,10 @@ fn ordinary_unwind_rolls_back_and_closes_before_last_staging_release() {
     reader.close().unwrap();
     drop(staging);
     assert!(weak.upgrade().is_none());
+}
+#[test]
+fn bundled_sqlite_has_the_wal_memory_disclosure_fix() {
+    let db = crate::database::open_in_memory().unwrap();
+    let current: String = db.query_row("SELECT sqlite_version()", [], |r| r.get(0)).unwrap();
+    assert!(semver::Version::parse(&current).unwrap() >= semver::Version::new(3, 54, 0));
 }

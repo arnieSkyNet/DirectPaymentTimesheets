@@ -242,8 +242,7 @@ fn registration(db: &Connection, path: &str, pa: i64) -> Result<String> {
         let count = statement.column_count();
         let path_index = statement
             .column_names()
-            .iter()
-            .position(|c| *c == column)
+            .position(|c| c == column)
             .unwrap();
         let rows = statement
             .query_map([path], |row| {

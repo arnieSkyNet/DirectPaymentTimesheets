@@ -2380,7 +2380,7 @@ pub(crate) mod about_read_only_tests {
         let before = std::fs::read(&path).unwrap();
         let permissions = std::fs::metadata(&path).unwrap().permissions();
         let db = open_read_only(&path).unwrap();
-        assert!(db.is_readonly(rusqlite::DatabaseName::Main).unwrap());
+        assert!(db.is_readonly(rusqlite::MAIN_DB).unwrap());
         assert_eq!(
             db.query_row("SELECT version FROM schema_version", [], |r| r
                 .get::<_, i64>(0))
@@ -2446,7 +2446,7 @@ pub(crate) mod about_read_only_tests {
         assert!(dir.path().join("synthetic.sqlite-wal").is_file());
         assert!(dir.path().join("synthetic.sqlite-shm").is_file());
         let reader = open_read_only(&path).unwrap();
-        assert!(reader.is_readonly(rusqlite::DatabaseName::Main).unwrap());
+        assert!(reader.is_readonly(rusqlite::MAIN_DB).unwrap());
         assert_eq!(
             reader
                 .query_row("SELECT version FROM schema_version", [], |r| r

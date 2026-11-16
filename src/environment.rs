@@ -63,6 +63,9 @@ impl AppEnvironment {
             crate::private_storage::ensure_private_dir(directory).map_err(|e| {
                 crate::startup::StartupError::io(crate::startup::Stage::Environment, directory, &e)
             })?;
+            crate::private_storage::verify_private_directory(directory).map_err(|e| {
+                crate::startup::StartupError::io(crate::startup::Stage::Environment, directory, &e)
+            })?;
         }
 
         Ok(Self {

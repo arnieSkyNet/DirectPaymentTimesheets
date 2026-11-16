@@ -733,6 +733,8 @@ impl DirectPaymentApp {
                 ui.label("Developed by Mark Worsdall");
                 ui.label("Development: ArnieSkyNet / DirectPaymentTimesheets project on GitHub.");
                 ui.label(format!("License: {}", env!("CARGO_PKG_LICENSE")));
+                ui.label("Free software: you may redistribute and modify it under GPL version 3 or later.");
+                ui.label("Provided without warranty; see the supplied LICENSE and third-party notices.");
                 ui.separator();
                 ui.label(crate::update_check::InstallationKind::current().guidance());
                 if ui
@@ -1238,6 +1240,8 @@ impl DirectPaymentApp {
 
     fn draw_smtp_config_tab(&mut self, ui: &mut egui::Ui) {
         let email = &mut self.application.context.config.email;
+        let relay_context = (email.smtp_transport.clone(), email.smtp_host.clone(), email.smtp_port,
+            email.smtp_username.clone(), email.smtp_security, email.smtp_authentication);
         let mut transport = email.smtp_transport.clone();
         ui.horizontal_wrapped(|ui| {
             ui.label("Transport");
@@ -1281,6 +1285,11 @@ impl DirectPaymentApp {
             });
         });
         if email.smtp_transport == "SMTP Server" {
+            if matches!(email.smtp_security, None | Some(crate::config::SmtpSecurity::Plaintext)) {
+                ui.checkbox(&mut email.allow_remote_plaintext,
+                    "Allow unencrypted payroll delivery to this unauthenticated relay");
+                ui.label("This exception never permits plaintext authentication. Use STARTTLS or TLS whenever available.");
+            }
             ui.horizontal(|ui| {
                 ui.label("Authentication");
                 let old = email.smtp_authentication;
@@ -1354,7 +1363,7 @@ impl DirectPaymentApp {
             if email.smtp_security.is_none()
                 || email.smtp_security == Some(crate::config::SmtpSecurity::Plaintext)
             {
-                ui.colored_label(egui::Color32::YELLOW,"Unencrypted SMTP exposes credentials and messages. Use only an intentionally trusted relay.");
+                ui.colored_label(egui::Color32::YELLOW,"Unencrypted SMTP exposes payroll messages; authentication remains blocked. Use only an intentionally trusted relay.");
             }
             ui.small("Passwords use your OS credential store. Backups contain references only; another account or computer may require password re-entry. Save changed SMTP settings before testing.");
         } else {
@@ -1362,6 +1371,10 @@ impl DirectPaymentApp {
         }
         if email.smtp_authentication == crate::config::SmtpAuthentication::Password {
             if let Some(error) = &email.smtp_credential_error { ui.colored_label(egui::Color32::RED, error); }
+        }
+        if relay_context != (email.smtp_transport.clone(), email.smtp_host.clone(), email.smtp_port,
+            email.smtp_username.clone(), email.smtp_security, email.smtp_authentication) {
+            email.allow_remote_plaintext = false; // Re-acknowledge a changed relay/security context.
         }
     }
 
@@ -6661,6 +6674,9 @@ mod preparation_navigation_tests {
         let (_directory, application, _screen) = dirty_preparation_fixture();
         let mut app = DirectPaymentApp::new(application);
         let approved = app.email_settings_digest().unwrap();
+        app.application.context.config.email.allow_remote_plaintext = true;
+        assert_ne!(approved, app.email_settings_digest().unwrap());
+        app.application.context.config.email.allow_remote_plaintext = false;
         app.application.context.config.email.smtp_security =
             Some(crate::config::SmtpSecurity::Plaintext);
         assert_ne!(approved, app.email_settings_digest().unwrap());
@@ -6870,6 +6886,7 @@ mod payroll_period_eligibility_tests {
             application.context.config.email.smtp_security =
                 Some(crate::config::SmtpSecurity::Plaintext);
             application.context.config.email.smtp_host = "127.0.0.1".into();
+            application.context.config.email.allow_remote_plaintext = true; // Synthetic loopback relay only.
             application.context.config.email.smtp_port = listener.local_addr().unwrap().port();
             application.context.config.email.smtp_username.clear();
             application.context.config.email.pa_test_email_address =

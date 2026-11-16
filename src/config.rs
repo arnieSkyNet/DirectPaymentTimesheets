@@ -324,6 +324,11 @@ pub struct EmailConfig {
     #[serde(default)]
     pub smtp_security: Option<SmtpSecurity>,
 
+    /// Explicit exception for an unauthenticated remote relay. Never permits
+    /// plaintext passwords or OAuth; missing legacy fields default to refusal.
+    #[serde(default)]
+    pub allow_remote_plaintext: bool,
+
     #[serde(default = "default_smtp_host")]
     pub smtp_host: String,
 
@@ -367,6 +372,21 @@ pub struct EmailConfig {
 }
 
 impl EmailConfig {
+    pub(crate) fn validate_transport_privacy(&self) -> Result<(), &'static str> {
+        if self.smtp_transport == "SMTP Server"
+            && matches!(self.smtp_security, None | Some(SmtpSecurity::Plaintext))
+        {
+            if !self.smtp_username.trim().is_empty()
+                || self.smtp_authentication == SmtpAuthentication::MicrosoftOAuth2
+            {
+                return Err("Authenticated SMTP requires STARTTLS or implicit TLS; plaintext authentication is blocked.");
+            }
+            if !self.allow_remote_plaintext {
+                return Err("Remote plaintext relay is blocked. Select STARTTLS/TLS, or explicitly acknowledge unencrypted payroll delivery in SMTP Config and save.");
+            }
+        }
+        Ok(())
+    }
     pub fn select_transport(&mut self, transport: String) {
         // A legacy local configuration has never approved remote plaintext.
         // Default its first remote setup to TLS; leave existing remote settings
@@ -388,6 +408,16 @@ impl std::fmt::Debug for EmailConfig {
             .field("smtp_security", &self.smtp_security)
             .field("credentials", &"[REDACTED]")
             .finish_non_exhaustive()
+    }
+}
+
+impl Drop for EmailConfig {
+    fn drop(&mut self) {
+        // Also erase discarded settings drafts and clones. This cannot erase
+        // copies owned by GUI/SMTP dependencies, swap or a privileged debugger.
+        use zeroize::Zeroize;
+        self.smtp_password.zeroize();
+        self.smtp_password_baseline.zeroize();
     }
 }
 
@@ -417,6 +447,7 @@ impl Default for EmailConfig {
             timesheet_employer_cc: true,
             smtp_transport: default_smtp_transport(),
             smtp_security: Some(SmtpSecurity::RequiredStarttls),
+            allow_remote_plaintext: false,
             smtp_host: default_smtp_host(),
             smtp_port: default_smtp_port(),
             smtp_username: String::new(),
@@ -471,7 +502,12 @@ impl AppConfig {
         if retries >= 8 {
             return Err(StartupError::new(Stage::Configuration,Some(path),"Configuration changed repeatedly while loading.","Close other configuration editors or application instances, then retry. No existing configuration was overwritten."));
         }
-        let contents = match fs::read_to_string(path) {
+        let contents = match (|| -> std::io::Result<String> {
+            use std::io::Read;
+            let mut contents = String::new();
+            crate::private_storage::open_private_read(path)?.read_to_string(&mut contents)?;
+            Ok(contents)
+        })() {
             Ok(contents) => contents,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
                 #[cfg(all(windows, debug_assertions, feature = "windows-dev-isolation"))]
@@ -606,6 +642,10 @@ pub(crate) fn publish_config(path: &Path, bytes: &[u8], replace: bool) -> std::i
         .parent()
         .filter(|p| !p.as_os_str().is_empty())
         .unwrap_or(Path::new("."));
+    if replace && path.exists() {
+        // Do not propagate unsafe legacy configuration permissions to a new save.
+        drop(crate::private_storage::open_private_read(path)?);
+    }
     let mut pending = crate::private_storage::tempfile_in(parent)?;
     pending.write_all(bytes)?;
     pending.as_file().sync_all()?;
@@ -669,6 +709,21 @@ fn reconcile_legacy_timesheet_email_body(config: &mut AppConfig, source: &toml::
 
 #[cfg(test)]
 mod tests {
+
+    #[cfg(unix)]
+    #[test]
+    fn legacy_shared_configuration_is_refused_without_reading_credentials_or_repair() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = crate::private_storage::tempdir().unwrap();
+        let path = root.path().join("config.toml");
+        let bytes = toml::to_string(&AppConfig::default()).unwrap();
+        crate::private_storage::write_new(&path, bytes.as_bytes()).unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+        assert!(AppConfig::load(&path).is_err());
+        assert!(AppConfig::default().save(&path).is_err());
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), bytes);
+        assert_eq!(std::fs::metadata(path).unwrap().permissions().mode() & 0o777, 0o644);
+    }
 
     #[test]
     fn payroll_footer_old_configs_defaults_and_multiline_round_trip() {

@@ -1,0 +1,7 @@
+# Exact notice/lockfile hashes must survive checkout on every packaging OS.
+third-party/** -text
+THIRD_PARTY_LICENSES.md -text
+LICENSE -text
+assets/fonts/DejaVu-LICENSE.txt -text
+Cargo.lock -text
+packaging/notice-allowlist.json -text

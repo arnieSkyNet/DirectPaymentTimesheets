@@ -4,15 +4,17 @@ For the project’s development history and the privacy reasons for this fresh s
 
 Direct Payment Timesheets is a local desktop application for administering UK Direct Payment Personal Assistant timesheets and the four-week payroll-provider workflow. It imports externally recorded work, prepares payroll timesheets, generates the provider PDF, sends timesheets and payslips, imports payroll documents, and preserves the evidence represented by submitted payroll.
 
-The latest stable release is **[v1.0.7](https://github.com/arnieSkyNet/DirectPaymentTimesheets/releases/tag/v1.0.7), SQLite schema 42**, published on 10 November 2026 for Linux, Windows and macOS. It includes editable submitted/settled timesheets, separately generated replacement PDFs, configurable folder/clipboard CSV import, Microsoft personal-account OAuth2, native credential storage, regional public holidays and configurable payroll rounding. The previous v1.0.6 release uses SQLite schema **41**. This is a single-user local desktop application for the documented Direct Payment payroll workflow, not a general-purpose payroll product.
+This working tree is an **unreleased security remediation** of clean baseline commit `995c3c8cf179dd522d595c20bbacce40a9b29304` (v1.0.7, schema 42). Application features and schema numbering are retained. The baseline has a verified ten-package build from run `43763642406`; those packages predate these fixes. See [current security and acceptance status](docs/SECURITY-REMEDIATION.md) and [baseline package hashes](docs/CLEAN-BASELINE-PACKAGES.json).
 
-## Download
+## Historical downloads and installation instructions
 
-**Latest stable release: v1.0.7 · Linux, Windows and macOS · SQLite schema 42**
+**Historical release: v1.0.7 · Linux, Windows and macOS · SQLite schema 42**
+
+The earlier project recorded v1.0.7 publication on 10 November 2026 from `2ae393f`. That historical source identity is different from the clean baseline and this remediation. The links/package names below preserve that release record; their availability in the replacement repository has not been reverified. No remediated release is published or approved. Do not treat historical binaries as containing the fixes in this working tree.
 
 **Already installed? Start with the [First-Time Setup Guide for v1.0.7](docs/FIRST-TIME-SETUP.md)** — employer and PA details, email, the provider's payroll schedule, hours and your first PDF timesheet.
 
-The downloads below are the ten published v1.0.7 installation packages. They include the Stage 1–8 safeguards, audited timesheet amendments, configurable CSV import, native credential storage and Microsoft personal-account OAuth2 described here. All ten packages were built from commit `2ae393f` and passed the all-platform package verification; this does not establish every hardware or minimum-OS acceptance result. See the [release notes and known limitations](https://github.com/arnieSkyNet/DirectPaymentTimesheets/releases/tag/v1.0.7).
+The historical set contains ten package variants. Its recorded source was `2ae393f`; the separate clean-baseline set inspected locally identifies `995c3c8cf179dd522d595c20bbacce40a9b29304`. Neither set certifies changes made after its build. [Release-build documentation](docs/RELEASE-BUILDS.md) separates historical evidence, baseline build success and remaining current-source acceptance.
 Timesheet email selects only unsent current PDF versions by default. Sent versions
 remain visible for an explicitly acknowledged resend. Each production attempt is
 recorded; uncertain acceptance blocks retry until documented review.
@@ -21,31 +23,31 @@ Choose your computer and installed operating system below. On Linux, choose eith
 
 **Windows 10 and later — Intel/AMD 64-bit (x86-64)**
 
-[![Download Windows installer](https://img.shields.io/badge/Download%20Windows%20installer-v1.0.7-blue?logo=windows11&logoColor=white)](https://github.com/arnieSkyNet/DirectPaymentTimesheets/releases/download/v1.0.7/DirectPaymentTimesheets-1.0.7-windows-x86_64-setup.exe)<br>
+[![Historical Windows installer](https://img.shields.io/badge/Historical%20Windows%20installer-v1.0.7-blue?logo=windows11&logoColor=white)](https://github.com/arnieSkyNet/DirectPaymentTimesheets/releases/download/v1.0.7/DirectPaymentTimesheets-1.0.7-windows-x86_64-setup.exe)<br>
 
 **Windows 10 and 11 — ARM64 (native application)**
 
-[![Download Windows ARM64 installer](https://img.shields.io/badge/Download%20Windows%20ARM64%20installer-v1.0.7-blue?logo=windows11&logoColor=white)](https://github.com/arnieSkyNet/DirectPaymentTimesheets/releases/download/v1.0.7/DirectPaymentTimesheets-1.0.7-windows-arm64-setup.exe)<br>
+[![Historical Windows ARM64 installer](https://img.shields.io/badge/Historical%20Windows%20ARM64%20installer-v1.0.7-blue?logo=windows11&logoColor=white)](https://github.com/arnieSkyNet/DirectPaymentTimesheets/releases/download/v1.0.7/DirectPaymentTimesheets-1.0.7-windows-arm64-setup.exe)<br>
 
 **Linux — Intel/AMD 64-bit (x86-64 / amd64)**
 
-[![Download Linux .deb](https://img.shields.io/badge/Download%20Linux%20.deb-v1.0.7-blue?logo=debian&logoColor=white)](https://github.com/arnieSkyNet/DirectPaymentTimesheets/releases/download/v1.0.7/direct-payment-timesheets_1.0.7_amd64.deb)<br>
-[![Download Linux AppImage](https://img.shields.io/badge/Download%20Linux%20AppImage-v1.0.7-green?logo=linux&logoColor=white)](https://github.com/arnieSkyNet/DirectPaymentTimesheets/releases/download/v1.0.7/DirectPaymentTimesheets-1.0.7-linux-x86_64.AppImage)<br>
+[![Historical Linux .deb](https://img.shields.io/badge/Historical%20Linux%20.deb-v1.0.7-blue?logo=debian&logoColor=white)](https://github.com/arnieSkyNet/DirectPaymentTimesheets/releases/download/v1.0.7/direct-payment-timesheets_1.0.7_amd64.deb)<br>
+[![Historical Linux AppImage](https://img.shields.io/badge/Historical%20Linux%20AppImage-v1.0.7-green?logo=linux&logoColor=white)](https://github.com/arnieSkyNet/DirectPaymentTimesheets/releases/download/v1.0.7/DirectPaymentTimesheets-1.0.7-linux-x86_64.AppImage)<br>
 
 **Raspberry Pi / Linux — ARM32 (armhf, ARMv7)**
 
-[![Download ARM32 .deb](https://img.shields.io/badge/Download%20ARM32%20.deb-v1.0.7-blue?logo=debian&logoColor=white)](https://github.com/arnieSkyNet/DirectPaymentTimesheets/releases/download/v1.0.7/direct-payment-timesheets_1.0.7_armhf.deb)<br>
-[![Download ARM32 AppImage](https://img.shields.io/badge/Download%20ARM32%20AppImage-v1.0.7-green?logo=linux&logoColor=white)](https://github.com/arnieSkyNet/DirectPaymentTimesheets/releases/download/v1.0.7/DirectPaymentTimesheets-1.0.7-linux-armhf.AppImage)<br>
+[![Historical ARM32 .deb](https://img.shields.io/badge/Historical%20ARM32%20.deb-v1.0.7-blue?logo=debian&logoColor=white)](https://github.com/arnieSkyNet/DirectPaymentTimesheets/releases/download/v1.0.7/direct-payment-timesheets_1.0.7_armhf.deb)<br>
+[![Historical ARM32 AppImage](https://img.shields.io/badge/Historical%20ARM32%20AppImage-v1.0.7-green?logo=linux&logoColor=white)](https://github.com/arnieSkyNet/DirectPaymentTimesheets/releases/download/v1.0.7/DirectPaymentTimesheets-1.0.7-linux-armhf.AppImage)<br>
 
 **Raspberry Pi / Linux — ARM64 (arm64 / aarch64)**
 
-[![Download ARM64 .deb](https://img.shields.io/badge/Download%20ARM64%20.deb-v1.0.7-blue?logo=debian&logoColor=white)](https://github.com/arnieSkyNet/DirectPaymentTimesheets/releases/download/v1.0.7/direct-payment-timesheets_1.0.7_arm64.deb)<br>
-[![Download ARM64 AppImage](https://img.shields.io/badge/Download%20ARM64%20AppImage-v1.0.7-green?logo=linux&logoColor=white)](https://github.com/arnieSkyNet/DirectPaymentTimesheets/releases/download/v1.0.7/DirectPaymentTimesheets-1.0.7-linux-aarch64.AppImage)<br>
+[![Historical ARM64 .deb](https://img.shields.io/badge/Historical%20ARM64%20.deb-v1.0.7-blue?logo=debian&logoColor=white)](https://github.com/arnieSkyNet/DirectPaymentTimesheets/releases/download/v1.0.7/direct-payment-timesheets_1.0.7_arm64.deb)<br>
+[![Historical ARM64 AppImage](https://img.shields.io/badge/Historical%20ARM64%20AppImage-v1.0.7-green?logo=linux&logoColor=white)](https://github.com/arnieSkyNet/DirectPaymentTimesheets/releases/download/v1.0.7/DirectPaymentTimesheets-1.0.7-linux-aarch64.AppImage)<br>
 
 **macOS — Apple Silicon or Intel**
 
-[![Download Apple Silicon DMG](https://img.shields.io/badge/Download%20Apple%20Silicon%20DMG-v1.0.7-blue?logo=apple&logoColor=white)](https://github.com/arnieSkyNet/DirectPaymentTimesheets/releases/download/v1.0.7/DirectPaymentTimesheets-1.0.7-macos-arm64.dmg)<br>
-[![Download Intel DMG](https://img.shields.io/badge/Download%20Intel%20DMG-v1.0.7-blue?logo=apple&logoColor=white)](https://github.com/arnieSkyNet/DirectPaymentTimesheets/releases/download/v1.0.7/DirectPaymentTimesheets-1.0.7-macos-x86_64.dmg)<br>
+[![Historical Apple Silicon DMG](https://img.shields.io/badge/Historical%20Apple%20Silicon%20DMG-v1.0.7-blue?logo=apple&logoColor=white)](https://github.com/arnieSkyNet/DirectPaymentTimesheets/releases/download/v1.0.7/DirectPaymentTimesheets-1.0.7-macos-arm64.dmg)<br>
+[![Historical Intel DMG](https://img.shields.io/badge/Historical%20Intel%20DMG-v1.0.7-blue?logo=apple&logoColor=white)](https://github.com/arnieSkyNet/DirectPaymentTimesheets/releases/download/v1.0.7/DirectPaymentTimesheets-1.0.7-macos-x86_64.dmg)<br>
 
 [Installation instructions](#install-build-and-run) · [v1.0.7 release notes](https://github.com/arnieSkyNet/DirectPaymentTimesheets/releases/tag/v1.0.7) · [SHA256SUMS](https://github.com/arnieSkyNet/DirectPaymentTimesheets/releases/download/v1.0.7/SHA256SUMS) · [All releases](https://github.com/arnieSkyNet/DirectPaymentTimesheets/releases/)
 
@@ -456,5 +458,5 @@ trust requirements still need to be checked for each deployment.
 Published v1.0.7 adds private creation for payroll storage and recovery
 staging, plus **Settings → Application Settings → Assess Storage Permissions**.
 The assessment changes no existing permissions. Shared business directories and
-existing replacement access policies are preserved. The download links above now point to v1.0.7; historical v1.0.6 assets remain available under [previous releases](https://github.com/arnieSkyNet/DirectPaymentTimesheets/releases/tag/v1.0.6). v1.0.7 SMTP blocks plaintext authentication, stores password/token secrets in Windows Credential Manager, macOS Keychain or a persistent Linux Secret Service, and supports Microsoft personal-account device authorization and refresh; live-provider acceptance remains incomplete. Legacy password migration verifies secure storage before replacing the plaintext field; missing or locked credential stores block authenticated sending. Old backups may still contain plaintext passwords, and copying a database/configuration backup does not transport OS credentials. Microsoft OAuth2 requires a registered public-client application ID and supports personal Outlook.com/Hotmail.com/Live.com accounts with required STARTTLS, not organizational Microsoft 365 accounts. Gmail/GMX password SMTP and unauthenticated local relays retain their transport paths. See [Microsoft OAuth2](docs/MICROSOFT-OAUTH2-SMTP.md), [credential storage](docs/SMTP-CREDENTIAL-STORAGE.md) and [email acceptance](docs/EMAIL-SECURITY-ACCEPTANCE.md). See
+existing replacement access policies are preserved. The links above describe historical v1.0.7 packages; v1.0.6 is recorded under [previous releases](https://github.com/arnieSkyNet/DirectPaymentTimesheets/releases/tag/v1.0.6). The current source blocks plaintext authentication and requires explicit consent for unauthenticated remote plaintext relay delivery, stores password/token secrets in Windows Credential Manager, macOS Keychain or a persistent Linux Secret Service, and supports Microsoft personal-account device authorization and refresh; Current-source live-provider acceptance must be assessed against retained evidence; this remediation does not repeat or claim new live-provider tests. Legacy password migration verifies secure storage before replacing the plaintext field; missing or locked credential stores block authenticated sending. Old backups may still contain plaintext passwords, and copying a database/configuration backup does not transport OS credentials. Microsoft OAuth2 requires a registered public-client application ID and supports personal Outlook.com/Hotmail.com/Live.com accounts with required STARTTLS, not organizational Microsoft 365 accounts. Gmail/GMX password SMTP and unauthenticated local relays retain their transport paths. See [Microsoft OAuth2](docs/MICROSOFT-OAUTH2-SMTP.md), [credential storage](docs/SMTP-CREDENTIAL-STORAGE.md) and [email acceptance](docs/EMAIL-SECURITY-ACCEPTANCE.md). See
 [security hardening](docs/SECURITY-HARDENING.md) for limits and separate repair review.

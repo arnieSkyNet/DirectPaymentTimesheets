@@ -1,12 +1,28 @@
 # Release builds and artifact-only packaging rehearsals
 
-Current source is **unreleased v1.0.7/schema42** on
-`security/v1.0.7-phase1`. The latest published release is **v1.0.6** for all
-supported targets. A read-only GitHub release inventory check on 7 November 2026
-found its ten package assets plus `SHA256SUMS`, and no v1.0.7 release.
-See [published inventory](https://github.com/arnieSkyNet/DirectPaymentTimesheets/releases/tag/v1.0.6).
-This verifies publication metadata, not package contents, installation, hardware
-compatibility or current-source acceptance. No workflow was dispatched.
+Current checkout descends from clean baseline
+`995c3c8cf179dd522d595c20bbacce40a9b29304` (v1.0.7/schema42). The local
+`DPTS-v1.0.7-Clean-Build` archive contains all ten baseline packages from run
+`43763642406`; their SHA-256 hashes match the complete manifest and individual
+sidecars. See [retained inventory](CLEAN-BASELINE-PACKAGES.json).
+
+The 16 November 2026 working-tree remediation changes dependencies and source.
+The baseline packages do not include those changes. Current source needs a new
+reviewed commit/package set and applicable native checks; see
+[security remediation](SECURITY-REMEDIATION.md). No native gates were activated.
+
+Historical v1.0.7 publication on 10 November 2026 is recorded in the inherited
+README against `2ae393f`; that source is not the fresh repository baseline.
+The following 7 November inventory is retained as an earlier checkpoint, not a
+claim that v1.0.6 is currently the latest release:
+
+> Current source is **unreleased v1.0.7/schema42** on
+> `security/v1.0.7-phase1`. The latest published release is **v1.0.6** for all
+> supported targets. A read-only GitHub release inventory check on 7 November 2026
+> found its ten package assets plus `SHA256SUMS`, and no v1.0.7 release.
+> See [published inventory](https://github.com/arnieSkyNet/DirectPaymentTimesheets/releases/tag/v1.0.6).
+> This verifies publication metadata, not package contents, installation, hardware
+> compatibility or current-source acceptance. No workflow was dispatched.
 
 The older release inventories and test-run/source references below are historical
 records. They retain their original versions and do not certify the current HEAD.
@@ -338,7 +354,12 @@ See [SMTP settings](DOMAIN.md#smtp-configuration-and-security),
 [recovery safeguards](DATABASE-SCHEMA.md#verified-startup-upgrades-and-legacy-restore).
 
 
-## Current acceptance boundary — 7 November 2026
+## Historical acceptance boundary — 7 November 2026
+
+Superseded for source identity by the 16 November remediation status. The source
+selections and pending tests below describe that historical checkpoint. The
+reconciled legacy SMTP/native workflows are now explicitly disabled, not approved
+selectors of their old project commits.
 
 The pinned macOS SMTP workflow still selects application source `d3006b7c526042a7ea5a2ab5f108a2f0d393d5dd`,
 not current v1.0.7 OAuth/amendment/settings code. Historical successful native
@@ -357,3 +378,44 @@ retrieval, all-target packaging, supported hardware and minimum-OS/GUI acceptanc
 The existing ignored tests require explicit scoped invocation; experimental native
 SQLite terminal machinery is not a prerequisite and remains inactive. Do not
 rerun completed historical campaigns or dispatch workflows merely to update prose.
+
+## Corresponding source and clean packaging
+
+Packaging now refuses dirty/untracked source. Run the notice checks and prepare
+the exact source bundle and distribution-native annex described in
+[corresponding source](CORRESPONDING-SOURCE.md) before binary distribution.
+No existing build is relabelled or replaced by these changes.
+
+## Packaging verification boundary
+
+Linux and macOS packaging build a private candidate, snapshots it read-only, extracts and
+checks that snapshot, then promotes it with its original SHA-256. Provenance
+requires that verified digest; recording rejects changed bytes. Output promotion
+uses an exclusive per-artifact lock. A stale lock aborts; assess an interrupted
+build before removing its lock manually.
+
+Windows builds use unique workspaces, committed NSIS controls, verified executable
+copies, hashed generated includes and a hash-bound build manifest. Compiler input
+files, NSIS resources and ancestor paths remain locked through compilation and
+payload verification. Native `7z.exe` is required; missing tooling aborts without
+downloading it. Extraction must exactly match approved notices, application/icon,
+System plug-in and the generated uninstaller digest captured synchronously from
+NSIS's uninstaller hook. The complete installer digest is captured by a
+synchronous finalizer before the output is snapshotted; later candidate replacement
+is rejected. Unknown extraction entries abort; do not waive them to
+make a build pass. Native NSIS/7-Zip layout, sharing locks and uninstaller matching
+still need acceptance evidence. Synthetic tests do not establish that evidence.
+
+Destination notice/provenance paths are checked before writing; exclusive
+same-directory temporary files and atomic replacement avoid following destination
+links. Approval schema, lock binding, required notices and source hashes are
+validated centrally for staging and compiler entry points. These safeguards assume
+a trusted build account/toolchain; read-only snapshots do not constrain root or a
+fully compromised build account. No native acceptance is claimed by these edits.
+
+The final independent Linux review observed that the installed 7-Zip 25.01 lists
+the existing NSIS baseline as `NSIS-3 Unicode BadCmd=13` and omits its generated
+uninstaller. That extractor is not qualified for the new Windows gate. A native
+Windows run must select an extractor that lists/extracts the generated uninstaller
+and matches the captured digest. Do not remove the uninstaller check or assume a
+particular newer version is accepted without testing it.

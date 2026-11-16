@@ -32,12 +32,18 @@ Recommends: xdg-desktop-portal-gtk | xdg-desktop-portal-kde
 Description: Manage direct payment payroll timesheets
  Desktop application for preparing and managing payroll documents.
 CONTROL
-OUTPUT_FILE="$OUTPUT_DIRECTORY/direct-payment-timesheets_${VERSION}_${DEB_ARCH}.deb"
+PUBLISH_FILE="$OUTPUT_DIRECTORY/direct-payment-timesheets_${VERSION}_${DEB_ARCH}.deb"
+mkdir -p "$BUILD_ROOT/candidate"
+OUTPUT_FILE="$BUILD_ROOT/candidate/direct-payment-timesheets_${VERSION}_${DEB_ARCH}.deb"
 dpkg-deb --root-owner-group --build "$PACKAGE_ROOT" "$OUTPUT_FILE"
+VERIFIED_SHA="$(python3 "$PROJECT_ROOT/packaging/package.py" snapshot-artifact "$OUTPUT_FILE" "$BUILD_ROOT/verified/$(basename "$OUTPUT_FILE")")"
+OUTPUT_FILE="$BUILD_ROOT/verified/$(basename "$OUTPUT_FILE")"
 [[ "$(dpkg-deb -f "$OUTPUT_FILE" Architecture)" == "$DEB_ARCH" ]]
 [[ "$(dpkg-deb -f "$OUTPUT_FILE" Version)" == "$VERSION" ]]
 dpkg-deb -x "$OUTPUT_FILE" "$BUILD_ROOT/verify"
+python3 "$PROJECT_ROOT/packaging/package.py" verify-notice-stage "$BUILD_ROOT/verify/usr/share/doc/direct-payment-timesheets"
+cmp "$BUILD_ROOT/verify/usr/share/doc/direct-payment-timesheets/LICENSE" "$BUILD_ROOT/verify/usr/share/doc/direct-payment-timesheets/copyright"
 python3 "$PROJECT_ROOT/packaging/package.py" elf "$TARGET" "$BUILD_ROOT/verify/usr/bin/direct-payment-timesheets"
 test -f "$BUILD_ROOT/verify/usr/share/doc/direct-payment-timesheets/DejaVu-LICENSE.txt"
 test -d "$BUILD_ROOT/verify/usr/share/doc/direct-payment-timesheets/third-party"
-python3 "$PROJECT_ROOT/packaging/package.py" record "$OUTPUT_FILE" "$TARGET" deb
+python3 "$PROJECT_ROOT/packaging/package.py" promote-verified "$OUTPUT_FILE" "$PUBLISH_FILE" "$TARGET" deb "$VERIFIED_SHA"

@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use chrono::Local;
 use rusqlite::Connection;
 #[cfg(test)]
-use rusqlite::DatabaseName;
+use rusqlite::MAIN_DB;
 
 const DATABASE_BACKUP_NAME: &str = "database.sqlite";
 const CONFIG_BACKUP_NAME: &str = "config.toml";
@@ -906,7 +906,7 @@ mod tests {
         let before = fs::read(&source).unwrap();
         let permissions = fs::metadata(&source).unwrap().permissions();
         let reader = open_read_only(&source).unwrap();
-        assert!(reader.is_readonly(DatabaseName::Main).unwrap());
+        assert!(reader.is_readonly(MAIN_DB).unwrap());
         assert!(reader
             .execute("DELETE FROM restore_test_marker", [])
             .is_err());

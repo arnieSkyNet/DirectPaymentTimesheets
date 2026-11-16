@@ -178,6 +178,26 @@ fn ensure_dir(path: &Path, private: bool) -> io::Result<()> {
 pub fn ensure_private_dir(path: &Path) -> io::Result<()> {
     ensure_dir(path, true)
 }
+pub(crate) fn verify_private_directory(path: &Path) -> io::Result<()> {
+    check_path(path)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
+        let directory = fs::OpenOptions::new().read(true)
+            .custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW).open(path)?;
+        let m = directory.metadata()?;
+        if m.uid() != unsafe { libc::geteuid() } || m.mode() & 0o077 != 0 {
+            return Err(io::Error::new(io::ErrorKind::PermissionDenied,
+                "Application-private directory has shared access or foreign ownership; assess storage and review a separate repair. No permissions were changed."));
+        }
+        #[cfg(target_os = "macos")]
+        if macos_acl::has_allow_entries(&directory)? {
+            return Err(io::Error::new(io::ErrorKind::PermissionDenied,
+                "Application-private directory has an extended allow ACL; review a separate repair."));
+        }
+    }
+    Ok(())
+}
 pub fn ensure_output_dir(path: &Path) -> io::Result<()> {
     ensure_dir(path, false)
 }
@@ -226,6 +246,47 @@ pub fn open_read(path: &Path) -> io::Result<File> {
     open_regular(path, false)
 }
 
+/// Application-private files only, never deliberately shared business documents.
+/// Refuse legacy access without changing the file or its permission policy.
+pub(crate) fn open_private_read(path: &Path) -> io::Result<File> {
+    let file = open_read(path)?;
+    verify_private_file(&file)?;
+    Ok(file)
+}
+
+fn verify_private_file(file: &File) -> io::Result<()> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        let m = file.metadata()?;
+        if m.uid() != unsafe { libc::geteuid() } || m.mode() & 0o077 != 0 || m.nlink() != 1 {
+            return Err(io::Error::new(io::ErrorKind::PermissionDenied,
+                "Application-private file has shared access, foreign ownership or multiple links; assess storage and review a separate repair. No permissions were changed."));
+        }
+        #[cfg(target_os = "macos")]
+        if macos_acl::has_allow_entries(file)? {
+            return Err(io::Error::new(io::ErrorKind::PermissionDenied,
+                "Application-private file has an extended allow ACL; review a separate repair. No permissions were changed."));
+        }
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
+fn verify_unix_database_files(path: &Path) -> io::Result<()> {
+    drop(open_private_read(path)?);
+    for suffix in ["-journal", "-wal", "-shm"] {
+        let mut name = path.as_os_str().to_os_string();
+        name.push(suffix);
+        match open_private_read(Path::new(&name)) {
+            Ok(_) => (),
+            Err(e) if e.kind() == io::ErrorKind::NotFound => (),
+            Err(e) => return Err(e),
+        }
+    }
+    Ok(())
+}
+
 /// Retain the lock inode: create privately if absent, otherwise open without
 /// truncation, replacement or permission repair.
 pub fn open_or_create_lock(path: &Path) -> io::Result<File> {
@@ -243,7 +304,8 @@ fn open_regular(path: &Path, writable: bool) -> io::Result<File> {
     #[cfg(unix)]
     {
         use std::os::unix::fs::OpenOptionsExt;
-        options.custom_flags(libc::O_NOFOLLOW);
+        // A FIFO must never block before handle-based type validation.
+        options.custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK);
     }
     #[cfg(windows)]
     {
@@ -260,6 +322,17 @@ fn open_regular(path: &Path, writable: bool) -> io::Result<File> {
     }
     if !file.metadata()?.is_file() {
         return Err(io::Error::other("Storage input is not a regular file"));
+    }
+    #[cfg(unix)]
+    {
+        use std::os::fd::AsRawFd;
+        // Restore ordinary blocking semantics only after validating this handle.
+        let flags = unsafe { libc::fcntl(file.as_raw_fd(), libc::F_GETFL) };
+        if flags == -1
+            || unsafe { libc::fcntl(file.as_raw_fd(), libc::F_SETFL, flags & !libc::O_NONBLOCK) } == -1
+        {
+            return Err(io::Error::last_os_error());
+        }
     }
     Ok(file)
 }
@@ -531,6 +604,8 @@ pub(crate) fn read_only_database_guard(path: &Path) -> io::Result<Vec<File>> {
     if !fs::symlink_metadata(path)?.is_file() {
         return Err(io::Error::other("Database is not a regular file"));
     }
+    #[cfg(unix)]
+    verify_unix_database_files(path)?;
     #[cfg(windows)]
     {
         platform::database_ancestor_guard(path)
@@ -567,6 +642,8 @@ pub(crate) fn writable_database_guard(path: &Path) -> io::Result<Vec<File>> {
         }
         Err(e) => return Err(e),
     }
+    #[cfg(unix)]
+    verify_unix_database_files(path)?;
     #[cfg(windows)]
     {
         Ok(ancestors)
@@ -807,6 +884,9 @@ mod tests {
         let before_dir = fs::metadata(&directory).unwrap().permissions();
         let before = fs::metadata(&file).unwrap().permissions();
         ensure_private_dir(&directory).unwrap();
+        #[cfg(unix)]
+        assert!(writable_database_guard(&file).is_err());
+        #[cfg(not(unix))]
         writable_database_guard(&file).unwrap();
         drop(open_or_create_lock(&file).unwrap());
         let _ = assess(&directory, true);
@@ -839,6 +919,85 @@ mod tests {
         create_new(&database).unwrap();
         symlink(&source, root.path().join("live.sqlite-wal")).unwrap();
         assert!(writable_database_guard(&database).is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn private_files_and_sidecars_reject_fifos_without_blocking() {
+        const CHILD: &str = "DPTS_SYNTHETIC_FIFO_TEST";
+        if std::env::var_os(CHILD).is_none() {
+            // Bound the regression itself: a blocking open cannot hang the suite.
+            let mut child = std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", "private_storage::tests::private_files_and_sidecars_reject_fifos_without_blocking", "--nocapture"])
+                .env(CHILD, "1")
+                .spawn().unwrap();
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+            loop {
+                if let Some(status) = child.try_wait().unwrap() {
+                    assert!(status.success());
+                    return;
+                }
+                if std::time::Instant::now() >= deadline {
+                    child.kill().unwrap();
+                    child.wait().unwrap();
+                    panic!("Synthetic FIFO validation blocked");
+                }
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+        }
+        use std::os::unix::{ffi::OsStrExt, fs::symlink};
+        let root = tempdir().unwrap();
+        let fifo = root.path().join("synthetic.fifo");
+        let make_fifo = |path: &Path| {
+            let name = std::ffi::CString::new(path.as_os_str().as_bytes()).unwrap();
+            assert_eq!(unsafe { libc::mkfifo(name.as_ptr(), 0o600) }, 0);
+        };
+        make_fifo(&fifo);
+        assert!(open_read(&fifo).is_err());
+        assert!(open_private_read(&fifo).is_err());
+        assert!(open_regular(&fifo, true).is_err());
+        assert!(open_or_create_lock(&fifo).is_err());
+        assert!(open_private_read(root.path()).is_err());
+        let link = root.path().join("synthetic.link");
+        symlink(&fifo, &link).unwrap();
+        assert!(open_private_read(&link).is_err());
+        assert!(read_only_database_guard(&fifo).is_err());
+        assert!(writable_database_guard(&fifo).is_err());
+        let database = root.path().join("synthetic.sqlite");
+        write_new(&database, b"Fictional database fixture").unwrap();
+        for suffix in ["-journal", "-wal", "-shm"] {
+            let sidecar = root.path().join(format!("synthetic.sqlite{suffix}"));
+            make_fifo(&sidecar);
+            assert!(read_only_database_guard(&database).is_err());
+            assert!(writable_database_guard(&database).is_err());
+            fs::remove_file(sidecar).unwrap();
+        }
+        let regular = open_private_read(&database).unwrap();
+        assert!(regular.metadata().unwrap().is_file());
+        use std::os::fd::AsRawFd;
+        let flags = unsafe { libc::fcntl(regular.as_raw_fd(), libc::F_GETFL) };
+        assert_ne!(flags, -1);
+        assert_eq!(flags & libc::O_NONBLOCK, 0);
+        assert_eq!(fs::read(&database).unwrap(), b"Fictional database fixture");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn private_database_and_sidecars_refuse_broad_legacy_access_without_repair() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = tempdir().unwrap();
+        let database = root.path().join("synthetic.sqlite");
+        write_new(&database, b"synthetic bytes").unwrap();
+        fs::set_permissions(&database, fs::Permissions::from_mode(0o644)).unwrap();
+        assert!(writable_database_guard(&database).is_err());
+        assert!(read_only_database_guard(&database).is_err());
+        assert_eq!(fs::metadata(&database).unwrap().permissions().mode() & 0o777, 0o644);
+        fs::set_permissions(&database, fs::Permissions::from_mode(0o600)).unwrap();
+        let wal = root.path().join("synthetic.sqlite-wal");
+        write_new(&wal, b"synthetic WAL").unwrap();
+        fs::set_permissions(&wal, fs::Permissions::from_mode(0o640)).unwrap();
+        assert!(writable_database_guard(&database).is_err());
+        assert_eq!(fs::read(&wal).unwrap(), b"synthetic WAL");
     }
 
     #[cfg(unix)]

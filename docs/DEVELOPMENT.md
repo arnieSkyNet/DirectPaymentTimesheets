@@ -62,7 +62,7 @@ Services/adapters:
 
 Dedicated screens include employer, PA, payroll settings, payroll preparation and application settings. Email settings and several workflow dialogs are currently coordinated from `gui.rs`.
 
-`src/main.rs.before_application_refactor` is a retained historical/reference file, not the compiled application path; do not treat it as production behaviour.
+The obsolete `src/main.rs.before_application_refactor` reference copy was removed during the 16 November 2026 remediation; only `src/main.rs` is the application entry point.
 
 CSV import parses `worked_minutes` from the supplied worked-duration field. It does not derive payable time from start/end values or consult the persisted rounding setting. Successful CSV files are copied to the internal `archive/YYYY/MM/` hierarchy with timestamped names and recorded in `import_audit`.
 

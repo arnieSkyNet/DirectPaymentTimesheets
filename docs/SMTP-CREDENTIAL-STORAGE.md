@@ -1,5 +1,7 @@
 # SMTP password storage — development 1.0.7, 16 October 2026
 
+> Current-source note (16 November 2026): see [security remediation and evidence boundaries](SECURITY-REMEDIATION.md). Historical source pins, native results and earlier storage descriptions below remain checkpoint records; they do not certify the changed dependencies/current working tree.
+
 > Current-state note (7 November 2026): the platform table and Molly results below
 > are the original 16 October checkpoint. Later bounded Linux and macOS evidence
 > is recorded in [email acceptance](EMAIL-SECURITY-ACCEPTANCE.md) and the release

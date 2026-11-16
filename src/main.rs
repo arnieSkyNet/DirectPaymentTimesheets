@@ -80,6 +80,10 @@ mod timesheet_amendments;
 mod update_check;
 
 fn main() -> std::process::ExitCode {
+    if let Err(error) = startup::protect_process_memory() {
+        startup::report(&error);
+        return std::process::ExitCode::FAILURE;
+    }
     if let Err(message) = development_launch_gate() {
         eprintln!("{message}");
         return std::process::ExitCode::FAILURE;

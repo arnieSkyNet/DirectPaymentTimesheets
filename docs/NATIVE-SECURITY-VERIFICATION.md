@@ -1,5 +1,7 @@
 # Development 1.0.7 Phase 1 native verification
 
+> Current-source note (16 November 2026): see [security remediation and evidence boundaries](SECURITY-REMEDIATION.md). Historical source pins, native results and earlier storage descriptions below remain checkpoint records; they do not certify the changed dependencies/current working tree.
+
 The current Windows corrections are uncommitted on `security/v1.0.7-phase1`
 at HEAD `5abca6816b1a74aa6f41304a51fd5e4bb2128b82`. Historical native run 38312225467
 tested its earlier approved committed source; it did not test the later corrections. No tag,

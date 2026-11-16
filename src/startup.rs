@@ -4,6 +4,23 @@ use std::{
     path::{Path, PathBuf},
 };
 
+/// Process-local Unix core limit, set before loading payroll or credentials.
+/// Does not change host settings or promise to suppress every OS crash reporter,
+/// swap, privileged inspection or Windows user-configured dump collection.
+pub(crate) fn protect_process_memory() -> Result<(), StartupError> {
+    #[cfg(unix)]
+    {
+        let limit = libc::rlimit { rlim_cur: 0, rlim_max: 0 };
+        // SAFETY: valid initialized rlimit; changes only the current process.
+        if unsafe { libc::setrlimit(libc::RLIMIT_CORE, &limit) } != 0 {
+            return Err(StartupError::new(Stage::Environment, None,
+                "Could not disable process core dumps; private data was not loaded.",
+                "Review the launch environment and OS crash-reporting policy before retrying."));
+        }
+    }
+    Ok(())
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Stage {
     Environment,
@@ -284,6 +301,21 @@ mod stage5_tests {
 
 #[cfg(test)]
 mod stage5_process_tests {
+    #[cfg(unix)]
+    #[test]
+    fn process_core_limit_is_disabled_before_private_data_load() {
+        if std::env::var_os("DPT_SYNTHETIC_CORE_LIMIT_CHILD").is_some() {
+            super::protect_process_memory().unwrap();
+            let mut limit = libc::rlimit { rlim_cur: 1, rlim_max: 1 };
+            assert_eq!(unsafe { libc::getrlimit(libc::RLIMIT_CORE, &mut limit) }, 0);
+            assert_eq!((limit.rlim_cur, limit.rlim_max), (0, 0));
+            return;
+        }
+        let child = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", "startup::stage5_process_tests::process_core_limit_is_disabled_before_private_data_load"])
+            .env("DPT_SYNTHETIC_CORE_LIMIT_CHILD", "1").output().unwrap();
+        assert!(child.status.success(), "Synthetic core-limit child failed");
+    }
     #[test]
     fn stage5_isolated_failure_process_fixture() {
         if std::env::var_os("DPT_STAGE5_FAILURE_CHILD").is_none() {

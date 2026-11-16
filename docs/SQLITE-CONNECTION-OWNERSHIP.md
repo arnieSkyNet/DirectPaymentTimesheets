@@ -1,5 +1,7 @@
 # SQLite connection ownership — v1.0.7 candidate status
 
+> Current-source note (16 November 2026): see [security remediation and evidence boundaries](SECURITY-REMEDIATION.md). Historical source pins, native results and earlier storage descriptions below remain checkpoint records; they do not certify the changed dependencies/current working tree.
+
 Production writable/read-only openers and repository fields now use
 `DatabaseConnection`. Existing query helpers retain shared `&Connection` access;
 there is no `DerefMut`, ownership extraction or production raw-connection

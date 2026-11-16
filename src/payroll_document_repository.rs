@@ -318,7 +318,7 @@ mod tests {
         for (index, marker) in markers.iter().enumerate() {
             let pdf = dir.path().join(format!("doc-{index}.pdf"));
             std::fs::write(&pdf, format!("%PDF-1.4 {index}")).unwrap();
-            db.execute("INSERT INTO imported_payroll_documents(id,personal_assistant_id,document_type,stored_path,sha256,document_year,sent_at) VALUES(?1,1,'p45',?2,?3,'2026/27',?4)", params![index+1,pdf.to_str().unwrap(),file_digest(&pdf).unwrap(),marker]).unwrap();
+            db.execute("INSERT INTO imported_payroll_documents(id,personal_assistant_id,document_type,stored_path,sha256,document_year,sent_at) VALUES(?1,1,'p45',?2,?3,'2026/27',?4)", params![(index+1) as i64,pdf.to_str().unwrap(),file_digest(&pdf).unwrap(),marker]).unwrap();
         }
         db.execute_batch("CREATE TRIGGER fail_version BEFORE UPDATE ON schema_version BEGIN SELECT RAISE(ABORT,'migration failure'); END;").unwrap();
         assert!(create_schema(&db).is_err());
@@ -345,7 +345,7 @@ mod tests {
                 repo.connection
                     .query_row::<Option<String>, _, _>(
                         "SELECT sent_at FROM imported_payroll_documents WHERE id=?1",
-                        [index + 1],
+                        [(index + 1) as i64],
                         |r| r.get(0)
                     )
                     .unwrap()
@@ -370,7 +370,7 @@ mod tests {
                 repo.connection
                     .query_row::<Option<String>, _, _>(
                         "SELECT sent_at FROM imported_payroll_documents WHERE id=?1",
-                        [index + 1],
+                        [(index + 1) as i64],
                         |r| r.get(0)
                     )
                     .unwrap()

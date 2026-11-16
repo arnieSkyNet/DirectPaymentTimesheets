@@ -1,0 +1,29 @@
+name: Locked dependency advisory review
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  advisories:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: '3.12'
+      - name: Check current RustSec data against exact expiring dispositions
+        run: |
+          curl --fail --location --retry 2 --max-time 120 https://api.github.com/repos/RustSec/advisory-db/tarball --output "$RUNNER_TEMP/rustsec.tar.gz"
+          python3 -B scripts/check_dependency_advisories.py "$RUNNER_TEMP/rustsec.tar.gz"
+      - name: Verify advisory range and packaging guards
+        run: python3 -B -m unittest discover -s scripts -p 'test_dependency_review.py' -v
+# No production invocation, credential-store access, native-gate activation,
+# publisher, artifact upload or write token. Full notice verification requires
+# cargo fetch --locked and is a separate release-source prerequisite.

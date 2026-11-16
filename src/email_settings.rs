@@ -42,6 +42,7 @@ pub(crate) fn validate_standalone_test(
     config: &EmailConfig,
     recipient: Option<TestRecipient>,
 ) -> Result<(), String> {
+    config.validate_transport_privacy().map_err(str::to_owned)?;
     crate::microsoft_oauth::validate(config)?;
     let recipient = recipient.ok_or("Select Payroll Test Address or PA Test Address.")?;
     match config.smtp_transport.as_str() {

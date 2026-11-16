@@ -214,19 +214,41 @@ fn bounded_integrity(db: &Connection, budget: usize) -> Result<bool> {
     let work = Arc::new(AtomicUsize::new(0));
     let count = Arc::clone(&work);
     let started = std::time::Instant::now();
-    db.progress_handler(
-        1000,
-        Some(move || {
-            count.fetch_add(1, Ordering::Relaxed) >= budget
-                || started.elapsed() > std::time::Duration::from_millis(250)
-        }),
-    );
+    // Rusqlite 0.41 requires &mut Connection to install its owning callback,
+    // whereas this check runs inside a borrowed transaction. Keep that writer
+    // reservation and owner intact. This scoped, non-owning native callback is
+    // removed on every return/unwind before its stack state can be destroyed.
+    struct Progress {
+        count: Arc<AtomicUsize>,
+        budget: usize,
+        started: std::time::Instant,
+    }
+    unsafe extern "C" fn progress(pointer: *mut std::ffi::c_void) -> std::ffi::c_int {
+        // SAFETY: the guard below keeps this state alive for the entire SQLite
+        // call; the callback neither calls SQLite nor unwinds across C.
+        let state = unsafe { &*(pointer as *const Progress) };
+        i32::from(state.count.fetch_add(1, Ordering::Relaxed) >= state.budget
+            || state.started.elapsed() > std::time::Duration::from_millis(250))
+    }
+    struct Clear<'a>(&'a Connection);
+    impl Drop for Clear<'_> {
+        fn drop(&mut self) {
+            // SAFETY: the borrowed connection outlives this guard. No statement
+            // remains active when the guard runs, including during unwinding.
+            unsafe { rusqlite::ffi::sqlite3_progress_handler(self.0.handle(), 0, None, std::ptr::null_mut()) };
+        }
+    }
+    let mut state = Progress { count, budget, started };
+    let _clear = Clear(db);
+    // SAFETY: synchronous use on this connection; no handler is installed by
+    // any other production path. State is declared before the cleanup guard.
+    unsafe { rusqlite::ffi::sqlite3_progress_handler(db.handle(), 1000, Some(progress),
+        (&mut state as *mut Progress).cast()) };
     let result = (|| -> rusqlite::Result<Vec<String>> {
         db.prepare("PRAGMA quick_check(1)")?
             .query_map([], |r| r.get(0))?
             .collect()
     })();
-    db.progress_handler(0, None::<fn() -> bool>);
     match result {
         Err(rusqlite::Error::SqliteFailure(e,_)) if e.code==rusqlite::ErrorCode::OperationInterrupted => Ok(false),
         Err(e)=>Err(e.into()),

@@ -20,6 +20,9 @@ ManifestSupportedOS all
 
 Name "${PRODUCT_NAME}"
 OutFile "${OUTPUT_FILE}"
+# Capture the generated uninstaller before it is embedded. A nonzero hook aborts.
+!uninstfinalize '"${PYTHON_EXE}" "${PACKAGE_HELPER}" capture-uninstaller "%1" "${BUILD_DIR}\generated-uninstaller.json"' = 0
+!finalize '"${PYTHON_EXE}" "${PACKAGE_HELPER}" capture-installer "%1"' = 0
 InstallDir "$LOCALAPPDATA\Programs\DirectPaymentTimesheets"
 SetCompressor /SOLID lzma
 SetOverwrite on
@@ -27,8 +30,8 @@ AllowSkipFiles off
 ShowInstDetails show
 ShowUninstDetails show
 BrandingText "${PRODUCT_NAME}"
-!define MUI_ICON "${PROJECT_ROOT}\assets\direct-payment-timesheets.ico"
-!define MUI_UNICON "${PROJECT_ROOT}\assets\direct-payment-timesheets.ico"
+!define MUI_ICON "${ICON_FILE}"
+!define MUI_UNICON "${ICON_FILE}"
 VIProductVersion "${VERSION}.0"
 VIAddVersionKey /LANG=1033 "ProductName" "${PRODUCT_NAME}"
 VIAddVersionKey /LANG=1033 "CompanyName" "${PUBLISHER}"
@@ -37,7 +40,7 @@ VIAddVersionKey /LANG=1033 "FileVersion" "${VERSION}"
 VIAddVersionKey /LANG=1033 "ProductVersion" "${VERSION}"
 
 !define MUI_ABORTWARNING
-!insertmacro MUI_PAGE_LICENSE "${PROJECT_ROOT}\LICENSE"
+!insertmacro MUI_PAGE_LICENSE "${NOTICE_STAGE}\LICENSE"
 !insertmacro MUI_PAGE_INSTFILES
 !insertmacro MUI_UNPAGE_CONFIRM
 !insertmacro MUI_UNPAGE_INSTFILES
@@ -75,10 +78,10 @@ Section "Application"
     SetRegView 64
     SetOutPath "$INSTDIR"
     File /oname=DirectPaymentTimesheets.exe "${SOURCE_BINARY}"
-    File "${PROJECT_ROOT}\assets\direct-payment-timesheets.ico"
-    File "${PROJECT_ROOT}\LICENSE"
-    File "${PROJECT_ROOT}\THIRD_PARTY_LICENSES.md"
-    File "${PROJECT_ROOT}\assets\fonts\DejaVu-LICENSE.txt"
+    File "${ICON_FILE}"
+    File "${NOTICE_STAGE}\LICENSE"
+    File "${NOTICE_STAGE}\THIRD_PARTY_LICENSES.md"
+    File "${NOTICE_STAGE}\DejaVu-LICENSE.txt"
     !include "${BUILD_DIR}\third-party-install.nsh"
     SetOutPath "$INSTDIR"
     WriteUninstaller "$INSTDIR\Uninstall.exe"

@@ -931,6 +931,7 @@ fn dispatch_message(
     message: &Message,
     #[cfg(test)] trusted_tls: Option<TlsParameters>,
 ) -> Result<(), ProductionSendError> {
+    config.validate_transport_privacy().map_err(|e| ProductionSendError::NotSent(e.into()))?;
     use crate::config::SmtpSecurity;
     #[cfg(test)]
     let fixture_tls_diagnostics = trusted_tls.is_some();

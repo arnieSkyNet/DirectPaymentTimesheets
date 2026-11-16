@@ -1,5 +1,7 @@
 # v1.0.7 email-security acceptance — 2026-11-02
 
+> Current-source note (16 November 2026): see [security remediation and evidence boundaries](SECURITY-REMEDIATION.md). Historical source pins, native results and earlier storage descriptions below remain checkpoint records; they do not certify the changed dependencies/current working tree.
+
 Automated acceptance: PASS. Full Linux regression: **1,030 passed, zero failed,
 one intentionally ignored native credential-store roundtrip**, no filtered tests.
 Production debug build, cargo check and git diff --check passed. Existing dead-code

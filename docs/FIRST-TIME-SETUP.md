@@ -1,5 +1,7 @@
 # First-Time Setup Guide — v1.0.7
 
+> This guide retains genuine fictional v1.0.6 screenshots. Their plaintext-password warning is historical: current source uses OS credential stores. Remote plaintext relay now requires explicit consent; see [current security status](SECURITY-REMEDIATION.md). No screenshot has been repainted or presented as a new-version capture.
+
 DirectPaymentTimesheets helps a Direct Payment employer record PA hours, prepare four-week payroll timesheets, send them to Payroll and distribute returned payslips. It does not calculate a complete payroll or replace your payroll provider's advice.
 
 Use this guide with **v1.0.7, database schema 42**. Examples use UK dates, such as **09/11/2026**, and 24-hour times. Keep real payroll information private.

@@ -33,12 +33,17 @@ while IFS= read -r -d '' library; do
     test -f "/usr/share/doc/$package/copyright"
     cp "/usr/share/doc/$package/copyright" "$APPDIR/usr/share/doc/bundled-libraries/$package.copyright"
 done < <(find "$APPDIR/usr/lib" -type f -name '*.so*' -print0)
-OUTPUT_FILE="$OUTPUT_DIRECTORY/DirectPaymentTimesheets-${VERSION}-linux-${APPIMAGE_ARCH}.AppImage"
+PUBLISH_FILE="$OUTPUT_DIRECTORY/DirectPaymentTimesheets-${VERSION}-linux-${APPIMAGE_ARCH}.AppImage"
+mkdir -p "$BUILD_ROOT/candidate"
+OUTPUT_FILE="$BUILD_ROOT/candidate/DirectPaymentTimesheets-${VERSION}-linux-${APPIMAGE_ARCH}.AppImage"
 ARCH="$APPIMAGE_ARCH" VERSION="$VERSION" "$BUILD_ROOT/image/squashfs-root/AppRun" \
     --runtime-file "$BUILD_ROOT/tools/runtime" "$APPDIR" "$OUTPUT_FILE"
 chmod 755 "$OUTPUT_FILE"
+VERIFIED_SHA="$(python3 "$PROJECT_ROOT/packaging/package.py" snapshot-artifact "$OUTPUT_FILE" "$BUILD_ROOT/verified/$(basename "$OUTPUT_FILE")")"
+OUTPUT_FILE="$BUILD_ROOT/verified/$(basename "$OUTPUT_FILE")"
 python3 "$PROJECT_ROOT/packaging/linux/appimage.py" "$OUTPUT_FILE" "$APPIMAGE_ARCH" "$BUILD_ROOT/verify/squashfs-root"
 EXTRACTED="$BUILD_ROOT/verify/squashfs-root"
+python3 "$PROJECT_ROOT/packaging/package.py" verify-notice-stage "$EXTRACTED/usr/share/doc/direct-payment-timesheets"
 python3 "$PROJECT_ROOT/packaging/package.py" elf "$TARGET" "$EXTRACTED/usr/bin/direct-payment-timesheets"
 # Verify the outer runtime architecture without requiring Rust ARMv7 attributes.
 readelf -h "$OUTPUT_FILE" > "$BUILD_ROOT/runtime-header"
@@ -54,4 +59,4 @@ desktop-file-validate "$EXTRACTED/direct-payment-timesheets.desktop"
 LD_LIBRARY_PATH="$EXTRACTED/usr/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" ldd "$EXTRACTED/usr/bin/direct-payment-timesheets" > "$BUILD_ROOT/ldd"
 cat "$BUILD_ROOT/ldd"
 if grep -q 'not found' "$BUILD_ROOT/ldd"; then exit 1; fi
-python3 "$PROJECT_ROOT/packaging/package.py" record "$OUTPUT_FILE" "$TARGET" appimage
+python3 "$PROJECT_ROOT/packaging/package.py" promote-verified "$OUTPUT_FILE" "$PUBLISH_FILE" "$TARGET" appimage "$VERIFIED_SHA"

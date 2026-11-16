@@ -20,7 +20,20 @@ pub fn is_prep_sheet_filename(path: &Path) -> bool {
 /// An otherwise unrecognised PDF can still be a preparation sheet. The actual
 /// import and validation stay in the existing service below.
 pub fn has_prep_sheet_heading(path: &Path) -> bool {
-    pdf_extract::extract_text(path).is_ok_and(|text| text.contains("PAYROLL PREPARATION SHEET"))
+    extract_preparation_text(path).is_ok_and(|text| text.contains("PAYROLL PREPARATION SHEET"))
+}
+
+fn extract_preparation_text(path: &Path) -> Result<String, Box<dyn Error>> {
+    use std::io::Read;
+    // Same input ceiling as ordinary payroll documents; bounded lopdf nesting
+    // is supplied by pdf-extract >=0.12. Size limits alone do not fix recursion.
+    let limit = crate::archive::MAX_PAYROLL_RETURN_ENTRY_BYTES;
+    let mut bytes = Vec::new();
+    crate::private_storage::open_read(path)?.take(limit + 1).read_to_end(&mut bytes)?;
+    if bytes.len() as u64 > limit {
+        return Err("Payroll preparation PDF exceeds the document size limit.".into());
+    }
+    Ok(pdf_extract::extract_text_from_mem(&bytes)?)
 }
 
 pub struct PayrollPrepSheetImportService<'a> {
@@ -46,7 +59,7 @@ impl<'a> PayrollPrepSheetImportService<'a> {
     }
 
     fn import_pdf(&self, path: &Path) -> Result<usize, Box<dyn Error>> {
-        let text = pdf_extract::extract_text(path)?;
+        let text = extract_preparation_text(path)?;
 
         self.import_text(&text)
     }
@@ -211,6 +224,29 @@ pub(crate) mod tests {
     use super::*;
     use chrono::Duration;
     use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[test]
+    fn deeply_nested_input_is_refused_without_process_abort() {
+        let directory = crate::private_storage::tempdir().unwrap();
+        let path = directory.path().join("synthetic-nested.pdf");
+        let mut pdf = b"%PDF-1.4\n".to_vec();
+        let first = pdf.len();
+        pdf.extend_from_slice(b"1 0 obj\n<< /Type /Catalog /Pages 2 0 R /X ");
+        pdf.extend(std::iter::repeat_n(b'[', 10380));
+        pdf.extend(std::iter::repeat_n(b']', 10380));
+        pdf.extend_from_slice(b" >>\nendobj\n");
+        let second = pdf.len();
+        pdf.extend_from_slice(b"2 0 obj\n<< /Type /Pages /Kids [] /Count 0 >>\nendobj\n");
+        let xref = pdf.len();
+        pdf.extend_from_slice(format!("xref\n0 3\n0000000000 65535 f \n{first:010} 00000 n \n{second:010} 00000 n \ntrailer\n<< /Size 3 /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF\n").as_bytes());
+        crate::private_storage::write_new(&path, &pdf).unwrap();
+        // The bounded parser may recover by omitting malformed objects. What
+        // matters is that it does not abort and the importer accepts no schedule.
+        let repository = repository();
+        let service = PayrollPrepSheetImportService::new(&repository);
+        assert!(service.import(&path).is_err());
+        assert!(!has_prep_sheet_heading(&path));
+    }
 
     fn repository() -> PayrollScheduleRepository {
         let connection = crate::database::open_in_memory().unwrap();

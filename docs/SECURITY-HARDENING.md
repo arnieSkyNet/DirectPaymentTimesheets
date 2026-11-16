@@ -1,5 +1,7 @@
 # Phase 1 storage hardening — development 1.0.7
 
+> Current-source note (16 November 2026): see [security remediation and evidence boundaries](SECURITY-REMEDIATION.md). Historical source pins, native results and earlier storage descriptions below remain checkpoint records; they do not certify the changed dependencies/current working tree.
+
 This phase follows the read-only audit of
 `ebe3801aa88d7990294dd38652242582e2b1a46d`. Schema remains 41. Published
 v1.0.6 downloads and release information are unchanged. No email transport,

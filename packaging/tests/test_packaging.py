@@ -48,7 +48,7 @@ class PackagingTests(unittest.TestCase):
                 with patch.object(Path, 'is_file', return_value=True), \
                         patch.object(package, 'digest', return_value='a' * 64), \
                         patch.object(package, 'source_sha', return_value='unit-test-only-provenance-not-a-commit') as provenance:
-                    package.record(artifact, target, 'macos')
+                    package.record(artifact, target, 'macos', 'a' * 64)
                     provenance.assert_called_once_with()
                 metadata = json.loads(artifact.with_name(artifact.name + '.json').read_text())
                 self.assertEqual(metadata['macos_deployment_target'], expected)
@@ -61,6 +61,8 @@ class PackagingTests(unittest.TestCase):
         self.assertLess(script.index('export MACOSX_DEPLOYMENT_TARGET'), script.index('cargo build'))
         self.assertIn("'LSMinimumSystemVersion': sys.argv[3]", script)
         self.assertEqual(script.count('python3 packaging/package.py macos "$TARGET"'), 2)
+        self.assertIn('verify-notice-stage "$MOUNT/Direct Payments Timesheets.app/Contents/Resources"', script)
+        self.assertIn('promote-verified "$OUTPUT_FILE" "$PUBLISH_FILE" "$TARGET" macos "$VERIFIED_SHA"', script)
         workflow = (ROOT / '.github/workflows/macos-packages-test.yml').read_text()
         self.assertIn('x86_64) target=x86_64-apple-darwin', workflow)
         self.assertIn('arm64) target=aarch64-apple-darwin', workflow)
@@ -199,6 +201,12 @@ class PackagingTests(unittest.TestCase):
             self.skipTest('Deferred until an authorised real Git checkout exists')
         self.assertEqual(identity.returncode, 0, 'Real checkout identity could not be verified')
         self.assertEqual(Path(identity.stdout.strip()).resolve(), ROOT.resolve())
+        try:
+            package.source_sha()
+        except ValueError as error:
+            if 'exact clean committed source' in str(error):
+                self.skipTest('Release packaging correctly refuses this uncommitted remediation; baseline ten-package evidence retained separately')
+            raise
         # Tests the real Debian script without building or launching the application.
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -257,10 +265,10 @@ class PackagingTests(unittest.TestCase):
         self.assertNotIn('RMDir /r', text)
         self.assertIn('StrCpy $INSTDIR "$LOCALAPPDATA\\Programs\\DirectPaymentTimesheets"', text)
         builder = (ROOT / 'packaging/windows/build-installer.ps1').read_text()
-        self.assertLess(builder.index('verify-binary'), builder.index('& $compiler'))
-        self.assertLess(builder.index(' pe $target $binary'), builder.index('& $compiler'))
-        self.assertIn('/DARCHITECTURE=$Architecture', builder)
-        self.assertIn('record $output $target windows', builder)
+        self.assertLess(builder.index('verify-binary'), builder.index('compile-windows-build'))
+        self.assertLess(builder.index(' pe $target $binary'), builder.index('compile-windows-build'))
+        self.assertLess(builder.index('prepare-windows-build'), builder.index('compile-windows-build'))
+        self.assertIn('verify_windows_payload(extracted,', (ROOT / 'packaging/package.py').read_text())
 
     def test_linux_scripts_reject_missing_or_unknown_target_before_building(self):
         if os.name == 'nt': self.skipTest('bash checks run on Linux')

@@ -260,6 +260,24 @@ fn message() -> Message {
         .body("Synthetic attachment-free content".to_string())
         .unwrap()
 }
+
+#[test]
+fn remote_plaintext_requires_consent_and_never_allows_credentials() {
+    let mut config = config(1, SmtpSecurity::Plaintext);
+    config.smtp_username.clear();
+    config.smtp_password.clear();
+    assert!(config.validate_transport_privacy().is_err());
+    config.allow_remote_plaintext = true;
+    assert!(config.validate_transport_privacy().is_ok());
+    let fixture = Fixture::new(SmtpSecurity::Plaintext, false, false, false);
+    config.smtp_port = fixture.port;
+    dispatch_message(&config, &message(), None).unwrap();
+    assert!(fixture.finish().iter().any(|(_, line)| line.starts_with("MAIL")));
+    config.smtp_username = "synthetic-user".into();
+    assert!(config.validate_transport_privacy().is_err());
+    config.smtp_transport = "Local SMTP Server".into();
+    assert!(config.validate_transport_privacy().is_ok());
+}
 fn trusted(domain: &str) -> TlsParameters {
     let cert = lettre::transport::smtp::client::Certificate::from_pem(include_bytes!(
         "../tests/fixtures/smtp/ca.pem"
@@ -386,6 +404,7 @@ fn unauthenticated_legacy_plaintext_and_explicit_plaintext_remain_compatible() {
         let mut config = config(fixture.port, SmtpSecurity::Plaintext);
         config.smtp_username.clear();
         config.smtp_password.clear();
+        config.allow_remote_plaintext = true; // Explicit consent for synthetic loopback relay.
         if legacy {
             config.smtp_security = None;
         }
@@ -508,6 +527,7 @@ fn standalone_async_test_uses_empty_database_and_writes_no_delivery_history() {
     config.smtp_username.clear();
     config.smtp_password.clear();
     config.test_sender_address = "from@example.test".into();
+    config.allow_remote_plaintext = true; // Synthetic attachment-free loopback test.
     config.payroll_test_email_address = "to@example.test".into();
     let (repaint_tx, repaint_rx) = std::sync::mpsc::channel();
     let mut task = TestEmailTask::default();

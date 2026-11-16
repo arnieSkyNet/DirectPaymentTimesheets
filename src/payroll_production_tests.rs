@@ -133,6 +133,7 @@ impl Smtp {
         app.application.context.config.email.smtp_security =
             Some(crate::config::SmtpSecurity::Plaintext);
         app.application.context.config.email.smtp_host = "127.0.0.1".into();
+        app.application.context.config.email.allow_remote_plaintext = true; // Synthetic loopback fixture.
         app.application.context.config.email.smtp_port = listener.local_addr().unwrap().port();
         app.application.context.config.email.smtp_username.clear();
         listener.set_nonblocking(true).unwrap();
@@ -3048,7 +3049,7 @@ fn workflow_eligibility_combined_synthetic_fixture_keeps_ordinary_and_retained_s
         assert!(manifest.parent().unwrap().file_name().unwrap().to_string_lossy().starts_with("dpt-dashboard-policy-"));
         app.application.save_config().unwrap();
         let destination=dir.path().join("database.sqlite");assert!(!destination.exists());
-        db(&app).backup(rusqlite::DatabaseName::Main,&destination,None).unwrap();
+        db(&app).backup(rusqlite::MAIN_DB,&destination,None::<fn(rusqlite::backup::Progress)>).unwrap();
         use std::io::Write;
         let mut output=std::fs::OpenOptions::new().create_new(true).write(true).open(manifest).unwrap();
         write!(output,"{}",serde_json::json!({"profile":dir.path(),"synthetic_only":true,"schedule":schedule.id})).unwrap();
