@@ -2333,11 +2333,10 @@ pub(crate) mod tests {
 pub(crate) mod about_read_only_tests {
     use super::*;
 
-    pub(crate) fn fixture_dir() -> tempfile::TempDir {
+    pub(crate) fn fixture_dir() -> crate::private_storage::PrivateTempDir {
         // Canonicalize only the OS-supplied fixture root before creation, as
         // private_storage::tempdir does. Never rewrite a database input path.
-        let root = std::env::temp_dir().canonicalize().unwrap();
-        let dir = tempfile::tempdir_in(root).unwrap();
+        let dir = crate::private_storage::tempdir().unwrap();
         assert!(dir.path().is_absolute());
         let mut prefix = std::path::PathBuf::new();
         for component in dir.path().components() {
@@ -2356,6 +2355,8 @@ pub(crate) mod about_read_only_tests {
     }
 
     fn fixture(path: &Path) -> Connection {
+        // Keep the historical schema fixture raw; do not run application migrations.
+        drop(crate::private_storage::create_new(path).unwrap());
         let db = Connection::open(path).unwrap();
         db.execute_batch(
             "CREATE TABLE schema_version(version INTEGER); INSERT INTO schema_version VALUES(7);",
@@ -2445,6 +2446,11 @@ pub(crate) mod about_read_only_tests {
         );
         assert!(dir.path().join("synthetic.sqlite-wal").is_file());
         assert!(dir.path().join("synthetic.sqlite-shm").is_file());
+        for suffix in ["-wal", "-shm"] {
+            drop(crate::private_storage::open_private_read(
+                &dir.path().join(format!("synthetic.sqlite{suffix}")),
+            ).unwrap());
+        }
         let reader = open_read_only(&path).unwrap();
         assert!(reader.is_readonly(rusqlite::MAIN_DB).unwrap());
         assert_eq!(

@@ -7815,6 +7815,7 @@ mod about_database_tests {
     fn about_displays_existing_schema_without_migration() {
         let dir = fixture_dir();
         let path = dir.path().join("synthetic.sqlite");
+        drop(crate::private_storage::create_new(&path).unwrap());
         let db = rusqlite::Connection::open(&path).unwrap();
         db.execute_batch(
             "CREATE TABLE schema_version(version INTEGER); INSERT INTO schema_version VALUES(7);",
@@ -7832,7 +7833,12 @@ mod about_database_tests {
         let path = dir.path().join("synthetic.sqlite");
         assert_eq!(read_about_schema_version(&path), "unavailable");
         assert!(!path.exists());
+        drop(crate::private_storage::create_new(&path).unwrap());
         rusqlite::Connection::open(&path).unwrap().close().unwrap();
+        // Prove the fallback is a query failure, not an admission refusal.
+        let reader = crate::database::open_read_only(&path).unwrap();
+        assert!(reader.prepare("SELECT version FROM schema_version").is_err());
+        reader.close().unwrap();
         let before = std::fs::read(&path).unwrap();
         assert_eq!(read_about_schema_version(&path), "unavailable");
         assert_eq!(std::fs::read(&path).unwrap(), before);

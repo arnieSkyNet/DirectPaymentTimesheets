@@ -1246,15 +1246,18 @@ mod tests {
         let backups_dir = temp_dir.path().join("backups");
         let corrupt_backup = backups_dir.join("20260101-010101");
         create_application_database(&live_database, "current live data");
-        fs::write(&live_config, "marker = 'current config'\n").unwrap();
-        fs::create_dir_all(&corrupt_backup).unwrap();
-        fs::write(corrupt_backup.join(DATABASE_BACKUP_NAME), "not sqlite").unwrap();
-        fs::write(
-            corrupt_backup.join(README_NAME),
-            format!("{BACKUP_IDENTITY}\n\nCreated: test\n\nBacked-up files:\n- database.sqlite\n"),
+        crate::private_storage::write_new(&live_config, b"marker = 'current config'\n").unwrap();
+        crate::private_storage::ensure_private_dir(&corrupt_backup).unwrap();
+        crate::private_storage::write_new(&corrupt_backup.join(DATABASE_BACKUP_NAME), b"not sqlite").unwrap();
+        crate::private_storage::write_new(
+            &corrupt_backup.join(README_NAME),
+            format!("{BACKUP_IDENTITY}\n\nCreated: test\n\nBacked-up files:\n- database.sqlite\n").as_bytes(),
         )
         .unwrap();
 
+        drop(crate::private_storage::open_private_read(
+            &corrupt_backup.join(DATABASE_BACKUP_NAME),
+        ).unwrap());
         let error =
             restore_test(&corrupt_backup, &live_database, &live_config, &backups_dir).unwrap_err();
 

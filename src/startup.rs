@@ -330,9 +330,9 @@ mod stage5_process_tests {
     }
     #[test]
     fn stage5_real_startup_failure_exits_nonzero_without_main_gui_or_sensitive_output() {
-        let dir = tempfile::tempdir().unwrap();
-        std::fs::write(
-            dir.path().join("config.toml"),
+        let dir = crate::private_storage::tempdir().unwrap();
+        crate::private_storage::write_new(
+            &dir.path().join("config.toml"),
             b"password='PRIVATE_SECRET'\nbroken=[",
         )
         .unwrap();
@@ -349,6 +349,7 @@ mod stage5_process_tests {
         assert_eq!(output.status.code(), Some(1));
         let text = String::from_utf8(output.stderr).unwrap();
         assert!(text.contains("Configuration"));
+        assert!(text.contains("malformed"));
         assert!(!text.contains("PRIVATE_SECRET"));
         assert!(dir.path().join("database.sqlite").exists());
     }

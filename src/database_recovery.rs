@@ -476,9 +476,9 @@ mod tests {
         let dir = crate::private_storage::tempdir().unwrap();
         let db = crate::database::open(dir.path().join("database.sqlite")).unwrap();
         crate::database::create_schema(&db).unwrap();
-        std::fs::write(
-            dir.path().join("config.toml"),
-            "[folders]\npdf_output='/never-access-business-files'\n",
+        crate::private_storage::write_new(
+            &dir.path().join("config.toml"),
+            b"[folders]\npdf_output='/never-access-business-files'\n",
         )
         .unwrap();
         (dir, db)
@@ -1066,6 +1066,7 @@ mod tests {
     fn original_schema1_backup_restores_through_full_supported_chain() {
         let (dir, db) = fixture();
         let old_path = dir.path().join("original-schema1.sqlite");
+        drop(crate::private_storage::create_new(&old_path).unwrap());
         let old = Connection::open(&old_path).unwrap();
         old.execute_batch("CREATE TABLE schema_version(version INTEGER NOT NULL); INSERT INTO schema_version VALUES(1);
             CREATE TABLE timesheets(id INTEGER PRIMARY KEY,pa_name TEXT NOT NULL,start_time TEXT NOT NULL,end_time TEXT NOT NULL,break_minutes INTEGER NOT NULL,worked_minutes INTEGER NOT NULL,hourly_rate REAL NOT NULL,amount REAL NOT NULL,notes TEXT);").unwrap();
@@ -1190,7 +1191,8 @@ mod stage5_tests {
         let dir = crate::private_storage::tempdir().unwrap();
         let path = dir.path().join("database.sqlite");
         let bytes = b"not a sqlite database";
-        std::fs::write(&path, bytes).unwrap();
+        crate::private_storage::write_new(&path, bytes).unwrap();
+        drop(crate::private_storage::open_private_read(&path).unwrap());
         assert!(initialise(&path).is_err());
         assert_eq!(std::fs::read(&path).unwrap(), bytes);
     }
@@ -1200,8 +1202,8 @@ mod stage5_tests {
         let path = dir.path().join("database.sqlite");
         let db = crate::database::open(&path).unwrap();
         crate::database::create_legacy_schema(&db, 37).unwrap();
-        std::fs::write(
-            dir.path().join("config.toml"),
+        crate::private_storage::write_new(
+            &dir.path().join("config.toml"),
             // Valid TOML can be backed up without risking a malformed hidden
             // password; the unsupported enum still fails application loading
             // AFTER migration, which is the boundary this fixture exercises.
@@ -1213,6 +1215,7 @@ mod stage5_tests {
             .err()
             .unwrap();
         assert_eq!(error.stage, crate::startup::Stage::Configuration);
+        assert!(error.explanation.contains("malformed"));
         assert!(error.to_string().contains("remains applied"));
         assert!(!error.to_string().contains("PRIVATE_SECRET"));
         assert_eq!(

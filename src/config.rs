@@ -1007,21 +1007,15 @@ payroll_information_folder = 'relative\Chosen Information'
 
     #[test]
     fn obsolete_public_holiday_enabled_key_is_ignored_and_not_saved() {
-        let unique = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let path = std::env::temp_dir().join(format!(
-            "direct-payment-timesheets-obsolete-holiday-setting-{}-{unique}.toml",
-            std::process::id()
-        ));
+        let dir = crate::private_storage::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
         let mut value = toml::Value::try_from(AppConfig::default()).unwrap();
         value
             .get_mut("payroll")
             .and_then(toml::Value::as_table_mut)
             .unwrap()
             .insert("public_holiday_enabled".to_string(), true.into());
-        std::fs::write(&path, toml::to_string_pretty(&value).unwrap()).unwrap();
+        crate::private_storage::write_new(&path, toml::to_string_pretty(&value).unwrap().as_bytes()).unwrap();
 
         let config = AppConfig::load(&path).unwrap();
         config.save(&path).unwrap();
@@ -1098,13 +1092,14 @@ mod stage5_tests {
     }
     #[test]
     fn malformed_and_unreadable_existing_configuration_is_preserved_and_redacted() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = crate::private_storage::tempdir().unwrap();
         let path = dir.path().join("config.toml");
         let bytes = "smtp_password = 'VERY_SECRET'\ntoken = 'PRIVATE_TOKEN'\nbroken = [";
-        fs::write(&path, bytes).unwrap();
+        crate::private_storage::write_new(&path, bytes.as_bytes()).unwrap();
         let e = AppConfig::load(&path).unwrap_err();
         assert_eq!(fs::read_to_string(&path).unwrap(), bytes);
         assert_eq!(e.stage, crate::startup::Stage::Configuration);
+        assert!(e.explanation.contains("malformed"));
         assert!(!e.to_string().contains("VERY_SECRET"));
         assert!(!e.to_string().contains("PRIVATE_TOKEN"));
         fs::remove_file(&path).unwrap();
