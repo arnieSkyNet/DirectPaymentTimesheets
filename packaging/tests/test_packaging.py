@@ -1,3 +1,4 @@
+import hashlib
 import importlib.util
 import json
 import os
@@ -67,6 +68,81 @@ class PackagingTests(unittest.TestCase):
         self.assertIn('x86_64) target=x86_64-apple-darwin', workflow)
         self.assertIn('arm64) target=aarch64-apple-darwin', workflow)
         self.assertIn('run: bash packaging/macos/build-dmg.sh', workflow)
+
+    def macos_build_root(self, root, selection=None):
+        physical = root / 'physical temporary root'
+        physical.mkdir(exist_ok=True)
+        alias = root / 'temporary-root-alias'
+        if not alias.exists():
+            alias.symlink_to(physical, target_is_directory=True)
+        script = (ROOT / 'packaging/macos/build-dmg.sh').read_text().splitlines()
+        normalize = next(line for line in script if line.startswith('TMPDIR='))
+        selection = selection or next(line for line in script if line.startswith('BUILD_ROOT='))
+        # Model Darwin's implicit root selection independently of exported TMPDIR.
+        # Explicit templates are handled by the real local mktemp implementation.
+        commands = '''set -euo pipefail
+mktemp() {
+    if [[ "$#" == 1 && "$1" == -d ]]; then
+        command mktemp -d "$DPTS_TEST_ALIAS/implicit.XXXXXXXXXX"
+    else
+        command mktemp "$@"
+    fi
+}
+'''
+        commands += normalize + '\nexport TMPDIR\n' + selection
+        commands += '\nprintf "%s\\n" "$TMPDIR" "$BUILD_ROOT"\n'
+        result = subprocess.run(['bash', '-c', commands], check=True, text=True,
+                                capture_output=True,
+                                env=dict(os.environ, TMPDIR=str(alias), DPTS_TEST_ALIAS=str(alias)))
+        normalized, build = result.stdout.splitlines()
+        self.assertEqual(Path(normalized), physical)
+        return physical, alias, Path(build)
+
+    @unittest.skipUnless(os.name == 'posix' and shutil.which('bash') and shutil.which('mktemp'),
+                         'POSIX shell and temporary-directory checks')
+    def test_macos_build_root_uses_physical_temporary_root(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            # Resolve only the test's OS-provided root, never a staging input.
+            root = Path(tmp).resolve()
+            physical, alias, build = self.macos_build_root(root)
+            self.assertEqual(build.parent, physical)
+            self.assertTrue(build.is_dir())
+            self.assertEqual(build.stat().st_mode & 0o077, 0)
+            destination = build / 'dmg/Direct Payments Timesheets.app/Contents/Resources/LICENSE'
+            data = b'Fictional licence notice\n'
+            checksum = hashlib.sha256(data).hexdigest()
+            package.safe_copy(data, destination, checksum)
+            self.assertEqual(destination.read_bytes(), data)
+            self.assertEqual(package.digest(destination), checksum)
+
+            # Demonstrate that the old bare invocation reproduces the alias bug.
+            _, _, old_build = self.macos_build_root(root, 'BUILD_ROOT="$(mktemp -d)"')
+            self.assertEqual(old_build.parent, alias)
+            with self.assertRaisesRegex(ValueError, 'Unsafe destination path'):
+                package.check_destination(old_build / 'LICENSE')
+
+    @unittest.skipUnless(os.name == 'posix' and shutil.which('bash') and shutil.which('mktemp'),
+                         'POSIX staging symlink checks')
+    def test_macos_physical_staging_still_rejects_malicious_symlinks(self):
+        for attack in ('file', 'directory'):
+            with self.subTest(attack=attack), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp).resolve()
+                _, _, build = self.macos_build_root(root)
+                outside = root / 'outside-staging'
+                outside.mkdir()
+                sentinel = outside / 'LICENSE'
+                sentinel.write_bytes(b'Fictional protected sentinel')
+                resources = build / 'dmg/Direct Payments Timesheets.app/Contents/Resources'
+                resources.parent.mkdir(parents=True)
+                if attack == 'directory':
+                    resources.symlink_to(outside, target_is_directory=True)
+                else:
+                    resources.mkdir()
+                    (resources / 'LICENSE').symlink_to(sentinel)
+                with self.assertRaisesRegex(ValueError, 'Unsafe destination path'):
+                    package.safe_copy(b'Fictional replacement', resources / 'LICENSE')
+                self.assertEqual(sentinel.read_bytes(), b'Fictional protected sentinel')
+                self.assertFalse(list(build.rglob('.dpts-*')))
 
     def test_explicit_target_mapping_and_ten_unique_packages(self):
         names = package.expected_packages('1.0.2')

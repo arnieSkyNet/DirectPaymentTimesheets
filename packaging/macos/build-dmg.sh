@@ -23,7 +23,8 @@ cargo test --locked --target "$TARGET"
 cargo build --release --locked --target "$TARGET"
 OUTPUT_DIRECTORY="$PROJECT_ROOT/dist/$TARGET"
 mkdir -p "$OUTPUT_DIRECTORY"
-BUILD_ROOT="$(mktemp -d)"
+# An explicit template prevents Darwin mktemp from selecting a /var alias again.
+BUILD_ROOT="$(mktemp -d "${TMPDIR%/}/dpts-dmg.XXXXXXXXXX")"
 trap 'rm -rf -- "$BUILD_ROOT"' EXIT
 STAGE="$BUILD_ROOT/dmg"
 APP="$STAGE/Direct Payments Timesheets.app"
