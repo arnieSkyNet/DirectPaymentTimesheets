@@ -1,10 +1,6 @@
 # Direct Payment Timesheets
 
-For the project’s development history and the privacy reasons for this fresh source history, see [Repository history](REPOSITORY-HISTORY.md).
-
-Direct Payment Timesheets is a local desktop application for administering UK Direct Payment Personal Assistant timesheets and the four-week payroll-provider workflow. It imports externally recorded work, prepares payroll timesheets, generates the provider PDF, sends timesheets and payslips, imports payroll documents, and preserves the evidence represented by submitted payroll.
-
-This working tree contains security remediation following clean baseline commit `995c3c8cf179dd522d595c20bbacce40a9b29304` (v1.0.7, schema 42). Application features and schema numbering are retained. The release downloads below use the selected builds recorded for each platform; the version number alone does not establish that an installer matches this working tree. See [current security and acceptance status](docs/SECURITY-REMEDIATION.md) and [historical baseline package hashes](docs/CLEAN-BASELINE-PACKAGES.json).
+Direct Payment Timesheets is a local desktop application for managing UK Direct Payment Personal Assistant timesheets and payroll paperwork.
 
 ## Downloads and installation instructions
 
@@ -13,16 +9,6 @@ This working tree contains security remediation following clean baseline commit 
 The links below download directly from the **private repository's v1.0.7 release**. Sign in to GitHub with an account that has access to `arnieSkyNet/DirectPaymentTimesheets`.
 
 **Already installed? Start with the [First-Time Setup Guide for v1.0.7](docs/FIRST-TIME-SETUP.md)** — employer and PA details, email, the provider's payroll schedule, hours and your first PDF timesheet.
-
-The selected set contains ten installers for seven supported platform/architecture combinations:
-
-- **Linux and Windows:** three DEBs, three AppImages and two Windows installers from the five successful packaging jobs in [run `43982249837`](https://github.com/arnieSkyNet/DirectPaymentTimesheets/actions/runs/43982249837), source commit `7b3de1b00b450864757163c3e6c557df3c84fcb9`.
-- **macOS:** the two retained, previously audited DMGs from [run `43763642406`](https://github.com/arnieSkyNet/DirectPaymentTimesheets/actions/runs/43763642406), source commit `995c3c8cf179dd522d595c20bbacce40a9b29304`.
-
-This is a mixed-source release set, not one all-platform build. Its [SHA256SUMS](https://github.com/arnieSkyNet/DirectPaymentTimesheets/releases/download/v1.0.7/SHA256SUMS) and [per-installer provenance manifest](https://github.com/arnieSkyNet/DirectPaymentTimesheets/releases/download/v1.0.7/rehearsal-manifest.json) identify the exact downloads. [Release-build documentation](docs/RELEASE-BUILDS.md) describes platform baselines and acceptance requirements.
-Timesheet email selects only unsent current PDF versions by default. Sent versions
-remain visible for an explicitly acknowledged resend. Each production attempt is
-recorded; uncertain acceptance blocks retry until documented review.
 
 Choose your computer and installed operating system below. On Linux, choose either the `.deb` installer or the portable AppImage.
 
@@ -79,7 +65,7 @@ When upgrading from v1.0.6, first launch automatically creates and verifies a pr
 
 ### Linux
 
-The packages use a **Debian 12 / Bookworm baseline** (glibc 2.36), for compatible desktop Linux systems of the matching architecture. Older distributions are not supported merely by choosing AppImage. Compatible Ubuntu/Mint and Raspberry Pi OS installations need the corresponding system libraries and a working graphical desktop; this is not a headless application. Hardware acceptance remains incomplete for current ARM32 graphics/window behaviour and ARM64 devices; QEMU and successful builds do not establish physical-device compatibility. See [release-build documentation](docs/RELEASE-BUILDS.md) for platform baselines and validation requirements.
+The packages use a **Debian 12 / Bookworm baseline** (glibc 2.36), for compatible desktop Linux systems of the matching architecture. Older distributions are not supported merely by choosing AppImage. Compatible Ubuntu/Mint and Raspberry Pi OS installations need the corresponding system libraries and a working graphical desktop; this is not a headless application. See the [release notes](https://github.com/arnieSkyNet/DirectPaymentTimesheets/releases/tag/v1.0.7) for platform compatibility and known limitations.
 
 #### Debian / Ubuntu / Raspberry Pi OS `.deb`
 
@@ -118,9 +104,7 @@ No administrator installation is required. AppImage still relies on compatible h
 
 Choose by **Settings > System > About > System type**: Intel/AMD 64-bit uses the
 `windows-x86_64` installer; an ARM-based Windows 10/11 PC uses the
-`windows-arm64` installer. Neither is for 32-bit Windows. Publishing the ARM64
-package does not establish completion of real-hardware acceptance testing; see
-[Windows validation](docs/RELEASE-BUILDS.md#windows).
+`windows-arm64` installer. Neither is for 32-bit Windows. See the [release notes](https://github.com/arnieSkyNet/DirectPaymentTimesheets/releases/tag/v1.0.7) for compatibility and known limitations.
 
 1. Download `DirectPaymentTimesheets-1.0.7-windows-x86_64-setup.exe` for Intel/AMD or `DirectPaymentTimesheets-1.0.7-windows-arm64-setup.exe` for ARM64 from the official release above.
 2. Open the downloaded file. The installer is unsigned. If SmartScreen displays **Windows protected your PC**, use **More info**, check that the filename matches your official download, then choose **Run anyway** only if you trust that download.
@@ -131,7 +115,7 @@ Both Windows architectures use the same per-user application folder and uninstal
 
 ### macOS
 
-The v1.0.7 macOS packages require **macOS 11.4 Big Sur or later for Intel (x86_64)** and **macOS 12.0 Monterey or later for Apple Silicon (arm64)**. Minimum-OS hardware acceptance testing remains pending on both architectures, including an Intel Mac running exactly macOS 11.4. These are independently distributed builds, not Mac App Store applications.
+The v1.0.7 macOS packages require **macOS 11.4 Big Sur or later for Intel (x86_64)** and **macOS 12.0 Monterey or later for Apple Silicon (arm64)**. See the [release notes](https://github.com/arnieSkyNet/DirectPaymentTimesheets/releases/tag/v1.0.7) for compatibility and known limitations. These are independently distributed builds, not Mac App Store applications.
 
 #### Choose the correct DMG
 
@@ -164,32 +148,7 @@ On macOS 11 and 12, the equivalent controls are **System Preferences → Securit
 
 Do not disable Gatekeeper globally or change security settings to allow all applications.
 
-### Build and run from source
-
-You will need Git, a current Rust toolchain including Cargo, and the native development libraries required by the desktop and TLS dependencies. See the [Rust installation instructions](https://www.rust-lang.org/tools/install) and [development guide](docs/DEVELOPMENT.md). The pinned release toolchain and platform dependencies are documented in [Release builds](docs/RELEASE-BUILDS.md).
-
-```bash
-git clone https://github.com/ArnieSkyNet/DirectPaymentTimesheets.git
-cd DirectPaymentTimesheets
-cargo check --locked
-cargo test --locked
-cargo run
-```
-
-Use disposable data for development as described under [Runtime data and configuration](#runtime-data-and-configuration).
-
-## Technology
-
-- Rust 2021
-- `eframe`/`egui` desktop UI
-- SQLite through bundled `rusqlite`
-- `printpdf` document generation
-- SMTP through `lettre`
-- PDF text extraction and ZIP processing for provider files
-
-## Implemented functionality
-
-This section describes **published v1.0.7 (schema 42)**, available through the download links above. Historical stage/schema headings identify when features were introduced; they do not change the current version or imply completion of hardware, native credential-store or live-provider acceptance.
+## Features
 
 ### Records and settings
 
@@ -197,6 +156,7 @@ This section describes **published v1.0.7 (schema 42)**, available through the d
 - Effective-dated PA pay-rate history, including employer top-up.
 - Effective-dated contracted weekly hours.
 - Application themes, folder/font settings, payroll settings and email settings.
+- Employer and PA signature image import and authorised signature drawing.
 - Dark, light, system, soft light/dark, blue and accessible high-contrast themes.
 
 Employer Maintenance uses a roughly 75/25 upper layout: Name | DOB | NI, then Email | DP Account | Telephone, with Edit Email Signature beneath; the right panel keeps the single multiline Address string. A full-width physical Signature section provides Select, Clear, open-containing-folder and the full path underneath. Redundant employer Sickness/SSP and Mileage Claims controls are removed; their legacy stored fields remain unchanged and do not gate features.
@@ -250,6 +210,10 @@ The Dashboard groups the workflow into three rows:
 - Production and Test Payslip Email select the same eligible unsent ordinary payslip plus P60/P45 bundle; an ordinary payslip is optional. Sent documents, P30/general information and unassociated ordinary archives are excluded; uncertain delivery blocks retry.
 - Standalone P60/P45 use `Payroll documents - {Personal Assistant Name}` and singular/plural neutral body text, independent of Dashboard dates. Ordinary/combined bundles use `Payslip for Week <PAYE week>` and the configured payslip body. MIME filenames use clean canonical payroll names; internal revision/hash storage filenames are not disclosed. Test sends retain TEST markers, target only the PA test address with no CC/BCC, and never mutate delivery/settlement/evidence state. See [exact email rules](docs/DOMAIN.md#email).
 
+- Corrected payroll document replacement with retained originals and delivery history.
+- Inactive-PA document archiving and **Resume incomplete filing** for interrupted moves.
+- Email attempt history and reviewed resolution of uncertain deliveries; uncertain messages are never automatically retried. See [delivery review](docs/DOMAIN.md#reviewing-uncertain-delivery).
+
 ### Backup and restore
 
 - Verified consistent SQLite backups protect PAs, hours, payroll records/history and embedded PDFs, including committed WAL data. When present, `config.toml` is also included with saved application preferences and credential references; passwords and Microsoft tokens remain in the OS credential store. A recovery manifest lists known external business paths.
@@ -257,13 +221,6 @@ The Dashboard groups the workflow into three rows:
 - Supported legacy backups restore through isolated migration. Review identifies current rows absent/different in restored data; a documented reason and explicit rollback acknowledgement are required. Changed data invalidates approval; unresolved email uncertainty blocks restore.
 - A separate verified pre-restore copy retains original submissions, delivery evidence and saved configuration when present. Restore replaces configuration only if the selected backup contains it. Password recovery requires the corresponding OS credential-store entry, or password re-entry; Microsoft may need reconnection. Restore requires closing other instances and restarting afterward.
 - External PDF, payslip, signature, CSV/archive and other business files are **not** copied/restored by database backup. Immutable submitted PDF and dispatch attachment bytes already retained inside SQLite **are included**, along with recipients and delivery evidence. These sensitive records increase database/backup size; no automatic retention cleanup is provided. Separately protect the complete application root and configured external folders/files before upgrade or rollback.
-
-`cargo run` uses normal configured data and automatically upgrades it. For a rehearsal,
-set `DIRECTPAYMENTTIMESHEETS_HOME` to an isolated copy **and** redirect its configured
-external folders; the root override alone does not isolate those paths. Do not use
-older executables, including v1.0.6, on schema-42 data: their restore can replace newer
-schemas. Consult [recovery details](docs/DATABASE-SCHEMA.md#verified-startup-upgrades-and-legacy-restore)
-before the first launch or any rollback.
 
 ## Runtime data and configuration
 
@@ -276,19 +233,6 @@ The application root contains `database.sqlite`, `config.toml` and internal impo
 New configurations use provider-neutral paths beneath `~/Documents/DirectPaymentTimesheets/` on Unix, or the discovered Windows Documents directory’s `DirectPaymentTimesheets` subfolder, for those business folders. The `~` prefix is expanded to the current user's home directory at runtime. Existing configured paths are preserved and remain editable in Application Settings. Startup checks business folders in the background and warns without preventing Settings access. Saving configuration preserves the selected paths without creating those folders. Workflows validate their own required locations and create outputs only when actually used; no alternate folder is silently substituted.
 
 The configured `email_archive` path is currently persisted but has no production consumer. Returned payroll information uses the separate payroll-information folder.
-
-## CSV import testing
-
-To test CSV import safely, prepare a parser-compatible CSV containing only synthetic data, then:
-
-1. use a disposable `DIRECTPAYMENTTIMESHEETS_HOME`;
-2. configure the CSV import folder in Application Settings;
-3. copy the test CSV into that folder; and
-4. use **Import Hours CSV** on the Dashboard.
-
-The test CSV's PA name must correspond to a maintained PA if downstream payroll work is required. Its rate and amount columns represent the external format only and are not authoritative for generated payroll.
-
-The files `data/sig-Employer.jpg` and `data/sig-PA.jpg` are deliberately blank white, project-created test signature images. They contain no real signatures or personal data.
 
 ## Payroll-period selections
 
@@ -331,7 +275,6 @@ See [Payroll evidence and reconciliation](docs/PAYROLL-EVIDENCE.md) for storage,
 
 - [First-Time Setup Guide for v1.0.7](docs/FIRST-TIME-SETUP.md)
 - [v1.0.7 release notes, verification and known limitations](https://github.com/arnieSkyNet/DirectPaymentTimesheets/releases/tag/v1.0.7)
-- [Project state (includes historical development checkpoints)](docs/PROJECT_STATE.md)
 - [Architecture](docs/ARCHITECTURE.md)
 - [Domain rules](docs/DOMAIN.md)
 - [Development guide](docs/DEVELOPMENT.md)
@@ -343,128 +286,3 @@ See [Payroll evidence and reconciliation](docs/PAYROLL-EVIDENCE.md) for storage,
 DirectPaymentTimesheets is free software licensed under the [GNU General Public License version 3 or later](LICENSE), identified by the SPDX expression `GPL-3.0-or-later`. You may redistribute and modify the source under that licence. Charging for copies or genuine services is permitted, but recipients retain the GPL freedoms and distributed modified versions remain subject to the GPL's requirements.
 
 Third-party dependencies and bundled font components remain subject to their respective terms; see [THIRD_PARTY_LICENSES.md](THIRD_PARTY_LICENSES.md).
-
-
-Corrected payroll PDFs are handled through Personal Assistant Maintenance → **Replace payroll document…**: select the existing identity, choose an individual corrected PDF, review both hashes/history, and confirm. Original bytes, hashes and delivery evidence remain retained. Revision/hash filenames are internal; payroll emails use canonical recipient-visible filenames. A saved Active-to-Inactive transition files safely identified PA-owned timesheets and payroll PDFs directly into shared year-level `Archived` folders, without a PA subfolder. New documents for inactive PAs go there directly; reactivation does not restore historical files. A durable move journal supports post-commit cleanup retries. See [filing and replacement details](docs/ARCHITECTURE.md#inactive-pa-filing-and-registered-supplement-repair).
-
-
-Stage 2 introduced schema37 in development 1.0.6 (current release schema42) to protect sickness dates across payroll cycles. Changes require a reason and reviewed scope; protected cycles require authorised sickness-only corrections, and uncertain delivery remains blocked. Corrected historical PDFs preserve settled work and original evidence, display revised dates in the ordinary weekly table and explain the change in the notes area. Payroll assesses financial implications; the application does not calculate SSP or classify CSV notes as sickness. Upgrades retain verified database/config recovery; external business files need separate protection. See [Stage 2 workflow](docs/DEVELOPMENT.md#stage-2-sickness-protection-106schema37).
-
-### Signature images and drawing (1.0.6)
-
-Employer and PA Maintenance accept PNG and JPEG content (including JPG, JFIF,
-Exif and progressive/grayscale JPEGs), validated independently of the filename.
-Invalid replacements leave the previous reference intact. Images are limited to
-8 MiB and 4096 pixels per dimension; Exif orientation is respected.
-
-Use **Draw Signature** in Maintenance or the Dashboard generation selection.
-The named person must sign, or explicitly authorise recording their signature.
-**Use drawn signature** immediately saves black ink on a transparent background
-for that employer or PA and reuses it in this and subsequent generated PDFs.
-Mouse, touch and stylus use the platform's primary-pointer support; pressure,
-multitouch drawing and handwriting recognition are not provided. Clear/redraw,
-authorisation and save/cancel controls are available; image import and unsigned
-continuation remain alternatives to drawing.
-
-If a configured image is unavailable or invalid, generation offers **Draw
-replacement**, **Continue unsigned** or **Cancel generation**. Unsigned continuation
-retains the configured path and printable blank signature spaces. Unconfigured
-signatures produce no warning. Changing a signature never changes an existing
-PDF or the immutable bytes authorised for resending.
-
-Drawn images use the database owner's full name under the configured data
-root's `signatures/` directory: `Full Name.png`, then `Full Name (2).png`, etc.
-Names retain Unicode and legitimate punctuation; unsafe filesystem characters
-are sanitised, and collisions are checked without case sensitivity. Unavailable
-names use `Employer <ID>.png` or `PA <ID>.png`. Identity and authorisation use
-stable database IDs, not filenames. Existing assets are never overwritten or
-renamed, including earlier hexadecimal filenames. Existing external paths remain
-supported. Neither external nor managed signature images are copied by database/configuration
-backup: separately protect the complete data root and external business assets.
-
-
-Stage 4 introduced schema38 in development 1.0.6 (current release schema42) for CSV content identity and prospective shift review across Hours Keeper and Hours Shift. Changed files at the same pathname are detected; originals and omitted rows are retained. Overnight overlaps and moved counterparts require explicit payable-version/separate-shift review, with audited deferral available. New protected edits require authorisation and contextual financial correction; legacy obligations remain unchanged. Upgrades use the existing verified recovery process. See [Stage 4 development notes](docs/DEVELOPMENT.md#stage-4-shift-change-protection-106schema38).
-
-
-## Stage 5 startup reliability (1.0.6/schema38)
-
-Startup failures identify their stage, safe relevant location and recovery action, without raw configuration, SQL errors or credentials. A separate native dialog presents fatal errors; stderr remains a fallback and failure exits nonzero. Windows uses its native message box, macOS uses `osascript`, and Linux uses an available `zenity` or `kdialog`; if no native helper works, configuration/database failures can use a small error-only window. After a graphics failure, eframe is not retried. Without usable graphical presentation, launch from a terminal to see stderr. No helper is automatically installed.
-
-Missing or inaccessible configured business folders produce background warnings and leave Settings and unrelated payroll work available. Recheck folders after reconnecting a drive. Missing configuration is published atomically without overwriting a concurrent existing file; malformed/unreadable configuration is preserved. Windows default-folder discovery returns a recoverable error when required.
-
-Current-schema startup validates critical schema/protection metadata and performs a bounded page check; it is not a full integrity certification of every stored page. Full verified backup/upgrade checks remain unchanged. Fresh databases are built in isolation and installed transactionally. Fatal database, backup or migration failures never trigger automatic reset, deletion or recovery replacement. A later configuration/graphics failure does not undo an already completed upgrade; retain its verified recovery copy and protect external business files separately.
-
-
-## Stage 6 recover incomplete archiving (1.0.6/schema39)
-
-Incomplete deactivation filing now retains durable scan and document intent, with
-verified publication provenance, restartable registration/cleanup and persistent
-recovery status. Use **Personal Assistant Maintenance → Resume incomplete filing**;
-there is no need to toggle employment status. Reconnection/permissions can be fixed
-without changing configured paths. Conflicting or changed files are preserved for
-review, and reactivation leaves archived history in place. Unrelated payroll work
-remains usable when its required files are available. Upgrades use the verified
-pre-migration database/config backup; separately protect external business files.
-See [filing recovery](docs/ARCHITECTURE.md#recover-incomplete-filing-stage-6-schema39).
-
-## Stage 7 imported-hours corrections (1.0.6/schema40)
-
-**View Imported Hours** now shows original and effective evidence with reviewed
-Edit, Revert to original, Exclude and Restore actions. Record a reason; protected
-cycles also require explicit authorisation and subsequent financial review in
-Payroll Timesheet Preparation. Original rows, submissions and PDFs remain retained.
-Worked minutes stay independently authoritative; inconsistent elapsed/break values
-produce a warning, not automatic recalculation. PA identity and imported rate/amount
-cannot be reassigned here. Internal shift history supports searchable twelve-row
-pages and stale-safe deletion; protected shifts cannot be deleted.
-
-The schema40 upgrade uses the existing verified pre-migration recovery backup and
-isolated installation. Keep external business-file backups separately. These
-protections are included in published v1.0.6 packages.
-
-
-## Stage 8 resolve uncertain email deliveries (1.0.6/schema41)
-
-Settings → Email Settings includes **Send a CC copy of timesheet emails to the
-employer**, enabled by default. It applies to first sends, corrected timesheets and
-resends. Disabling it removes only employer CC: To Payroll and optional BCC PA stay
-unchanged. Payslip, P45 and P60 email stays To PA and BCC employer.
-
-Final approval shows actual recipients and PA bundle attachment hashes. A changed
-recipient, setting, document, delivery state or attachment invalidates approval.
-Production sends only the approved, reverified bytes and retains immutable attempt
-and attachment evidence. SMTP acceptance is not proof of inbox receipt; receiving
-an employer copy is not proof Payroll or the PA received theirs.
-
-Dashboard → Timesheet Email Status includes separate payslip/P45/P60 and timesheet
-attempt history. Review unresolved and legacy uncertainties there. Record evidence
-and a reason, then confirm acceptance/external sending, reliably confirmed not sent,
-or still uncertain. The application records reviewer identity and time. Still
-uncertain stays blocked; confirmed not sent allows a fresh approval, preserving the
-original attempt. No uncertain email is automatically retried. Legacy records do
-not acquire invented recipients, Message-IDs or attachment evidence.
-
-See [delivery review](docs/DOMAIN.md#reviewing-uncertain-delivery) for the review sequence and [SMTP settings](docs/DOMAIN.md#smtp-configuration-and-security) for transport/security limitations.
-
-### SMTP security in v1.0.6
-
-This historical section describes v1.0.6. For the current release, see [v1.0.7 storage privacy and secure email](#v107-storage-privacy-and-secure-email).
-
-Published v1.0.6 supports required STARTTLS (normally 587), implicit TLS (normally
-465), and explicitly selected plaintext SMTP. New remote configurations default
-to required STARTTLS; existing configurations retain plaintext until reviewed.
-TLS validates certificates and hostnames and never falls back to plaintext.
-Local relays remain compatible. Passwords are stored in plaintext configuration
-and backups. See [SMTP configuration and security](docs/DOMAIN.md#smtp-configuration-and-security)
-for warnings, platform trust requirements and delivery safeguards. All v1.0.6
-packages included these transport modes; provider compatibility and platform
-trust requirements still need to be checked for each deployment.
-
-
-## v1.0.7: storage privacy and secure email
-
-Published v1.0.7 adds private creation for payroll storage and recovery
-staging, plus **Settings → Application Settings → Assess Storage Permissions**.
-The assessment changes no existing permissions. Shared business directories and
-existing replacement access policies are preserved. The links above identify the selected v1.0.7 release builds; v1.0.6 is documented in the [upgrade guide](docs/FIRST-TIME-SETUP.md#2-first-launch-or-upgrade-from-v106). The current source blocks plaintext authentication and requires explicit consent for unauthenticated remote plaintext relay delivery, stores password/token secrets in Windows Credential Manager, macOS Keychain or a persistent Linux Secret Service, and supports Microsoft personal-account device authorization and refresh; Current-source live-provider acceptance must be assessed against retained evidence; this remediation does not repeat or claim new live-provider tests. Legacy password migration verifies secure storage before replacing the plaintext field; missing or locked credential stores block authenticated sending. Old backups may still contain plaintext passwords, and copying a database/configuration backup does not transport OS credentials. Microsoft OAuth2 requires a registered public-client application ID and supports personal Outlook.com/Hotmail.com/Live.com accounts with required STARTTLS, not organizational Microsoft 365 accounts. Gmail/GMX password SMTP and unauthenticated local relays retain their transport paths. See [Microsoft OAuth2](docs/MICROSOFT-OAUTH2-SMTP.md), [credential storage](docs/SMTP-CREDENTIAL-STORAGE.md) and [email acceptance](docs/EMAIL-SECURITY-ACCEPTANCE.md). See
-[security hardening](docs/SECURITY-HARDENING.md) for limits and separate repair review.
