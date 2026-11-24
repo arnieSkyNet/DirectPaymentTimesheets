@@ -175,6 +175,11 @@ pub(crate) fn manual_hours_reason(week: NaiveDate, entered_on: NaiveDate) -> &'s
     }
 }
 
+pub(crate) fn manual_target(reason: Option<&str>) -> Option<(&str, i64)> {
+    let (label, minutes) = reason?.split_once(" | approved current minutes: ")?;
+    Some((label, minutes.parse().ok()?))
+}
+
 // An amended week can retain dated actuals alongside its estimate. Require
 // a positive undated estimate balance and reject unrelated manual items or carry.
 fn estimate_minutes(items: &[WorkedItemSnapshot], week: i64, amended: bool) -> Option<i64> {
@@ -1127,7 +1132,20 @@ impl HistoricalReview {
     }
 }
 
-pub fn historical_decision(app: &Application, review: &HistoricalReview, paid: bool) -> Result<()> {
+#[derive(Clone, Copy)]
+pub(crate) enum HistoricalDecision {
+    AlreadyPaid,
+    Unpaid,
+    Dismiss,
+}
+
+const HISTORICAL_DISMISSAL: &str = "historical_payment_dismissal";
+
+pub(crate) fn historical_decision(
+    app: &Application,
+    review: &HistoricalReview,
+    decision: HistoricalDecision,
+) -> Result<()> {
     let db = open(app)?;
     let tx = rusqlite::Transaction::new_unchecked(&db, rusqlite::TransactionBehavior::Immediate)?;
     let evidence = load_for_pa(&tx, review.record.personal_assistant_id)?;
@@ -1140,6 +1158,16 @@ pub fn historical_decision(app: &Application, review: &HistoricalReview, paid: b
         .map(|candidate| &candidate.evidence)
         .ok_or("Historical payroll or evidence changed; refresh review")?;
     let key = current.fingerprint();
+    if matches!(decision, HistoricalDecision::Dismiss) {
+        tx.execute(
+            "INSERT INTO shift_change_events(source,source_id,before_evidence,after_evidence,reason,review_signature,recorded_at,actor)
+             VALUES(?1,?2,'',?3,'Dismissed historical payment review; no payroll adjustment',?4,?5,'local_employer')",
+            params![HISTORICAL_DISMISSAL, review.record.id, toml::to_string(current)?, key, now()],
+        )?;
+        tx.commit()?;
+        return Ok(());
+    }
+    let paid = matches!(decision, HistoricalDecision::AlreadyPaid);
     if lifecycle::has_decision(
         &tx,
         review.record.id,
@@ -1158,6 +1186,52 @@ pub fn historical_decision(app: &Application, review: &HistoricalReview, paid: b
     )?;
     tx.commit()?;
     Ok(())
+}
+
+// Older accepted PDFs can contain a positive manual weekly amount without
+// saying which intervals it covered or even whether it was an estimate.
+// Unmatched source IDs are not evidence of extra payable hours in that case.
+fn covered_by_opaque_week(
+    app: &Application,
+    db: &Connection,
+    period: &HistoricalPeriod,
+    date: NaiveDate,
+    eligible: &[WorkEvidence],
+) -> Result<bool> {
+    let Some(submission) = period.submission else { return Ok(false) };
+    let week = (date - period.start).num_days() / 7 + 1;
+    if !period.items.iter().any(|item| {
+        item.week_number == week && item.source_type == "manual_adjustment"
+            && item.work_date.is_none() && lifecycle::item_key(item).is_none()
+            && item.worked_minutes > 0
+    }) {
+        return Ok(false);
+    }
+    let Some(accepted) = lifecycle::weeks(db, submission)?.into_iter()
+        .find(|row| row.week_number == week)
+    else { return Ok(false) };
+    let carried: i64 = period.items.iter().filter(|item| {
+        item.week_number == week && (matches!(item.source_type.as_str(),
+            "carry_correction" | "legacy_previous_cycle_adjustment" | "previous_cycle_late_shift")
+            || item.work_date.as_deref().and_then(crate::models::parse_employment_date)
+                .is_some_and(|day| day < period.start))
+    }).map(|item| item.worked_minutes).sum();
+    let start = period.start + chrono::Duration::weeks(week - 1);
+    let end = start + chrono::Duration::days(6);
+    let mut observed = 0i64;
+    for entry in eligible.iter().filter(|entry| entry.pa == period.record.personal_assistant_id) {
+        let day = entry.date()?;
+        if (start..=end).contains(&day) {
+            let Ok(minutes) = crate::pay_rate_allocation::payable_minutes_on(
+                entry.minutes, day, &app.context.config.payroll,
+            ) else { return Ok(false) };
+            let Some(total) = observed.checked_add(minutes) else { return Ok(false) };
+            observed = total;
+        }
+    }
+    let accepted_minutes = (accepted.worked_hours * 60.0).round() as i64;
+    // Negative carry can reduce the paid total but cannot establish extra work.
+    Ok(observed > 0 && observed <= accepted_minutes.saturating_sub(carried.max(0)))
 }
 
 #[derive(Clone)]
@@ -1277,6 +1351,11 @@ fn plan_in_connection(
             plan.notices.push(format!("{key}: work reserved by an unresolved delivery attempt"));
             continue;
         }
+        if let Some(prior) = previous.filter(|prior| prior.stage == Stage::Settled) {
+            if super::legacy_baseline::contains(db, prior.record.id, e)? {
+                continue;
+            }
+        }
         if date < start && previous.is_none_or(|entry| {
             entry.submission.is_none() && entry.items.is_empty()
                 && entry.stage != Stage::Indeterminate
@@ -1325,12 +1404,15 @@ fn plan_in_connection(
             let exact = lifecycle::has_exact_intervals(&previous.items);
             if exact && crate::shift_changes::prospective(db, &e.source, e.id)? && !unpaid {
                 plan.notices.push(format!("{key}: new historical evidence requires reviewed Carry correction forward in its original payroll preparation"));
-            } else if !super::legacy_baseline::contains(db, prior.id, e)?
-                && (exact || !lifecycle::has_decision(db, prior.id, "already_paid", &fingerprint)?)
-            {
+            } else if exact || !lifecycle::has_decision(db, prior.id, "already_paid", &fingerprint)? {
                 if exact || unpaid {
                     plan.work.push(e.clone());
-                } else {
+                } else if !covered_by_opaque_week(app, db, previous, date, &pre.eligible)?
+                    && !db.query_row(
+                        "SELECT EXISTS(SELECT 1 FROM shift_change_events WHERE source=?1 AND source_id=?2 AND review_signature=?3)",
+                        params![HISTORICAL_DISMISSAL, prior.id, fingerprint],
+                        |row| row.get::<_, bool>(0),
+                    )? {
                     plan.historical_reviews.push(HistoricalReview {
                         record: prior.clone(),
                         target: record.clone(),
@@ -1526,9 +1608,8 @@ fn calculate_plan(
     // Preserve the established opaque historical-backfill path, not its old
     // previous-cycle-only membership scan. Dated late work is selected above.
     let empty: Vec<crate::models::TimesheetEntry> = Vec::new();
-    let historical_backfill = app
-        .payroll_worked_item_repository
-        .get_manual_adjustments(record.id)?
+    let adjustments = app.payroll_worked_item_repository.get_manual_adjustments(record.id)?;
+    let historical_backfill = adjustments
         .iter()
         .any(|a| {
             crate::historical_adjustment_compatibility::is_historical_adjustment_reason(
@@ -1561,6 +1642,15 @@ fn calculate_plan(
             late,
             &app.context.config.payroll,
         )?;
+    }
+    for adjustment in &adjustments {
+        if let Some((label, minutes)) = manual_target(adjustment.reason.as_deref()) {
+            let index = (adjustment.week_number - 1) as usize;
+            crate::pay_rate_allocation::apply_manual_target(
+                &app.pay_rate_repository, &mut result, record.personal_assistant_id,
+                weeks[index], index, minutes, label,
+            )?;
+        }
     }
     let corrections = outstanding(app, record)?;
     let applications = apply_balances(&mut result, &corrections)?;

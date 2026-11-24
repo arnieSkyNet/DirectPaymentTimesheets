@@ -221,7 +221,9 @@ pub fn reconcile_payroll_hours(
                 adjustment.reason.as_deref(),
             );
         excludes_previous_cycle_from_week_totals |= is_historical_backfill;
-        if adjustment.adjustment_minutes == 0 || !(1..=4).contains(&adjustment.week_number) {
+        if adjustment.adjustment_minutes == 0 || !(1..=4).contains(&adjustment.week_number)
+            || crate::payroll_evidence::reconciliation::manual_target(adjustment.reason.as_deref()).is_some()
+        {
             continue;
         }
         let index = (adjustment.week_number - 1) as usize;
@@ -427,6 +429,36 @@ pub fn add_evidence(
     if late {
         result.previous_cycle_minutes += minutes;
     }
+    Ok(())
+}
+
+pub(crate) fn apply_manual_target(
+    rates: &PayRateRepository,
+    result: &mut ReconciledPayrollHours,
+    pa: i64,
+    start: NaiveDate,
+    index: usize,
+    target: i64,
+    reason: &str,
+) -> Result<(), PayRateAllocationError> {
+    let current: i64 = result.weeks[index].iter()
+        .filter(|portion| !portion.is_previous_cycle)
+        .map(|portion| portion.worked_minutes)
+        .sum();
+    let delta = target.checked_sub(current)
+        .ok_or_else(|| PayRateAllocationError("Manual worked minutes overflow".into()))?;
+    if delta == 0 {
+        return Ok(());
+    }
+    let end = start + chrono::Duration::days(6);
+    let rate = select_manual_adjustment_rate(rates, pa, start, end, delta)?
+        .ok_or_else(|| no_applicable_rate_for_week(start, end))?;
+    add_portion(&mut result.weeks[index], delta, &rate, false)?;
+    result.week_totals_minutes[index] = result.week_totals_minutes[index].checked_add(delta)
+        .ok_or_else(|| PayRateAllocationError("Manual worked minutes overflow".into()))?;
+    result.snapshot_items.push(snapshot_from_rate(
+        index as i64 + 1, "manual_adjustment", None, None, delta, &rate, Some(reason.into()),
+    ));
     Ok(())
 }
 

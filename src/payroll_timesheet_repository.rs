@@ -312,12 +312,18 @@ impl PayrollTimesheetRepository {
 
     /// Returned information only: deliberately independent of preparation and delivery state.
     pub fn save_actual_in_lieu_hours(&self, record_id: i64, value: Option<f64>) -> Result<()> {
+        Self::write_actual_in_lieu_hours(&self.connection, record_id, value)
+    }
+
+    fn write_actual_in_lieu_hours(
+        db: &rusqlite::Connection, record_id: i64, value: Option<f64>,
+    ) -> Result<()> {
         if value.is_some_and(|hours| !hours.is_finite() || hours < 0.0) {
             return Err(rusqlite::Error::InvalidParameterName(
                 "Enter finite, non-negative in-lieu hours, or leave blank until known".into(),
             ));
         }
-        let changed = self.connection.execute(
+        let changed = db.execute(
             "UPDATE payroll_timesheets SET actual_in_lieu_hours = ?1, actual_in_lieu_updated_at = ?2 WHERE id = ?3",
             params![value, chrono::Local::now().to_rfc3339(), record_id],
         )?;
@@ -627,6 +633,7 @@ impl PayrollTimesheetRepository {
         Ok(invalidated)
     }
 
+    #[cfg(test)]
     pub fn save_preparation_atomically(
         &self,
         record: &PayrollTimesheet,
@@ -635,6 +642,19 @@ impl PayrollTimesheetRepository {
         annual_leave: &[PayrollTimesheetAnnualLeave],
         adjustments: &[ManualHoursAdjustment],
         updated_at: &str,
+    ) -> Result<bool> {
+        self.save_preparation_with_returned_hours(record, weeks, holidays, annual_leave, adjustments, updated_at, None)
+    }
+
+    pub(crate) fn save_preparation_with_returned_hours(
+        &self,
+        record: &PayrollTimesheet,
+        weeks: &[PayrollTimesheetWeek],
+        holidays: &[PayrollTimesheetPublicHoliday],
+        annual_leave: &[PayrollTimesheetAnnualLeave],
+        adjustments: &[ManualHoursAdjustment],
+        updated_at: &str,
+        returned_hours: Option<Option<f64>>,
     ) -> Result<bool> {
         use rusqlite::OptionalExtension;
 
@@ -837,6 +857,12 @@ impl PayrollTimesheetRepository {
         if let Some(before)=before {
             crate::timesheet_amendments::record_save(&transaction,record.id,&before)
                 .map_err(|e|rusqlite::Error::InvalidParameterName(e.to_string()))?;
+        }
+        crate::payroll_evidence::manual_preparation::supersede_with_normal_save(
+            &transaction, record.id, updated_at,
+        ).map_err(|error| rusqlite::Error::InvalidParameterName(error.to_string()))?;
+        if let Some(hours) = returned_hours {
+            Self::write_actual_in_lieu_hours(&transaction, record.id, hours)?;
         }
         transaction.commit()?;
         Ok(candidate_invalidated)

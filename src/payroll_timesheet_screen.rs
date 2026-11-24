@@ -107,9 +107,8 @@ pub struct PayrollTimesheetScreen {
     pending_pa: Option<i64>,
     // Active PA first, followed by previously active PAs. Unvisited PAs
     // remain in the dropdown until activated.
-    visited_pas: Vec<i64>,
     dropdown_pas: Vec<i64>,
-    restore_visits: Option<(BoundPayrollPeriod, Vec<i64>)>,
+    restore_selection: Option<(BoundPayrollPeriod, i64)>,
     scroll_to_active: bool,
     unsaved_error: Option<String>,
     duplicate_ui: crate::payroll_evidence::duplicate_ui::DuplicateUi,
@@ -146,9 +145,8 @@ impl PayrollTimesheetScreen {
             selected_pa: None,
             leaving_note_suggestions: HashMap::new(),
             pending_pa: None,
-            visited_pas: Vec::new(),
             dropdown_pas: Vec::new(),
-            restore_visits: None,
+            restore_selection: None,
             scroll_to_active: false,
             unsaved_error: None,
             duplicate_ui: Default::default(),
@@ -189,9 +187,8 @@ impl PayrollTimesheetScreen {
         self.selected_pa = None;
         self.leaving_note_suggestions.clear();
         self.pending_pa = None;
-        self.visited_pas.clear();
         self.dropdown_pas.clear();
-        self.restore_visits = None;
+        self.restore_selection = None;
         self.scroll_to_active = false;
         self.unsaved_error = None;
         self.review_ui = Default::default();
@@ -231,39 +228,6 @@ impl PayrollTimesheetScreen {
             } else {
                 self.historical_preparations = historical;
                 self.reload();
-            }
-        }
-        if let Some(start) = parse_date(&operational_schedule.first_week_commencing) {
-            let calendar = crate::public_holidays::for_application(application, start);
-            ui.label(&calendar.status);
-            for warning in &calendar.warnings {
-                ui.label(warning);
-            }
-            if self
-                .holiday_binding
-                .as_ref()
-                .is_some_and(|binding| *binding != calendar.binding)
-            {
-                ui.colored_label(
-                    egui::Color32::YELLOW,
-                    "Holiday calendar changed: reload preparation before saving or generating.",
-                );
-            }
-            for (record, holidays) in self.records.iter().zip(&self.public_holidays) {
-                let differences = crate::public_holidays::comparison(&calendar.binding, holidays);
-                if !differences.is_empty() {
-                    ui.collapsing(
-                        format!(
-                            "Holiday calendar comparison — PA {} (stored values retained)",
-                            record.personal_assistant_id
-                        ),
-                        |ui| {
-                            for difference in differences {
-                                ui.label(difference);
-                            }
-                        },
-                    );
-                }
             }
         }
         let frame = ui.ctx().cumulative_frame_nr();
@@ -306,7 +270,7 @@ impl PayrollTimesheetScreen {
             }
         }
         if !self.loaded {
-            let preserve_scroll = self.restore_visits.is_some();
+            let preserve_scroll = self.restore_selection.is_some();
             match self.load(application, operational_schedule, period_label) {
                 Ok(()) => {
                     self.loaded = true;
@@ -322,6 +286,16 @@ impl PayrollTimesheetScreen {
             }
         }
 
+        ui.label(format!("Payroll period: {}", crate::date_utils::calendar_text(
+            crate::date_utils::preference(ui), &self.period_label,
+        )));
+
+        if let Some(start) = parse_date(&operational_schedule.first_week_commencing) {
+            ui.label(format!("Four-week period: {} to {}",
+                crate::date_utils::screen(ui, &start.format("%d/%m/%Y").to_string()),
+                crate::date_utils::screen(ui, &(start + chrono::Duration::days(27)).format("%d/%m/%Y").to_string()),
+            ));
+        }
         let mut selected = self.selected_pa;
         ui.horizontal(|ui| {
             ui.label("Personal Assistant");
@@ -358,98 +332,28 @@ impl PayrollTimesheetScreen {
             ui.label("No Payroll Timesheet records are available.");
         }
 
-        let mut reactivate = None;
         let mut review_changed = false;
-        for pa in self.visited_pas.clone() {
-            let record_index = self
-                .weeks
-                .iter()
-                .position(|(r, _, _)| r.personal_assistant_id == pa)
-                .expect("visited PA is loaded");
-            let active = Some(pa) == self.selected_pa;
-            // Reserve the background before drawing contents; painting it after
-            // measuring preserves the existing layout and widget identities.
-            let active_panel = active.then(|| {
-                (
-                    ui.painter().add(egui::Shape::Noop),
-                    egui::Rect::from_min_size(
-                        ui.next_widget_position(),
-                        egui::vec2(ui.available_width(), 0.0),
-                    ),
-                )
-            });
-            if active {
-                if let Some(schedule) = &self.schedule {
-                    ui.label(format!(
-                        "Payroll period: {}",
-                        crate::date_utils::calendar_text(
-                            crate::date_utils::preference(ui),
-                            &self.period_label
-                        )
-                    ));
-
-                    ui.label(format!(
-                        "Four-week period: {} to {}",
-                        crate::date_utils::screen(ui, &schedule.first_week_commencing),
-                        self.weeks
-                            .first()
-                            .and_then(|(_, weeks, _)| weeks.last())
-                            .map(|week| crate::date_utils::screen(ui, &week.week_commencing))
-                            .unwrap_or_default()
-                    ));
-                }
-
-                ui.separator();
-            }
+        if let Some(pa) = self.selected_pa {
+            let record_index = self.weeks.iter()
+                .position(|(record, _, _)| record.personal_assistant_id == pa)
+                .expect("selected PA is loaded");
+            let active_panel = Some((
+                ui.painter().add(egui::Shape::Noop),
+                egui::Rect::from_min_size(
+                    ui.next_widget_position(),
+                    egui::vec2(ui.available_width(), 0.0),
+                ),
+            ));
             ui.horizontal(|ui| {
                 ui.heading(&self.weeks[record_index].2);
-                if active {
-                    ui.label(preparation_employment_label(application, pa));
-                } else if ui
-                    .add_sized(
-                        egui::vec2(240.0, ui.spacing().interact_size.y * 1.3),
-                        egui::Button::new(
-                            egui::RichText::new(format!(
-                                "Start editing {}",
-                                self.weeks[record_index].2
-                            ))
-                            .strong(),
-                        ),
-                    )
-                    .clicked()
-                {
-                    reactivate = Some(pa);
-                }
+                ui.label(preparation_employment_label(application, pa));
             });
-            if active && self.scroll_to_active {
-                // Keep both selectors visible when bringing the active PA up.
+            if self.scroll_to_active {
                 ui.scroll_to_rect(
                     egui::Rect::from_min_size(ui.min_rect().min, egui::Vec2::ZERO),
                     Some(egui::Align::Min),
                 );
                 self.scroll_to_active = false;
-            }
-            if !active {
-                self.show_visited_pa(ui, record_index);
-                ui.separator();
-                continue;
-            }
-            self.show_returned_information(ui, application, record_index);
-            if self.duplicate_ui.show_scoped(ui, application, Some(pa)) {
-                finish_active_panel(ui, active_panel);
-                self.reload_evidence_preserving_visits();
-                return;
-            }
-            let preparation_dirty = self.has_unsaved_changes();
-            let (record, _, name) = &self.weeks[record_index];
-            self.review_ui.show_manual(ui, application, record);
-            if self.review_ui.show_pa(ui, application, record, name, preparation_dirty) {
-                review_changed = true;
-            }
-            if self.blocked(record.id, pa) {
-                ui.separator();
-                finish_active_panel(ui, active_panel);
-                continue;
             }
             let pending_editor_dirty = self.has_unsaved_changes();
             let (records, public_holidays, numeric_editor_texts, assistant_mileage_enabled) = (
@@ -475,27 +379,11 @@ impl PayrollTimesheetScreen {
 
             let section_style =
                 pa_section_style(record_index, application.context.config.theme, ui.visuals());
-            let mut save_requested = false;
-            egui::Frame::new()
+            let (notes_valid, changed, save_label, record_id) = egui::Frame::new()
                 .fill(egui::Color32::TRANSPARENT)
                 .stroke(section_style.stroke)
                 .show(ui, |ui| {
                     ui.set_width(ui.available_width());
-
-                    match snapshot_state {
-                        Some(SnapshotState::Submitted) => {
-                            ui.label("Previously submitted — amend, Save and regenerate; sending remains separate");
-                        }
-                        Some(SnapshotState::Indeterminate) => {
-                            ui.label("Delivery status is indeterminate — read-only");
-                        }
-                        Some(SnapshotState::Candidate) => {
-                            ui.label(
-                                "Generated candidate — changes require regeneration before sending",
-                            );
-                        }
-                        None => {}
-                    }
 
                     ui.horizontal(|ui| {
                         ui.label("Previous cycle hours");
@@ -507,16 +395,6 @@ impl PayrollTimesheetScreen {
                         ui.label(previous);
                     });
 
-                    if read_only {
-                        ui.horizontal(|ui| {
-                            ui.label("Review sickness dates / authorised sickness-only correction:");
-                            if let Some(week) = weeks.first() {
-                                if ui.button("Review all sickness dates").clicked() {
-                                    if let Err(error)=self.sickness_ui.open_cycle(ui, application, record, &week.week_commencing, assistant_name) { self.status_message=error.to_string(); }
-                                }
-                            }
-                        });
-                    }
                     ui.add_enabled_ui(!read_only, |ui| {
                         egui::Grid::new(format!("payroll_week_grid_{}", record_index))
                             .striped(true)
@@ -606,6 +484,12 @@ impl PayrollTimesheetScreen {
                             });
                     });
 
+                    let hours_or_details_changed = leave_baseline.as_ref().is_some_and(|b|
+                        !weeks_equal(&b.weeks, weeks)
+                            || !public_holidays_equal(&b.public_holidays, holidays)
+                            || !annual_leave_equal(&b.annual_leave, annual_leave)
+                            || !optional_hours_equal(b.previous_cycle_hours, record.previous_cycle_hours));
+                    Self::draw_returned_information(ui, application, record, &mut self.returned_hours_text, &mut self.returned_hours_status);
                     ui.label("Notes for Payroll Department");
                     ui.add_enabled(!read_only, egui::TextEdit::multiline(&mut record.payroll_department_notes)
                         .id_salt(("payroll_department_notes", record.id)).desired_rows(3).desired_width(f32::INFINITY));
@@ -614,16 +498,68 @@ impl PayrollTimesheetScreen {
                     if !notes_valid {
                         ui.colored_label(ui.visuals().error_fg_color, "Maximum 256 characters; shorten the note before saving. Input has not been truncated.");
                     }
-                    if !read_only && crate::gui_controls::save_button_enabled(ui,format!("Save {}", assistant_name), pending_editor_dirty || leave_baseline.as_ref().is_some_and(|b| b.payroll_department_notes!=record.payroll_department_notes || !weeks_equal(&b.weeks, weeks) || !public_holidays_equal(&b.public_holidays, holidays) || !annual_leave_equal(&b.annual_leave, annual_leave) || !optional_hours_equal(b.previous_cycle_hours, record.previous_cycle_hours)),notes_valid).clicked() {
-                        save_requested = true;
-                    }
+                    let record_id = record.id;
+                    let save_label = format!("Save {}", assistant_name);
+                    let changed = pending_editor_dirty || hours_or_details_changed
+                        || leave_baseline.as_ref().is_some_and(|b|
+                            b.payroll_department_notes != record.payroll_department_notes);
+                    (notes_valid, changed, save_label, record_id)
+                }).inner;
+            let (record, weeks, assistant_name) = &self.weeks[record_index];
+            match snapshot_state {
+                Some(SnapshotState::Submitted) => {
+                    ui.label("Previously submitted — amend, Save and regenerate; sending remains separate");
+                }
+                Some(SnapshotState::Indeterminate) => {
+                    ui.label("Delivery status is indeterminate — read-only");
+                }
+                Some(SnapshotState::Candidate) => {
+                    ui.label(
+                        "Generated candidate — changes require regeneration before sending",
+                    );
+                }
+                None => {}
+            }
 
-                    if let Some(error) = self.save_errors.get(&record.id) {
-                        ui.colored_label(ui.visuals().error_fg_color, error);
+            if read_only {
+                ui.horizontal(|ui| {
+                    ui.label("Review sickness dates / authorised sickness-only correction:");
+                    if let Some(week) = weeks.first() {
+                        if ui.button("Review all sickness dates").clicked() {
+                            if let Err(error)=self.sickness_ui.open_cycle(ui, application, record, &week.week_commencing, assistant_name) { self.status_message=error.to_string(); }
+                        }
                     }
-                    ui.separator();
                 });
-            if save_requested {
+            }
+
+            if self.duplicate_ui.show_scoped(ui, application, Some(pa)) {
+                review_changed = true;
+            }
+            let (record, _, name) = &self.weeks[record_index];
+            review_changed |= self.review_ui.show_pa(ui, application, record, name, changed);
+            if let Some(start) = parse_date(&operational_schedule.first_week_commencing) {
+                let calendar = crate::public_holidays::for_application(application, start);
+                for warning in &calendar.warnings {
+                    ui.label(warning);
+                }
+                if self.holiday_binding.as_ref().is_some_and(|binding| *binding != calendar.binding) {
+                    ui.colored_label(egui::Color32::YELLOW, "Holiday calendar changed: reload preparation before saving or generating.");
+                }
+                for difference in crate::public_holidays::comparison(
+                    &calendar.binding, &self.public_holidays[record_index],
+                ) {
+                    ui.label(difference);
+                }
+            }
+            if self.save_errors.get(&record_id).is_none()
+                && (self.status_message.contains("failed") || self.status_message.starts_with("Save or discard"))
+            {
+                ui.colored_label(ui.visuals().error_fg_color, &self.status_message);
+            }
+            if let Some(error) = self.save_errors.get(&record_id) {
+                ui.colored_label(ui.visuals().error_fg_color, error);
+            }
+            if !read_only && crate::gui_controls::save_button_enabled(ui, save_label, changed, notes_valid).clicked() {
                 if let Err(error) = self.save_current(application) {
                     self.status_message = preparation_save_error(error.as_ref());
                     self.save_errors
@@ -633,10 +569,6 @@ impl PayrollTimesheetScreen {
             finish_active_panel(ui, active_panel);
         }
 
-        if let Some(pa) = reactivate {
-            self.request_pa(Some(pa));
-            ui.ctx().request_repaint();
-        }
         self.sickness_ui.show(ui, application, &self.weeks);
         if self.sickness_ui.take_changed() {
             if let Err(e) = self.refresh_candidate_indicators(application) {
@@ -659,21 +591,30 @@ impl PayrollTimesheetScreen {
             }
             None => {}
         }
-        ui.label(&self.status_message);
-        // Finish this frame before reloading so the scroll area's content does
-        // not briefly shrink. Keep saved review rows in their original slots.
-        if review_changed {
-            let review_ui = std::mem::take(&mut self.review_ui);
-            self.reload_evidence_preserving_visits();
-            self.review_ui = review_ui;
+        if self.selected_pa.is_none() && !self.status_message.is_empty() {
+            ui.label(&self.status_message);
+        }
+        if review_changed && !self.has_unsaved_changes() {
+            self.reload_evidence_preserving_selection();
             ui.ctx().request_repaint();
         }
+
     }
 
+    #[cfg(test)]
     fn show_returned_information(&mut self, ui: &mut egui::Ui, app: &Application, index: usize) {
-        let record = &mut self.weeks[index].0;
-        let text = self
-            .returned_hours_text
+        Self::draw_returned_information(ui, app, &mut self.weeks[index].0,
+            &mut self.returned_hours_text, &mut self.returned_hours_status);
+    }
+
+    fn draw_returned_information(
+        ui: &mut egui::Ui,
+        app: &Application,
+        record: &mut PayrollTimesheet,
+        returned_hours_text: &mut HashMap<i64, String>,
+        returned_hours_status: &mut HashMap<i64, String>,
+    ) {
+        let text = returned_hours_text
             .entry(record.id)
             .or_insert_with(|| {
                 record
@@ -705,12 +646,12 @@ impl PayrollTimesheetScreen {
                     Ok(value) => {
                         record.actual_in_lieu_hours = value;
                         *text = value.map(|v| format!("{v:.2}")).unwrap_or_default();
-                        self.returned_hours_status.insert(record.id, "Returned hours saved. Outgoing payroll unchanged.".into());
+                        returned_hours_status.insert(record.id, "Returned hours saved. Outgoing payroll unchanged.".into());
                     }
-                    Err(error) => { self.returned_hours_status.insert(record.id, error); }
+                    Err(error) => { returned_hours_status.insert(record.id, error); }
                 }
             }
-            if let Some(message) = self.returned_hours_status.get(&record.id) { ui.label(message); }
+            if let Some(message) = returned_hours_status.get(&record.id) { ui.label(message); }
         });
     }
 
@@ -757,13 +698,13 @@ impl PayrollTimesheetScreen {
         Ok(())
     }
 
-    fn reload_evidence_preserving_visits(&mut self) {
+    fn reload_evidence_preserving_selection(&mut self) {
         let restore = self
             .bound_period
             .clone()
-            .map(|period| (period, self.visited_pas.clone()));
+            .zip(self.selected_pa);
         self.reload();
-        self.restore_visits = restore;
+        self.restore_selection = restore;
     }
 
     fn activate_pa(&mut self, selected: Option<i64>) {
@@ -782,8 +723,6 @@ impl PayrollTimesheetScreen {
                     }
                 }
             }
-            self.visited_pas.retain(|id| *id != pa);
-            self.visited_pas.insert(0, pa);
         }
         self.scroll_to_active = true;
     }
@@ -824,102 +763,6 @@ impl PayrollTimesheetScreen {
         }
         Ok(())
     }
-    fn show_visited_pa(&self, ui: &mut egui::Ui, index: usize) {
-        let (record, weeks, name) = &self.weeks[index];
-        ui.label("Previously visited — activate to edit or resolve actions");
-        if self.blocked(record.id, record.personal_assistant_id)
-            || self.review_ui.unresolved(record.id)
-        {
-            ui.label("Unresolved payroll actions require attention");
-        }
-        match self.snapshot_states.get(&record.id) {
-            Some(SnapshotState::Submitted) => {
-                ui.label("Submitted payroll timesheet — read-only");
-            }
-            Some(SnapshotState::Indeterminate) => {
-                ui.label("Delivery status is indeterminate — read-only");
-            }
-            Some(SnapshotState::Candidate) => {
-                ui.label("Generated candidate — changes require regeneration before sending");
-            }
-            None => {}
-        }
-        ui.label(format!(
-            "Previous cycle hours: {}",
-            record
-                .previous_cycle_hours
-                .map(format_decimal_hours)
-                .unwrap_or_default()
-        ));
-        let mileage = self
-            .assistant_mileage_enabled
-            .get(&record.personal_assistant_id)
-            .copied()
-            .unwrap_or_default();
-        egui::Grid::new(("visited_payroll", record.id))
-            .striped(true)
-            .show(ui, |ui| {
-                for label in [
-                    "W/c",
-                    "Worked",
-                    "Annual Leave",
-                    "Sick / SSP",
-                    "Public Holiday",
-                    "Travel Miles",
-                ] {
-                    ui.label(label);
-                }
-                ui.end_row();
-                for week in weeks {
-                    ui.label(crate::date_utils::screen(ui, &week.week_commencing));
-                    ui.label(format_decimal_hours(week.worked_hours));
-                    ui.vertical(|ui| {
-                        ui.label(format_decimal_hours(week.annual_leave_hours));
-                        if week.annual_leave_hours > 0.0
-                            && self.annual_leave.get(&record.id).is_none_or(|rows| {
-                                !rows.iter().any(|row| row.week_number == week.week_number)
-                            })
-                        {
-                            ui.label("Legacy undated leave");
-                        }
-                        if let Some(leave) = self.annual_leave.get(&record.id) {
-                            for row in leave.iter().filter(|r| r.week_number == week.week_number) {
-                                ui.label(format!(
-                                    "{}: {}",
-                                    crate::date_utils::screen(ui, &row.leave_date),
-                                    format_decimal_hours(row.hours)
-                                ));
-                            }
-                        }
-                    });
-                    ui.label(if self.sickness_ui.has_data(week.id) {
-                        "•"
-                    } else {
-                        ""
-                    });
-                    ui.vertical(|ui| {
-                        for holiday in self.public_holidays[index]
-                            .iter()
-                            .filter(|h| h.week_number == week.week_number)
-                        {
-                            ui.label(format!(
-                                "{}: {}",
-                                crate::date_utils::screen(ui, &holiday.holiday_date),
-                                format_decimal_hours(holiday.hours)
-                            ));
-                        }
-                    });
-                    ui.label(if mileage {
-                        format_decimal_hours(week.travel_miles)
-                    } else {
-                        String::new()
-                    });
-                    ui.end_row();
-                }
-            });
-        self.review_ui.show_audit(ui, record.id, name);
-    }
-
     fn request_pa(&mut self, selected: Option<i64>) {
         if selected != self.selected_pa {
             if self.has_unsaved_changes() {
@@ -953,12 +796,13 @@ impl PayrollTimesheetScreen {
         }))
     }
 
+    fn returned_hours_draft(&self, record: &PayrollTimesheet) -> Option<&str> {
+        self.returned_hours_text.get(&record.id)
+            .filter(|text| **text != record.actual_in_lieu_hours.map(|value| format!("{value:.2}")).unwrap_or_default())
+            .map(String::as_str)
+    }
+
     pub fn has_unsaved_changes(&self) -> bool {
-        if self.weeks.iter().any(|(record, _, _)| Some(record.personal_assistant_id) == self.selected_pa
-            && self.review_ui.manual_dirty(record.id))
-        {
-            return true;
-        }
         let Some((record, weeks, _)) = self
             .weeks
             .iter()
@@ -966,6 +810,10 @@ impl PayrollTimesheetScreen {
         else {
             return false;
         };
+        self.returned_hours_draft(record).is_some() || self.preparation_is_dirty(record, weeks)
+    }
+
+    fn preparation_is_dirty(&self, record: &PayrollTimesheet, weeks: &[PayrollTimesheetWeek]) -> bool {
         let Some(baseline) = self.preparation_baselines.get(&record.id) else {
             return false;
         };
@@ -1020,14 +868,13 @@ impl PayrollTimesheetScreen {
     }
 
     fn discard_current(&mut self) {
-        if let Some((record, _, _)) = self.weeks.iter().find(|(record, _, _)| Some(record.personal_assistant_id) == self.selected_pa) {
-            self.review_ui.discard_manual(record.id);
-        }
         if let Some((record, weeks, _)) = self
             .weeks
             .iter_mut()
             .find(|(r, _, _)| Some(r.personal_assistant_id) == self.selected_pa)
         {
+            self.returned_hours_text.remove(&record.id);
+            self.returned_hours_status.remove(&record.id);
             if let Some(baseline) = self.preparation_baselines.get(&record.id) {
                 record.payroll_department_notes = baseline.payroll_department_notes.clone();
                 record.previous_cycle_hours = baseline.previous_cycle_hours;
@@ -1046,6 +893,24 @@ impl PayrollTimesheetScreen {
         &mut self,
         application: &Application,
     ) -> Result<(), Box<dyn std::error::Error>> {
+        let index = self
+            .weeks
+            .iter()
+            .position(|(r, _, _)| Some(r.personal_assistant_id) == self.selected_pa)
+            .ok_or("No PA selected")?;
+        let returned_hours = self.returned_hours_draft(&self.weeks[index].0)
+            .map(parse_actual_in_lieu).transpose()?;
+        if let Some(hours) = returned_hours {
+            let (record, weeks, _) = &self.weeks[index];
+            if !self.preparation_is_dirty(record, weeks) {
+                let id = record.id;
+                application.payroll_timesheet_repository.save_actual_in_lieu_hours(id, hours)?;
+                self.weeks[index].0.actual_in_lieu_hours = hours;
+                self.returned_hours_text.remove(&id);
+                self.returned_hours_status.remove(&id);
+                return Ok(());
+            }
+        }
         let db = crate::payroll_evidence::open(application)?;
         let _guard = crate::timesheet_delivery::production_lock(&db)?;
         let start = parse_date(
@@ -1064,29 +929,46 @@ impl PayrollTimesheetScreen {
                 .ok_or("Reload preparation to review holiday data")?,
         )?;
 
-        let index = self
-            .weeks
-            .iter()
-            .position(|(r, _, _)| Some(r.personal_assistant_id) == self.selected_pa)
-            .ok_or("No PA selected")?;
-        if self.review_ui.manual_dirty(self.weeks[index].0.id) {
-            return Err("Verify and save the manual totals in Manual preparation before leaving".into());
+        let legacy_draft = crate::payroll_evidence::manual_preparation::latest(&db, self.weeks[index].0.id)?;
+        if legacy_draft.is_some() {
+            let record = &self.weeks[index].0;
+            let dates = std::array::from_fn(|week| start + chrono::Duration::weeks(week as i64));
+            let hours = crate::payroll_evidence::reconciliation::calculate(application, record, &dates, None)?;
+            let adjustments = application.payroll_worked_item_repository.get_manual_adjustments(record.id)?;
+            for (index, minutes) in hours.week_totals_minutes.iter().enumerate() {
+                let week = (index + 1) as i64;
+                let delta = adjustments.iter().find(|row| row.week_number == week)
+                    .map_or(0, |row| row.adjustment_minutes);
+                self.worked_hours_baselines.insert((record.id, week), minutes - delta);
+            }
         }
         let (record, weeks, name) = &mut self.weeks[index];
         let holidays = &mut self.public_holidays[index];
         let leave = self.annual_leave.entry(record.id).or_default();
-        commit_record_numeric_editors(&mut self.numeric_editor_texts, weeks, holidays);
+        let mut editor_texts = self.numeric_editor_texts.clone();
+        let mut edited_weeks = weeks.clone();
+        let mut edited_holidays = holidays.clone();
+        commit_record_numeric_editors(&mut editor_texts, &mut edited_weeks, &mut edited_holidays);
         let result = save_preparation_record(
             application,
             self.bound_period.as_ref(),
             self.schedule.as_ref().ok_or("No period selected")?,
             record,
-            weeks,
-            holidays,
+            &edited_weeks,
+            &edited_holidays,
             leave,
             &self.worked_hours_baselines,
             self.preparation_baselines.get(&record.id),
+            returned_hours,
         )?;
+        self.numeric_editor_texts = editor_texts;
+        *weeks = edited_weeks;
+        *holidays = edited_holidays;
+        if let Some(hours) = returned_hours {
+            record.actual_in_lieu_hours = hours;
+            self.returned_hours_text.remove(&record.id);
+            self.returned_hours_status.remove(&record.id);
+        }
         *leave = result.normalised_annual_leave;
         for (index, week) in weeks.iter_mut().enumerate() {
             week.public_holiday_hours = result.public_holiday_totals[index];
@@ -1144,8 +1026,8 @@ impl PayrollTimesheetScreen {
             ui.heading("Unsaved payroll preparation changes");
             ui.horizontal(|ui| {
                 for (label, choice) in [
-                    ("Save changes", UnsavedChoice::Save),
-                    ("Discard changes", UnsavedChoice::Discard),
+                    ("Save and continue", UnsavedChoice::Save),
+                    ("Discard changes and continue", UnsavedChoice::Discard),
                     ("Cancel", UnsavedChoice::Cancel),
                 ] {
                     if crate::gui_controls::save_button(ui,label,matches!(choice,UnsavedChoice::Save)).clicked() {
@@ -1351,9 +1233,16 @@ impl PayrollTimesheetScreen {
                     Some(SnapshotState::Submitted | SnapshotState::Indeterminate)
                 )
             {
-                let weeks = application
+                let mut weeks = application
                     .payroll_timesheet_repository
                     .get_weeks(record.id)?;
+                if let Some(draft) = crate::payroll_evidence::manual_preparation::latest(
+                    &*crate::payroll_evidence::open(application)?, record.id,
+                )? {
+                    for week in &mut weeks {
+                        week.worked_hours = draft.week_totals()[(week.week_number - 1) as usize] as f64 / 60.0;
+                    }
+                }
                 let holidays = application
                     .payroll_timesheet_repository
                     .get_public_holidays(record.id)?;
@@ -1615,18 +1504,11 @@ impl PayrollTimesheetScreen {
                 })
                 .collect::<Vec<_>>(),
         );
-        self.visited_pas = self
-            .restore_visits
-            .take()
-            .filter(|(period, _)| *period == BoundPayrollPeriod::from(schedule))
-            .map(|(_, visits)| visits)
-            .unwrap_or_default();
-        self.visited_pas.retain(|id| self.dropdown_pas.contains(id));
-        let first = self
-            .visited_pas
-            .first()
-            .or(self.dropdown_pas.first())
-            .copied();
+        let first = self.restore_selection.take()
+            .filter(|(period, pa)| *period == BoundPayrollPeriod::from(schedule)
+                && self.dropdown_pas.contains(pa))
+            .map(|(_, pa)| pa)
+            .or_else(|| self.dropdown_pas.first().copied());
         self.activate_pa(first);
         self.sickness_ui.refresh(application, &self.weeks)?;
         self.status_message = format!("Loaded {} Payroll Timesheets.", self.weeks.len());
@@ -1695,6 +1577,7 @@ fn save_preparation_record(
     annual_leave: &[PayrollTimesheetAnnualLeave],
     worked_hours_baselines: &HashMap<(i64, i64), i64>,
     baseline: Option<&PreparationBaseline>,
+    returned_hours: Option<Option<f64>>,
 ) -> Result<SaveResult, Box<dyn std::error::Error>> {
     crate::payroll_timesheet_repository::validate_payroll_department_notes(
         &record.payroll_department_notes,
@@ -1753,8 +1636,25 @@ fn save_preparation_record(
                 .iter()
                 .find(|adjustment| adjustment.week_number == week.week_number);
             let delta = final_minutes - baseline_minutes;
-            let reason = if let Some(previous) = existing.filter(|previous|
+            let edited = baseline.and_then(|saved| saved.weeks.iter().find(|row| row.id == week.id))
+                .is_some_and(|saved| (saved.worked_hours * 60.0).round() as i64 != final_minutes);
+            let previous_carry = if week.week_number == 1 {
+                (record.previous_cycle_hours.unwrap_or_default() * 60.0).round() as i64
+            } else {
+                0
+            };
+            let reason = if edited && existing.is_none_or(|old|
+                !crate::historical_adjustment_compatibility::is_historical_adjustment_reason(old.reason.as_deref()))
+            {
+                crate::models::parse_employment_date(&week.week_commencing).map(|date| {
+                    let label = crate::payroll_evidence::reconciliation::manual_hours_reason(
+                        date, crate::payroll_evidence::reconciliation::today(),
+                    );
+                    format!("{label} | approved current minutes: {}", final_minutes - previous_carry)
+                })
+            } else if let Some(previous) = existing.filter(|previous|
                 previous.adjustment_minutes == delta
+                    || crate::payroll_evidence::reconciliation::manual_target(previous.reason.as_deref()).is_some()
                     || crate::historical_adjustment_compatibility::is_historical_adjustment_reason(previous.reason.as_deref())
             ) {
                 previous.reason.clone()
@@ -1780,7 +1680,10 @@ fn save_preparation_record(
         .cloned()
         .collect::<Vec<_>>();
 
-    let changed = baseline.is_none_or(|baseline| {
+    let legacy_draft = crate::payroll_evidence::manual_preparation::latest(
+        &*crate::payroll_evidence::open(application)?, record.id,
+    )?.is_some();
+    let changed = legacy_draft || baseline.is_none_or(|baseline| {
         baseline.payroll_department_notes != record.payroll_department_notes
             || !optional_hours_equal(baseline.previous_cycle_hours, record.previous_cycle_hours)
             || !weeks_equal(&baseline.weeks, &weeks)
@@ -1789,6 +1692,9 @@ fn save_preparation_record(
             || baseline.manual_adjustments != desired_persisted_adjustments
     });
     if !changed {
+        if let Some(hours) = returned_hours {
+            application.payroll_timesheet_repository.save_actual_in_lieu_hours(record.id, hours)?;
+        }
         return Ok(SaveResult {
             changed: false,
             candidate_invalidated: false,
@@ -1801,13 +1707,14 @@ fn save_preparation_record(
     let now = chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
     let candidate_invalidated = application
         .payroll_timesheet_repository
-        .save_preparation_atomically(
+        .save_preparation_with_returned_hours(
             record,
             &weeks,
             public_holidays,
             &annual_leave,
             &desired_adjustments,
             &now,
+            returned_hours,
         )?;
 
     Ok(SaveResult {
@@ -2608,6 +2515,7 @@ pub(crate) mod tests {
                 .unwrap_or(&[]),
             &screen.worked_hours_baselines,
             screen.preparation_baselines.get(&record.id),
+            None,
         )
     }
 
@@ -3388,10 +3296,10 @@ pub(crate) mod tests {
         save_current_row(&application, &schedule, &screen).unwrap();
         crate::payroll_evidence::reconciliation::TEST_TODAY.with(|clock| clock.set(None));
         let adjustments = application.payroll_worked_item_repository.get_manual_adjustments(record).unwrap();
-        assert_eq!(adjustments.iter().map(|a| a.reason.as_deref()).collect::<Vec<_>>(), [
-            Some("Manual confirmed worked hours"),
-            Some("Manual hours for a partly elapsed week"),
-            Some("Manual current-period estimate"),
+        assert_eq!(adjustments.iter().map(|a| crate::payroll_evidence::reconciliation::manual_target(a.reason.as_deref())).collect::<Vec<_>>(), [
+            Some(("Manual confirmed worked hours", 60)),
+            Some(("Manual hours for a partly elapsed week", 60)),
+            Some(("Manual current-period estimate", 60)),
         ]);
     }
 

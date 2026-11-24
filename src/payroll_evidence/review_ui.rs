@@ -5,6 +5,7 @@ pub struct ReviewUi {
     complete: HashSet<(i64, String)>,
     cached: std::collections::HashMap<i64, ReviewData>,
     error: String,
+    #[cfg(test)]
     manual: std::collections::HashMap<i64, super::manual_preparation::Editor>,
     historical_rows: std::collections::HashMap<i64, Vec<HistoricalRow>>,
 }
@@ -13,8 +14,6 @@ const CARRY_FORWARD: &str = "Extra hours not included in previous payroll — ca
 
 struct HistoricalRow {
     review: reconciliation::HistoricalReview,
-    saved: Option<bool>,
-    height: f32,
 }
 
 struct ReviewData {
@@ -58,24 +57,8 @@ impl ReviewUi {
         let reviews = plan
             .as_ref()
             .map_or(&[][..], |plan| plan.historical_reviews.as_slice());
-        rows.retain(|row| {
-            reviews
-                .iter()
-                .any(|review| review.same_evidence(&row.review))
-                || (row.saved.is_some()
-                    && !reviews
-                        .iter()
-                        .any(|review| review.evidence.key() == row.review.evidence.key()))
-        });
-        for review in reviews {
-            if !rows.iter().any(|row| row.review.same_evidence(review)) {
-                rows.push(HistoricalRow {
-                    review: review.clone(),
-                    saved: None,
-                    height: 0.0,
-                });
-            }
-        }
+        rows.clear();
+        rows.extend(reviews.iter().cloned().map(|review| HistoricalRow { review }));
         self.cached.insert(
             record.id,
             ReviewData {
@@ -116,14 +99,7 @@ impl ReviewUi {
         })
     }
 
-    pub(crate) fn manual_dirty(&self, record: i64) -> bool {
-        self.manual.get(&record).is_some_and(|editor| editor.dirty)
-    }
-
-    pub(crate) fn discard_manual(&mut self, record: i64) {
-        self.manual.remove(&record);
-    }
-
+    #[cfg(test)]
     pub(crate) fn show_manual(
         &mut self,
         ui: &mut egui::Ui,
@@ -197,38 +173,42 @@ impl ReviewUi {
                         ui.label(notice);
                     }
                     if let Some(rows) = self.historical_rows.get_mut(&record.id) {
-                        let remaining = rows.iter().filter(|row| row.saved.is_none()).count();
-                        ui.strong(format!("Historical payment reviews remaining: {remaining}"));
-                        if remaining > 0 {
+                        if !rows.is_empty() {
+                            ui.strong(format!("Historical payment reviews remaining: {}", rows.len()));
                             ui.label("Current preparation and submission can continue with these historical entries held.");
                         }
-                        for row in rows {
-                            egui::Frame::group(ui.style()).show(ui, |ui| {
-                                ui.set_min_height(row.height);
-                                let review = &row.review;
+                        rows.retain(|row| {
+                            let review = &row.review;
+                            let result = egui::Frame::group(ui.style()).show(ui, |ui| {
                                 ui.strong(format!("Historical payment review — {}", review.evidence.pa_name));
                                 ui.label(format!("{}: {} – {}, {:.2} hours", review.evidence.label(), review.evidence.start, review.evidence.end, review.evidence.minutes as f64 / 60.0));
-                                if let Some(paid) = row.saved {
-                                    ui.strong(format!("Saved: {}", if paid { INCLUDED } else { CARRY_FORWARD }));
-                                } else {
-                                    ui.label("This historical payroll is settled, but retained evidence cannot establish whether this shift was included. Original payroll totals will remain unchanged.");
-                                    let paid = ui.button(INCLUDED).clicked();
-                                    let unpaid = ui.button(CARRY_FORWARD).clicked();
-                                    if paid || unpaid {
-                                        match reconciliation::historical_decision(app, review, paid) {
-                                            Ok(()) => {
-                                                row.saved = Some(paid);
-                                                self.error.clear();
-                                                changed = true;
-                                                ui.ctx().request_repaint();
-                                            }
-                                            Err(e) => self.error = e.to_string(),
-                                        }
+                                ui.label("This historical payroll is settled, but retained evidence cannot establish whether this shift was included. Original payroll totals will remain unchanged.");
+                                let mut decision = None;
+                                for (label, choice) in [
+                                    (INCLUDED, reconciliation::HistoricalDecision::AlreadyPaid),
+                                    (CARRY_FORWARD, reconciliation::HistoricalDecision::Unpaid),
+                                    ("Dismiss — no payroll adjustment required", reconciliation::HistoricalDecision::Dismiss),
+                                ] {
+                                    if ui.button(label).clicked() {
+                                        decision = Some(choice);
                                     }
                                 }
-                                row.height = ui.min_rect().height();
-                            });
-                        }
+                                decision.map(|choice| reconciliation::historical_decision(app, review, choice))
+                            }).inner;
+                            match result {
+                                Some(Ok(())) => {
+                                    self.error.clear();
+                                    changed = true;
+                                    ui.ctx().request_repaint();
+                                    false
+                                }
+                                Some(Err(error)) => {
+                                    self.error = error.to_string();
+                                    true
+                                }
+                                None => true,
+                            }
+                        });
                     }
                 }
             }
@@ -273,12 +253,21 @@ impl ReviewUi {
                     }
                 }
             }
-            self.show_audit(ui, record.id, name);
+            if stage != Stage::Editable || data.audit.iter().any(|line|
+                line.starts_with("Duplicate decision ") || line.starts_with("Correction ")
+            ) {
+                self.show_audit(ui, record.id, name);
+            }
         }
 
-        // The parent preserves this UI cache across evidence reloads so that
-        // historical row confirmations survive. Refresh a completed carry here
-        // to remove its action immediately and retain the new audit decision.
+        if changed {
+            if let Some(plan) = self.cached.get_mut(&record.id).and_then(|data| data.plan.as_mut()) {
+                if let Some(rows) = self.historical_rows.get(&record.id) {
+                    plan.historical_reviews.retain(|review| rows.iter().any(|row| row.review.same_evidence(review)));
+                }
+            }
+        }
+        // Refresh a completed carry so its issue panel disappears on repaint.
         if changed && self.historical(record.id) {
             match reconciliation::changes(app, record) {
                 Ok(change) => {

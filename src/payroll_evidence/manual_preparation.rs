@@ -20,6 +20,21 @@ pub(crate) struct Draft {
     entered_on: Option<String>,
 }
 
+impl Draft {
+    pub(crate) fn week_totals(&self) -> [i64; 4] { self.final_totals }
+}
+
+pub(crate) fn supersede_with_normal_save(db: &Connection, record: i64, at: &str) -> Result<()> {
+    if let Some(draft) = latest(db, record)? {
+        db.execute(
+            "INSERT INTO shift_change_events(source,source_id,before_evidence,after_evidence,reason,review_signature,recorded_at,actor)
+             VALUES(?1,?2,?3,'null','Saved in normal payroll preparation',?4,?5,'local_employer')",
+            params![SOURCE, record, serde_json::to_string(&draft)?, draft.signature, at],
+        )?;
+    }
+    Ok(())
+}
+
 pub(crate) struct Preview {
     pub actual: [i64; 4],
     pub shifts: Vec<(NaiveDate, i64)>,
@@ -34,14 +49,13 @@ pub(crate) fn latest(db: &Connection, record: i64) -> Result<Option<Draft>> {
         "SELECT after_evidence, recorded_at FROM shift_change_events WHERE source=?1 AND source_id=?2 ORDER BY id DESC LIMIT 1",
         params![SOURCE, record], |row| Ok((row.get(0)?, row.get(1)?)),
     ).optional()?;
-    stored.map(|(payload, recorded_at)| {
-        let mut draft: Draft = serde_json::from_str(&payload)?;
-        if draft.entered_on.is_none() {
-            draft.entered_on = chrono::DateTime::parse_from_rfc3339(&recorded_at)
-                .ok().map(|date| date.date_naive().to_string());
-        }
-        Ok(draft)
-    }).transpose()
+    let Some((payload, recorded_at)) = stored else { return Ok(None) };
+    let mut draft: Option<Draft> = serde_json::from_str(&payload)?;
+    if let Some(draft) = draft.as_mut().filter(|draft| draft.entered_on.is_none()) {
+        draft.entered_on = chrono::DateTime::parse_from_rfc3339(&recorded_at)
+            .ok().map(|date| date.date_naive().to_string());
+    }
+    Ok(draft)
 }
 
 fn revision(db: &Connection, record: i64) -> Result<Option<i64>> {

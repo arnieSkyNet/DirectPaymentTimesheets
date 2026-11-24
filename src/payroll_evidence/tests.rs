@@ -425,7 +425,7 @@ fn settled_aggregate_historical_shift_requires_paid_unpaid_review() {
         let p = reconciliation::plan(&app, &next).unwrap();
         assert_eq!(p.historical_reviews.len(), 1);
         assert!(p.work.is_empty());
-        reconciliation::historical_decision(&app, &p.historical_reviews[0], paid).unwrap();
+        reconciliation::historical_decision(&app, &p.historical_reviews[0], if paid { reconciliation::HistoricalDecision::AlreadyPaid } else { reconciliation::HistoricalDecision::Unpaid }).unwrap();
         let result = reconciliation::calculate(&app, &next, &w, None).unwrap();
         assert_eq!(result.week_totals_minutes[0], if paid { 0 } else { 60 });
         if !paid {
@@ -1894,3 +1894,77 @@ fn stage2a_business_examples_deduction_stays_in_week_one() {
 
 #[path = "stage2c_revised_tests.rs"]
 mod stage2c_revised_tests;
+
+#[test]
+fn settled_aggregate_with_nine_later_rows_below_accepted_totals_needs_no_review() {
+    let (dir, mut app) = setup();
+    app.context.config.folders.payslip_folder = dir.path().join("payslips");
+    let (historical, dates) = period(&app, 1, "2026-04-01", 1);
+    for week in [3, 4] {
+        app.payroll_worked_item_repository.set_manual_adjustment(
+            historical.id,
+            &crate::payroll_worked_item_repository::ManualHoursAdjustment {
+                week_number: week,
+                adjustment_minutes: 600,
+                reason: None,
+            },
+            "synthetic",
+        ).unwrap();
+    }
+    submit(&app, &historical, &dates);
+    let schedule = app.payroll_schedule_repository.get_for_year_and_cycle("2026/27", 1)
+        .unwrap().unwrap();
+    let filename = crate::payroll_file_naming::payslip_filename("Example PA", &schedule).unwrap();
+    let pdf = dir.path().join(filename);
+    stage2c_revised_tests::synthetic_pdf(&pdf, &["Synthetic payslip", "Total Payments 250.00"]);
+    assert_eq!(app.import_payroll_documents(&pdf, Some(&schedule)).unwrap().payslips_imported, 1);
+    settle(&app, &historical);
+    let (latest, latest_dates) = period(&app, 2, "2026-04-29", 1);
+    let db = open(&app).unwrap();
+    for day in 15..=23 {
+        db.execute(
+            "INSERT INTO timesheets(personal_assistant_id,pa_name,start_time,end_time,break_minutes,worked_minutes,hourly_rate,amount)
+             VALUES (1,'Example PA',?1,?2,0,60,12,12)",
+            params![format!("2026-04-{day}T09:00:00"), format!("2026-04-{day}T10:00:00")],
+        ).unwrap();
+        db.execute(
+            "INSERT INTO shift_change_events(source,source_id,before_evidence,after_evidence,reason,review_signature,recorded_at,actor)
+             VALUES ('imported',?1,'','synthetic','New CSV evidence','synthetic-batch','2026-05-15T09:00:00Z','local_employer')",
+            [db.last_insert_rowid()],
+        ).unwrap();
+    }
+    submit(&app, &latest, &latest_dates);
+    let (next, next_dates) = period(&app, 3, "2026-05-27", 1);
+    let prior = lifecycle::latest(&db, historical.id).unwrap().unwrap();
+    let before = lifecycle::weeks(&db, prior).unwrap().iter().map(|w| w.worked_hours).collect::<Vec<_>>();
+    let plan = reconciliation::plan(&app, &next).unwrap();
+    assert_eq!(plan.historical_reviews.len(), 0);
+    assert!(plan.work.is_empty());
+    assert!(plan.notices.is_empty());
+    assert_eq!(reconciliation::calculate(&app, &next, &next_dates, None).unwrap().week_totals_minutes, [0; 4]);
+    assert_eq!(lifecycle::weeks(&db, prior).unwrap().iter().map(|w| w.worked_hours).collect::<Vec<_>>(), before);
+    assert_eq!(db.query_row("SELECT COUNT(*) FROM payroll_reconciliation_decisions", [], |r| r.get::<_, i64>(0)).unwrap(), 0);
+}
+
+#[test]
+fn historical_dismissal_is_distinct_persistent_and_financially_inert() {
+    let (_dir, app) = setup();
+    let (historical, _) = period(&app, 1, "2026-04-01", 1);
+    settle(&app, &historical);
+    direct(&app, "2026-04-02T09:00", "2026-04-02T10:00");
+    let (current, dates) = period(&app, 2, "2026-04-29", 1);
+    let initial = reconciliation::plan(&app, &current).unwrap();
+    assert_eq!(initial.historical_reviews.len(), 1);
+    let review = &initial.historical_reviews[0];
+    reconciliation::historical_decision(&app, review, reconciliation::HistoricalDecision::Dismiss).unwrap();
+    assert!(reconciliation::historical_decision(&app, review, reconciliation::HistoricalDecision::Unpaid).is_err());
+    let db = open(&app).unwrap();
+    assert_eq!(db.query_row("SELECT COUNT(*) FROM shift_change_events WHERE source='historical_payment_dismissal'", [], |row| row.get::<_,u32>(0)).unwrap(), 1);
+    for table in ["payroll_corrections", "payroll_reconciliation_decisions"] {
+        assert_eq!(db.query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |row| row.get::<_,u32>(0)).unwrap(), 0);
+    }
+    drop(db);
+    let app = crate::payroll_timesheet_screen::tests::reopen_test_application(_dir.path());
+    assert!(reconciliation::plan(&app, &current).unwrap().historical_reviews.is_empty());
+    assert_eq!(reconciliation::calculate(&app, &current, &dates, None).unwrap().week_totals_minutes, [0;4]);
+}

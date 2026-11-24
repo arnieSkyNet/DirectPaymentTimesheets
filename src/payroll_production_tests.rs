@@ -3273,7 +3273,7 @@ fn feature2_seven_historical_reviews_refresh_only_after_accepted_amendment() {
     )
     .unwrap();
     refresh(&app, &mut review_ui);
-    assert!(reconciliation::historical_decision(&app.application, &stale, true).is_err());
+    assert!(reconciliation::historical_decision(&app.application, &stale, crate::payroll_evidence::reconciliation::HistoricalDecision::AlreadyPaid).is_err());
     let fresh = review_ui
         .preparation_plan(current.id)
         .unwrap()
@@ -3350,15 +3350,7 @@ fn feature2_seven_historical_reviews_refresh_only_after_accepted_amendment() {
         .unwrap()
         .historical_reviews
         .is_empty());
-    assert!(reconciliation::historical_decision(&app.application, &fresh, true).is_err());
-    crate::gui_controls::acceptance::frame(
-        &ctx,
-        vec![],
-        |ui| {
-            review_ui.show_pa(ui, &app.application, &current, "PA1 Test", false);
-        },
-        "Historical payment reviews remaining: 0",
-    );
+    assert!(reconciliation::historical_decision(&app.application, &fresh, crate::payroll_evidence::reconciliation::HistoricalDecision::AlreadyPaid).is_err());
 
     let more = feature2_source_csv(&["20/04/2026"])
         .replace("09:00:00", "13:00:00")
@@ -3823,7 +3815,7 @@ fn feature2_manual_preparation_generates_current_pdf_with_open_historical_review
         &egui::Context::default(),
         vec![],
         |ui| screen.show(ui, &app.application, &next, "fictional manual preparation"),
-        "Open manual preparation",
+        "Save PA1 Test",
     );
     let current = app
         .application

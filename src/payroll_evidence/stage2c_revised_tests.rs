@@ -61,7 +61,7 @@ fn submit_manual_candidate(app:&Application, record:&PayrollTimesheet, hours:&cr
         record.personal_assistant_id,&record.payroll_year,record.cycle_number,&path,"synthetic",||Ok(())).unwrap();
 }
 
-fn synthetic_pdf(path:&std::path::Path,text:&[&str]) {
+pub(super) fn synthetic_pdf(path:&std::path::Path,text:&[&str]) {
     use lopdf::{dictionary,Document,Object,Stream};
     use lopdf::content::{Content,Operation};
     let mut doc=Document::with_version("1.4");
@@ -89,7 +89,7 @@ fn revised_stage2c_payslip_import_fallback_is_cycle_scoped_and_nonblocking() {
     for readable in [true,false] {
         let (dir,mut app)=setup();
         app.context.config.folders.payslip_folder=dir.path().join("payslips");
-        let (_old,_)=period(&app,1,"2026-04-01",1);
+        let (old,_)=period(&app,1,"2026-04-01",1);
         let schedule=app.payroll_schedule_repository.get_for_year_and_cycle("2026/27",1).unwrap().unwrap();
         let filename=crate::payroll_file_naming::payslip_filename("Example PA",&schedule).unwrap();
         let path=dir.path().join(filename);
@@ -109,6 +109,15 @@ fn revised_stage2c_payslip_import_fallback_is_cycle_scoped_and_nonblocking() {
         assert!(plan.notices.iter().any(|n| n.contains(if readable {"3.00 paid working hours"} else {"could not be verified"})),
             "{:?}",plan.notices);
         assert_eq!(reconciliation::calculate(&app,&current,&dates,None).unwrap().week_totals_minutes,[60,0,0,0]);
+        settle(&app, &old);
+        let db = open(&app).unwrap();
+        db.execute("INSERT INTO payroll_legacy_settlements VALUES (?1,'synthetic')", [old.id]).unwrap();
+        let earlier = load_for_pa(&db, 1).unwrap().into_iter().find(|entry| {
+            entry.date().unwrap() < dates[0]
+        }).unwrap();
+        db.execute("INSERT INTO payroll_legacy_evidence VALUES (?1,?2,?3)",
+            params![earlier.source, earlier.id, earlier.fingerprint()]).unwrap();
+        assert!(reconciliation::plan(&app, &current).unwrap().notices.is_empty());
         submit(&app,&current,&dates);
         let db=open(&app).unwrap();
         assert!(lifecycle::latest(&db,current.id).unwrap().is_some());
