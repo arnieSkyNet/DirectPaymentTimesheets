@@ -2510,6 +2510,6 @@
     "third-party/notices/subsetter-0.2.6-NOTICE": "756e3179c6911701fb3fd41e5a364a7fe38360670955444aab40a0070a512c27",
     "third-party/notices/svg2pdf-0.13.0-NOTICE": "74544feeaa2083014e5c62c4d3eda0e6dfb77f621310b5b602b074df199dcc20"
   },
-  "lock_sha256": "aa78b152d02fe7631d205fabbfbfb2a2a27cbc4225261c287382c27942e193a8",
+  "lock_sha256": "f10005860a6f60624a7381f1496bfff1c91edbf55e5babe1309d7adce1dfac60",
   "schema": 1
 }
