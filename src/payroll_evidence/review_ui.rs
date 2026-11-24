@@ -22,7 +22,7 @@ struct ReviewData {
     manual_saved: bool,
     plan: Option<reconciliation::Plan>,
     change: Option<reconciliation::Changes>,
-    audit: Vec<String>,
+    audit: Vec<audit::Entry>,
 }
 impl ReviewUi {
     pub fn refresh_record(
@@ -68,7 +68,7 @@ impl ReviewUi {
                     && lifecycle::latest(&db, record.id)?.is_some(),
                 plan,
                 change,
-                audit: reconciliation::audit_lines(app, record)?,
+                audit: audit::history(app, record)?,
             },
         );
         Ok(())
@@ -87,7 +87,7 @@ impl ReviewUi {
         })
     }
     pub fn refresh_audit(&mut self,app:&Application,record:&crate::payroll_timesheet_repository::PayrollTimesheet)->Result<()> {
-        if let Some(data)=self.cached.get_mut(&record.id) {data.audit=reconciliation::audit_lines(app,record)?;}
+        if let Some(data)=self.cached.get_mut(&record.id) {data.audit=audit::history(app,record)?;}
         Ok(())
     }
     pub fn historical(&self,id:i64)->bool {
@@ -253,11 +253,6 @@ impl ReviewUi {
                     }
                 }
             }
-            if stage != Stage::Editable || data.audit.iter().any(|line|
-                line.starts_with("Duplicate decision ") || line.starts_with("Correction ")
-            ) {
-                self.show_audit(ui, record.id, name);
-            }
         }
 
         if changed {
@@ -274,25 +269,44 @@ impl ReviewUi {
                     if let Some(data) = self.cached.get_mut(&record.id) {
                         data.change = Some(change);
                     }
-                    if let Err(error) = self.refresh_audit(app, record) {
-                        self.error = error.to_string();
-                    }
                 }
                 Err(error) => self.error = error.to_string(),
+            }
+        }
+        if changed {
+            if let Err(error) = self.refresh_audit(app, record) {
+                self.error = error.to_string();
             }
         }
         if !self.error.is_empty() {
             ui.colored_label(ui.visuals().error_fg_color, &self.error);
         }
+        self.show_audit(ui, record.id, name);
         changed
     }
     pub fn show_audit(&self, ui: &mut egui::Ui, record_id: i64, name: &str) {
         if let Some(data) = self.cached.get(&record_id).filter(|d| !d.audit.is_empty()) {
-            ui.collapsing(format!("Payroll audit/details — {name}"), |ui| {
-                for line in &data.audit {
-                    ui.label(line);
-                }
-            });
+            egui::CollapsingHeader::new(format!("Payroll audit/details — {name}"))
+                .id_salt(("payroll_history", record_id))
+                .show(ui, |ui| {
+                    ui.label("Oldest first. Current issues are listed separately.");
+                    let mut previous_date = None;
+                    for entry in &data.audit {
+                        let date = entry.date_label();
+                        if previous_date.as_ref() != Some(&date) {
+                            ui.separator();
+                            ui.strong(&date);
+                            previous_date = Some(date);
+                        }
+                        ui.label(egui::RichText::new(&entry.summary).strong());
+                        for detail in &entry.details {
+                            ui.label(detail);
+                        }
+                        if !entry.effect.is_empty() {
+                            ui.label(&entry.effect);
+                        }
+                    }
+                });
         }
     }
 }

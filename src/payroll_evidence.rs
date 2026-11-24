@@ -404,6 +404,7 @@ pub mod duplicate_ui;
 pub mod lifecycle;
 pub(crate) mod manual_preparation;
 mod payslip_hours;
+pub(crate) mod audit;
 pub mod reconciliation;
 pub mod review_ui;
 #[cfg(test)]

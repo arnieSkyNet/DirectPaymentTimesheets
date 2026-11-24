@@ -338,10 +338,11 @@ fn resolved_birch_and_invalidated_dune_audits_preserve_history_and_payable_one_p
         .find(|(r, _, _)| r.personal_assistant_id == 2)
         .unwrap();
     assert_eq!(dune.1[0].worked_hours, 1.50);
-    let before = crate::payroll_evidence::reconciliation::audit_lines(&app, &dune.0).unwrap();
-    assert!(before
-        .iter()
-        .any(|l| l.contains("winner imported:149") && l.contains("direct:6")));
+    let before = crate::payroll_evidence::audit::history(&app, &dune.0).unwrap();
+    assert!(before.iter().any(|entry| entry.summary.contains("Shift selected")
+        && entry.details.iter().any(|line| line.starts_with("Hours Keeper"))));
+    assert!(before.iter().any(|entry| entry.summary.contains("Shift set aside")
+        && entry.details.iter().any(|line| line.starts_with("Hours Shift"))));
     let raw_before = crate::payroll_evidence::load(&app).unwrap();
     screen.loaded = true;
     screen.preflight_done = true;
@@ -371,7 +372,7 @@ fn resolved_birch_and_invalidated_dune_audits_preserve_history_and_payable_one_p
         .unwrap();
     assert_eq!(dune.1[0].worked_hours, 1.50);
     assert_eq!(
-        crate::payroll_evidence::reconciliation::audit_lines(&app, &dune.0).unwrap(),
+        crate::payroll_evidence::audit::history(&app, &dune.0).unwrap(),
         before
     );
     assert_eq!(
@@ -441,10 +442,10 @@ fn historical_review_has_priority_but_completed_review_returns_to_longest_servin
         0.0
     );
     assert!(
-        crate::payroll_evidence::reconciliation::audit_lines(&app, &review.record)
+        crate::payroll_evidence::audit::history(&app, &review.record)
             .unwrap()
             .iter()
-            .any(|l| l.contains("already_paid"))
+            .any(|entry| entry.summary == "Shift marked as included in previous payroll")
     );
 }
 
@@ -1022,7 +1023,7 @@ fn sent_and_settled_preparations_are_not_rewritten_when_employment_no_longer_ove
             .payroll_timesheet_repository
             .get_weeks(record.id)
             .unwrap();
-        let audit = crate::payroll_evidence::reconciliation::audit_lines(&app, record).unwrap();
+        let audit = crate::payroll_evidence::audit::history(&app, record).unwrap();
         db.execute("UPDATE personal_assistants SET employment_status='Inactive',start_date='01/01/2027',leaving_date='01/02/2027' WHERE id=1", []).unwrap();
         let reloaded = load_period_for_eligibility_test(&app, &historical);
         assert!(reloaded.dropdown_pas.contains(&1));
@@ -1038,7 +1039,7 @@ fn sent_and_settled_preparations_are_not_rewritten_when_employment_no_longer_ove
         ));
         assert_eq!(
             audit,
-            crate::payroll_evidence::reconciliation::audit_lines(&app, record).unwrap()
+            crate::payroll_evidence::audit::history(&app, record).unwrap()
         );
         assert_eq!(reloaded.records.len(), original.records.len());
     }
@@ -1328,4 +1329,124 @@ fn normal_preparation_keeps_drafts_and_compacts_reviews_before_save() {
     let dates = std::array::from_fn(|week| chrono::NaiveDate::from_ymd_opt(2026,4,29).unwrap() + chrono::Duration::weeks(week as i64));
     assert_eq!(crate::payroll_evidence::reconciliation::calculate_for_generation(&app, &record, &dates, None)
         .unwrap().week_totals_minutes[0], 150);
+}
+
+#[test]
+fn pa_popup_selection_closes_and_keeps_click_out_of_the_editor() {
+    use crate::gui_controls::acceptance::{click, frame};
+
+    let (_dir, app, schedule, mut screen) = two_pa_preparation();
+    screen.loaded = true;
+    screen.preflight_done = true;
+    let ctx = egui::Context::default();
+    render_preparation(&ctx, &app, &schedule, &mut screen);
+    let select = frame(&ctx, vec![], |ui| screen.show(ui, &app, &schedule, "period"), "Personal Assistant").0 + egui::vec2(90.0, 0.0);
+    click(&ctx, select, |ui| screen.show(ui, &app, &schedule, "period"), "Save Longest Test");
+    assert!(egui::Popup::is_any_open(&ctx), "selector must open");
+    let option = frame(&ctx, vec![], |ui| screen.show(ui, &app, &schedule, "period"), "Active Test").0;
+    click(&ctx, option, |ui| screen.show(ui, &app, &schedule, "period"), "Worked");
+
+    let text = render_preparation(&ctx, &app, &schedule, &mut screen);
+    assert_eq!(screen.selected_pa, Some(1));
+    assert!(!egui::Popup::is_any_open(&ctx));
+    assert!(!text.iter().any(|text| text.contains("Longest Test")));
+    assert!(text.contains(&"Save Active Test".into()));
+    assert_eq!(text.iter().filter(|text| *text == "Worked").count(), 1);
+    assert!(ctx.memory(|memory| memory.focused().is_none()));
+    let _ = ctx.run(egui::RawInput {
+        screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1600.0, 4000.0))),
+        events: vec![egui::Event::Text("987".into())],
+        ..Default::default()
+    }, |ctx| {
+        egui::CentralPanel::default().show(ctx, |ui| screen.show(ui, &app, &schedule, "period"));
+    });
+    assert!(!screen.has_unsaved_changes());
+
+    // An actual selector click with a dirty draft must still use the existing guard.
+    screen.weeks[0].0.payroll_department_notes = "Synthetic unsaved note".into();
+    let select = frame(&ctx, vec![], |ui| screen.show(ui, &app, &schedule, "period"), "Personal Assistant").0 + egui::vec2(90.0, 0.0);
+    click(&ctx, select, |ui| screen.show(ui, &app, &schedule, "period"), "Save Active Test");
+    let option = frame(&ctx, vec![], |ui| screen.show(ui, &app, &schedule, "period"), "Longest Test").0;
+    click(&ctx, option, |ui| screen.show(ui, &app, &schedule, "period"), "Save Active Test");
+    let cancel = frame(&ctx, vec![], |ui| screen.show(ui, &app, &schedule, "period"), "Cancel").0;
+    assert_eq!(screen.pending_pa, Some(2));
+    assert_eq!(screen.selected_pa, Some(1));
+    click(&ctx, cancel, |ui| screen.show(ui, &app, &schedule, "period"), "Save Active Test");
+    assert_eq!(screen.pending_pa, None);
+    assert_eq!(screen.weeks[0].0.payroll_department_notes, "Synthetic unsaved note");
+}
+
+#[test]
+fn payroll_audit_shows_readable_history_without_rewriting_records() {
+    use crate::gui_controls::acceptance::{click, frame};
+
+    let (_dir, app, schedule, mut screen) = two_pa_preparation();
+    let record = screen.weeks.iter().find(|entry| entry.0.personal_assistant_id == 1).unwrap().0.clone();
+    let db = setup_connection(&app);
+    db.execute(
+        "INSERT INTO timesheet_amendment_versions(payroll_timesheet_id,event,before_state,after_state,recorded_at,actor)
+         VALUES (?1,'save','{}',?2,'2026-04-03T09:40:00','local_employer')",
+        rusqlite::params![record.id, r#"{"fixture":true}"#],
+    ).unwrap();
+    db.execute(
+        "INSERT INTO payroll_corrections(personal_assistant_id,origin_payroll_timesheet_id,evidence_key,minutes,reason,created_at)
+         VALUES (1,?1,'synthetic-adjustment',-95,'Automatic estimate reconciliation','2026-04-02T11:20:00')",
+        [record.id],
+    ).unwrap();
+    db.execute(
+        "INSERT INTO payroll_reconciliation_decisions(payroll_timesheet_id,kind,evidence_key,evidence,decided_at,actor)
+         VALUES (?1,'complete_actuals','synthetic-evidence','Synthetic detail','unknown','local_employer')",
+        [record.id],
+    ).unwrap();
+    db.execute_batch(
+        "INSERT INTO timesheets (id,personal_assistant_id,pa_name,start_time,end_time,break_minutes,worked_minutes,hourly_rate,amount)
+         VALUES (314,1,'Active Test','2026-04-01T22:00:00','2026-04-02T02:15:00',30,225,12.50,46.88);
+         INSERT INTO shift_change_events(source,source_id,before_evidence,after_evidence,reason,review_signature,recorded_at,actor)
+         VALUES ('imported',314,'','legacy import snapshot','New CSV evidence','synthetic','2026-04-02T08:10:00','local_employer');"
+    ).unwrap();
+    let before = crate::repository::EffectiveTimesheetValues {
+        start_time: "2026-04-01T22:00:00".into(), end_time: "2026-04-02T02:15:00".into(),
+        break_minutes: 30, worked_minutes: 225, notes: None,
+    };
+    let after = crate::repository::EffectiveTimesheetValues {
+        end_time: "2026-04-02T02:45:00".into(), worked_minutes: 255,
+        notes: Some("Fictional handover ran late".into()), ..before.clone()
+    };
+    db.execute(
+        "INSERT INTO shift_change_events(source,source_id,before_evidence,after_evidence,reason,review_signature,recorded_at,actor)
+         VALUES ('imported',314,?1,?2,'Finish time confirmed','synthetic-edit','2026-04-02T08:40:00','local_employer')",
+        rusqlite::params![format!("{before:?}"), format!("{after:?}")],
+    ).unwrap();
+    let history = crate::payroll_evidence::audit::history(&app, &record).unwrap();
+    assert_eq!(history.iter().map(|entry| entry.date_label()).collect::<Vec<_>>(),
+        ["02/04/2026 at 08:10", "02/04/2026 at 08:40", "02/04/2026 at 11:20", "03/04/2026 at 09:40", "Date and time not recorded"]);
+    assert!(history[2].effect.contains("Deduct 1 hour 35 minutes"));
+    assert!(history[3].effect.contains("did not change the submitted timesheet"));
+    assert!(history[4].effect.contains("did not itself change payroll figures"));
+    let stored: String = db.query_row("SELECT after_evidence FROM shift_change_events WHERE source_id=314 AND review_signature='synthetic-edit'", [], |row| row.get(0)).unwrap();
+    screen.load(&app, &schedule, "period").unwrap();
+    screen.loaded = true;
+    screen.preflight_done = true;
+    screen.request_pa(Some(1));
+    let ctx = egui::Context::default();
+    let collapsed = render_preparation(&ctx, &app, &schedule, &mut screen);
+    assert!(!collapsed.iter().any(|text| text.contains("Deduct 1 hour")));
+    let audit = frame(&ctx, vec![], |ui| screen.show(ui, &app, &schedule, "period"), "Payroll audit/details — Active Test").0;
+    click(&ctx, audit, |ui| screen.show(ui, &app, &schedule, "period"), "Save Active Test");
+    let expanded = render_preparation(&ctx, &app, &schedule, &mut screen);
+    assert!(expanded.iter().any(|text| text.contains("Deduct 1 hour 35 minutes")));
+    assert!(expanded.iter().any(|text| text.contains("Current issues are listed separately")));
+    assert!(expanded.iter().any(|text| text.contains("01/04/2026, 22:00 to 02/04/2026 at 02:15")));
+    assert!(expanded.iter().any(|text| text.contains("30 minutes break") && text.contains("3 hours 45 minutes worked")));
+    assert!(expanded.iter().any(|text| text.contains("£12.50 per hour") && text.contains("£46.88")));
+    assert!(expanded.iter().any(|text| text.starts_with("After:") && text.contains("02:45") && text.contains("4 hours 15 minutes worked")));
+    assert!(expanded.iter().any(|text| text.contains("Finish time confirmed")));
+    assert!(!expanded.iter().any(|text| text.contains("Technical details") || text.contains("local_employer")
+        || text.contains("2026-04-03T") || text.contains("fixture") || text.contains("legacy import snapshot")));
+    let audit = frame(&ctx, vec![], |ui| screen.show(ui, &app, &schedule, "period"), "Payroll audit/details — Active Test").0;
+    click(&ctx, audit, |ui| screen.show(ui, &app, &schedule, "period"), "Save Active Test");
+    let closed_again = render_preparation(&ctx, &app, &schedule, &mut screen);
+    assert!(!closed_again.iter().any(|text| text.contains("£46.88")));
+    assert_eq!(db.query_row("SELECT after_evidence FROM shift_change_events WHERE source_id=314 AND review_signature='synthetic-edit'", [], |row| row.get::<_, String>(0)).unwrap(), stored);
+    assert_eq!(crate::payroll_evidence::audit::history(&app, &record).unwrap(), history);
 }

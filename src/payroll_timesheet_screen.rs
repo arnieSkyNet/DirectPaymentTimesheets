@@ -314,7 +314,8 @@ impl PayrollTimesheetScreen {
                             .iter()
                             .find(|(r, _, _)| r.personal_assistant_id == *pa)
                             .expect("eligible PA is loaded");
-                        ui.selectable_value(
+                        crate::gui_controls::combo_value(
+                            ui,
                             &mut selected,
                             Some(record.personal_assistant_id),
                             name,
