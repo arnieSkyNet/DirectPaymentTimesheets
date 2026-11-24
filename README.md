@@ -2,11 +2,18 @@
 
 Direct Payment Timesheets is a local desktop application for managing UK Direct Payment Personal Assistant timesheets and payroll paperwork.
 
+## Source and release status
+
+- **Current source on `main`: v1.0.8.** This version can be built with Cargo and passed production acceptance on Debian amd64 on 24 November 2026.
+- **Latest official downloadable release: v1.0.7.** The installation packages and download badges below are for this release.
+
+Official multi-platform v1.0.8 installation packages are expected to be built after the GitHub Actions allowance resets on 6 December 2026, subject to successful builds and verification. No official v1.0.8 installation packages are available to download yet.
+
 ## Downloads and installation instructions
 
 **Release: v1.0.7 · Linux, Windows and macOS · SQLite schema 42**
 
-The links below download directly from the **private repository's v1.0.7 release**. Sign in to GitHub with an account that has access to `arnieSkyNet/DirectPaymentTimesheets`.
+The links below download directly from the project's official GitHub v1.0.7 release.
 
 **Already installed? Start with the [First-Time Setup Guide for v1.0.7](docs/FIRST-TIME-SETUP.md)** — employer and PA details, email, the provider's payroll schedule, hours and your first PDF timesheet.
 
@@ -61,7 +68,7 @@ Choose `armhf` for an `armhf` result, `arm64`/`aarch64` for `arm64`, or `amd64`/
 
 Before upgrading an existing installation, close every running copy, keep a database/configuration recovery copy and separately protect external payroll documents, signatures and other business files. Download packages only from this project's official GitHub release.
 
-When upgrading from v1.0.6, first launch automatically creates and verifies a pre-upgrade database backup, including committed WAL data, before migrating schema **41 to 42**. Configuration is included when present; OS credential-store secrets and external business files are not copied. Backup failure blocks the upgrade. Migration is one-way: **never run v1.0.6 against the upgraded database**. Check version 1.0.7/schema 42, settings and email access after startup. See the [First-Time Setup Guide](docs/FIRST-TIME-SETUP.md#2-first-launch-or-upgrade-from-v106) for the upgrade and recovery procedure.
+When upgrading from v1.0.6 to the downloadable v1.0.7 release, first launch automatically creates and verifies a pre-upgrade database backup, including committed WAL data, before migrating schema **41 to 42**. Configuration is included when present; OS credential-store secrets and external business files are not copied. Backup failure blocks the upgrade. Migration is one-way: **never run v1.0.6 against the upgraded database**. Check version 1.0.7/schema 42, settings and email access after startup. See the [First-Time Setup Guide](docs/FIRST-TIME-SETUP.md#2-first-launch-or-upgrade-from-v106) for the upgrade and recovery procedure.
 
 ### Linux
 
@@ -147,6 +154,17 @@ Only make an exception for the package you deliberately downloaded from **this p
 On macOS 11 and 12, the equivalent controls are **System Preferences → Security & Privacy → General**. On older macOS versions that offer it, Control-clicking the app in Finder and choosing **Open**, then confirming **Open**, may also grant the exception. On newer versions, use Privacy & Security if Finder's Open command still blocks it. If no exception is offered, consult [Apple's current safe-opening instructions](https://support.apple.com/en-gb/102445); a managed Mac may require help from its administrator.
 
 Do not disable Gatekeeper globally or change security settings to allow all applications.
+
+### Build v1.0.8 from source
+
+With Rust and Cargo installed, check out `main` and run these commands from the repository root:
+
+```bash
+cargo build --locked
+cargo run --locked
+```
+
+See the [development guide](docs/DEVELOPMENT.md#local-setup) for development setup and how to run against disposable data.
 
 ## Features
 
