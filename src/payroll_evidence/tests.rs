@@ -445,6 +445,51 @@ fn settled_aggregate_historical_shift_requires_paid_unpaid_review() {
     }
 }
 #[test]
+fn overlapping_historical_periods_hold_reviews_and_carry_in_either_order() {
+    for first_cycle in [1, 2] {
+        let (_dir, app) = setup();
+        let (old, weeks) = period(&app, first_cycle, "2026-04-01", 1);
+        submit(&app, &old, &weeks);
+        settle(&app, &old);
+        save_amendment(&app, &old, 0.5);
+        submit(&app, &old, &weeks);
+        direct(&app, "2026-04-03T09:00", "2026-04-03T10:00");
+        let (next, next_weeks) = period(&app, 3, "2026-04-29", 1);
+        let result = reconciliation::calculate(&app, &next, &next_weeks, None).unwrap();
+        assert_eq!(result.previous_cycle_minutes, 30);
+        candidate(&app, &next, &next_weeks);
+        let db = open(&app).unwrap();
+        assert!(lifecycle::verify_candidate_evidence(&db, next.id).is_ok());
+        let before = db
+            .query_row("SELECT COUNT(*) FROM payroll_corrections", [], |row| {
+                row.get::<_, i64>(0)
+            })
+            .unwrap();
+
+        let (overlap, _) = period(&app, 3 - first_cycle, "2026-04-02", 1);
+        settle(&app, &overlap);
+        let plan = reconciliation::plan(&app, &next).unwrap();
+        assert!(plan.overlap);
+        assert!(plan.historical_reviews.is_empty() && plan.work.is_empty());
+        assert_eq!(plan.notices.len(), 1);
+        assert_eq!(reconciliation::calculate(&app, &next, &next_weeks, None).unwrap().previous_cycle_minutes, 0);
+        assert!(reconciliation::outstanding(&app, &next).unwrap().is_empty());
+        for historical in [&old, &overlap] {
+            let change = reconciliation::changes(&app, historical).unwrap();
+            assert!(change.blocked && change.components.is_empty());
+            assert!(reconciliation::carry(&app, historical, &change.signature, true).is_err());
+        }
+        assert!(lifecycle::verify_candidate_evidence(&db, next.id).is_err());
+        assert_eq!(
+            db.query_row("SELECT COUNT(*) FROM payroll_corrections", [], |row| row
+                .get::<_, i64>(0))
+                .unwrap(),
+            before
+        );
+    }
+}
+
+#[test]
 fn payslip_settlement_is_per_pa_and_paid_evidence_never_reappears() {
     let (_dir, app) = setup();
     let (r, w) = period(&app, 1, "2026-04-01", 1);
@@ -465,11 +510,20 @@ fn payslip_settlement_is_per_pa_and_paid_evidence_never_reappears() {
     assert!(reconciliation::calculate(&app, &r, &w, None).is_err());
 }
 #[test]
-fn aggregate_negative_requires_audited_completeness_and_zero_floor_remainder_persists() {
+fn aggregate_negative_requires_audited_completeness_and_is_applied_once() {
     let (_dir, app) = setup();
-    let (old, _) = period(&app, 1, "2026-04-01", 1);
+    let (old, weeks) = period(&app, 1, "2026-04-01", 1);
+    app.payroll_worked_item_repository.set_manual_adjustment(
+        old.id,
+        &crate::payroll_worked_item_repository::ManualHoursAdjustment {
+            week_number: 1,
+            adjustment_minutes: 180,
+            reason: Some("Manual current-period estimate".into()),
+        },
+        "synthetic accepted estimate",
+    ).unwrap();
+    submit(&app, &old, &weeks);
     settle(&app, &old);
-    open(&app).unwrap().execute("UPDATE payroll_timesheet_weeks SET worked_hours=3 WHERE payroll_timesheet_id=?1 AND week_number=1",[old.id]).unwrap();
     let change = reconciliation::changes(&app, &old).unwrap();
     assert!(change.requires_complete);
     assert!(reconciliation::carry(&app, &old, &change.signature, false).is_err());
@@ -477,23 +531,20 @@ fn aggregate_negative_requires_audited_completeness_and_zero_floor_remainder_per
     let (next, nw) = period(&app, 2, "2026-04-29", 1);
     direct(&app, "2026-04-30T09:00", "2026-04-30T11:00");
     let result = reconciliation::calculate(&app, &next, &nw, None).unwrap();
-    assert_eq!(result.week_totals_minutes, [0; 4]);
-    assert_eq!(result.previous_cycle_minutes, -120);
+    assert_eq!(result.week_totals_minutes, [-60, 0, 0, 0]);
+    assert_eq!(result.previous_cycle_minutes, -180);
     submit(&app, &next, &nw);
     settle(&app, &next);
     let (third, tw) = period(&app, 3, "2026-05-27", 1);
     let outstanding = reconciliation::outstanding(&app, &third).unwrap();
-    assert_eq!(outstanding[0].minutes, -60);
+    assert!(outstanding.is_empty());
     assert_eq!(
         reconciliation::calculate(&app, &third, &tw, None)
             .unwrap()
             .week_totals_minutes,
         [0; 4]
     );
-    assert_eq!(
-        reconciliation::outstanding(&app, &third).unwrap()[0].minutes,
-        -60
-    );
+    assert!(reconciliation::outstanding(&app, &third).unwrap().is_empty());
     assert_eq!(open(&app).unwrap().query_row("SELECT COUNT(*) FROM payroll_reconciliation_decisions WHERE kind='complete_actuals'",[],|r|r.get::<_,i64>(0)).unwrap(),1);
 }
 #[test]
@@ -542,11 +593,16 @@ fn separate_corrections_consolidate_without_losing_components() {
         rate: None,
         reason: "test".into(),
     });
-    let mut totals = [60, 0, 0, 0];
-    let applied = reconciliation::apply_corrections(&mut totals, &cs).unwrap();
-    assert_eq!(totals, [0; 4]);
-    assert_eq!(applied, vec![(120, 120), (-180, -180)]);
-    assert_eq!(cs[2].minutes, -60);
+    let mut result = crate::pay_rate_allocation::ReconciledPayrollHours {
+        weeks: Default::default(),
+        week_totals_minutes: [60, 0, 0, 0],
+        previous_cycle_minutes: 0,
+        snapshot_items: Vec::new(),
+    };
+    let applied = reconciliation::apply_balances(&mut result, &cs).unwrap();
+    assert_eq!(result.week_totals_minutes, [-60, 0, 0, 0]);
+    assert_eq!(applied, [(120, 120), (-180, -180), (-60, -60)]);
+    assert_eq!(result.snapshot_items.iter().map(|item| item.worked_minutes).collect::<Vec<_>>(), [120, -180, -60]);
 }
 #[test]
 fn notes_only_does_not_invalidate_candidate_but_new_shift_does() {
@@ -744,9 +800,18 @@ fn missing_historical_rate_is_not_fabricated() {
 #[test]
 fn aggregate_carry_retains_actual_membership_without_adding_full_shift_again() {
     let (_dir, app) = setup();
-    let (old, _) = period(&app, 1, "2026-04-01", 1);
+    let (old, weeks) = period(&app, 1, "2026-04-01", 1);
+    app.payroll_worked_item_repository.set_manual_adjustment(
+        old.id,
+        &crate::payroll_worked_item_repository::ManualHoursAdjustment {
+            week_number: 1,
+            adjustment_minutes: 60,
+            reason: Some("Manual current-period estimate".into()),
+        },
+        "synthetic accepted estimate",
+    ).unwrap();
+    submit(&app, &old, &weeks);
     settle(&app, &old);
-    open(&app).unwrap().execute("UPDATE payroll_timesheet_weeks SET worked_hours=1 WHERE payroll_timesheet_id=?1 AND week_number=1",[old.id]).unwrap();
     direct(&app, "2026-04-02T09:00", "2026-04-02T11:00");
     let change = reconciliation::changes(&app, &old).unwrap();
     reconciliation::carry(&app, &old, &change.signature, false).unwrap();
@@ -777,7 +842,8 @@ fn two_open_candidates_cannot_submit_the_same_historical_shift_twice() {
 #[test]
 fn direct_preparation_manual_adjustment_and_carry_still_reconcile_final_hours() {
     let (_dir, app) = setup();
-    let (old, _) = period(&app, 1, "2026-04-01", 1);
+    let (old, weeks) = period(&app, 1, "2026-04-01", 1);
+    submit(&app, &old, &weeks);
     settle(&app, &old);
     direct(&app, "2026-04-02T09:00", "2026-04-02T12:00");
     let change = reconciliation::changes(&app, &old).unwrap();
@@ -1468,10 +1534,19 @@ fn refresh_carry_review(
 #[test]
 fn carry_review_ui_requires_completeness_and_retains_settled_totals() {
     let (_dir, app) = setup();
-    let (old, _) = period(&app, 1, "2026-04-01", 1);
+    let (old, weeks) = period(&app, 1, "2026-04-01", 1);
+    app.payroll_worked_item_repository.set_manual_adjustment(
+        old.id,
+        &crate::payroll_worked_item_repository::ManualHoursAdjustment {
+            week_number: 1,
+            adjustment_minutes: 180,
+            reason: Some("Manual current-period estimate".into()),
+        },
+        "synthetic accepted estimate",
+    ).unwrap();
+    submit(&app, &old, &weeks);
     settle(&app, &old);
     let db = open(&app).unwrap();
-    db.execute("UPDATE payroll_timesheet_weeks SET worked_hours=3 WHERE payroll_timesheet_id=?1 AND week_number=1", [old.id]).unwrap();
     let ctx = egui::Context::default();
     let mut review = review_ui::ReviewUi::default();
     refresh_carry_review(&mut review, &app, &old);
@@ -1533,8 +1608,8 @@ fn carry_review_ui_requires_completeness_and_retains_settled_totals() {
     let (next, dates) = period(&app, 2, "2026-04-29", 1);
     direct(&app, "2026-04-30T09:00", "2026-04-30T11:00");
     let result = reconciliation::calculate(&app, &next, &dates, None).unwrap();
-    assert_eq!(result.week_totals_minutes, [0; 4]);
-    assert_eq!(result.previous_cycle_minutes, -120);
+    assert_eq!(result.week_totals_minutes, [-60, 0, 0, 0]);
+    assert_eq!(result.previous_cycle_minutes, -180);
 }
 
 #[test]
@@ -1670,3 +1745,152 @@ fn configurable_csv_methods_round_once_per_shift_without_rewriting_sources() {
             .is_empty());
     }
 }
+
+#[test]
+fn manual_preparation_leaves_seven_reviews_open_and_carries_only_selected_balances() {
+    use super::manual_preparation;
+    let (_dir, app) = setup();
+    let (old, _) = period(&app, 1, "2026-04-01", 1);
+    settle(&app, &old);
+    for day in 15..=21 {
+        direct(
+            &app,
+            &format!("2026-04-{day}T09:00"),
+            &format!("2026-04-{day}T10:00"),
+        );
+    }
+    direct(&app, "2026-05-01T09:00", "2026-05-01T11:00");
+    let (current, weeks) = period(&app, 2, "2026-04-29", 1);
+    let db = open(&app).unwrap();
+    db.execute(
+        "INSERT INTO payroll_corrections(personal_assistant_id,origin_payroll_timesheet_id,evidence_key,work_date,minutes,reason,created_at)
+         VALUES(1,?1,'fictional-existing-carry','2026-04-08',30,'Verified synthetic balance','test')",
+        [old.id],
+    ).unwrap();
+    let correction_id = db.last_insert_rowid();
+    assert_eq!(
+        reconciliation::plan(&app, &current)
+            .unwrap()
+            .historical_reviews
+            .len(),
+        7
+    );
+    let ordinary = reconciliation::calculate_for_generation(&app, &current, &weeks, None).unwrap();
+    assert_eq!(ordinary.week_totals_minutes, [150, 0, 0, 0]);
+    assert_eq!(ordinary.previous_cycle_minutes, 30);
+
+    let mut review_ui = review_ui::ReviewUi::default();
+    let evidence = load_for_pa(&db, 1).unwrap();
+    let pre = preflight_for_pa(&db, &evidence, 1).unwrap();
+    review_ui
+        .refresh_record(&app, &current, false, &pre)
+        .unwrap();
+    let ctx = egui::Context::default();
+    let label = "Open manual preparation";
+    let (button, _) = crate::gui_controls::acceptance::frame(
+        &ctx,
+        vec![],
+        |ui| review_ui.show_manual(ui, &app, &current),
+        label,
+    );
+    for pressed in [true, false] {
+        let _ = crate::gui_controls::acceptance::frame(
+            &ctx,
+            vec![
+                egui::Event::PointerMoved(button),
+                egui::Event::PointerButton {
+                    pos: button,
+                    button: egui::PointerButton::Primary,
+                    pressed,
+                    modifiers: Default::default(),
+                },
+            ],
+            |ui| review_ui.show_manual(ui, &app, &current),
+            if pressed {
+                label
+            } else {
+                "Final worked hours: 2"
+            },
+        );
+    }
+
+    let preview = manual_preparation::preview(&app, &current, &weeks).unwrap();
+    assert_eq!(preview.actual, [120, 0, 0, 0]);
+    let totals = [150, 45, 0, 0];
+    assert!(manual_preparation::save(&app, &current, &weeks, &preview, totals, &[9999]).is_err());
+    manual_preparation::save(&app, &current, &weeks, &preview, totals, &[]).unwrap();
+    let generated = reconciliation::calculate_for_generation(&app, &current, &weeks, None).unwrap();
+    assert_eq!(generated.week_totals_minutes, totals);
+    assert_eq!(generated.previous_cycle_minutes, 0);
+    assert_eq!(
+        generated
+            .snapshot_items
+            .iter()
+            .filter(|item| item.direct_shift_id.is_some())
+            .count(),
+        1
+    );
+
+    let preview = manual_preparation::preview(&app, &current, &weeks).unwrap();
+    manual_preparation::save(&app, &current, &weeks, &preview, totals, &[correction_id]).unwrap();
+    let generated = reconciliation::calculate_for_generation(&app, &current, &weeks, None).unwrap();
+    assert_eq!(generated.week_totals_minutes, [180, 45, 0, 0]);
+    assert_eq!(generated.previous_cycle_minutes, 30);
+    assert_eq!(
+        db.query_row(
+            "SELECT COUNT(*) FROM payroll_correction_applications",
+            [],
+            |row| row.get::<_, i64>(0)
+        )
+        .unwrap(),
+        1
+    );
+    assert_eq!(
+        db.query_row(
+            "SELECT COUNT(*) FROM payroll_reconciliation_decisions",
+            [],
+            |row| row.get::<_, i64>(0)
+        )
+        .unwrap(),
+        0
+    );
+    assert_eq!(
+        reconciliation::plan(&app, &current)
+            .unwrap()
+            .historical_reviews
+            .len(),
+        7
+    );
+
+    direct(&app, "2026-05-02T09:00", "2026-05-02T10:00");
+    assert!(reconciliation::calculate_for_generation(&app, &current, &weeks, None).is_err());
+    assert!(manual_preparation::save(&app, &current, &weeks, &preview, totals, &[]).is_err());
+}
+
+#[test]
+fn stage2a_business_examples_deduction_stays_in_week_one() {
+    let deduction = reconciliation::CorrectionApplication {
+        id: 1,
+        minutes: -960,
+        date: None,
+        rate_id: None,
+        rate_date: None,
+        rate: None,
+        reason: "synthetic confirmed deduction".into(),
+    };
+    let mut hours = crate::pay_rate_allocation::ReconciledPayrollHours {
+        weeks: Default::default(),
+        week_totals_minutes: [720, 180, 0, 0],
+        previous_cycle_minutes: 0,
+        snapshot_items: Vec::new(),
+    };
+    assert_eq!(
+        reconciliation::apply_balances(&mut hours, &[deduction]).unwrap(),
+        [(1, -960)]
+    );
+    assert_eq!(hours.week_totals_minutes, [-240, 180, 0, 0]);
+    assert_eq!(hours.previous_cycle_minutes, -960);
+}
+
+#[path = "stage2c_revised_tests.rs"]
+mod stage2c_revised_tests;

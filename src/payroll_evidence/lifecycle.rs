@@ -115,6 +115,47 @@ pub fn items(db: &Connection, submission: i64) -> Result<Vec<WorkedItemSnapshot>
     Ok(db.prepare("SELECT week_number,source_type,timesheet_id,work_date,worked_minutes,pay_rate_id,pay_rate_effective_date,total_hourly_rate,reason,direct_shift_id,source_evidence FROM payroll_submission_items WHERE submission_id=?1 ORDER BY id")?
         .query_map([submission], |r|Ok(WorkedItemSnapshot {week_number:r.get(0)?,source_type:r.get(1)?,timesheet_id:r.get(2)?,work_date:r.get(3)?,worked_minutes:r.get(4)?,pay_rate_id:r.get(5)?,pay_rate_effective_date:r.get(6)?,total_hourly_rate:r.get(7)?,reason:r.get(8)?,direct_shift_id:r.get(9)?,source_evidence:r.get(10)?}))?.collect::<rusqlite::Result<Vec<_>>>()?)
 }
+pub fn weeks(
+    db: &Connection,
+    submission: i64,
+) -> Result<Vec<crate::payroll_timesheet_repository::PayrollTimesheetWeek>> {
+    use crate::payroll_timesheet_repository::PayrollTimesheetWeek;
+    let mut statement = db.prepare(
+        "SELECT id,payroll_timesheet_id,week_number,week_commencing,worked_hours,
+                annual_leave_hours,sick_leave_hours,public_holiday_hours,travel_miles
+         FROM payroll_submission_weeks WHERE submission_id=?1 ORDER BY week_number",
+    )?;
+    let rows = statement.query_map([submission], |row| {
+        Ok(PayrollTimesheetWeek {
+            id: row.get(0)?,
+            payroll_timesheet_id: row.get(1)?,
+            week_number: row.get(2)?,
+            week_commencing: row.get(3)?,
+            worked_hours: row.get(4)?,
+            annual_leave_hours: row.get(5)?,
+            sick_leave_hours: row.get(6)?,
+            public_holiday_hours: row.get(7)?,
+            travel_miles: row.get(8)?,
+        })
+    })?;
+    Ok(rows.collect::<rusqlite::Result<_>>()?)
+}
+
+pub fn submitted_correction_minutes(
+    db: &Connection,
+    correction: i64,
+    exclude_record: Option<i64>,
+) -> rusqlite::Result<i64> {
+    db.query_row(
+        "SELECT COALESCE(SUM(a.minutes),0)
+         FROM payroll_submission_corrections a JOIN payroll_submissions s ON s.id=a.submission_id
+         WHERE a.correction_id=?1 AND (?2 IS NULL OR s.payroll_timesheet_id<>?2)
+           AND s.id=(SELECT MAX(id) FROM payroll_submissions WHERE payroll_timesheet_id=s.payroll_timesheet_id)",
+        params![correction, exclude_record],
+        |row| row.get(0),
+    )
+}
+
 pub fn item_key(item: &WorkedItemSnapshot) -> Option<String> {
     item.timesheet_id
         .map(|id| format!("imported:{id}"))
@@ -125,25 +166,23 @@ pub fn submitted_items(
     record: i64,
     app: &Application,
 ) -> Result<Vec<WorkedItemSnapshot>> {
-    let mut retained = if let Some(version)=crate::timesheet_amendments::latest(db,record)? {
-        version.items
-    } else { match latest(db, record)? {
+    retained_items(db, record, app, latest(db, record)?)
+}
+
+pub(super) fn retained_items(
+    db: &Connection,
+    record: i64,
+    app: &Application,
+    submission: Option<i64>,
+) -> Result<Vec<WorkedItemSnapshot>> {
+    let mut retained = match submission {
         Some(id) => items(db, id)?,
-        None => {
-            if app
-                .payroll_worked_item_repository
-                .snapshot_metadata(record)?
-                .is_some_and(|m| {
-                    m.state == crate::payroll_worked_item_repository::SnapshotState::Submitted
-                })
-            {
-                app.payroll_worked_item_repository
-                    .get_snapshot_items(record)?
-            } else {
-                Vec::new()
-            }
+        None if app.payroll_worked_item_repository.snapshot_metadata(record)?
+            .is_some_and(|meta| meta.state == crate::payroll_worked_item_repository::SnapshotState::Submitted) =>
+        {
+            app.payroll_worked_item_repository.get_snapshot_items(record)?
         }
-    }
+        None => Vec::new(),
     };
     let pa: Option<i64> = db
         .query_row(
@@ -239,6 +278,7 @@ pub fn verify_candidate_evidence(db: &Connection, record: i64) -> Result<()> {
     if uncaptured {
         return Err("This PDF predates structured sickness evidence; regenerate it before first delivery. Retained submitted PDFs may still be explicitly resent.".into());
     }
+    verify_candidate_accounting(db, record)?;
     if crate::sickness_service::document_is_correction(db, record)? {
         crate::sickness_service::verify_candidate_correction(db, record)?;
         let signature: String = db.query_row(
@@ -268,27 +308,8 @@ pub fn verify_candidate_evidence(db: &Connection, record: i64) -> Result<()> {
             );
         }
     }
-    if crate::timesheet_amendments::saved(db,record)? {
-        crate::timesheet_amendments::verify_generated(db,record)?;
-        return Ok(());
-    }
-    for e in &captured {
-        let consumed:bool=db.query_row("SELECT EXISTS(SELECT 1 FROM payroll_submission_items i JOIN payroll_submissions s ON s.id=i.submission_id JOIN payroll_timesheets p ON p.id=s.payroll_timesheet_id WHERE p.id<>?1 AND s.id=(SELECT MAX(id) FROM payroll_submissions WHERE payroll_timesheet_id=p.id) AND ((?2='imported' AND i.timesheet_id=?3) OR (?2='direct' AND i.direct_shift_id=?3)))",params![record,e.source,e.id],|r|r.get(0))?;
-        if consumed {
-            return Err("Evidence was included in another submission; regenerate this payroll before sending".into());
-        }
-    }
-    let applications=db.prepare("SELECT a.minutes,c.minutes,c.id FROM payroll_correction_applications a JOIN payroll_corrections c ON c.id=a.correction_id WHERE a.payroll_timesheet_id=?1")?.query_map([record],|r|Ok((r.get::<_,i64>(0)?,r.get::<_,i64>(1)?,r.get::<_,i64>(2)?)))?.collect::<rusqlite::Result<Vec<_>>>()?;
-    for (applied, total, id) in applications {
-        let consumed:i64=db.query_row("SELECT COALESCE(SUM(a.minutes),0) FROM payroll_submission_corrections a JOIN payroll_submissions s ON s.id=a.submission_id WHERE a.correction_id=?1 AND s.payroll_timesheet_id<>?2 AND s.id=(SELECT MAX(id) FROM payroll_submissions WHERE payroll_timesheet_id=s.payroll_timesheet_id)",params![id,record],|r|r.get(0))?;
-        let remaining = total - consumed;
-        if remaining.signum() != applied.signum()
-            || applied.unsigned_abs() > remaining.unsigned_abs()
-        {
-            return Err(
-                "Outstanding correction changed after generation; regenerate before sending".into(),
-            );
-        }
+    if crate::timesheet_amendments::saved(db, record)? {
+        return crate::timesheet_amendments::verify_generated(db, record);
     }
     if captured.is_empty() {
         return Ok(());
@@ -315,7 +336,7 @@ pub fn verify_candidate_evidence(db: &Connection, record: i64) -> Result<()> {
     if pre.unresolved.iter().any(|g| {
         g.candidates
             .iter()
-            .any(|e| e.pa == pa && e.date().is_ok_and(|d| d <= end))
+            .any(|e| e.pa == pa && e.date().is_ok_and(|d| (start..=end).contains(&d)))
     }) {
         return Err("New possible duplicates require review before sending".into());
     }
@@ -326,6 +347,38 @@ pub fn verify_candidate_evidence(db: &Connection, record: i64) -> Result<()> {
     {
         if !captured.iter().any(|c| c.key() == e.key()) {
             return Err("A new shift was recorded after generation; reopen preparation and regenerate before sending".into());
+        }
+    }
+    Ok(())
+}
+
+// All first sends, including amendments and sickness corrections, must still
+// fit the accepted ledger by the time the delivery transaction claims them.
+fn verify_candidate_accounting(db: &Connection, record: i64) -> Result<()> {
+    let consumed: bool = db.query_row(
+        "SELECT EXISTS(
+            SELECT 1 FROM payroll_timesheet_worked_item_snapshots candidate
+            JOIN payroll_submission_items i ON candidate.timesheet_id=i.timesheet_id
+                                          OR candidate.direct_shift_id=i.direct_shift_id
+            JOIN payroll_submissions s ON s.id=i.submission_id
+            WHERE candidate.payroll_timesheet_id=?1 AND s.payroll_timesheet_id<>?1
+              AND s.id=(SELECT MAX(id) FROM payroll_submissions WHERE payroll_timesheet_id=s.payroll_timesheet_id)
+        )",
+        [record],
+        |row| row.get(0),
+    )?;
+    if consumed {
+        return Err("Evidence was included in another submission; regenerate this payroll before sending".into());
+    }
+    let applications=db.prepare("SELECT a.minutes,c.minutes,c.id FROM payroll_correction_applications a JOIN payroll_corrections c ON c.id=a.correction_id WHERE a.payroll_timesheet_id=?1")?.query_map([record],|r|Ok((r.get::<_,i64>(0)?,r.get::<_,i64>(1)?,r.get::<_,i64>(2)?)))?.collect::<rusqlite::Result<Vec<_>>>()?;
+    for (applied, total, id) in applications {
+        let remaining = total - submitted_correction_minutes(db, id, Some(record))?;
+        if remaining.signum() != applied.signum()
+            || applied.unsigned_abs() > remaining.unsigned_abs()
+        {
+            return Err(
+                "Outstanding correction changed after generation; regenerate before sending".into(),
+            );
         }
     }
     Ok(())
@@ -395,6 +448,29 @@ pub fn candidate_signature(db: &Connection, id: i64) -> Result<String> {
         .map(WorkEvidence::fingerprint)
         .collect::<Vec<_>>();
     values.push(format!("period:{first:?}"));
+    // A schedule change can change which settled record owns identical work.
+    // Bind historical dates and settlement evidence before a candidate can send.
+    let mut prior = db.prepare(
+        "SELECT p.id,s.first_week_commencing,
+                (SELECT e.sent_at FROM payroll_timesheet_email_status e
+                 WHERE e.personal_assistant_id=p.personal_assistant_id
+                   AND e.payroll_year=p.payroll_year AND e.cycle_number=p.cycle_number
+                   AND e.email_type='payslip')
+         FROM payroll_timesheets p LEFT JOIN payroll_schedules s
+           ON s.payroll_year=p.payroll_year AND s.cycle_number=p.cycle_number
+         WHERE p.personal_assistant_id=?1 AND p.id<>?2",
+    )?;
+    for row in prior.query_map(params![pa, id], |row| {
+        Ok(format!(
+            "history-period:{}:{:?}:{:?}",
+            row.get::<_, i64>(0)?,
+            row.get::<_, Option<String>>(1)?,
+            row.get::<_, Option<String>>(2)?
+        ))
+    })? {
+        values.push(row?);
+    }
+
     if crate::timesheet_amendments::saved(db,id)? {
         let revision:i64=db.query_row("SELECT MAX(id) FROM timesheet_amendment_versions WHERE payroll_timesheet_id=?1 AND event='save'",[id],|r|r.get(0))?;
         values.push(format!("saved-amendment:{revision}"));
@@ -450,10 +526,6 @@ pub fn candidate_signature(db: &Connection, id: i64) -> Result<String> {
         ))
     })? {
         values.push(row?);
-    }
-    if crate::timesheet_amendments::saved(db,id)? || db.query_row("SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE name='timesheet_amendment_versions')",[],|r|r.get::<_,bool>(0))? {
-        let mut revisions=db.prepare("SELECT MAX(v.id),v.payroll_timesheet_id FROM timesheet_amendment_versions v JOIN payroll_timesheets p ON p.id=v.payroll_timesheet_id WHERE p.personal_assistant_id=?1 AND p.id<>?2 AND v.event='generated' GROUP BY v.payroll_timesheet_id ORDER BY v.payroll_timesheet_id")?;
-        for row in revisions.query_map(params![pa,id],|r|Ok(format!("authority:{}:{}",r.get::<_,i64>(0)?,r.get::<_,i64>(1)?)))? {values.push(row?);}
     }
     values.sort();
     Ok(hash(&values.join("|")))

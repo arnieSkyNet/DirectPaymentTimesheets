@@ -20,7 +20,7 @@ impl AppEnvironment {
         {
             let root = crate::development::initialise().map_err(|e| {
                 crate::startup::StartupError::new(crate::startup::Stage::Environment,
-                    Some(&crate::development::root()),
+                    None,
                     format!("Isolated development startup refused: {e}"),
                     "No production fallback. Preserve the isolated profile and inspect the development startup failure.")
             })?;

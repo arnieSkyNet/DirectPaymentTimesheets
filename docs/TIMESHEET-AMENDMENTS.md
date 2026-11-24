@@ -9,17 +9,21 @@ nor regeneration sends email, marks a replacement as submitted, or changes the
 original send history. No Correct/Resubmit approval is needed to unlock editing.
 Submitted and settled records remain available even for departed PAs.
 
-The latest **saved and successfully regenerated** timesheet is authoritative for
-later payroll reconciliation and estimated-hours carry-forward. Saving without
-regeneration leaves the preceding generated/submitted baseline authoritative and
-invalidates the current PDF binding, preventing an old PDF being sent as the edit.
-An unchanged historical CSV cannot overwrite manually corrected hours. Material
-source changes recorded subsequently are compared with the corrected version;
-the existing rounding, carry-forward, consumption and nonnegative-payable rules
-apply to the difference. Repeated calculations do not add that difference again.
-A newer corrected generated version supersedes older baseline differences rather
-than summing historical estimates. No separate financial submission state or
-amendment-specific financial correction ledger has been introduced.
+The latest **definitively accepted submission** is authoritative for later
+payroll reconciliation and estimated-hours carry-forward. Its weekly totals,
+worked-source membership and submitted correction applications advance together
+when Payroll delivery is accepted or an audited review establishes acceptance.
+Saving invalidates the current PDF binding. A generated replacement is available
+for review and separate dispatch. It leaves the existing financial baseline in
+place, as do renewed previews, rejected delivery, same-document resends and
+ordinary payslip settlement.
+
+An unresolved first send reserves its claimed sources and correction balances
+until the outcome is established. The prior accepted submission remains in force
+during that hold. A confirmed rejection releases the reservation. An accepted
+replacement supersedes the prior submission and retains both documents and their
+evidence. Actual-hour differences use the existing rounding, completeness and
+carry rules against the accepted accounting facts.
 
 Schema 42 adds an append-only timesheet amendment/version audit, including before
 and after preparation, actor/time, generated document identity, worked evidence,
@@ -28,7 +32,7 @@ bytes, earlier document identities/hashes, notes and delivery attempts remain
 retained. Existing PDF publication, native private-file handling and signature
 validation are reused; valid maintained signatures are rendered normally, while
 original signed PDF bytes remain in document/submission history. A failed version
-publication cannot promote a new authoritative baseline or permit a stale send.
+publication cannot create a sendable replacement.
 The existing verified schema-upgrade/recovery process applies; older application
 writers are refused by schema guards. No live database is migrated by tests.
 
@@ -46,7 +50,7 @@ explicit email separation, blue Save/reset/confirmation and reload, future
 positive/negative carry, no repeated payment, publication failure and atomic
 schema-42 upgrade/old-writer refusal. Native interactive acceptance is separate.
 
-## Florence validation — 2 November 2026
+## Historical Florence validation — 2 November 2026
 
 - Focused amendment/eligibility/migration regressions: **10 passed**.
 - Full application suite: **1,047 passed, zero failed, three intentionally ignored
@@ -65,7 +69,7 @@ execute their own binary reliably. Evidence is retained locally under
 
 ## Subsequent cycles and new actual hours
 
-An amended/regenerated timesheet does not close later payroll cycles to new
+An amended timesheet leaves later payroll cycles open to new
 Hours Keeper CSVs, clipboard CSVs or completed internal shifts. Source audit events
 are retained as provenance; their presence is not a veto on reconciling new actual
 hours against the latest corrected authoritative timesheet. Unchanged original
@@ -83,18 +87,15 @@ Regressions exercise real CSV import, the clipboard paste handler and the intern
 clock-in/complete API across subsequent cycles, including positive and negative
 carry, settled history, saved downward corrections and repeat preparation. They
 also cover correcting the prior timesheet after a next-cycle PDF already exists:
-the stale PDF must be regenerated, but next-cycle preparation and generation stay
-available. The corrected baseline replaces older values; applied carry and source
-hours must not be paid twice. Original submissions/PDF bytes and version history
+acceptance of the replacement invalidates the stale next-cycle PDF. Next-cycle
+preparation remains available, and regeneration uses the accepted replacement
+and previously submitted carry. Original submissions/PDF bytes and version history
 remain retained. No acquisition or regeneration sends email automatically.
 
-Cross-cycle validation on Florence (2 November 2026): full application regression
+Historical cross-cycle validation on Florence (2 November 2026): full application regression
 **1,051 passed, zero failed, three intentionally ignored native tests**, zero
 filtered out (348.03 seconds). The related Feature 2/clipboard/import/logger
-selection passed **54 tests** (45.40 seconds), including a strengthened negative
-carry-capacity case: zero-payable preparation/generation remains available, only
-the remaining deduction reaches the following cycle, and new actual hours are
-still accepted. Production code was unchanged between the full suite and that
+selection passed **54 tests** (45.40 seconds), including a case for the former rule that deferred part of a deduction. Current Stage 2A acceptance requires applying the full signed balance in Week 1. Production code was unchanged between the full suite and that
 strengthened test rerun. Cargo check and diff checks passed; test counts overlap.
 Evidence: `/tmp/dpt-feature2-cycles-gckbl__m/`. All fixtures are synthetic; no live
 payroll, credentials or real email submission was used. Schema remains 42.

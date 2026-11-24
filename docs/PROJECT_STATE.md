@@ -1,12 +1,12 @@
 # DirectPaymentTimesheets project state
 
-This document describes unreleased v1.0.7 on `security/v1.0.7-phase1`. Source code, migrations and tests are the authority if this summary becomes stale.
+This document describes the unreleased development package defined in [Cargo.toml](../Cargo.toml). Source code, migrations and tests are the authority if this summary becomes stale.
 
-The functionality below describes unreleased development 1.0.7/schema42. Published v1.0.6 packages remain the public downloads. Historical stage headings and dated acceptance reports retain their original versions, source commits and scope; they are not current-HEAD platform verification.
+Current development uses SQLite schema 42. Published v1.0.6 packages remain the public downloads. Historical stage headings and dated acceptance reports retain their original versions, source commits and scope; they are not current-HEAD platform verification.
 
 ## Current release and platform
 
-- Development application version: `1.0.7`; published downloads: `1.0.6` for Linux, Windows and macOS.
+- [Cargo.toml](../Cargo.toml) defines the development application version.
 - Database schema: version 42, upgraded through verified backups and isolated ordered migrations.
 - Desktop UI: Rust with `eframe`/`egui`.
 - Persistence: SQLite through `rusqlite` (bundled SQLite).
@@ -193,7 +193,7 @@ Stage 2 final-review corrections close the retained-view transfer gap: source/de
 
 ## Stage 4 shift change protection (1.0.6/schema38)
 
-Stage 4 introduced additive schema38; current development 1.0.7 now uses schema42. Semantic CSV headers support the verified Hours Keeper format and existing synthetic aliases regardless of column order. Content identity detects changed same-path exports. Shared review protects imported/internal counterparts and cross-midnight overlaps; original evidence, archival bytes and omitted rows remain retained. Review supports a payable-version choice, explicit separate shifts and audited deferral. New protected edits require prospective authorisation and the existing contextual financial correction workflow; pre-existing obligations are preserved. The established verified database/config backup and isolated upgrade installation remain mandatory; external business files need separate protection.
+Stage 4 introduced additive schema 38. Current development uses schema 42. Semantic CSV headers support the verified Hours Keeper format and existing synthetic aliases regardless of column order. Content identity detects changed same-path exports. Shared review protects imported/internal counterparts and cross-midnight overlaps; original evidence, archival bytes and omitted rows remain retained. Review supports a payable-version choice, explicit separate shifts and audited deferral. New protected edits require prospective authorisation and the existing contextual financial correction workflow; pre-existing obligations are preserved. The established verified database/config backup and isolated upgrade installation remain mandatory; external business files need separate protection.
 
 
 ## Stage 5 startup reliability (1.0.6/schema38)
@@ -240,7 +240,7 @@ separate from proof of recipient inbox receipt. See the Stage 8 sections in
 
 ### SMTP security development status
 
-Development 1.0.7 retains required STARTTLS, implicit TLS and explicit plaintext
+The development application retains required STARTTLS, implicit TLS and explicit plaintext
 SMTP through shared production/test transport; published downloads are unchanged.
 Existing missing security settings remain legacy plaintext, and new remote
 configurations default to required STARTTLS. Certificate/hostname validation is

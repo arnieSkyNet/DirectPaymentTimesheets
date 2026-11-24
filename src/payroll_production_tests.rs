@@ -2544,7 +2544,7 @@ fn feature2_submitted_and_settled_amendments_regenerate_without_sending_or_rewri
             save_feature2_hours(&app,hours);
             assert!(app.application.payroll_worked_item_repository.snapshot_metadata(record.id).unwrap().is_none());
             let report=generate(&mut app,&[1]);assert_eq!(report.completed(),1,"{:?}",report.entries);
-            let version=crate::timesheet_amendments::latest(&conn,record.id).unwrap().unwrap();
+            let version=crate::timesheet_amendments::latest_generated(&conn,record.id).unwrap().unwrap();
             assert_eq!(version.totals,[ (hours*60.0) as i64,0,0,0]);
             assert_eq!(app.application.payroll_worked_item_repository.snapshot_metadata(record.id).unwrap().unwrap().state,SnapshotState::Candidate);
             crate::payroll_snapshot_service::verify_preview_or_test_attachment(&app.application.payroll_worked_item_repository,record.id,&file).unwrap();
@@ -2570,14 +2570,18 @@ fn feature2_submitted_and_settled_amendments_regenerate_without_sending_or_rewri
 }
 
 #[test]
-fn feature2_latest_regenerated_estimate_drives_future_carry_without_double_payment() {
+fn feature2_accepted_amendment_drives_future_carry_without_double_payment() {
     let (_dir,mut app,schedule)=fixture();assert_eq!(generate(&mut app,&[1]).completed(),1);
     let original_record=app.application.payroll_timesheet_repository.get_for_cycle_and_pa("2026/27",1,1).unwrap().unwrap();
     let file=path(&app,&schedule,1);
     crate::payroll_snapshot_service::send_production_candidate(&app.application.payroll_worked_item_repository,original_record.id,1,"2026/27",1,&file,"fixture",||Ok(())).unwrap();
     save_feature2_hours(&app,1.5);
-    assert!(crate::timesheet_amendments::latest(&db(&app),original_record.id).unwrap().is_none(),"saved-only draft is not a regenerated authority");
+    assert!(crate::timesheet_amendments::latest_generated(&db(&app),original_record.id).unwrap().is_none(),"saved-only draft is not a regenerated authority");
     assert_eq!(generate(&mut app,&[1]).completed(),1);
+    crate::payroll_snapshot_service::send_production_candidate(
+        &app.application.payroll_worked_item_repository, original_record.id, 1,
+        "2026/27", 1, &path(&app, &schedule, 1), "synthetic replacement", || Ok(()),
+    ).unwrap();
     let conn=db(&app);
     conn.execute("INSERT INTO payroll_schedules(id,payroll_year,cycle_number,first_week_commencing,latest_posting_date,pay_date,created_at) VALUES(6,'2026/27',2,'29/04/2026','20/05/2026','30/05/2026','synthetic')",[]).unwrap();
     let future=app.application.payroll_timesheet_repository.insert("2026/27",2,1,None,"synthetic").unwrap();
@@ -2590,6 +2594,11 @@ fn feature2_latest_regenerated_estimate_drives_future_carry_without_double_payme
     for amended in [1.5,1.0] {
         if amended==1.0 {
             save_feature2_hours(&app,amended);assert_eq!(generate(&mut app,&[1]).completed(),1);
+            assert_eq!(crate::payroll_evidence::reconciliation::calculate(&app.application,&record,&dates,None).unwrap().week_totals_minutes,[60,0,0,0]);
+            crate::payroll_snapshot_service::send_production_candidate(
+                &app.application.payroll_worked_item_repository, original_record.id, 1,
+                "2026/27", 1, &path(&app, &schedule, 1), "synthetic replacement", || Ok(()),
+            ).unwrap();
             assert_eq!(crate::payroll_evidence::reconciliation::calculate(&app.application,&record,&dates,None).unwrap().week_totals_minutes,[0;4]);
             conn.execute("UPDATE timesheets SET worked_minutes=180,end_time='2026-04-02T12:00:00' WHERE id=1",[]).unwrap();
         }
@@ -2604,6 +2613,16 @@ fn feature2_latest_regenerated_estimate_drives_future_carry_without_double_payme
     // and negative remaining amounts net once through the established engine.
     conn.execute("UPDATE timesheets SET worked_minutes=0,end_time='2026-04-02T09:00:00' WHERE id=1",[]).unwrap();
     conn.execute("INSERT INTO timesheets(id,personal_assistant_id,pa_name,start_time,end_time,break_minutes,worked_minutes,hourly_rate,amount) VALUES(6,1,'Synthetic','2026-04-30T09:00:00','2026-04-30T12:00:00',0,180,12,36)",[]).unwrap();
+    let held = crate::payroll_evidence::reconciliation::calculate(&app.application, &record, &dates, None).unwrap();
+    assert_eq!(held.previous_cycle_minutes, 120, "the aggregate deduction must stay held");
+    let pending = crate::payroll_evidence::reconciliation::changes(&app.application, &original_record).unwrap();
+    assert!(pending.requires_complete);
+    assert!(crate::payroll_evidence::reconciliation::carry(
+        &app.application, &original_record, &pending.signature, false,
+    ).is_err());
+    crate::payroll_evidence::reconciliation::carry(
+        &app.application, &original_record, &pending.signature, true,
+    ).unwrap();
     let payable=crate::payroll_evidence::reconciliation::calculate(&app.application,&record,&dates,None).unwrap();
     assert_eq!(payable.week_totals_minutes.iter().sum::<i64>(),120);
     assert_eq!(payable.previous_cycle_minutes,-60);
@@ -2620,7 +2639,7 @@ fn feature2_latest_regenerated_estimate_drives_future_carry_without_double_payme
     let next=app.application.payroll_timesheet_repository.get_for_cycle_and_pa("2026/27",3,1).unwrap().unwrap();
     let next_dates=text.map(|d|crate::date_utils::parse_legacy(&d).unwrap());
     assert_eq!(crate::payroll_evidence::reconciliation::calculate(&app.application,&next,&next_dates,None).unwrap().week_totals_minutes,[0;4],"already applied carry and source hours must not be paid again");
-    assert_eq!(conn.query_row("SELECT COUNT(*) FROM payroll_submissions WHERE payroll_timesheet_id=?1",[original_record.id],|r|r.get::<_,i64>(0)).unwrap(),1);
+    assert_eq!(conn.query_row("SELECT COUNT(*) FROM payroll_submissions WHERE payroll_timesheet_id=?1",[original_record.id],|r|r.get::<_,i64>(0)).unwrap(),3);
 }
 
 #[test]
@@ -2630,16 +2649,16 @@ fn feature2_failed_version_publication_never_advances_authority_or_allows_stale_
     let file=path(&app,&schedule,1);
     crate::payroll_snapshot_service::send_production_candidate(&app.application.payroll_worked_item_repository,original.id,1,"2026/27",1,&file,"fixture",||Ok(())).unwrap();
     save_feature2_hours(&app,3.);assert_eq!(generate(&mut app,&[1]).completed(),1);
-    let conn=db(&app);let previous=crate::timesheet_amendments::latest(&conn,original.id).unwrap().unwrap();
+    let conn=db(&app);let previous=crate::timesheet_amendments::latest_generated(&conn,original.id).unwrap().unwrap();
     save_feature2_hours(&app,4.);
     conn.execute_batch("CREATE TRIGGER fail_version BEFORE INSERT ON timesheet_amendment_versions WHEN NEW.event='generated' BEGIN SELECT RAISE(ABORT,'synthetic version failure'); END;").unwrap();
     assert_eq!(generate(&mut app,&[1]).completed(),0);
-    assert_eq!(crate::timesheet_amendments::latest(&conn,original.id).unwrap().unwrap().document,previous.document);
+    assert_eq!(crate::timesheet_amendments::latest_generated(&conn,original.id).unwrap().unwrap().document,previous.document);
     assert!(app.application.payroll_worked_item_repository.snapshot_metadata(original.id).unwrap().is_none());
     assert!(crate::timesheet_delivery::capture(&conn,original.id).is_err());
     conn.execute_batch("DROP TRIGGER fail_version").unwrap();
     assert_eq!(generate(&mut app,&[1]).completed(),1);
-    assert_eq!(crate::timesheet_amendments::latest(&conn,original.id).unwrap().unwrap().totals[0],240);
+    assert_eq!(crate::timesheet_amendments::latest_generated(&conn,original.id).unwrap().unwrap().totals[0],240);
 }
 
 #[derive(Clone,Copy,Debug)]
@@ -2698,10 +2717,14 @@ fn feature2_assert_next_cycles_accept_actuals(mode:Feature2Ingest) {
         let original=app.application.payroll_timesheet_repository.get_for_cycle_and_pa("2026/27",1,1).unwrap().unwrap();
         let original_pdf=path(&app,&original_schedule,1);
         crate::payroll_snapshot_service::send_production_candidate(&app.application.payroll_worked_item_repository,original.id,1,"2026/27",1,&original_pdf,"synthetic",||Ok(())).unwrap();
-        let before:Vec<u8>=conn.query_row("SELECT pdf_bytes FROM payroll_submissions WHERE payroll_timesheet_id=?1",[original.id],|r|r.get(0)).unwrap();
+        let before:Vec<u8>=conn.query_row("SELECT pdf_bytes FROM payroll_submissions WHERE payroll_timesheet_id=?1 ORDER BY id LIMIT 1",[original.id],|r|r.get(0)).unwrap();
         if estimate==5.0 {conn.execute("INSERT INTO payroll_timesheet_email_status(personal_assistant_id,payroll_year,cycle_number,email_type,sent_at) VALUES(1,'2026/27',1,'payslip','synthetic historical settlement')",[]).unwrap();}
         save_feature2_hours(&app,estimate);assert_eq!(generate(&mut app,&[1]).completed(),1);
-        let mut authority=crate::timesheet_amendments::latest(&conn,original.id).unwrap().unwrap();
+        crate::payroll_snapshot_service::send_production_candidate(
+            &app.application.payroll_worked_item_repository, original.id, 1,
+            "2026/27", 1, &path(&app, &original_schedule, 1), "synthetic replacement", || Ok(()),
+        ).unwrap();
+        let mut authority=crate::timesheet_amendments::latest_generated(&conn,original.id).unwrap().unwrap();
         let next=feature2_cycle_schedule(&app,2,"29/04/2026","30/05/2026");
         app.operational_payroll_period.select(&next,None);
         feature2_ingest_actuals(&mut app,mode,&["05/04/2026","02/05/2026"],"cycle-two.csv");
@@ -2712,6 +2735,12 @@ fn feature2_assert_next_cycles_accept_actuals(mode:Feature2Ingest) {
             assert!(!notice.contains("approve"));assert!(notice.contains("does not lock"));
         }
         let source_events:i64=conn.query_row("SELECT COUNT(*) FROM shift_change_events",[],|r|r.get(0)).unwrap();assert!(source_events>=2);
+        if estimate == 5.0 {
+            use crate::payroll_evidence::reconciliation;
+            let pending = reconciliation::changes(&app.application, &original).unwrap();
+            assert!(pending.requires_complete);
+            reconciliation::carry(&app.application, &original, &pending.signature, true).unwrap();
+        }
         let carry=if estimate<2. {120} else {240-(estimate*60.) as i64};
         let ctx=egui::Context::default();let mut preparation=crate::payroll_timesheet_screen::PayrollTimesheetScreen::new();
         crate::gui_controls::acceptance::frame(&ctx,vec![],|ui|preparation.show(ui,&app.application,&next,"synthetic next cycle"),"Save PA1 Test");
@@ -2727,7 +2756,11 @@ fn feature2_assert_next_cycles_accept_actuals(mode:Feature2Ingest) {
         if matches!(mode,Feature2Ingest::Folder) && estimate==3.0 {
             app.operational_payroll_period.select(&original_schedule,None);
             save_feature2_hours(&app,3.5);assert_eq!(generate(&mut app,&[1]).completed(),1);
-            authority=crate::timesheet_amendments::latest(&conn,original.id).unwrap().unwrap();
+            crate::payroll_snapshot_service::send_production_candidate(
+                &app.application.payroll_worked_item_repository, original.id, 1,
+                "2026/27", 1, &path(&app, &original_schedule, 1), "synthetic replacement", || Ok(()),
+            ).unwrap();
+            authority=crate::timesheet_amendments::latest_generated(&conn,original.id).unwrap().unwrap();
             app.operational_payroll_period.select(&next,None);
             assert!(crate::payroll_evidence::lifecycle::verify_candidate_evidence(&conn,next_record.id).is_err(),"an old next-cycle PDF must not conceal the new authority");
             let mut refreshed=crate::payroll_timesheet_screen::PayrollTimesheetScreen::new();
@@ -2745,9 +2778,9 @@ fn feature2_assert_next_cycles_accept_actuals(mode:Feature2Ingest) {
         let third_record=app.application.payroll_timesheet_repository.get_for_cycle_and_pa("2026/27",3,1).unwrap().unwrap();
         assert_eq!(app.application.payroll_timesheet_repository.get_weeks(third_record.id).unwrap().iter().map(|w|(w.worked_hours*60.).round() as i64).sum::<i64>(),120,"{mode:?}: third cycle must accept fresh actuals without repaying previous estimates/carry");
         assert_eq!(third_record.previous_cycle_hours.unwrap_or(0.),0.);
-        assert_eq!(crate::timesheet_amendments::latest(&conn,original.id).unwrap().unwrap().document,authority.document);
+        assert_eq!(crate::timesheet_amendments::latest_generated(&conn,original.id).unwrap().unwrap().document,authority.document);
         assert_eq!(conn.query_row("SELECT pdf_bytes FROM payroll_submissions WHERE payroll_timesheet_id=?1",[original.id],|r|r.get::<_,Vec<u8>>(0)).unwrap(),before);
-        assert_eq!(conn.query_row("SELECT COUNT(*) FROM payroll_submissions WHERE payroll_timesheet_id=?1",[original.id],|r|r.get::<_,i64>(0)).unwrap(),1);
+        assert_eq!(conn.query_row("SELECT COUNT(*) FROM payroll_submissions WHERE payroll_timesheet_id=?1",[original.id],|r|r.get::<_,i64>(0)).unwrap(),if matches!(mode, Feature2Ingest::Folder) && estimate == 3.0 { 3 } else { 2 });
     }
 }
 #[test]
@@ -2756,6 +2789,606 @@ fn feature2_future_cycles_accept_folder_csv_actuals_and_reconcile_corrected_esti
 fn feature2_future_cycles_accept_clipboard_actuals_despite_historic_csv_files() {feature2_assert_next_cycles_accept_actuals(Feature2Ingest::Clipboard);}
 #[test]
 fn feature2_future_cycles_accept_logged_actuals_and_reconcile_corrected_estimates() {feature2_assert_next_cycles_accept_actuals(Feature2Ingest::Logger);}
+
+#[test]
+fn feature2_paid_original_estimates_reconcile_csv_credits_and_full_deductions() {
+    use crate::payroll_evidence::reconciliation;
+
+    let (_dir, mut app, original_schedule) = fixture();
+    let conn = db(&app);
+    conn.execute_batch("UPDATE personal_assistants SET employment_status=CASE id WHEN 1 THEN 'Active' ELSE 'Inactive' END").unwrap();
+    crate::private_storage::ensure_private_dir(&app.application.context.config.folders.csv_import)
+        .unwrap();
+    assert_eq!(generate(&mut app, &[1]).completed(), 1);
+    let old = app
+        .application
+        .payroll_timesheet_repository
+        .get_for_cycle_and_pa("2026/27", 1, 1)
+        .unwrap()
+        .unwrap();
+    for (week_number, adjustment_minutes) in [(3, 90), (4, 300)] {
+        app.application
+            .payroll_worked_item_repository
+            .set_manual_adjustment(
+                old.id,
+                &crate::payroll_worked_item_repository::ManualHoursAdjustment {
+                    week_number,
+                    adjustment_minutes,
+                    reason: Some("Manual current-period estimate".into()),
+                },
+                "synthetic estimate",
+            )
+            .unwrap();
+    }
+    assert_eq!(generate(&mut app, &[1]).completed(), 1);
+    let original_pdf = path(&app, &original_schedule, 1);
+    crate::payroll_snapshot_service::send_production_candidate(
+        &app.application.payroll_worked_item_repository,
+        old.id,
+        1,
+        "2026/27",
+        1,
+        &original_pdf,
+        "synthetic",
+        || Ok(()),
+    )
+    .unwrap();
+    app.application
+        .payroll_timesheet_email_repository
+        .mark_sent(1, "2026/27", 1, "payslip", "synthetic settlement")
+        .unwrap();
+
+    let original_document: (i64, String, Vec<u8>) = conn.query_row(
+        "SELECT document_id,pdf_sha256,pdf_bytes FROM payroll_submissions WHERE payroll_timesheet_id=?1 ORDER BY id LIMIT 1",
+        [old.id], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+    ).unwrap();
+    let next = feature2_cycle_schedule(&app, 2, "29/04/2026", "30/05/2026");
+    app.operational_payroll_period.select(&next, None);
+    let csv = feature2_source_csv(&["18/04/2026", "25/04/2026", "02/05/2026"])
+        .replace("11:00:00,0h 00m,2h 00m", "10:53:00,0h 00m,1h 53m");
+    for name in ["first.csv", "reexport.csv"] {
+        crate::private_storage::write_new(
+            &app.application.context.config.folders.csv_import.join(name),
+            csv.as_bytes(),
+        )
+        .unwrap();
+        assert!(!app.application.import_csv().unwrap().has_failures());
+        let ctx = egui::Context::default();
+        let mut preparation = crate::payroll_timesheet_screen::PayrollTimesheetScreen::new();
+        crate::gui_controls::acceptance::frame(
+            &ctx,
+            vec![],
+            |ui| preparation.show(ui, &app.application, &next, "synthetic next cycle"),
+            "Save PA1 Test",
+        );
+        let current = app
+            .application
+            .payroll_timesheet_repository
+            .get_for_cycle_and_pa("2026/27", 2, 1)
+            .unwrap()
+            .unwrap();
+        let plan = reconciliation::plan(&app.application, &current).unwrap();
+        assert!(plan.historical_reviews.is_empty());
+        assert_eq!(plan.work.len(), 1);
+        assert_eq!(current.previous_cycle_hours, Some(0.5));
+    }
+    let ledger = |sql: &str| -> i64 { conn.query_row(sql, [], |r| r.get(0)).unwrap() };
+    assert_eq!(ledger("SELECT COUNT(*) FROM payroll_corrections"), 1);
+    assert_eq!(ledger("SELECT SUM(minutes) FROM payroll_corrections"), 30);
+    let pending = reconciliation::changes(&app.application, &old).unwrap();
+    assert!(pending.requires_complete);
+    assert!(reconciliation::carry(&app.application, &old, &pending.signature, false).is_err());
+    assert_eq!(ledger("SELECT SUM(minutes) FROM payroll_corrections"), 30);
+    reconciliation::carry(&app.application, &old, &pending.signature, true).unwrap();
+    assert_eq!(ledger("SELECT SUM(minutes) FROM payroll_corrections"), -150);
+    assert_eq!(generate(&mut app, &[1]).completed(), 1);
+    assert_eq!(
+        ledger("SELECT SUM(minutes) FROM payroll_correction_applications"),
+        -150
+    );
+    assert_eq!(ledger("SELECT COUNT(*) FROM payroll_submissions"), 1);
+    assert_eq!(
+        ledger("SELECT COUNT(*) FROM timesheet_amendment_versions"),
+        0
+    );
+
+    let current = app
+        .application
+        .payroll_timesheet_repository
+        .get_for_cycle_and_pa("2026/27", 2, 1)
+        .unwrap()
+        .unwrap();
+    crate::payroll_snapshot_service::send_production_candidate(
+        &app.application.payroll_worked_item_repository,
+        current.id,
+        1,
+        "2026/27",
+        2,
+        &path(&app, &next, 1),
+        "synthetic",
+        || Ok(()),
+    )
+    .unwrap();
+    assert_eq!(
+        ledger("SELECT SUM(minutes) FROM payroll_submission_corrections"),
+        -150
+    );
+
+    // A revised estimate accounts for the earlier applied credit. The other
+    // week's already applied deduction stays in submitted history.
+    app.operational_payroll_period
+        .select(&original_schedule, None);
+    let repo = &app.application.payroll_timesheet_repository;
+    let mut weeks = repo.get_weeks(old.id).unwrap();
+    weeks[2].worked_hours = 1.0;
+    let adjustments = weeks
+        .iter()
+        .map(
+            |week| crate::payroll_worked_item_repository::ManualHoursAdjustment {
+                week_number: week.week_number,
+                adjustment_minutes: 0,
+                reason: None,
+            },
+        )
+        .collect::<Vec<_>>();
+    repo.save_preparation_atomically(
+        &old,
+        &weeks,
+        &repo.get_public_holidays(old.id).unwrap(),
+        &repo.get_annual_leave(old.id).unwrap(),
+        &adjustments,
+        "synthetic revised estimate",
+    )
+    .unwrap();
+    assert_eq!(generate(&mut app, &[1]).completed(), 1);
+
+    assert_eq!(ledger("SELECT COUNT(*) FROM payroll_corrections"), 2);
+    crate::payroll_snapshot_service::send_production_candidate(
+        &app.application.payroll_worked_item_repository, old.id, 1,
+        "2026/27", 1, &path(&app, &original_schedule, 1), "synthetic replacement", || Ok(()),
+    ).unwrap();
+
+    let third = feature2_cycle_schedule(&app, 3, "27/05/2026", "30/06/2026");
+    app.operational_payroll_period.select(&third, None);
+    feature2_ingest_actuals(
+        &mut app,
+        Feature2Ingest::Folder,
+        &["30/05/2026"],
+        "third.csv",
+    );
+    let ctx = egui::Context::default();
+    let mut preparation = crate::payroll_timesheet_screen::PayrollTimesheetScreen::new();
+    crate::gui_controls::acceptance::frame(
+        &ctx,
+        vec![],
+        |ui| preparation.show(ui, &app.application, &third, "synthetic third cycle"),
+        "Save PA1 Test",
+    );
+    let current = app
+        .application
+        .payroll_timesheet_repository
+        .get_for_cycle_and_pa("2026/27", 3, 1)
+        .unwrap()
+        .unwrap();
+    let applied = conn.prepare(
+        "SELECT minutes FROM payroll_correction_applications WHERE payroll_timesheet_id=?1 ORDER BY minutes",
+    ).unwrap().query_map([current.id], |row| row.get::<_, i64>(0))
+        .unwrap().collect::<rusqlite::Result<Vec<_>>>().unwrap();
+    assert_eq!(applied, [30]);
+    assert_eq!(ledger("SELECT COUNT(*) FROM payroll_corrections"), 3);
+    assert_eq!(conn.query_row(
+        "SELECT document_id,pdf_sha256,pdf_bytes FROM payroll_submissions WHERE payroll_timesheet_id=?1 ORDER BY id LIMIT 1",
+        [old.id], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+    ).unwrap(), original_document);
+}
+
+#[test]
+fn feature2_amended_mixed_estimates_reconcile_midweek_csv_with_existing_actuals() {
+    use crate::payroll_evidence::reconciliation;
+
+    let (_dir, mut app, previous) = fixture();
+    let conn = db(&app);
+    conn.execute(
+        "UPDATE personal_assistants SET employment_status='Inactive' WHERE id<>1",
+        [],
+    )
+    .unwrap();
+    let folder = app.application.context.config.folders.csv_import.clone();
+    crate::private_storage::ensure_private_dir(&folder).unwrap();
+    let import = |app: &mut DirectPaymentApp, name: &str, dates: &[&str], expected_rows| {
+        crate::private_storage::write_new(
+            &folder.join(name),
+            feature2_source_csv(dates).as_bytes(),
+        )
+        .unwrap();
+        let summary = app.application.import_csv().unwrap();
+        assert!(!summary.has_failures());
+        assert_eq!(summary.rows_imported, expected_rows);
+    };
+    import(
+        &mut app,
+        "early-actuals.csv",
+        &["15/04/2026", "22/04/2026"],
+        2,
+    );
+    let repo = &app.application.payroll_timesheet_repository;
+    let old = repo.get_for_cycle_and_pa("2026/27", 1, 1).unwrap().unwrap();
+    let adjustments = (1..=4)
+        .map(
+            |week_number| crate::payroll_worked_item_repository::ManualHoursAdjustment {
+                week_number,
+                adjustment_minutes: [0, 0, 60, 240][(week_number - 1) as usize],
+                reason: (week_number >= 3).then(|| "Manual current-period estimate".into()),
+            },
+        )
+        .collect::<Vec<_>>();
+    for estimate in &adjustments {
+        app.application
+            .payroll_worked_item_repository
+            .set_manual_adjustment(old.id, estimate, "fictional estimate")
+            .unwrap();
+    }
+    assert_eq!(generate(&mut app, &[1]).completed(), 1);
+    crate::payroll_snapshot_service::send_production_candidate(
+        &app.application.payroll_worked_item_repository,
+        old.id,
+        1,
+        "2026/27",
+        1,
+        &path(&app, &previous, 1),
+        "synthetic",
+        || Ok(()),
+    )
+    .unwrap();
+    app.application
+        .payroll_timesheet_email_repository
+        .mark_sent(1, "2026/27", 1, "payslip", "synthetic paid")
+        .unwrap();
+    let repo = &app.application.payroll_timesheet_repository;
+    let mut weeks = repo.get_weeks(old.id).unwrap();
+    weeks[2].worked_hours = 3.5;
+    weeks[3].worked_hours = 5.;
+    repo.save_preparation_atomically(
+        &old,
+        &weeks,
+        &repo.get_public_holidays(old.id).unwrap(),
+        &repo.get_annual_leave(old.id).unwrap(),
+        &adjustments,
+        "fictional amended estimates",
+    )
+    .unwrap();
+    assert_eq!(generate(&mut app, &[1]).completed(), 1);
+    crate::payroll_snapshot_service::send_production_candidate(
+        &app.application.payroll_worked_item_repository, old.id, 1,
+        "2026/27", 1, &path(&app, &previous, 1), "synthetic replacement", || Ok(()),
+    ).unwrap();
+    let version = crate::timesheet_amendments::latest_generated(&conn, old.id)
+        .unwrap()
+        .unwrap();
+    assert_eq!(&version.totals[2..], &[210, 300]);
+
+    // A deduction posted by the old amended path must stay in the audit
+    // ledger, but its unapplied amount still needs completeness confirmation.
+    conn.execute(
+        "INSERT INTO payroll_corrections(personal_assistant_id,origin_payroll_timesheet_id,evidence_key,work_date,minutes,reason,created_at)
+         VALUES (1,?1,?2,'2026-04-22',-30,'legacy synthetic deduction','test')",
+        params![old.id, format!("version:{}:week:4|legacy|0", version.document)],
+    ).unwrap();
+
+    let next = feature2_cycle_schedule(&app, 2, "29/04/2026", "30/05/2026");
+    app.operational_payroll_period.select(&next, None);
+    let dates = &["18/04/2026", "25/04/2026", "02/05/2026"];
+    import(&mut app, "midweek.csv", dates, 3);
+    import(&mut app, "midweek-repeat.csv", dates, 0);
+    let ctx = egui::Context::default();
+    let mut screen = crate::payroll_timesheet_screen::PayrollTimesheetScreen::new();
+    crate::gui_controls::acceptance::frame(
+        &ctx,
+        vec![],
+        |ui| {
+            screen.show(
+                ui,
+                &app.application,
+                &next,
+                "synthetic midweek reconciliation",
+            )
+        },
+        "Save PA1 Test",
+    );
+    let current = app
+        .application
+        .payroll_timesheet_repository
+        .get_for_cycle_and_pa("2026/27", 2, 1)
+        .unwrap()
+        .unwrap();
+    let plan = reconciliation::plan(&app.application, &current).unwrap();
+    assert!(plan.historical_reviews.is_empty() && plan.notices.is_empty());
+    assert_eq!(plan.work.len(), 1);
+    assert_eq!(current.previous_cycle_hours, Some(0.5));
+    let pending = reconciliation::changes(&app.application, &old).unwrap();
+    assert!(pending.requires_complete);
+    assert_eq!(
+        pending
+            .components
+            .iter()
+            .map(|component| component.minutes)
+            .collect::<Vec<_>>(),
+        [-60]
+    );
+    assert!(reconciliation::carry(&app.application, &old, &pending.signature, false).is_err());
+    reconciliation::carry(&app.application, &old, &pending.signature, true).unwrap();
+    assert_eq!(generate(&mut app, &[1]).completed(), 1);
+    assert_eq!(generate(&mut app, &[1]).completed(), 1);
+    assert_eq!(
+        conn.query_row("SELECT COUNT(*) FROM payroll_corrections", [], |row| row
+            .get::<_, i64>(0))
+            .unwrap(),
+        3
+    );
+    assert_eq!(
+        conn.query_row(
+            "SELECT SUM(minutes) FROM payroll_correction_applications",
+            [],
+            |row| row.get::<_, i64>(0)
+        )
+        .unwrap(),
+        -30
+    );
+    crate::payroll_snapshot_service::send_production_candidate(
+        &app.application.payroll_worked_item_repository,
+        current.id,
+        1,
+        "2026/27",
+        2,
+        &path(&app, &next, 1),
+        "synthetic",
+        || Ok(()),
+    )
+    .unwrap();
+    let third = feature2_cycle_schedule(&app, 3, "27/05/2026", "30/06/2026");
+    app.operational_payroll_period.select(&third, None);
+    import(&mut app, "third-actuals.csv", &["30/05/2026"], 1);
+    let mut screen = crate::payroll_timesheet_screen::PayrollTimesheetScreen::new();
+    crate::gui_controls::acceptance::frame(
+        &egui::Context::default(),
+        vec![],
+        |ui| screen.show(ui, &app.application, &third, "synthetic later period"),
+        "Save PA1 Test",
+    );
+    assert_eq!(generate(&mut app, &[1]).completed(), 1);
+    let later = app
+        .application
+        .payroll_timesheet_repository
+        .get_for_cycle_and_pa("2026/27", 3, 1)
+        .unwrap()
+        .unwrap();
+    assert!(reconciliation::outstanding(&app.application, &later)
+        .unwrap()
+        .is_empty());
+    assert_eq!(
+        crate::timesheet_amendments::latest_generated(&conn, old.id)
+            .unwrap()
+            .unwrap()
+            .document,
+        version.document
+    );
+}
+
+#[test]
+fn feature2_seven_historical_reviews_refresh_only_after_accepted_amendment() {
+    use crate::payroll_evidence::{self, reconciliation};
+
+    let (_dir, mut app, prior) = fixture();
+    let conn = db(&app);
+    conn.execute(
+        "UPDATE personal_assistants SET employment_status='Inactive' WHERE id<>1",
+        [],
+    )
+    .unwrap();
+    let old = app
+        .application
+        .payroll_timesheet_repository
+        .get_for_cycle_and_pa("2026/27", 1, 1)
+        .unwrap()
+        .unwrap();
+    app.application
+        .payroll_worked_item_repository
+        .set_manual_adjustment(
+            old.id,
+            &crate::payroll_worked_item_repository::ManualHoursAdjustment {
+                week_number: 2,
+                adjustment_minutes: 30,
+                reason: Some("Fictional manual work".into()),
+            },
+            "synthetic",
+        )
+        .unwrap();
+    assert_eq!(generate(&mut app, &[1]).completed(), 1);
+    crate::payroll_snapshot_service::send_production_candidate(
+        &app.application.payroll_worked_item_repository,
+        old.id,
+        1,
+        "2026/27",
+        1,
+        &path(&app, &prior, 1),
+        "synthetic",
+        || Ok(()),
+    )
+    .unwrap();
+    app.application
+        .payroll_timesheet_email_repository
+        .mark_sent(1, "2026/27", 1, "payslip", "synthetic paid")
+        .unwrap();
+    let folder = app.application.context.config.folders.csv_import.clone();
+    crate::private_storage::ensure_private_dir(&folder).unwrap();
+    let csv = feature2_source_csv(&[
+        "15/04/2026",
+        "16/04/2026",
+        "17/04/2026",
+        "18/04/2026",
+        "19/04/2026",
+        "20/04/2026",
+        "21/04/2026",
+    ]);
+    for (name, expected) in [("actuals.csv", 7), ("repeat.csv", 0)] {
+        crate::private_storage::write_new(&folder.join(name), csv.as_bytes()).unwrap();
+        let summary = app.application.import_csv().unwrap();
+        assert!(!summary.has_failures());
+        assert_eq!(summary.rows_imported, expected);
+    }
+    let next = feature2_cycle_schedule(&app, 2, "29/04/2026", "30/05/2026");
+    let current_id = app
+        .application
+        .payroll_timesheet_repository
+        .insert("2026/27", 2, 1, None, "synthetic")
+        .unwrap();
+    let current = app
+        .application
+        .payroll_timesheet_repository
+        .get_for_cycle_and_pa("2026/27", 2, 1)
+        .unwrap()
+        .unwrap();
+    assert_eq!(current.id, current_id);
+    let refresh = |app: &DirectPaymentApp,
+                   review_ui: &mut payroll_evidence::review_ui::ReviewUi| {
+        let db = db(app);
+        let current_evidence = payroll_evidence::load_for_pa(&db, 1).unwrap();
+        let pre = payroll_evidence::preflight_for_pa(&db, &current_evidence, 1).unwrap();
+        review_ui
+            .refresh_record(&app.application, &current, false, &pre)
+            .unwrap();
+    };
+    let mut review_ui = payroll_evidence::review_ui::ReviewUi::default();
+    refresh(&app, &mut review_ui);
+    let reviews = &review_ui
+        .preparation_plan(current.id)
+        .unwrap()
+        .historical_reviews;
+    assert_eq!(reviews.len(), 7);
+    let stale = reviews[0].clone();
+    let edited_id = stale.evidence.id;
+    conn.execute(
+        "UPDATE timesheets SET worked_minutes=90 WHERE id=?1",
+        [edited_id],
+    )
+    .unwrap();
+    refresh(&app, &mut review_ui);
+    assert!(reconciliation::historical_decision(&app.application, &stale, true).is_err());
+    let fresh = review_ui
+        .preparation_plan(current.id)
+        .unwrap()
+        .historical_reviews
+        .iter()
+        .find(|row| row.evidence.id == edited_id)
+        .unwrap()
+        .clone();
+    assert_eq!(fresh.evidence.minutes, 90);
+    let ctx = egui::Context::default();
+    let (_, _) = crate::gui_controls::acceptance::frame(
+        &ctx,
+        vec![],
+        |ui| {
+            review_ui.show_pa(ui, &app.application, &current, "PA1 Test", false);
+        },
+        "Historical payment reviews remaining: 7",
+    );
+    let label = format!(
+        "{}: {} – {}, 1.50 hours",
+        fresh.evidence.label(),
+        fresh.evidence.start,
+        fresh.evidence.end
+    );
+    crate::gui_controls::acceptance::frame(
+        &ctx,
+        vec![],
+        |ui| {
+            review_ui.show_pa(ui, &app.application, &current, "PA1 Test", false);
+        },
+        &label,
+    );
+
+    let repo = &app.application.payroll_timesheet_repository;
+    let mut weeks = repo.get_weeks(old.id).unwrap();
+    weeks[2].worked_hours = 10.;
+    let adjustments = (1..=4)
+        .map(
+            |week_number| crate::payroll_worked_item_repository::ManualHoursAdjustment {
+                week_number,
+                adjustment_minutes: 0,
+                reason: None,
+            },
+        )
+        .collect::<Vec<_>>();
+    repo.save_preparation_atomically(
+        &old,
+        &weeks,
+        &repo.get_public_holidays(old.id).unwrap(),
+        &repo.get_annual_leave(old.id).unwrap(),
+        &adjustments,
+        "synthetic saved draft",
+    )
+    .unwrap();
+    refresh(&app, &mut review_ui);
+    assert_eq!(
+        review_ui
+            .preparation_plan(current.id)
+            .unwrap()
+            .historical_reviews
+            .len(),
+        7
+    );
+    assert_eq!(generate(&mut app, &[1]).completed(), 1);
+    refresh(&app, &mut review_ui);
+    assert_eq!(review_ui.preparation_plan(current.id).unwrap().historical_reviews.len(), 7);
+    crate::payroll_snapshot_service::send_production_candidate(
+        &app.application.payroll_worked_item_repository, old.id, 1,
+        "2026/27", 1, &path(&app, &prior, 1), "synthetic replacement", || Ok(()),
+    ).unwrap();
+    refresh(&app, &mut review_ui);
+    assert!(review_ui
+        .preparation_plan(current.id)
+        .unwrap()
+        .historical_reviews
+        .is_empty());
+    assert!(reconciliation::historical_decision(&app.application, &fresh, true).is_err());
+    crate::gui_controls::acceptance::frame(
+        &ctx,
+        vec![],
+        |ui| {
+            review_ui.show_pa(ui, &app.application, &current, "PA1 Test", false);
+        },
+        "Historical payment reviews remaining: 0",
+    );
+
+    let more = feature2_source_csv(&["20/04/2026"])
+        .replace("09:00:00", "13:00:00")
+        .replace("11:00:00", "15:00:00");
+    crate::private_storage::write_new(&folder.join("late-actual.csv"), more.as_bytes()).unwrap();
+    let summary = app.application.import_csv().unwrap();
+    assert_eq!(summary.rows_imported, 1);
+    app.operational_payroll_period.select(&next, None);
+    refresh(&app, &mut review_ui);
+    let credits: i64 = conn
+        .query_row(
+            "SELECT COALESCE(SUM(minutes),0) FROM payroll_corrections",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(credits, 330);
+    assert!(review_ui
+        .preparation_plan(current.id)
+        .unwrap()
+        .historical_reviews
+        .is_empty());
+    refresh(&app, &mut review_ui);
+    assert_eq!(
+        conn.query_row("SELECT COUNT(*) FROM payroll_corrections", [], |row| row
+            .get::<_, i64>(0))
+            .unwrap(),
+        1
+    );
+}
 
 #[test]
 fn feature2_last_two_estimated_weeks_reconcile_new_csv_actuals_in_next_cycle() {
@@ -2771,14 +3404,24 @@ fn feature2_last_two_estimated_weeks_reconcile_new_csv_actuals_in_next_cycle() {
     let adjustments=weeks.iter().map(|w|crate::payroll_worked_item_repository::ManualHoursAdjustment{week_number:w.week_number,adjustment_minutes:0,reason:None}).collect::<Vec<_>>();
     repo.save_preparation_atomically(&record,&weeks,&repo.get_public_holidays(record.id).unwrap(),&repo.get_annual_leave(record.id).unwrap(),&adjustments,"synthetic estimated weeks").unwrap();
     assert_eq!(generate(&mut app,&[1]).completed(),1);
-    let version=crate::timesheet_amendments::latest(&conn,record.id).unwrap().unwrap();assert_eq!(version.totals,[120,0,180,240]);
+    crate::payroll_snapshot_service::send_production_candidate(
+        &app.application.payroll_worked_item_repository, record.id, 1,
+        "2026/27", 1, &path(&app, &original_schedule, 1), "synthetic replacement", || Ok(()),
+    ).unwrap();
+    let version=crate::timesheet_amendments::latest_generated(&conn,record.id).unwrap().unwrap();assert_eq!(version.totals,[120,0,180,240]);
     let next=feature2_cycle_schedule(&app,2,"29/04/2026","30/05/2026");app.operational_payroll_period.select(&next,None);
     feature2_ingest_actuals(&mut app,Feature2Ingest::Folder,&["18/04/2026","25/04/2026","02/05/2026"],"estimated-week-actuals.csv");
+    use crate::payroll_evidence::reconciliation;
+    let partial = reconciliation::changes(&app.application, &record).unwrap();
+    assert!(partial.requires_complete);
+    reconciliation::sync_settled_corrections(&app.application, 1).unwrap();
+    assert_eq!(conn.query_row("SELECT COUNT(*) FROM payroll_corrections", [], |r| r.get::<_, i64>(0)).unwrap(), 0);
+    reconciliation::carry(&app.application, &record, &partial.signature, true).unwrap();
     let ctx=egui::Context::default();let mut preparation=crate::payroll_timesheet_screen::PayrollTimesheetScreen::new();
     crate::gui_controls::acceptance::frame(&ctx,vec![],|ui|preparation.show(ui,&app.application,&next,"synthetic next cycle"),"Save PA1 Test");
     let next_record=app.application.payroll_timesheet_repository.get_for_cycle_and_pa("2026/27",2,1).unwrap().unwrap();
-    assert_eq!(next_record.previous_cycle_hours,Some(-2.0),"negative carry uses available current hours without freezing payroll");
-    assert_eq!(app.application.payroll_timesheet_repository.get_weeks(next_record.id).unwrap().iter().map(|w|(w.worked_hours*60.).round() as i64).sum::<i64>(),0,"a larger overestimate leaves a zero-payable cycle, not an editing/generation lock");
+    assert_eq!(next_record.previous_cycle_hours,Some(-3.0),"the full approved deduction applies in Week 1");
+    assert_eq!(app.application.payroll_timesheet_repository.get_weeks(next_record.id).unwrap().iter().map(|w|(w.worked_hours*60.).round() as i64).sum::<i64>(),-60,"a larger deduction leaves a signed payable Week 1");
     assert_eq!(generate(&mut app,&[1]).completed(),1,"negative carry must not freeze next-cycle generation");
     let next_pdf=path(&app,&next,1);
     crate::payroll_snapshot_service::send_production_candidate(&app.application.payroll_worked_item_repository,next_record.id,1,"2026/27",2,&next_pdf,"synthetic",||Ok(())).unwrap();
@@ -2787,11 +3430,11 @@ fn feature2_last_two_estimated_weeks_reconcile_new_csv_actuals_in_next_cycle() {
     let mut third_preparation=crate::payroll_timesheet_screen::PayrollTimesheetScreen::new();
     crate::gui_controls::acceptance::frame(&ctx,vec![],|ui|third_preparation.show(ui,&app.application,&third,"synthetic third cycle"),"Save PA1 Test");
     let third_record=app.application.payroll_timesheet_repository.get_for_cycle_and_pa("2026/27",3,1).unwrap().unwrap();
-    assert_eq!(third_record.previous_cycle_hours,Some(-1.0),"only the remaining overestimate is deducted next time");
-    assert_eq!(app.application.payroll_timesheet_repository.get_weeks(third_record.id).unwrap().iter().map(|w|(w.worked_hours*60.).round() as i64).sum::<i64>(),60);
+    assert_eq!(third_record.previous_cycle_hours,None,"the full deduction was submitted in the previous cycle");
+    assert_eq!(app.application.payroll_timesheet_repository.get_weeks(third_record.id).unwrap().iter().map(|w|(w.worked_hours*60.).round() as i64).sum::<i64>(),120);
     assert_eq!(generate(&mut app,&[1]).completed(),1);
 
-    assert_eq!(crate::timesheet_amendments::latest(&conn,record.id).unwrap().unwrap().document,version.document);
+    assert_eq!(crate::timesheet_amendments::latest_generated(&conn,record.id).unwrap().unwrap().document,version.document);
 }
 
 mod recipient_layout_tests {
@@ -3148,4 +3791,1114 @@ fn acceptance_gui_note_prompt_wraps_inside_an_expanded_dashboard_for_both_workfl
             }
         }
     }
+}
+
+#[test]
+fn feature2_manual_preparation_generates_current_pdf_with_open_historical_review() {
+    use crate::payroll_evidence::{manual_preparation, reconciliation};
+
+    let (_dir, mut app, prior) = fixture();
+    let conn = db(&app);
+    conn.execute(
+        "UPDATE personal_assistants SET employment_status='Inactive' WHERE id<>1",
+        [],
+    )
+    .unwrap();
+    app.application
+        .payroll_timesheet_email_repository
+        .mark_sent(1, "2026/27", 1, "payslip", "fictional settled history")
+        .unwrap();
+    let next = feature2_cycle_schedule(&app, 2, "29/04/2026", "30/05/2026");
+    app.operational_payroll_period.select(&next, None);
+    let folder = &app.application.context.config.folders.csv_import;
+    crate::private_storage::ensure_private_dir(folder).unwrap();
+    crate::private_storage::write_new(
+        &folder.join("fictional.csv"),
+        feature2_source_csv(&["18/04/2026", "02/05/2026"]).as_bytes(),
+    )
+    .unwrap();
+    assert_eq!(app.application.import_csv().unwrap().rows_imported, 2);
+    let mut screen = crate::payroll_timesheet_screen::PayrollTimesheetScreen::new();
+    crate::gui_controls::acceptance::frame(
+        &egui::Context::default(),
+        vec![],
+        |ui| screen.show(ui, &app.application, &next, "fictional manual preparation"),
+        "Open manual preparation",
+    );
+    let current = app
+        .application
+        .payroll_timesheet_repository
+        .get_for_cycle_and_pa("2026/27", 2, 1)
+        .unwrap()
+        .unwrap();
+    let start = crate::date_utils::parse_legacy(&next.first_week_commencing).unwrap();
+    let dates = std::array::from_fn(|index| start + chrono::Duration::weeks(index as i64));
+    let preview = manual_preparation::preview(&app.application, &current, &dates).unwrap();
+    assert_eq!(preview.actual, [120, 0, 0, 0]);
+    manual_preparation::save(
+        &app.application,
+        &current,
+        &dates,
+        &preview,
+        [150, 60, 0, 0],
+        &[],
+    )
+    .unwrap();
+    let report = generate(&mut app, &[1]);
+    assert_eq!(report.completed(), 1, "{:?}", report.entries);
+    let pdf = path(&app, &next, 1);
+    let extracted = pdf_extract::extract_text(&pdf).unwrap();
+    assert!(extracted.contains("29/04/2026 2.5"), "{extracted}");
+    assert!(extracted.contains("06/05/2026 1"), "{extracted}");
+    assert_eq!(
+        reconciliation::plan(&app.application, &current)
+            .unwrap()
+            .historical_reviews
+            .len(),
+        2
+    );
+    assert!(!path(&app, &prior, 1).exists());
+    assert_eq!(
+        conn.query_row("SELECT COUNT(*) FROM payroll_submissions", [], |row| row
+            .get::<_, i64>(0))
+            .unwrap(),
+        0
+    );
+}
+
+#[test]
+fn stage2a_unsent_amendment_keeps_reconciliation_baseline() {
+    use crate::payroll_evidence::reconciliation;
+    let (_dir, mut app, schedule) = fixture();
+    assert_eq!(generate(&mut app, &[1]).completed(), 1);
+    let record = app
+        .application
+        .payroll_timesheet_repository
+        .get_for_cycle_and_pa("2026/27", 1, 1)
+        .unwrap()
+        .unwrap();
+    let file = path(&app, &schedule, 1);
+    crate::payroll_snapshot_service::send_production_candidate(
+        &app.application.payroll_worked_item_repository,
+        record.id,
+        1,
+        "2026/27",
+        1,
+        &file,
+        "synthetic",
+        || Ok(()),
+    )
+    .unwrap();
+    let conn = db(&app);
+    let submission = crate::payroll_evidence::lifecycle::latest(&conn, record.id)
+        .unwrap()
+        .unwrap();
+    let before = reconciliation::changes(&app.application, &record)
+        .unwrap()
+        .signature;
+    save_feature2_hours(&app, 3.25);
+    assert_eq!(
+        reconciliation::changes(&app.application, &record)
+            .unwrap()
+            .signature,
+        before
+    );
+    assert_eq!(generate(&mut app, &[1]).completed(), 1);
+    crate::payroll_snapshot_service::verify_preview_or_test_attachment(
+        &app.application.payroll_worked_item_repository,
+        record.id,
+        &file,
+    )
+    .unwrap();
+    assert_eq!(
+        reconciliation::changes(&app.application, &record)
+            .unwrap()
+            .signature,
+        before
+    );
+    app.application
+        .payroll_timesheet_email_repository
+        .mark_sent(1, "2026/27", 1, "payslip", "synthetic settlement")
+        .unwrap();
+    assert_eq!(
+        crate::payroll_evidence::lifecycle::latest(&conn, record.id).unwrap(),
+        Some(submission)
+    );
+    assert_eq!(
+        reconciliation::changes(&app.application, &record)
+            .unwrap()
+            .signature,
+        before
+    );
+}
+
+#[test]
+fn stage2a_replacement_membership_and_partial_carry_follow_accepted_delivery() {
+    stage2a_replacement_outcome("rejected");
+    stage2a_replacement_outcome("accepted");
+    stage2a_replacement_outcome("review-accepted");
+}
+
+#[test]
+fn stage2a_uncertain_replacement_keeps_baseline_and_reserves_carry() {
+    stage2a_replacement_outcome("uncertain");
+}
+
+fn stage2a_replacement_outcome(outcome: &str) {
+    use crate::payroll_snapshot_service::{publish_candidate, CandidatePublication};
+    use crate::{
+        payroll_evidence::{lifecycle, reconciliation},
+        timesheet_delivery as delivery,
+    };
+    let (_dir, mut app, schedule) = fixture();
+    let mut conn = db(&app);
+    let repos = &app.application.payroll_timesheet_repository;
+    let record = repos
+        .get_for_cycle_and_pa("2026/27", 1, 1)
+        .unwrap()
+        .unwrap();
+    conn.execute_batch("INSERT INTO payroll_schedules(payroll_year,cycle_number,first_week_commencing,latest_posting_date,pay_date,created_at) VALUES
+            ('2026/27',2,'04/03/2026','20/03/2026','30/03/2026','synthetic'),
+            ('2026/27',3,'29/04/2026','20/05/2026','30/05/2026','synthetic')").unwrap();
+    let origin = repos.insert("2026/27", 2, 1, None, "synthetic").unwrap();
+    repos.insert("2026/27", 3, 1, None, "synthetic").unwrap();
+    let later = repos
+        .get_for_cycle_and_pa("2026/27", 3, 1)
+        .unwrap()
+        .unwrap();
+    conn.execute("INSERT INTO payroll_corrections(id,personal_assistant_id,origin_payroll_timesheet_id,evidence_key,minutes,reason,created_at) VALUES(1,1,?1,'synthetic',-90,'synthetic','synthetic')", [origin]).unwrap();
+    conn.execute(
+        "UPDATE timesheets SET worked_minutes=30,end_time='2026-04-02T09:30:00' WHERE id=1",
+        [],
+    )
+    .unwrap();
+    assert_eq!(generate(&mut app, &[1]).completed(), 1);
+    let file = path(&app, &schedule, 1);
+    // Reproduce a previously accepted partial application from the former
+    // zero-floor policy, without editing any accepted ledger row.
+    let worked = &app.application.payroll_worked_item_repository;
+    let mut items = worked.get_snapshot_items(record.id).unwrap();
+    for item in items.iter_mut().filter(|item| item.source_type == "carry_correction") {
+        item.worked_minutes = -30;
+    }
+    conn.execute(
+        "UPDATE payroll_correction_applications SET minutes=-30 WHERE payroll_timesheet_id=?1",
+        [record.id],
+    ).unwrap();
+    let first_weeks: [i64; 4] = app.application.payroll_timesheet_repository.get_weeks(record.id)
+        .unwrap().iter().map(|week| week.id).collect::<Vec<_>>().try_into().unwrap();
+    publish_candidate(worked, CandidatePublication {
+        payroll_timesheet_id: record.id,
+        items: &items,
+        final_pdf_path: &file,
+        generated_at: "synthetic historical candidate",
+        previous_cycle_minutes: -30,
+        week_ids: &first_weeks,
+        week_totals_minutes: &[0; 4],
+    }, |path| { std::fs::write(path, b"%PDF synthetic original partial application")?; Ok(()) }).unwrap();
+    crate::payroll_snapshot_service::send_production_candidate(
+        &app.application.payroll_worked_item_repository,
+        record.id,
+        1,
+        "2026/27",
+        1,
+        &file,
+        "synthetic",
+        || Ok(()),
+    )
+    .unwrap();
+    let original_bytes = std::fs::read(&file).unwrap();
+    let first = lifecycle::latest(&conn, record.id).unwrap().unwrap();
+    let initial = lifecycle::items(&conn, first).unwrap();
+    assert!(initial.iter().any(|item| item.timesheet_id == Some(1)));
+    // Represent a partial deduction on the original accepted submission.
+    assert_eq!(
+        conn.query_row(
+            "SELECT minutes FROM payroll_submission_corrections WHERE submission_id=?1",
+            [first],
+            |r| r.get::<_, i64>(0)
+        )
+        .unwrap(),
+        -30
+    );
+    let remaining = || {
+        reconciliation::outstanding(&app.application, &later)
+            .unwrap()
+            .iter()
+            .map(|c| c.minutes)
+            .sum::<i64>()
+    };
+    assert_eq!(remaining(), -60);
+    save_feature2_hours(&app, 0.75);
+    conn.execute(
+        "INSERT OR REPLACE INTO payroll_correction_applications VALUES(?1,1,-45)",
+        [record.id],
+    )
+    .unwrap();
+    let weeks: [i64; 4] = app
+        .application
+        .payroll_timesheet_repository
+        .get_weeks(record.id)
+        .unwrap()
+        .iter()
+        .map(|week| week.id)
+        .collect::<Vec<_>>()
+        .try_into()
+        .unwrap();
+    publish_candidate(
+        &app.application.payroll_worked_item_repository,
+        CandidatePublication {
+            payroll_timesheet_id: record.id,
+            items: &[],
+            final_pdf_path: &file,
+            generated_at: "synthetic",
+            previous_cycle_minutes: -45,
+            week_ids: &weeks,
+            week_totals_minutes: &[45, 0, 0, 0],
+        },
+        |path| {
+            std::fs::write(path, b"%PDF synthetic replacement")?;
+            Ok(())
+        },
+    )
+    .unwrap();
+    assert_eq!(
+        remaining(),
+        -60,
+        "generation preserves the submitted deduction"
+    );
+    let competing = if outcome == "uncertain" {
+        let repo = &app.application.payroll_worked_item_repository;
+        conn.execute(
+            "INSERT INTO payroll_correction_applications VALUES(?1,1,-60)",
+            [later.id],
+        )
+        .unwrap();
+        let path = app
+            .application
+            .context
+            .environment
+            .data_dir
+            .join("synthetic-competing.pdf");
+        publish_candidate(
+            repo,
+            CandidatePublication {
+                payroll_timesheet_id: later.id,
+                items: &[],
+                final_pdf_path: &path,
+                generated_at: "synthetic",
+                previous_cycle_minutes: -60,
+                week_ids: &[0; 4],
+                week_totals_minutes: &[0; 4],
+            },
+            |path| {
+                std::fs::write(path, b"%PDF synthetic competing candidate")?;
+                Ok(())
+            },
+        )
+        .unwrap();
+        let intent = delivery::capture(&conn, later.id).unwrap();
+        let pdf = delivery::bytes(&conn, &intent).unwrap();
+        Some((intent, pdf))
+    } else {
+        None
+    };
+    let intent = delivery::capture(&conn, record.id).unwrap();
+    let bytes = delivery::bytes(&conn, &intent).unwrap();
+    let delivery::Claim::Claimed(attempt) = delivery::claim(
+        &conn,
+        &intent,
+        "fictional@example.test",
+        "synthetic",
+        &bytes,
+    )
+    .unwrap() else {
+        panic!("expected new replacement claim")
+    };
+    delivery::finish(
+        &conn,
+        attempt,
+        match outcome {
+            "review-accepted" => "uncertain",
+            "rejected" => "confirmed_not_sent",
+            _ => outcome,
+        },
+        "synthetic transport",
+    )
+    .unwrap();
+    if outcome == "review-accepted" {
+        delivery::review(
+            &mut conn,
+            attempt,
+            "accepted",
+            "synthetic acceptance evidence",
+        )
+        .unwrap();
+    }
+    drop(conn);
+    let conn = db(&app); // Reopen the database after transport/review.
+    if outcome == "rejected" {
+        // A posting left by an older build cannot make an unsent version authoritative.
+        let version = crate::timesheet_amendments::latest_generated(&conn, record.id)
+            .unwrap()
+            .unwrap();
+        conn.execute(
+            "INSERT INTO payroll_corrections(personal_assistant_id,origin_payroll_timesheet_id,evidence_key,minutes,reason,created_at)
+             VALUES(1,?1,?2,11,'synthetic historical draft posting','synthetic')",
+            params![record.id, format!("version:{}:week:1|synthetic|0", version.document)],
+        ).unwrap();
+        assert_eq!(remaining(), -60, "hold a historical posting tied to an unsent document");
+    }
+    let accepted = matches!(outcome, "accepted" | "review-accepted");
+    let latest = lifecycle::latest(&conn, record.id).unwrap().unwrap();
+    assert_eq!(latest != first, accepted, "{outcome}");
+    let membership = lifecycle::submitted_items(&conn, record.id, &app.application).unwrap();
+    assert_eq!(
+        membership.iter().any(|item| item.timesheet_id == Some(1)),
+        !accepted,
+        "{outcome}"
+    );
+    assert_eq!(
+        remaining(),
+        match outcome {
+            "uncertain" => 0,
+            "rejected" => -60,
+            _ => -45,
+        }
+    );
+    assert_eq!(
+        remaining(),
+        match outcome {
+            "uncertain" => 0,
+            "rejected" => -60,
+            _ => -45,
+        }
+    );
+    assert_eq!(
+        lifecycle::submitted_correction_minutes(&conn, 1, None).unwrap(),
+        if accepted { -45 } else { -30 }
+    );
+    let accepted_weeks = lifecycle::weeks(&conn, latest).unwrap();
+    assert_eq!(
+        accepted_weeks[0].worked_hours,
+        if accepted { 0.75 } else { 0.0 }
+    );
+    assert_eq!(
+        conn.query_row(
+            "SELECT pdf_bytes FROM payroll_submissions WHERE id=?1",
+            [first],
+            |r| r.get::<_, Vec<u8>>(0),
+        )
+        .unwrap(),
+        original_bytes
+    );
+    if let Some((competing, pdf)) = competing {
+        let error = delivery::claim(
+            &conn,
+            &competing,
+            "fictional@example.test",
+            "synthetic competing send",
+            &pdf,
+        )
+        .err()
+        .expect("competing correction must be held");
+        assert!(error.to_string().contains("another unresolved attempt"));
+        let mut reopened = db(&app);
+        delivery::review(
+            &mut reopened,
+            attempt,
+            "confirmed_not_sent",
+            "synthetic rejection evidence",
+        )
+        .unwrap();
+        assert_eq!(remaining(), -60);
+        assert_eq!(
+            lifecycle::latest(&reopened, record.id).unwrap(),
+            Some(first)
+        );
+    }
+    if accepted {
+        assert_eq!(
+            conn.query_row(
+                "SELECT supersedes_id FROM payroll_submissions WHERE id=?1",
+                [latest],
+                |r| r.get::<_, i64>(0)
+            )
+            .unwrap(),
+            first
+        );
+        assert!(matches!(
+            delivery::claim(
+                &conn,
+                &intent,
+                "fictional@example.test",
+                "synthetic",
+                &bytes
+            )
+            .unwrap(),
+            delivery::Claim::AlreadyAccepted
+        ));
+        let resend = delivery::capture(&conn, record.id).unwrap();
+        assert!(resend.resend);
+        let delivery::Claim::Claimed(retry) = delivery::claim(
+            &conn,
+            &resend,
+            "fictional@example.test",
+            "synthetic resend",
+            &bytes,
+        )
+        .unwrap() else {
+            panic!("expected resend claim")
+        };
+        delivery::finish(&conn, retry, "accepted", "synthetic transport").unwrap();
+        assert_eq!(lifecycle::latest(&conn, record.id).unwrap(), Some(latest));
+    }
+}
+
+#[test]
+fn stage2a_business_examples_week_one_and_pdf() {
+    use crate::payroll_evidence::{lifecycle, reconciliation};
+
+    let (dir, mut app, previous) = fixture();
+    let conn = db(&app);
+    app.application.context.config.payroll.rounding_minutes = 15;
+    app.application.context.config.payroll.rounding_direction = "Up".into();
+    let record = |cycle, pa| {
+        conn.query_row(
+            "SELECT id FROM payroll_timesheets WHERE cycle_number=?1 AND personal_assistant_id=?2",
+            params![cycle, pa],
+            |r| r.get::<_, i64>(0),
+        )
+        .unwrap()
+    };
+    for (pa, week, hours) in [(1, 3, 16), (1, 4, 24), (2, 4, 16)] {
+        app.application
+            .payroll_worked_item_repository
+            .set_manual_adjustment(
+                record(1, pa),
+                &crate::payroll_worked_item_repository::ManualHoursAdjustment {
+                    week_number: week,
+                    adjustment_minutes: 60 * hours,
+                    reason: Some("estimate".into()),
+                },
+                "synthetic estimate",
+            )
+            .unwrap();
+    }
+    assert_eq!(generate(&mut app, &[1, 2]).completed(), 2);
+    for pa in [1, 2] {
+        crate::payroll_snapshot_service::send_production_candidate(
+            &app.application.payroll_worked_item_repository,
+            record(1, pa),
+            pa,
+            "2026/27",
+            1,
+            &path(&app, &previous, pa),
+            "synthetic",
+            || Ok(()),
+        )
+        .unwrap();
+    }
+    let schedule = feature2_cycle_schedule(&app, 2, "29/04/2026", "30/05/2026");
+    app.operational_payroll_period.select(&schedule, None);
+    let folder = &app.application.context.config.folders.csv_import;
+    crate::private_storage::ensure_private_dir(folder).unwrap();
+    let csv = concat!(
+        "Fictional Hours Keeper export\nPA,Start,End,Break,Worked,Rate,Amount,Note\n",
+        "PA1 Test,15/04/2026 at 00:00:00,15/04/2026 at 20:53:00,0h 00m,20h 53m,12,0,synthetic\n",
+        "PA1 Test,22/04/2026 at 00:00:00,22/04/2026 at 22:53:00,0h 00m,22h 53m,12,0,synthetic\n",
+        "PA1 Test,29/04/2026 at 00:00:00,29/04/2026 at 13:00:00,0h 00m,13h 00m,12,0,synthetic\n",
+        "PA1 Test,30/04/2026 at 00:00:00,30/04/2026 at 13:00:00,0h 00m,13h 00m,12,0,synthetic\n",
+        "PA2 Test,29/04/2026 at 00:00:00,29/04/2026 at 12:00:00,0h 00m,12h 00m,12,0,synthetic\n",
+    );
+    for name in ["actuals.csv", "duplicate-export.csv"] {
+        crate::private_storage::write_new(&folder.join(name), csv.as_bytes()).unwrap();
+        assert!(!app.application.import_csv().unwrap().has_failures());
+    }
+    let repo = &app.application.payroll_timesheet_repository;
+    let historic1 = repo.get_for_cycle_and_pa("2026/27", 1, 1).unwrap().unwrap();
+    let historic2 = repo.get_for_cycle_and_pa("2026/27", 1, 2).unwrap().unwrap();
+    let changes = reconciliation::changes(&app.application, &historic1).unwrap();
+    assert_eq!(
+        changes
+            .components
+            .iter()
+            .map(|part| part.minutes)
+            .collect::<Vec<_>>(),
+        [300, -60]
+    );
+    assert!(changes.requires_complete);
+    assert!(
+        reconciliation::carry(&app.application, &historic1, &changes.signature, false).is_err()
+    );
+    reconciliation::carry(&app.application, &historic1, &changes.signature, true).unwrap();
+    let ctx = egui::Context::default();
+    let mut preparation = crate::payroll_timesheet_screen::PayrollTimesheetScreen::new();
+    crate::gui_controls::acceptance::frame(
+        &ctx,
+        vec![],
+        |ui| preparation.show(ui, &app.application, &schedule, "synthetic next cycle"),
+        "Save PA1 Test",
+    );
+    assert_eq!(generate(&mut app, &[1]).completed(), 1);
+    let positive = path(&app, &schedule, 1);
+    let pdf = pdf_extract::extract_text(&positive).unwrap();
+    assert!(pdf.contains("29/04/2026 30"), "{pdf}");
+    assert!(pdf.contains("(Info only +4.00 hours)"), "{pdf}");
+    // Empty historical CSV coverage requires explicit confirmation.
+    let changes = reconciliation::changes(&app.application, &historic2).unwrap();
+    assert_eq!(
+        changes
+            .components
+            .iter()
+            .map(|part| part.minutes)
+            .collect::<Vec<_>>(),
+        [-960]
+    );
+    assert!(changes.requires_complete);
+    assert!(
+        reconciliation::carry(&app.application, &historic2, &changes.signature, false).is_err()
+    );
+    reconciliation::carry(&app.application, &historic2, &changes.signature, true).unwrap();
+    assert!(reconciliation::carry(&app.application, &historic2, &changes.signature, true).is_err());
+    assert_eq!(generate(&mut app, &[1, 2]).completed(), 2);
+    assert_eq!(generate(&mut app, &[1, 2]).completed(), 2);
+    let negative = path(&app, &schedule, 2);
+    let pdf = pdf_extract::extract_text(&negative).unwrap();
+    assert!(pdf.contains("29/04/2026 -4"), "{pdf}");
+    assert!(pdf.contains("(Info only -16.00 hours)"), "{pdf}");
+    for (pa, expected_minutes) in [(1, 1800), (2, -240)] {
+        let file = path(&app, &schedule, pa);
+        let id = record(2, pa);
+        crate::payroll_snapshot_service::send_production_candidate(
+            &app.application.payroll_worked_item_repository,
+            id,
+            pa,
+            "2026/27",
+            2,
+            &file,
+            "synthetic",
+            || Ok(()),
+        )
+        .unwrap();
+        let reopened = db(&app);
+        let sid = lifecycle::latest(&reopened, id).unwrap().unwrap();
+        assert_eq!(
+            lifecycle::weeks(&reopened, sid).unwrap()[0].worked_hours * 60.0,
+            expected_minutes as f64
+        );
+    }
+    // A notes amendment exercises generation and replacement of an accepted
+    // negative Week 1 through the ordinary delivery ledger.
+    use crate::timesheet_delivery as delivery;
+    let id = record(2, 2);
+    let accepted = lifecycle::latest(&conn, id).unwrap().unwrap();
+    let accepted_pdf = std::fs::read(&negative).unwrap();
+    let repo = &app.application.payroll_timesheet_repository;
+    let mut replacement = repo.get_for_cycle_and_pa("2026/27", 2, 2).unwrap().unwrap();
+    replacement.payroll_department_notes = "Synthetic replacement note".into();
+    let weeks = repo.get_weeks(id).unwrap();
+    let saved = app
+        .application
+        .payroll_worked_item_repository
+        .get_manual_adjustments(id)
+        .unwrap();
+    let adjustments = weeks
+        .iter()
+        .map(|week| {
+            saved
+                .iter()
+                .find(|adjustment| adjustment.week_number == week.week_number)
+                .cloned()
+                .unwrap_or(
+                    crate::payroll_worked_item_repository::ManualHoursAdjustment {
+                        week_number: week.week_number,
+                        adjustment_minutes: 0,
+                        reason: None,
+                    },
+                )
+        })
+        .collect::<Vec<_>>();
+    repo.save_preparation_atomically(
+        &replacement,
+        &weeks,
+        &repo.get_public_holidays(id).unwrap(),
+        &repo.get_annual_leave(id).unwrap(),
+        &adjustments,
+        "synthetic replacement",
+    )
+    .unwrap();
+    assert_eq!(generate(&mut app, &[2]).completed(), 1);
+    let replacement_text = pdf_extract::extract_text(&negative).unwrap();
+    assert!(replacement_text.contains("29/04/2026 -4"));
+    assert!(replacement_text.contains("(Info only -16.00 hours)"));
+    for outcome in ["confirmed_not_sent", "uncertain"] {
+        let intent = delivery::capture(&conn, id).unwrap();
+        let attachment = delivery::bytes(&conn, &intent).unwrap();
+        let delivery::Claim::Claimed(attempt) = delivery::claim(
+            &conn,
+            &intent,
+            "fictional@example.test",
+            outcome,
+            &attachment,
+        )
+        .unwrap() else {
+            panic!("replacement should have a new attempt")
+        };
+        delivery::finish(&conn, attempt, outcome, "synthetic transport result").unwrap();
+        assert_eq!(lifecycle::latest(&conn, id).unwrap(), Some(accepted));
+        if outcome == "uncertain" {
+            let mut reviewed = db(&app);
+            delivery::review(
+                &mut reviewed,
+                attempt,
+                "accepted",
+                "synthetic acceptance evidence",
+            )
+            .unwrap();
+            let submitted = lifecycle::latest(&reviewed, id).unwrap().unwrap();
+            assert_ne!(submitted, accepted);
+            assert_eq!(
+                lifecycle::weeks(&reviewed, submitted).unwrap()[0].worked_hours,
+                -4.0
+            );
+            assert_eq!(
+                reviewed
+                    .query_row(
+                        "SELECT supersedes_id FROM payroll_submissions WHERE id=?1",
+                        [submitted],
+                        |row| row.get::<_, i64>(0),
+                    )
+                    .unwrap(),
+                accepted
+            );
+        }
+    }
+    assert_eq!(
+        conn.query_row(
+            "SELECT pdf_bytes FROM payroll_submissions WHERE id=?1",
+            [accepted],
+            |row| row.get::<_, Vec<u8>>(0),
+        )
+        .unwrap(),
+        accepted_pdf
+    );
+    assert_eq!(
+        conn.query_row(
+            "SELECT count(*) FROM payroll_submissions WHERE payroll_timesheet_id=?1",
+            [id],
+            |row| row.get::<_, i64>(0),
+        )
+        .unwrap(),
+        2
+    );
+    assert_eq!(
+        conn.query_row(
+            "SELECT count(*) FROM timesheet_amendment_versions WHERE payroll_timesheet_id=?1",
+            [id],
+            |row| row.get::<_, i64>(0),
+        )
+        .unwrap(),
+        2
+    );
+
+    // Rebuild the application and its repositories against the same disposable profile.
+    drop(app);
+    let mut app = DirectPaymentApp::new(
+        crate::payroll_timesheet_screen::tests::reopen_test_application(dir.path()),
+    );
+    let third = feature2_cycle_schedule(&app, 3, "27/05/2026", "30/06/2026");
+    app.operational_payroll_period.select(&third, None);
+    let ctx = egui::Context::default();
+    let mut preparation = crate::payroll_timesheet_screen::PayrollTimesheetScreen::new();
+    crate::gui_controls::acceptance::frame(
+        &ctx,
+        vec![],
+        |ui| preparation.show(ui, &app.application, &third, "synthetic next cycle"),
+        "Save PA1 Test",
+    );
+    assert_eq!(generate(&mut app, &[1, 2]).completed(), 2);
+    for pa in [1, 2] {
+        let result = db(&app).query_row("SELECT COALESCE(SUM(worked_hours),0) FROM payroll_timesheet_weeks WHERE payroll_timesheet_id=?1",
+            [record(3, pa)], |r| r.get::<_, f64>(0)).unwrap();
+        assert_eq!(result, 0.0);
+    }
+}
+
+fn historical_verification_fixture() -> (
+    crate::private_storage::PrivateTempDir,
+    DirectPaymentApp,
+    PayrollSchedule,
+) {
+    let (dir, app, schedule) = fixture();
+    // The standard fixture includes an unrelated April shift from an open
+    // preparation. Exclude it so only the submitted facts below are in scope.
+    db(&app)
+        .execute("DELETE FROM timesheets WHERE id=1", [])
+        .unwrap();
+    (dir, app, schedule)
+}
+
+fn historical_verification_period(
+    app: &DirectPaymentApp,
+    cycle: i64,
+    start: &str,
+) -> (
+    PayrollSchedule,
+    crate::payroll_timesheet_repository::PayrollTimesheet,
+) {
+    let schedule = feature2_cycle_schedule(app, cycle, start, start);
+    let repo = &app.application.payroll_timesheet_repository;
+    let id = repo.insert("2026/27", cycle, 1, None, "fictional").unwrap();
+    let start = crate::date_utils::parse_legacy(start).unwrap();
+    let dates = std::array::from_fn(|week| {
+        (start + chrono::Duration::weeks(week as i64))
+            .format("%d/%m/%Y")
+            .to_string()
+    });
+    repo.create_missing_weeks(id, &dates, &[0.; 4]).unwrap();
+    (
+        schedule,
+        repo.get_for_cycle_and_pa("2026/27", cycle, 1)
+            .unwrap()
+            .unwrap(),
+    )
+}
+
+fn historical_verification_import(app: &mut DirectPaymentApp, name: &str, rows: &[(&str, u32)]) {
+    let folder = &app.application.context.config.folders.csv_import;
+    crate::private_storage::ensure_private_dir(folder).unwrap();
+    let mut csv = String::from("Fictional export\nPA,Start,End,Break,Worked,Rate,Amount,Note\n");
+    for (day, minutes) in rows {
+        assert!(*minutes < 24 * 60);
+        csv.push_str(&format!(
+            "PA1 Test,{day} at 00:00:00,{day} at {:02}:{:02}:00,0h 00m,{}h {:02}m,12,0,fictional\n",
+            minutes / 60,
+            minutes % 60,
+            minutes / 60,
+            minutes % 60,
+        ));
+    }
+    crate::private_storage::write_new(&folder.join(name), csv.as_bytes()).unwrap();
+    let result = app.application.import_csv().unwrap();
+    assert!(!result.has_failures(), "{:?}", result.failure_messages);
+}
+
+fn historical_verification_submit(
+    app: &mut DirectPaymentApp,
+    schedule: &PayrollSchedule,
+    record: &crate::payroll_timesheet_repository::PayrollTimesheet,
+    estimates: &[i64],
+) -> i64 {
+    for (week, minutes) in estimates
+        .iter()
+        .copied()
+        .enumerate()
+        .filter(|(_, minutes)| *minutes != 0)
+    {
+        app.application
+            .payroll_worked_item_repository
+            .set_manual_adjustment(
+                record.id,
+                &crate::payroll_worked_item_repository::ManualHoursAdjustment {
+                    week_number: week as i64 + 1,
+                    adjustment_minutes: minutes,
+                    reason: Some("estimate".into()),
+                },
+                "fictional estimate",
+            )
+            .unwrap();
+    }
+    app.operational_payroll_period.select(schedule, None);
+    let result = generate(app, &[1]);
+    assert_eq!(result.completed(), 1, "{:?}", result.entries);
+    crate::payroll_snapshot_service::send_production_candidate(
+        &app.application.payroll_worked_item_repository,
+        record.id,
+        1,
+        "2026/27",
+        record.cycle_number,
+        &path(app, schedule, 1),
+        "fictional transport",
+        || Ok(()),
+    )
+    .unwrap();
+    crate::payroll_evidence::lifecycle::latest(&db(app), record.id)
+        .unwrap()
+        .unwrap()
+}
+
+fn historical_verification_calculate(
+    app: &DirectPaymentApp,
+    record: &crate::payroll_timesheet_repository::PayrollTimesheet,
+    start: &str,
+) -> crate::pay_rate_allocation::ReconciledPayrollHours {
+    let start = crate::date_utils::parse_legacy(start).unwrap();
+    crate::payroll_evidence::reconciliation::calculate(
+        &app.application,
+        record,
+        &std::array::from_fn(|week| start + chrono::Duration::weeks(week as i64)),
+        None,
+    )
+    .unwrap()
+}
+
+#[test]
+fn stage2a_historical_all_weeks_multiple_cycles_and_restart() {
+    use crate::payroll_evidence::{lifecycle, reconciliation};
+    let (dir, mut app, _) = historical_verification_fixture();
+    let (early, early_record) = historical_verification_period(&app, 2, "29/04/2026");
+    historical_verification_submit(&mut app, &early, &early_record, &[120]);
+    for (cycle, start) in [(3, "27/05/2026"), (4, "24/06/2026")] {
+        let (schedule, record) = historical_verification_period(&app, cycle, start);
+        historical_verification_submit(&mut app, &schedule, &record, &[]);
+    }
+    let (previous, previous_record) = historical_verification_period(&app, 5, "22/07/2026");
+    historical_verification_submit(&mut app, &previous, &previous_record, &[120, 120, 120, 240]);
+    let (current, current_record) = historical_verification_period(&app, 6, "19/08/2026");
+    for name in ["historical.csv", "repeat.csv"] {
+        historical_verification_import(
+            &mut app,
+            name,
+            &[
+                ("29/04/2026", 180),
+                ("22/07/2026", 173),
+                ("29/07/2026", 53),
+                ("05/08/2026", 180),
+                ("12/08/2026", 60),
+                ("19/08/2026", 60),
+            ],
+        );
+    }
+    let early_change = reconciliation::changes(&app.application, &early_record).unwrap();
+    assert_eq!(
+        early_change
+            .components
+            .iter()
+            .map(|c| c.minutes)
+            .collect::<Vec<_>>(),
+        [60]
+    );
+    let previous_change = reconciliation::changes(&app.application, &previous_record).unwrap();
+    assert_eq!(
+        previous_change
+            .components
+            .iter()
+            .map(|c| c.minutes)
+            .collect::<Vec<_>>(),
+        [60, -60, 60, -180]
+    );
+    // The two deductions are proposals pending confirmation; the credits can post automatically.
+    assert!(previous_change.requires_complete);
+    assert!(reconciliation::carry(
+        &app.application,
+        &previous_record,
+        &previous_change.signature,
+        false
+    )
+    .is_err());
+    let held = historical_verification_calculate(&app, &current_record, "19/08/2026");
+    assert_eq!(held.week_totals_minutes, [240, 0, 0, 0]);
+    let previous_change = reconciliation::changes(&app.application, &previous_record).unwrap();
+    reconciliation::carry(
+        &app.application,
+        &previous_record,
+        &previous_change.signature,
+        true,
+    )
+    .unwrap();
+    assert!(
+        !reconciliation::changes(&app.application, &previous_record)
+            .unwrap()
+            .changed
+    );
+    let current_hours = historical_verification_calculate(&app, &current_record, "19/08/2026");
+    assert_eq!(current_hours.previous_cycle_minutes, -60);
+    assert_eq!(current_hours.week_totals_minutes, [0; 4]);
+    assert_eq!(
+        current_hours
+            .snapshot_items
+            .iter()
+            .filter(|item| item.timesheet_id.is_some())
+            .map(|item| item.work_date.as_deref().unwrap())
+            .collect::<Vec<_>>(),
+        ["2026-08-19"]
+    );
+    app.operational_payroll_period.select(&current, None);
+    assert_eq!(generate(&mut app, &[1]).completed(), 1);
+    drop(app);
+    let mut app = DirectPaymentApp::new(
+        crate::payroll_timesheet_screen::tests::reopen_test_application(dir.path()),
+    );
+    app.operational_payroll_period.select(&current, None);
+    assert_eq!(generate(&mut app, &[1]).completed(), 1);
+    let pdf = pdf_extract::extract_text(&path(&app, &current, 1)).unwrap();
+    assert!(pdf.contains("(Info only -1.00 hours)"));
+    let sid = historical_verification_submit(&mut app, &current, &current_record, &[]);
+    assert_eq!(
+        lifecycle::weeks(&db(&app), sid).unwrap()[0].worked_hours,
+        0.0
+    );
+    let (_, next) = historical_verification_period(&app, 7, "16/09/2026");
+    assert_eq!(
+        historical_verification_calculate(&app, &next, "16/09/2026").week_totals_minutes,
+        [0; 4]
+    );
+    assert!(reconciliation::outstanding(&app.application, &next)
+        .unwrap()
+        .is_empty());
+}
+
+#[test]
+fn stage2a_historical_december_early_submission_and_january_reconciliation() {
+    use crate::payroll_evidence::reconciliation;
+    let (_dir, mut app, _) = historical_verification_fixture();
+    let (december, record) = historical_verification_period(&app, 10, "07/12/2026");
+    // The schedule normally posts on the 18th. This fixture submits on the 11th,
+    // retaining actual work already known and estimates for the other three weeks.
+    let conn = db(&app);
+    conn.execute(
+        "UPDATE payroll_schedules SET latest_posting_date='18/12/2026' WHERE id=?1",
+        [december.id],
+    )
+    .unwrap();
+    reconciliation::TEST_TODAY
+        .with(|clock| clock.set(Some(chrono::NaiveDate::from_ymd_opt(2026, 12, 11).unwrap())));
+    historical_verification_import(&mut app, "early-december.csv", &[("08/12/2026", 120)]);
+    let sid = historical_verification_submit(&mut app, &december, &record, &[0, 120, 120, 180]);
+    // The delivery fixture uses the host timestamp; set the synthetic historical fact.
+    conn.execute(
+        "UPDATE payroll_submissions SET submitted_at='2026-12-11 12:00:00' WHERE id=?1",
+        [sid],
+    )
+    .unwrap();
+    assert!(reconciliation::changes(&app.application, &record)
+        .unwrap()
+        .components
+        .is_empty());
+    reconciliation::TEST_TODAY
+        .with(|clock| clock.set(Some(chrono::NaiveDate::from_ymd_opt(2027, 1, 8).unwrap())));
+    let (january, current) = historical_verification_period(&app, 11, "04/01/2027");
+    historical_verification_import(
+        &mut app,
+        "january-export.csv",
+        &[
+            ("08/12/2026", 120),
+            ("14/12/2026", 173),
+            ("21/12/2026", 60),
+            ("28/12/2026", 60),
+            ("04/01/2027", 60),
+        ],
+    );
+    let changed = reconciliation::changes(&app.application, &record).unwrap();
+    assert_eq!(
+        changed
+            .components
+            .iter()
+            .map(|c| c.minutes)
+            .collect::<Vec<_>>(),
+        [60, -60, -120]
+    );
+    assert!(changed.requires_complete);
+    assert!(reconciliation::carry(&app.application, &record, &changed.signature, false).is_err());
+    reconciliation::carry(&app.application, &record, &changed.signature, true).unwrap();
+    let payable = historical_verification_calculate(&app, &current, "04/01/2027");
+    assert_eq!(payable.previous_cycle_minutes, -120);
+    assert_eq!(payable.week_totals_minutes, [-60, 0, 0, 0]);
+    app.operational_payroll_period.select(&january, None);
+    assert_eq!(generate(&mut app, &[1]).completed(), 1);
+    let pdf = pdf_extract::extract_text(&path(&app, &january, 1)).unwrap();
+    assert!(pdf.contains("04/01/2027 -1"));
+    assert!(pdf.contains("(Info only -2.00 hours)"));
+    reconciliation::TEST_TODAY.with(|clock| clock.set(None));
+}
+
+#[test]
+fn stage2a_historical_opaque_legacy_requires_review() {
+    use crate::payroll_evidence::reconciliation;
+    let (_dir, mut app, _) = historical_verification_fixture();
+    let (_, old) = historical_verification_period(&app, 2, "29/04/2026");
+    let (_, current) = historical_verification_period(&app, 6, "19/08/2026");
+    app.application
+        .payroll_timesheet_email_repository
+        .mark_sent(1, "2026/27", 2, "payslip", "fictional legacy settlement")
+        .unwrap();
+    db(&app).execute("UPDATE payroll_timesheet_weeks SET worked_hours=2 WHERE payroll_timesheet_id=?1 AND week_number=1", [old.id]).unwrap();
+    historical_verification_import(&mut app, "ambiguous.csv", &[("29/04/2026", 180)]);
+    reconciliation::sync_settled_corrections(&app.application, 1).unwrap();
+    let plan = reconciliation::plan(&app.application, &current).unwrap();
+    assert_eq!(plan.historical_reviews.len(), 1);
+    assert!(plan.work.is_empty());
+    assert!(reconciliation::outstanding(&app.application, &current)
+        .unwrap()
+        .is_empty());
+}
+
+#[test]
+fn stage2a_historical_zero_net_still_submits_both_components() {
+    use crate::payroll_evidence::{lifecycle, reconciliation};
+    let (_dir, mut app, _) = historical_verification_fixture();
+    let (old, old_record) = historical_verification_period(&app, 2, "29/04/2026");
+    historical_verification_submit(&mut app, &old, &old_record, &[120, 120]);
+    let (current, record) = historical_verification_period(&app, 3, "27/05/2026");
+    historical_verification_import(
+        &mut app,
+        "cancel.csv",
+        &[("29/04/2026", 180), ("06/05/2026", 60), ("27/05/2026", 120)],
+    );
+    let change = reconciliation::changes(&app.application, &old_record).unwrap();
+    assert_eq!(
+        change
+            .components
+            .iter()
+            .map(|c| c.minutes)
+            .collect::<Vec<_>>(),
+        [60, -60]
+    );
+    reconciliation::carry(&app.application, &old_record, &change.signature, true).unwrap();
+    let hours = historical_verification_calculate(&app, &record, "27/05/2026");
+    assert_eq!(hours.week_totals_minutes, [120, 0, 0, 0]);
+    assert_eq!(hours.previous_cycle_minutes, 0);
+    let sid = historical_verification_submit(&mut app, &current, &record, &[]);
+    let conn = db(&app);
+    assert_eq!(lifecycle::weeks(&conn, sid).unwrap()[0].worked_hours, 2.0);
+    let mut stmt = conn.prepare(
+        "SELECT minutes FROM payroll_submission_corrections WHERE submission_id=?1 ORDER BY minutes",
+    ).unwrap();
+    let applications = stmt
+        .query_map([sid], |row| row.get::<_, i64>(0))
+        .unwrap()
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .unwrap();
+    assert_eq!(applications, [-60, 60]);
+    let (_, next) = historical_verification_period(&app, 4, "24/06/2026");
+    assert!(reconciliation::outstanding(&app.application, &next)
+        .unwrap()
+        .is_empty());
+}
+
+#[test]
+fn stage2a_historical_new_csv_in_ordinary_week_uses_payable_minutes() {
+    use crate::payroll_evidence::reconciliation;
+    let (_dir, mut app, _) = historical_verification_fixture();
+    app.application.context.config.payroll.rounding_minutes = 15;
+    app.application.context.config.payroll.rounding_direction = "Up".into();
+    let (old, old_record) = historical_verification_period(&app, 2, "29/04/2026");
+    historical_verification_import(&mut app, "ordinary.csv", &[("29/04/2026", 120)]);
+    historical_verification_submit(&mut app, &old, &old_record, &[]);
+    let (_, current) = historical_verification_period(&app, 6, "19/08/2026");
+    historical_verification_import(
+        &mut app,
+        "late-ordinary.csv",
+        &[("30/04/2026", 53), ("19/08/2026", 60)],
+    );
+    let changes = reconciliation::changes(&app.application, &old_record).unwrap();
+    assert_eq!(changes.components.len(), 1);
+    assert_eq!(changes.components[0].date.as_deref(), Some("2026-04-30"));
+    assert_eq!(changes.components[0].minutes, 60);
+    assert!(!changes.requires_complete);
+    reconciliation::carry(&app.application, &old_record, &changes.signature, false).unwrap();
+    let hours = historical_verification_calculate(&app, &current, "19/08/2026");
+    assert_eq!(hours.previous_cycle_minutes, 60);
+    assert_eq!(hours.week_totals_minutes, [120, 0, 0, 0]);
 }

@@ -39,6 +39,7 @@ impl LeaveYear {
 struct CycleEvidence {
     record: PayrollTimesheet,
     weeks: Vec<PayrollTimesheetWeek>,
+    submitted_work_weeks: Option<Vec<PayrollTimesheetWeek>>,
     leave: Vec<PayrollTimesheetAnnualLeave>,
     items: Vec<WorkedItemSnapshot>,
     sent: bool,
@@ -70,14 +71,29 @@ impl Evidence {
             .contracted_hours_repository
             .get_all_for_personal_assistant(pa_id)?;
         let schedules = application.payroll_schedule_repository.get_all()?;
+        let db = crate::payroll_evidence::open(application)?;
+        use crate::payroll_evidence::lifecycle;
         let mut cycles = Vec::new();
         for record in application
             .payroll_timesheet_repository
             .get_all_for_personal_assistant(pa_id)?
         {
-            let weeks = application
-                .payroll_timesheet_repository
-                .get_weeks(record.id)?;
+            let weeks = application.payroll_timesheet_repository.get_weeks(record.id)?;
+            let submission = lifecycle::latest(&db, record.id)?;
+            let (submitted_work_weeks, items, snapshot_state) = if let Some(id) = submission {
+                (
+                    Some(lifecycle::weeks(&db, id)?),
+                    lifecycle::items(&db, id)?,
+                    Some(SnapshotState::Submitted),
+                )
+            } else {
+                (
+                    None,
+                    application.payroll_worked_item_repository.get_snapshot_items(record.id)?,
+                    application.payroll_worked_item_repository.snapshot_metadata(record.id)?
+                        .map(|metadata| metadata.state),
+                )
+            };
             let period_end = schedules
                 .iter()
                 .find(|schedule| {
@@ -91,16 +107,10 @@ impl Evidence {
                 .get_for_pa_and_cycle(pa_id, &record.payroll_year, record.cycle_number, "payslip")?
                 .is_some_and(|status| status.is_definitively_sent());
             cycles.push(CycleEvidence {
-                leave: application
-                    .payroll_timesheet_repository
-                    .get_annual_leave(record.id)?,
-                items: application
-                    .payroll_worked_item_repository
-                    .get_snapshot_items(record.id)?,
-                snapshot_state: application
-                    .payroll_worked_item_repository
-                    .snapshot_metadata(record.id)?
-                    .map(|metadata| metadata.state),
+                leave: application.payroll_timesheet_repository.get_annual_leave(record.id)?,
+                submitted_work_weeks,
+                items,
+                snapshot_state,
                 record,
                 weeks,
                 sent,
@@ -402,7 +412,8 @@ fn calculate(evidence: &Evidence, year: LeaveYear, today: NaiveDate) -> Result<S
         if !cycle.sent {
             continue;
         }
-        let relevant_week = cycle.weeks.iter().any(|week| {
+        let worked_weeks = cycle.submitted_work_weeks.as_deref().unwrap_or(&cycle.weeks);
+        let relevant_week = worked_weeks.iter().any(|week| {
             parse_employment_date(&week.week_commencing)
                 .is_some_and(|start| (0..7).any(|day| qualifying(start + Duration::days(day))))
         });
@@ -415,7 +426,7 @@ fn calculate(evidence: &Evidence, year: LeaveYear, today: NaiveDate) -> Result<S
             let mut boundary_exclusions = Vec::new();
             let window_start = year.start().max(employment_start);
             let window_end = year.end().min(employment_end).min(today);
-            for week in &cycle.weeks {
+            for week in worked_weeks {
                 let week_start = checked_date(&week.week_commencing, "week commencing")?;
                 let week_end = week_start + Duration::days(6);
                 if window_start > window_end
@@ -577,7 +588,7 @@ fn calculate(evidence: &Evidence, year: LeaveYear, today: NaiveDate) -> Result<S
         } else {
             // No trustworthy submitted membership: do not reinterpret raw shifts
             // or treat a current editable preparation total as settled evidence.
-            if cycle.weeks.iter().any(|week| {
+            if worked_weeks.iter().any(|week| {
                 week.worked_hours > 0.0
                     && parse_employment_date(&week.week_commencing).is_some_and(|start| {
                         (0..7).any(|day| qualifying(start + Duration::days(day)))

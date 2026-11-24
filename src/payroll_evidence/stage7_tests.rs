@@ -581,3 +581,404 @@ fn stage7_new_financial_obligation_invalidates_displayed_source_authorisation() 
         30
     );
 }
+
+fn stage2b_imported_rounding_edit(initial: i64, edited: i64, accepted: i64) -> Vec<i64> {
+    let (dir, mut app) = setup();
+    app.context.config.payroll.rounding_minutes = 15;
+    app.context.config.payroll.rounding_direction = "Up".into();
+    let (record, weeks) = period(&app, 1, "2026-04-01", 1);
+    import(
+        &app, &dir,
+        &format!("Example PA,2 April 2026 at 09:00:00,2 April 2026 at 11:00:00,0h 00m,1h {:02}m,£12,£12,fixture", initial - 60),
+    );
+    submit(&app, &record, &weeks);
+    settle(&app, &record);
+    let connection = open(&app).unwrap();
+    let submission = lifecycle::latest(&connection, record.id).unwrap().unwrap();
+    let before = lifecycle::items(&connection, submission).unwrap();
+    assert_eq!(before[0].worked_minutes, accepted);
+    let edit = Change::Edit(TimesheetCorrectionProposal {
+        start_time: "2026-04-02T09:00".into(),
+        end_time: "2026-04-02T11:00".into(),
+        break_minutes: 0,
+        worked_minutes: edited,
+        notes: Some("fictional edit".into()),
+    });
+    let changed = change(&app, 1, &edit, true).unwrap();
+    assert_eq!(changed.entry.raw.worked_minutes, initial);
+    assert_eq!(changed.entry.effective.worked_minutes, edited);
+    reconciliation::sync_settled_corrections(&app, 1).unwrap();
+    assert_eq!(
+        connection
+            .query_row("SELECT count(*) FROM payroll_corrections", [], |r| r
+                .get::<_, i64>(0))
+            .unwrap(),
+        0
+    );
+    assert_eq!(lifecycle::items(&connection, submission).unwrap(), before);
+    reconciliation::changes(&app, &record)
+        .unwrap()
+        .components
+        .into_iter()
+        .map(|c| c.minutes)
+        .collect()
+}
+
+#[test]
+fn stage2b_retained_62_to_63_same_rounding_bucket_is_zero() {
+    assert_eq!(
+        stage2b_imported_rounding_edit(62, 63, 75),
+        Vec::<i64>::new()
+    );
+}
+
+#[test]
+fn stage2b_retained_62_to_76_crosses_one_rounding_boundary() {
+    assert_eq!(stage2b_imported_rounding_edit(62, 76, 75), [15]);
+}
+
+#[test]
+fn stage2b_amended_source_less_week_reduction_cannot_post_automatically() {
+    let (dir, app) = setup();
+    let (record, weeks) = period(&app, 1, "2026-04-01", 1);
+    import(&app, &dir, ROW);
+    submit(&app, &record, &weeks);
+    // A downward saved total takes the accepted amended-week comparison path.
+    save_amendment(&app, &record, 0.75);
+    submit(&app, &record, &weeks);
+    let db = open(&app).unwrap();
+    let submission = lifecycle::latest(&db, record.id).unwrap().unwrap();
+    let retained = lifecycle::items(&db, submission).unwrap();
+    assert_eq!(
+        lifecycle::weeks(&db, submission).unwrap()[0].worked_hours,
+        0.75
+    );
+    change(&app, 1, &Change::Exclude, true).unwrap();
+    let proposal = reconciliation::changes(&app, &record).unwrap();
+    assert_eq!(proposal.components.len(), 1);
+    assert_eq!(proposal.components[0].minutes, -45);
+    assert!(proposal.components[0].source.is_none());
+    reconciliation::sync_settled_corrections(&app, 1).unwrap();
+    assert_eq!(lifecycle::items(&db, submission).unwrap(), retained);
+    assert_eq!(
+        db.query_row("SELECT count(*) FROM payroll_corrections", [], |row| row.get::<_, i64>(0)).unwrap(),
+        0,
+        "source approval must not silently post a source-less weekly deduction; requires_complete={}",
+        proposal.requires_complete
+    );
+    assert!(proposal.requires_complete);
+    assert!(reconciliation::carry(&app, &record, &proposal.signature, false).is_err());
+    reconciliation::carry(&app, &record, &proposal.signature, true).unwrap();
+    let (next, dates) = period(&app, 2, "2026-04-29", 1);
+    let payable = reconciliation::calculate(&app, &next, &dates, None).unwrap();
+    assert_eq!(payable.week_totals_minutes, [-45, 0, 0, 0]);
+    assert_eq!(payable.previous_cycle_minutes, -45);
+    submit(&app, &next, &dates);
+    let (later, dates) = period(&app, 3, "2026-05-27", 1);
+    assert_eq!(
+        reconciliation::calculate(&app, &later, &dates, None).unwrap().week_totals_minutes,
+        [0; 4],
+    );
+}
+
+#[test]
+fn stage2b_date_move_at_equal_payable_minutes_preserves_source_identity() {
+    let (dir, app) = setup();
+    let (record, weeks) = period(&app, 1, "2026-04-01", 1);
+    import(&app, &dir, ROW);
+    submit(&app, &record, &weeks);
+    settle(&app, &record);
+    let db = open(&app).unwrap();
+    let submission = lifecycle::latest(&db, record.id).unwrap().unwrap();
+    let original = lifecycle::items(&db, submission).unwrap();
+    let moved = Change::Edit(TimesheetCorrectionProposal {
+        start_time: "2026-04-10T09:00".into(),
+        end_time: "2026-04-10T10:00".into(),
+        break_minutes: 0,
+        worked_minutes: 60,
+        notes: Some("fictional date move".into()),
+    });
+    change(&app, 1, &moved, true).unwrap();
+    let proposal = reconciliation::changes(&app, &record).unwrap();
+    let (next, dates) = period(&app, 2, "2026-04-29", 1);
+    let before_carry = reconciliation::calculate(&app, &next, &dates, None).unwrap();
+    assert_eq!(before_carry.week_totals_minutes, [0; 4]);
+    if !proposal.components.is_empty() {
+        reconciliation::carry(&app, &record, &proposal.signature, proposal.requires_complete).unwrap();
+    }
+    let result = reconciliation::calculate(&app, &next, &dates, None).unwrap();
+    assert_eq!(result.week_totals_minutes, [0; 4], "{}", proposal.description);
+    import(&app, &dir, "Example PA,11 April 2026 at 09:00:00,11 April 2026 at 09:53:00,0h 00m,0h 53m,£12,£12,new work");
+    stage2b_review_separate_export_rows(&app);
+    let proposal = reconciliation::changes(&app, &record).unwrap();
+    assert_eq!(proposal.components.len(), 1);
+    assert_eq!(proposal.components[0].minutes, 60);
+    assert!(!proposal.requires_complete);
+    reconciliation::carry(&app, &record, &proposal.signature, false).unwrap();
+    let result = reconciliation::calculate(&app, &next, &dates, None).unwrap();
+    assert_eq!(result.week_totals_minutes, [60, 0, 0, 0]);
+    assert_eq!(lifecycle::items(&db, submission).unwrap(), original);
+}
+
+#[test]
+fn stage2b_amendment_does_not_reround_unchanged_paid_shift_when_actual_arrives() {
+    let (dir, mut app) = setup();
+    app.context.config.payroll.rounding_minutes = 15;
+    app.context.config.payroll.rounding_direction = "Up".into();
+    let (mut record, weeks) = period(&app, 1, "2026-04-01", 1);
+    import(&app, &dir, "Example PA,2 April 2026 at 09:00:00,2 April 2026 at 10:02:00,0h 00m,1h 02m,£12,£12,original");
+    submit(&app, &record, &weeks);
+    record.payroll_department_notes = "fictional amendment".into();
+    save_amendment(&app, &record, 1.25);
+    submit(&app, &record, &weeks);
+    let db = open(&app).unwrap();
+    let sid = lifecycle::latest(&db, record.id).unwrap().unwrap();
+    let original = lifecycle::items(&db, sid).unwrap();
+    assert_eq!(original[0].worked_minutes, 75);
+    app.context.config.payroll.rounding_direction = "Down".into();
+    assert!(reconciliation::changes(&app, &record)
+        .unwrap()
+        .components
+        .is_empty());
+    // Repeat the original row alongside the new row so import can distinguish
+    // an addition from a possible replacement of an omitted row.
+    import(&app, &dir, concat!(
+        "Example PA,2 April 2026 at 09:00:00,2 April 2026 at 10:02:00,0h 00m,1h 02m,£12,£12,original\n",
+        "Example PA,3 April 2026 at 09:00:00,3 April 2026 at 09:31:00,0h 00m,0h 31m,£12,£6,late",
+    ));
+    assert_eq!(app.get_timesheets().unwrap().len(), 2);
+    assert_eq!(lifecycle::items(&db, sid).unwrap(), original);
+    let proposed = reconciliation::changes(&app, &record).unwrap();
+    assert_eq!(
+        proposed
+            .components
+            .iter()
+            .map(|c| c.minutes)
+            .collect::<Vec<_>>(),
+        [30]
+    );
+}
+
+#[test]
+fn stage2b_partial_csv_estimate_deduction_stays_held_until_confirmation() {
+    let (dir, app) = setup();
+    let (record, weeks) = period(&app, 1, "2026-04-01", 1);
+    app.payroll_worked_item_repository
+        .set_manual_adjustment(
+            record.id,
+            &crate::payroll_worked_item_repository::ManualHoursAdjustment {
+                week_number: 1,
+                adjustment_minutes: 180,
+                reason: Some("estimate".into()),
+            },
+            "fictional estimate",
+        )
+        .unwrap();
+    submit(&app, &record, &weeks);
+    import(&app, &dir, ROW);
+    reconciliation::sync_settled_corrections(&app, 1).unwrap();
+    let db = open(&app).unwrap();
+    let proposal = reconciliation::changes(&app, &record).unwrap();
+    assert!(proposal.requires_complete);
+    assert_eq!(
+        proposal
+            .components
+            .iter()
+            .map(|c| c.minutes)
+            .collect::<Vec<_>>(),
+        [-120]
+    );
+    assert!(reconciliation::carry(&app, &record, &proposal.signature, false).is_err());
+    assert_eq!(
+        db.query_row("SELECT count(*) FROM payroll_corrections", [], |r| r
+            .get::<_, i64>(0))
+            .unwrap(),
+        0
+    );
+    let (next, dates) = period(&app, 2, "2026-04-29", 1);
+    assert_eq!(
+        reconciliation::calculate(&app, &next, &dates, None)
+            .unwrap()
+            .week_totals_minutes,
+        [0; 4]
+    );
+    reconciliation::carry(&app, &record, &proposal.signature, true).unwrap();
+    let hours = reconciliation::calculate(&app, &next, &dates, None).unwrap();
+    assert_eq!(hours.week_totals_minutes, [-120, 0, 0, 0]);
+    assert_eq!(hours.previous_cycle_minutes, -120);
+}
+
+#[test]
+fn stage2b_changed_csv_assignee_keeps_separate_sources_and_accepted_owner() {
+    let (dir, app) = setup();
+    let (original_record, dates) = period(&app, 1, "2026-04-01", 1);
+    import(&app, &dir, ROW);
+    submit(&app, &original_record, &dates);
+    let db = open(&app).unwrap();
+    let submission = lifecycle::latest(&db, original_record.id).unwrap().unwrap();
+    let accepted = lifecycle::items(&db, submission).unwrap();
+    import(&app, &dir, &ROW.replace("Example PA", "Other PA"));
+    let current = load(&app).unwrap();
+    assert_eq!(
+        current.iter().map(|e| (e.pa, e.id)).collect::<Vec<_>>(),
+        [(1, 1), (2, 2)]
+    );
+    assert!(groups(&current).unwrap().is_empty());
+    assert_eq!(lifecycle::items(&db, submission).unwrap(), accepted);
+    assert!(reconciliation::changes(&app, &original_record)
+        .unwrap()
+        .components
+        .is_empty());
+    let (other, _) = period(&app, 1, "2026-04-01", 2);
+    let result = reconciliation::calculate(&app, &other, &dates, None).unwrap();
+    assert_eq!(result.snapshot_items.len(), 1);
+    assert_eq!(result.snapshot_items[0].timesheet_id, Some(2));
+}
+
+#[test]
+fn stage2b_manual_totals_and_signed_carry_are_already_payable() {
+    let (dir, mut app) = setup();
+    app.context.config.payroll.rounding_direction = "Down".into();
+    let (old, _) = period(&app, 1, "2026-04-01", 1);
+    settle(&app, &old);
+    let (next, dates) = period(&app, 2, "2026-04-29", 1);
+    let db = open(&app).unwrap();
+    db.execute("INSERT INTO payroll_corrections(id,personal_assistant_id,origin_payroll_timesheet_id,evidence_key,minutes,reason,created_at) VALUES(1,1,?1,'fixture',-7,'fictional correction','fixture')", [old.id]).unwrap();
+    import(&app, &dir, &format!("{ROW}\nExample PA,30 April 2026 at 09:00:00,30 April 2026 at 09:34:00,0h 00m,0h 34m,£12,£12,fictional"));
+    let preview = super::manual_preparation::preview(&app, &next, &dates).unwrap();
+    assert_eq!(preview.actual, [30, 0, 0, 0]);
+    assert_eq!(
+        preview.totals([67, 0, 0, 0], &[1]).unwrap(),
+        ([60, 0, 0, 0], -7)
+    );
+    super::manual_preparation::save(&app, &next, &dates, &preview, [67, 0, 0, 0], &[1]).unwrap();
+    let hours = reconciliation::calculate_for_generation(&app, &next, &dates, None).unwrap();
+    assert_eq!(hours.week_totals_minutes, [60, 0, 0, 0]);
+    assert_eq!(hours.previous_cycle_minutes, -7);
+    assert_eq!(
+        hours
+            .snapshot_items
+            .iter()
+            .map(|item| item.worked_minutes)
+            .collect::<Vec<_>>(),
+        [30, 37, -7]
+    );
+}
+
+
+fn stage2b_rounding_matrix(step: i64, direction: &str) {
+    for sign in [-1, 1] {
+        let (dir, mut app) = setup();
+        app.context.config.payroll.rounding_minutes = step;
+        app.context.config.payroll.rounding_direction = direction.into();
+        let (record, weeks) = period(&app, 1, "2026-04-01", 1);
+        let remainder = if direction == "Up" { 1 } else { step - 1 };
+        let raw = 2 * step + remainder;
+        let paid = if direction == "Up" && step > 1 { 3 * step } else { raw / step * step };
+        let csv_duration = format!("{}h {:02}m", raw / 60, raw % 60);
+        import(&app, &dir, &format!(
+            "Example PA,2 April 2026 at 09:00:00,2 April 2026 at 13:00:00,0h 00m,{csv_duration},£12,£12,first
+Example PA,3 April 2026 at 09:00:00,3 April 2026 at 13:00:00,0h 00m,{csv_duration},£12,£12,second",
+        ));
+        submit(&app, &record, &weeks);
+        settle(&app, &record);
+        let db = open(&app).unwrap();
+        let submission = lifecycle::latest(&db, record.id).unwrap().unwrap();
+        let original = lifecycle::items(&db, submission).unwrap();
+        assert_eq!(original.len(), 2);
+        assert!(original.iter().all(|item| item.worked_minutes == paid));
+        assert_eq!(
+            lifecycle::weeks(&db, submission).unwrap()[0].worked_hours,
+            (2 * paid) as f64 / 60.0,
+        );
+
+        app.context.config.payroll.rounding_direction =
+            if direction == "Up" { "Down" } else { "Up" }.into();
+        assert!(reconciliation::changes(&app, &record).unwrap().components.is_empty());
+        app.context.config.payroll.rounding_direction = direction.into();
+
+        let revise = |minutes| edit("2026-04-02T09:00", "2026-04-02T13:00", minutes);
+        let same_bucket = match (direction, step) {
+            (_, 1) => raw,
+            ("Up", _) => raw + 1,
+            _ => raw - 1,
+        };
+        change(&app, 1, &revise(same_bucket), true).unwrap();
+        assert!(reconciliation::changes(&app, &record).unwrap().components.is_empty());
+        change(&app, 1, &revise(raw + sign * step), true).unwrap();
+        let proposed = reconciliation::changes(&app, &record).unwrap();
+        assert_eq!(proposed.components.len(), 1);
+        assert_eq!(proposed.components[0].minutes, sign * step);
+        assert!(!proposed.requires_complete);
+        reconciliation::carry(&app, &record, &proposed.signature, false).unwrap();
+        let (next, next_weeks) = period(&app, 2, "2026-04-29", 1);
+        let calculate_next = || reconciliation::calculate(&app, &next, &next_weeks, None).unwrap();
+        assert_eq!(calculate_next().week_totals_minutes, [sign * step, 0, 0, 0]);
+        assert_eq!(calculate_next().week_totals_minutes, [sign * step, 0, 0, 0]);
+        submit(&app, &next, &next_weeks);
+        app.context.config.payroll.rounding_direction =
+            if direction == "Up" { "Down" } else { "Up" }.into();
+        assert!(reconciliation::changes(&app, &record).unwrap().components.is_empty());
+        let (later, later_weeks) = period(&app, 3, "2026-05-27", 1);
+        assert_eq!(
+            reconciliation::calculate(&app, &later, &later_weeks, None).unwrap().week_totals_minutes,
+            [0; 4],
+        );
+        assert!(reconciliation::changes(&app, &record).unwrap().components.is_empty());
+        assert_eq!(lifecycle::items(&db, submission).unwrap(), original);
+    }
+}
+
+macro_rules! rounding_matrix_case {
+    ($name:ident, $step:literal, $direction:literal) => {
+        #[test]
+        fn $name() {
+            stage2b_rounding_matrix($step, $direction);
+        }
+    };
+}
+
+rounding_matrix_case!(stage2b_round_01_up, 1, "Up");
+rounding_matrix_case!(stage2b_round_01_down, 1, "Down");
+rounding_matrix_case!(stage2b_round_05_up, 5, "Up");
+rounding_matrix_case!(stage2b_round_05_down, 5, "Down");
+rounding_matrix_case!(stage2b_round_10_up, 10, "Up");
+rounding_matrix_case!(stage2b_round_10_down, 10, "Down");
+rounding_matrix_case!(stage2b_round_15_up, 15, "Up");
+rounding_matrix_case!(stage2b_round_15_down, 15, "Down");
+rounding_matrix_case!(stage2b_round_30_up, 30, "Up");
+rounding_matrix_case!(stage2b_round_30_down, 30, "Down");
+rounding_matrix_case!(stage2b_round_60_up, 60, "Up");
+rounding_matrix_case!(stage2b_round_60_down, 60, "Down");
+
+
+#[test]
+fn stage2b_moved_shift_does_not_undo_accepted_downward_amendment() {
+    let (dir, app) = setup();
+    let (record, weeks) = period(&app, 1, "2026-04-01", 1);
+    import(&app, &dir, ROW);
+    submit(&app, &record, &weeks);
+    save_amendment(&app, &record, 0.75);
+    submit(&app, &record, &weeks);
+
+    change(&app, 1, &edit("2026-04-10T09:00", "2026-04-10T10:00", 60), true).unwrap();
+    assert!(reconciliation::changes(&app, &record).unwrap().components.is_empty());
+    import(&app, &dir, "Example PA,11 April 2026 at 09:00:00,11 April 2026 at 09:53:00,0h 00m,0h 53m,£12,£12,new work");
+    stage2b_review_separate_export_rows(&app);
+    let (next, dates) = period(&app, 2, "2026-04-29", 1);
+    assert_eq!(
+        reconciliation::calculate(&app, &next, &dates, None).unwrap().week_totals_minutes,
+        [60, 0, 0, 0],
+    );
+}
+
+fn stage2b_review_separate_export_rows(app: &Application) {
+    // The fixture reuses its export filename. The existing resolver must
+    // explicitly confirm that both linked rows describe separate shifts.
+    let db = open(app).unwrap();
+    let evidence = load(app).unwrap();
+    let unresolved = preflight(&db, &evidence).unwrap().unresolved;
+    assert_eq!(unresolved.len(), 1);
+    assert_eq!(unresolved[0].candidates.len(), 2);
+    approve_group(&db, &evidence, &[(unresolved[0].fingerprint.clone(), "separate".into())]).unwrap();
+}

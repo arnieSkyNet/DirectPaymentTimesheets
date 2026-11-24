@@ -343,18 +343,31 @@ fn add_raw_item(
 }
 
 /// Round payable duration only; source intervals and raw minutes stay untouched.
+#[cfg(test)]
 pub(crate) fn payable_minutes(
     minutes: i64,
     settings: &crate::config::PayrollConfig,
 ) -> Result<i64, PayRateAllocationError> {
-    let increment = settings.rounding_minutes;
+    round_minutes(minutes, settings.rounding_minutes, &settings.rounding_direction)
+}
+
+pub(crate) fn payable_minutes_on(
+    minutes: i64,
+    date: chrono::NaiveDate,
+    settings: &crate::config::PayrollConfig,
+) -> Result<i64, PayRateAllocationError> {
+    let (increment, direction) = settings.rounding_on(date);
+    round_minutes(minutes, increment, direction)
+}
+
+fn round_minutes(minutes: i64, increment: i64, direction: &str) -> Result<i64, PayRateAllocationError> {
     if minutes < 0 || ![1, 5, 10, 15, 30, 60].contains(&increment) {
         return Err(PayRateAllocationError(
             "Invalid payroll duration or rounding increment".into(),
         ));
     }
     let remainder = minutes % increment;
-    match settings.rounding_direction.as_str() {
+    match direction {
         "Down" => Ok(minutes - remainder),
         "Up" => minutes
             .checked_add(if remainder == 0 {
@@ -378,10 +391,10 @@ pub fn add_evidence(
     late: bool,
     settings: &crate::config::PayrollConfig,
 ) -> Result<(), PayRateAllocationError> {
-    let minutes = payable_minutes(evidence.minutes, settings)?;
     let date = evidence
         .date()
         .map_err(|e| PayRateAllocationError(e.to_string()))?;
+    let minutes = payable_minutes_on(evidence.minutes, date, settings)?;
     let rate = rates
         .get_for_personal_assistant_as_of(evidence.pa, date)
         .map_err(repository_error)?

@@ -1287,7 +1287,7 @@ dependencies = [
 
 [[package]]
 name = "direct_payment_timesheets"
-version = "1.0.7"
+version = "1.0.8"
 dependencies = [
  "chrono",
  "csv",

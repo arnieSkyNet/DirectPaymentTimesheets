@@ -13,10 +13,17 @@ static PROFILE: OnceLock<PathBuf> = OnceLock::new();
 static HELD: OnceLock<Vec<File>> = OnceLock::new();
 thread_local! { static ROOT_SCOPE: Cell<bool> = const { Cell::new(false) }; }
 
-pub fn root() -> PathBuf {
-    // Molly-only development profile. Neither runtime environment variables nor
-    // current directory can redirect it to existing production data.
-    PathBuf::from(r"C:\Users\Wizdom\AppData\Local\DirectPaymentTimesheets-v107-development")
+fn root() -> io::Result<PathBuf> {
+    // On Windows this queries the OS Local AppData known folder. Keep the
+    // existing isolated profile name so existing development data stays put.
+    let local = dirs::data_local_dir()
+        .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "Local AppData is unavailable"))?;
+    if !local.is_absolute() || !local.starts_with(r"C:\") {
+        return Err(io::Error::other(
+            "Development profile must be on the verified C: volume",
+        ));
+    }
+    Ok(local.join("DirectPaymentTimesheets-v107-development"))
 }
 
 fn confined(root: &Path, path: &Path) -> bool {
@@ -165,12 +172,7 @@ pub fn initialise() -> io::Result<PathBuf> {
             "Explicit isolated launch required; no home override allowed",
         ));
     }
-    let root = root();
-    if !root.is_absolute() || !root.starts_with(r"C:\") {
-        return Err(io::Error::other(
-            "Development profile must be on the verified C: volume",
-        ));
-    }
+    let root = root()?;
     crate::private_storage::check_path(&root)?;
     let fresh = match std::fs::symlink_metadata(&root) {
         Err(e) if e.kind() == io::ErrorKind::NotFound => {
@@ -250,13 +252,13 @@ mod tests {
     use super::*;
     #[test]
     fn development_path_isolation_rejects_escape_and_streams() {
-        let root = root();
+        let root = root().unwrap();
         assert!(confined(&root, &root.join("database.sqlite")));
         for path in [
             PathBuf::from("database.sqlite"),
             root.clone(),
             root.join("../database.sqlite"),
-            root.with_file_name("molly-v107-development-other")
+            root.with_file_name("isolated-development-other")
                 .join("database.sqlite"),
             root.join("database.sqlite:stream"),
             PathBuf::from(r"C:\Users\Public\database.sqlite"),
@@ -267,7 +269,7 @@ mod tests {
     }
     #[test]
     fn development_folders_and_credentials_start_isolated() {
-        let root = root();
+        let root = root().unwrap();
         let config = initial_config(&root);
         assert!(
             config.email.smtp_host.is_empty()
@@ -317,10 +319,9 @@ mod tests {
             );
             return;
         }
-        // Molly's general Temp directory has an unrelated modify ACE. Keep that
-        // legitimate refusal: use a new private fixture under the reviewed local
-        // profile parent, never change Temp's ACL or bypass an intermediate.
-        let fixture = crate::private_storage::tempdir_in(root().parent().unwrap()).unwrap();
+        // Use a private fixture under the same Local AppData parent as the
+        // development profile. The system Temp directory can have broader ACLs.
+        let fixture = crate::private_storage::tempdir_in(root().unwrap().parent().unwrap()).unwrap();
         let root = fixture.path().to_path_buf();
         let database = root.join("database.sqlite");
         // The separately approved production root policy also admits this safe

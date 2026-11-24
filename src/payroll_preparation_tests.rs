@@ -427,7 +427,7 @@ fn historical_review_has_priority_but_completed_review_returns_to_longest_servin
     screen.load(&app, &schedule, "period").unwrap();
     assert_eq!(screen.selected_pa, Some(1));
     let record = screen.weeks[0].0.id;
-    assert!(screen.review_ui.blocks_preparation(record));
+    assert!(!screen.review_ui.blocks_preparation(record));
     let review = screen
         .review_ui
         .preparation_plan(record)
@@ -456,9 +456,23 @@ fn historical_review_has_priority_but_completed_review_returns_to_longest_servin
 #[test]
 fn submitted_discrepancy_is_prioritised_without_overwriting_saved_hours_on_load() {
     let (_dir, app, schedule, mut screen) = two_pa_preparation();
-    app.payroll_timesheet_email_repository
-        .mark_sent(1, "2026/27", 6, "timesheet", "2026-09-04T10:00:00Z")
-        .unwrap();
+    let record = screen.weeks.iter().find(|(record, _, _)| record.personal_assistant_id == 1).unwrap().0.clone();
+    let weeks = app.payroll_timesheet_repository.get_weeks(record.id).unwrap();
+    let ids = std::array::from_fn(|index| weeks[index].id);
+    let pdf = app.context.environment.data_dir.join("fictional-accepted-zero.pdf");
+    crate::payroll_snapshot_service::publish_candidate(
+        &app.payroll_worked_item_repository,
+        crate::payroll_snapshot_service::CandidatePublication {
+            payroll_timesheet_id: record.id, items: &[], final_pdf_path: &pdf,
+            generated_at: "synthetic", previous_cycle_minutes: 0,
+            week_ids: &ids, week_totals_minutes: &[0; 4],
+        },
+        |path| { std::fs::write(path, b"%PDF synthetic accepted zero")?; Ok(()) },
+    ).unwrap();
+    crate::payroll_snapshot_service::send_production_candidate(
+        &app.payroll_worked_item_repository, record.id, 1, &record.payroll_year,
+        record.cycle_number, &pdf, "synthetic", || Ok(()),
+    ).unwrap();
     setup_connection(&app).execute_batch("INSERT INTO timesheets(id,personal_assistant_id,pa_name,start_time,end_time,break_minutes,worked_minutes,hourly_rate,amount) VALUES (1,1,'Active Test','2026-08-11T09:00','2026-08-11T10:00',0,60,12,12);").unwrap();
     screen.load(&app, &schedule, "period").unwrap();
     assert_eq!(screen.selected_pa, Some(1));

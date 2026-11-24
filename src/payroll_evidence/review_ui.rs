@@ -5,6 +5,7 @@ pub struct ReviewUi {
     complete: HashSet<(i64, String)>,
     cached: std::collections::HashMap<i64, ReviewData>,
     error: String,
+    manual: std::collections::HashMap<i64, super::manual_preparation::Editor>,
     historical_rows: std::collections::HashMap<i64, Vec<HistoricalRow>>,
 }
 const INCLUDED: &str = "Already included in previous payroll";
@@ -19,6 +20,7 @@ struct HistoricalRow {
 struct ReviewData {
     stage: Stage,
     replacement: bool,
+    manual_saved: bool,
     plan: Option<reconciliation::Plan>,
     change: Option<reconciliation::Changes>,
     audit: Vec<String>,
@@ -31,13 +33,19 @@ impl ReviewUi {
         duplicates: bool,
         preflight: &Preflight,
     ) -> Result<()> {
+        self.cached.remove(&record.id);
         let db = open(app)?;
         let stage = lifecycle::stage(&db, record)?;
-        if stage == Stage::Editable && !duplicates {
-            reconciliation::sync_settled_corrections(app, record.personal_assistant_id)?;
-        }
+        let manual_saved = stage == Stage::Editable
+            && super::manual_preparation::latest(&db, record.id)?.is_some();
         let plan = if stage == Stage::Editable && !duplicates {
-            Some(reconciliation::plan_prepared(app, record, preflight)?)
+            let plan = reconciliation::plan_prepared(app, record, preflight)?;
+            if !manual_saved {
+                reconciliation::sync_settled_corrections(app, record.personal_assistant_id)?;
+                Some(reconciliation::plan_prepared(app, record, preflight)?)
+            } else {
+                Some(plan)
+            }
         } else {
             None
         };
@@ -46,32 +54,33 @@ impl ReviewUi {
         } else {
             None
         };
-        if let Some(plan) = &plan {
-            let rows = self.historical_rows.entry(record.id).or_default();
-            rows.retain(|row| {
-                row.saved.is_some()
-                    || plan
-                        .historical_reviews
+        let rows = self.historical_rows.entry(record.id).or_default();
+        let reviews = plan
+            .as_ref()
+            .map_or(&[][..], |plan| plan.historical_reviews.as_slice());
+        rows.retain(|row| {
+            reviews
+                .iter()
+                .any(|review| review.same_evidence(&row.review))
+                || (row.saved.is_some()
+                    && !reviews
                         .iter()
-                        .any(|review| review.evidence.key() == row.review.evidence.key())
-            });
-            for review in &plan.historical_reviews {
-                if !rows
-                    .iter()
-                    .any(|row| row.review.evidence.key() == review.evidence.key())
-                {
-                    rows.push(HistoricalRow {
-                        review: review.clone(),
-                        saved: None,
-                        height: 0.0,
-                    });
-                }
+                        .any(|review| review.evidence.key() == row.review.evidence.key()))
+        });
+        for review in reviews {
+            if !rows.iter().any(|row| row.review.same_evidence(review)) {
+                rows.push(HistoricalRow {
+                    review: review.clone(),
+                    saved: None,
+                    height: 0.0,
+                });
             }
         }
         self.cached.insert(
             record.id,
             ReviewData {
                 stage,
+                manual_saved,
                 replacement: stage == Stage::Editable
                     && lifecycle::latest(&db, record.id)?.is_some(),
                 plan,
@@ -91,7 +100,7 @@ impl ReviewUi {
                 || d.plan
                     .as_ref()
                     .is_some_and(|p| !p.historical_reviews.is_empty() || !p.notices.is_empty())
-                || d.change.as_ref().is_some_and(|c| c.changed)
+                || d.change.as_ref().is_some_and(|c| c.changed || c.blocked)
         })
     }
     pub fn refresh_audit(&mut self,app:&Application,record:&crate::payroll_timesheet_repository::PayrollTimesheet)->Result<()> {
@@ -102,12 +111,69 @@ impl ReviewUi {
         self.cached.get(&id).is_some_and(|d|matches!(d.stage,Stage::Submitted|Stage::Settled))
     }
     pub fn blocks_preparation(&self, id: i64) -> bool {
-        self.cached.get(&id).is_some_and(|d| {
-            d.plan
-                .as_ref()
-                .is_some_and(|p| !p.historical_reviews.is_empty())
+        self.cached.get(&id).is_some_and(|data| {
+            data.manual_saved
         })
     }
+
+    pub(crate) fn manual_dirty(&self, record: i64) -> bool {
+        self.manual.get(&record).is_some_and(|editor| editor.dirty)
+    }
+
+    pub(crate) fn discard_manual(&mut self, record: i64) {
+        self.manual.remove(&record);
+    }
+
+    pub(crate) fn show_manual(
+        &mut self,
+        ui: &mut egui::Ui,
+        app: &Application,
+        record: &crate::payroll_timesheet_repository::PayrollTimesheet,
+    ) {
+        let Some(data) = self.cached.get(&record.id) else {
+            return;
+        };
+        if !data.plan.as_ref().is_some_and(|plan| {
+            !plan.overlap && (data.manual_saved || !plan.historical_reviews.is_empty())
+        }) {
+            return;
+        }
+        ui.group(|ui| {
+            ui.heading("Manual preparation — current period");
+            let label = if self.manual.contains_key(&record.id) {
+                "Refresh manual preparation"
+            } else {
+                "Open manual preparation"
+            };
+            if ui.button(label).clicked() {
+                let dates = match reconciliation::period(app, record) {
+                    Ok((start, _)) => {
+                        std::array::from_fn(|index| start + chrono::Duration::weeks(index as i64))
+                    }
+                    Err(error) => {
+                        ui.label(error.to_string());
+                        return;
+                    }
+                };
+                match super::manual_preparation::Editor::open(app, record, &dates) {
+                    Ok(editor) => {
+                        self.manual.insert(record.id, editor);
+                        self.error.clear();
+                    }
+                    Err(error) => {
+                        self.manual.remove(&record.id);
+                        self.error = error.to_string();
+                    }
+                }
+            }
+            if let Some(editor) = self.manual.get_mut(&record.id) {
+                editor.show(ui, app, record);
+            } else if !self.error.is_empty() {
+                ui.colored_label(ui.visuals().error_fg_color, &self.error);
+            }
+        });
+    }
+
     pub fn show_pa(
         &mut self,
         ui: &mut egui::Ui,
@@ -133,6 +199,9 @@ impl ReviewUi {
                     if let Some(rows) = self.historical_rows.get_mut(&record.id) {
                         let remaining = rows.iter().filter(|row| row.saved.is_none()).count();
                         ui.strong(format!("Historical payment reviews remaining: {remaining}"));
+                        if remaining > 0 {
+                            ui.label("Current preparation and submission can continue with these historical entries held.");
+                        }
                         for row in rows {
                             egui::Frame::group(ui.style()).show(ui, |ui| {
                                 ui.set_min_height(row.height);
@@ -164,8 +233,11 @@ impl ReviewUi {
                 }
             }
             if matches!(stage,Stage::Submitted|Stage::Settled) {
-                ui.label("Amend hours directly, Save and regenerate the PDF. The latest regenerated saved version is used for subsequent reconciliation. Email sending is a separate explicit action.");
+                ui.label("Amend the hours, save, and generate a replacement PDF. Reconciliation uses the last accepted submission until the replacement is accepted.");
                 if let Some(change)=&data.change {
+                    if change.blocked {
+                        ui.label(&change.description);
+                    }
                     if change.changed {
                         egui::Frame::group(ui.style()).show(ui, |ui| {
                             ui.strong(format!("Carry-forward review — {name}"));

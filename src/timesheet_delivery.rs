@@ -111,6 +111,33 @@ pub struct Intent {
 pub fn blocked(db: &Connection, record: i64) -> rusqlite::Result<bool> {
     db.query_row("SELECT EXISTS(SELECT 1 FROM timesheet_delivery_attempts WHERE payroll_timesheet_id=?1 AND outcome='uncertain' AND resolved_at IS NULL)", [record], |r|r.get(0))
 }
+/// An unresolved first send holds the correction until acceptance or rejection.
+pub fn correction_reserved(db: &Connection, record: i64, correction: i64) -> rusqlite::Result<bool> {
+    db.query_row(
+        "SELECT EXISTS(
+            SELECT 1 FROM timesheet_attempt_corrections c
+            JOIN timesheet_delivery_attempts a ON a.id=c.attempt_id
+            WHERE c.correction_id=?1 AND a.payroll_timesheet_id<>?2
+              AND a.outcome='uncertain' AND a.resolved_at IS NULL
+        )",
+        params![correction, record],
+        |row| row.get(0),
+    )
+}
+
+pub fn work_reserved(db: &Connection, record: i64, source: &str, id: i64) -> rusqlite::Result<bool> {
+    db.query_row(
+        "SELECT EXISTS(
+            SELECT 1 FROM timesheet_attempt_items i
+            JOIN timesheet_delivery_attempts a ON a.id=i.attempt_id
+            WHERE a.payroll_timesheet_id<>?1 AND a.outcome='uncertain' AND a.resolved_at IS NULL
+              AND ((?2='imported' AND i.timesheet_id=?3) OR (?2='direct' AND i.direct_shift_id=?3))
+        )",
+        params![record, source, id],
+        |row| row.get(0),
+    )
+}
+
 pub fn capture(db: &Connection, record: i64) -> Result<Intent> {
     if blocked(db, record)? {
         return Err("Delivery uncertain — explicit review required".into());
@@ -259,6 +286,16 @@ fn finalise(db: &Connection, attempt: i64, accepted: bool, at: &str) -> Result<(
     }
     if !accepted {
         return Ok(());
+    }
+    // A document can enter the financial ledger only once. A resend has
+    // already returned above; replay of an accepted intent is handled at claim.
+    let already_submitted: bool = db.query_row(
+        "SELECT EXISTS(SELECT 1 FROM payroll_submissions WHERE document_id=?1)",
+        [document],
+        |row| row.get(0),
+    )?;
+    if already_submitted {
+        return Err("Replacement document already has an accepted submission".into());
     }
     db.execute("INSERT INTO payroll_submissions(payroll_timesheet_id,submitted_at,supersedes_id,pdf_path,pdf_sha256,pdf_bytes,payroll_department_notes,document_id) SELECT ?1,?2,(SELECT MAX(id) FROM payroll_submissions WHERE payroll_timesheet_id=?1),a.pdf_path,d.pdf_sha256,d.pdf_bytes,a.payroll_department_notes,d.id FROM timesheet_documents d JOIN timesheet_delivery_attempts a ON a.document_id=d.id WHERE a.id=?3",params![record,at,attempt])?;
     let submission = db.last_insert_rowid();

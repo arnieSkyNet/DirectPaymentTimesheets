@@ -502,8 +502,11 @@ impl PayrollSettingsScreen {
         payroll.public_holiday_region = self.public_holiday_region;
         payroll.frequency = self.frequency.clone();
 
-        payroll.rounding_minutes = self.rounding_minutes;
-        payroll.rounding_direction = self.rounding_direction.clone();
+        payroll.set_rounding(
+            self.rounding_minutes,
+            &self.rounding_direction,
+            crate::payroll_evidence::reconciliation::today(),
+        );
 
         payroll.start_of_workweek = self.start_of_workweek.clone();
 
@@ -1213,6 +1216,24 @@ mod save_consistency_tests {
             }
         }
     }
+    #[test]
+    fn revised_stage2c_rounding_saves_effective_date_and_previous_rule() {
+        let (dir, mut app) = crate::payroll_timesheet_screen::tests::test_application();
+        let effective = chrono::NaiveDate::from_ymd_opt(2026, 5, 28).unwrap();
+        crate::payroll_evidence::reconciliation::TEST_TODAY.with(|clock| clock.set(Some(effective)));
+        let mut screen = PayrollSettingsScreen::new();
+        screen.load(&app);
+        screen.rounding_minutes = 30;
+        screen.rounding_direction = "Down".into();
+        screen.save(&mut app);
+        crate::payroll_evidence::reconciliation::TEST_TODAY.with(|clock| clock.set(None));
+        assert_eq!(screen.status_message, "Payroll settings saved.");
+        let settings = crate::config::AppConfig::load(&dir.path().join("config.toml")).unwrap().payroll;
+        let round = crate::pay_rate_allocation::payable_minutes_on;
+        assert_eq!(round(62, effective.pred_opt().unwrap(), &settings).unwrap(), 75);
+        assert_eq!(round(62, effective, &settings).unwrap(), 60);
+    }
+
     #[test]
     fn failed_save_keeps_blue_button_and_visible_draft_then_retry_resets_it() {
         use crate::gui_controls::acceptance::{click, frame};

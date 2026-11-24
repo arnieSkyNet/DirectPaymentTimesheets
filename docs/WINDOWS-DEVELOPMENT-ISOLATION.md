@@ -1,4 +1,4 @@
-# TEST_WORKSTATION: isolated Windows v1.0.7 development
+# Isolated Windows development
 
 Update, 15 October 2026: the separately authorized production volume-root owner
 policy is shared by normal and development builds. The
@@ -8,10 +8,12 @@ SECURITY-HARDENING.md for the current production owner-admission requirements.
 
 This opt-in build runs the real application, Email Settings persistence and SMTP
 implementation with a fresh test database. It never imports production settings
-or payroll. It is specific to TEST_WORKSTATION's Windows user profile.
+or payroll.
 
-Fixed profile:
-`C:\Users\<account>\AppData\Local\DirectPaymentTimesheets-v107-development`
+The application uses the signed-in user's Windows Local AppData known folder
+on the verified C: volume and appends `DirectPaymentTimesheets-v107-development`.
+The existing directory name preserves access to an established development
+profile at that location.
 
 Its `config.toml`, `database.sqlite`, sidecars, internal directories and five
 business folders stay separate from `DirectPaymentTimesheets`. Initial settings

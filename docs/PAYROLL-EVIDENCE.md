@@ -1,7 +1,7 @@
 # Payroll evidence and reconciliation (schema 29)
 
 Schema29 is the historical evidence-migration milestone described here. Current
-scope is unreleased development v1.0.7 on `security/v1.0.7-phase1`, schema42. Published v1.0.6 packages remain separate;
+scope is the unreleased development package defined in [Cargo.toml](../Cargo.toml), using SQLite schema 42. Published v1.0.6 packages remain separate;
 see [downloads](../README.md#download).
 
 ## Sources and possible duplicates
@@ -19,7 +19,7 @@ Import retains conflicting same-start and within-file duplicate candidates inste
 Milestones are per PA/payroll period, not schedule-wide:
 
 1. Editable preparation uses current eligible evidence and explicit manual adjustments.
-2. A successfully emailed timesheet preserves submitted evidence. In v1.0.7/schema42, submitted and settled preparation allows explicit saved amendments without a Correct/Resubmit unlock. Generate the replacement PDF separately, then review and send it separately. Original submissions/documents remain retained; the latest successfully regenerated saved version is authoritative for later reconciliation. **Carry correction forward** remains an explicit audited decision for discrepancies requiring it, including completeness confirmation for aggregate reductions; unsaved preparation drafts must be saved/discarded first. See [timesheet amendments](TIMESHEET-AMENDMENTS.md).
+2. A successfully emailed timesheet preserves submitted evidence. In v1.0.7/schema42, submitted and settled preparation allows explicit saved amendments without a Correct/Resubmit unlock. Generate the replacement PDF separately, then review and send it separately. Original submissions and documents remain retained. Later reconciliation uses the latest definitively accepted submission, including acceptance established by audited delivery review. **Carry correction forward** remains an explicit audited decision for discrepancies requiring it, including completeness confirmation for aggregate reductions; unsaved preparation drafts must be saved/discarded first. See [timesheet amendments](TIMESHEET-AMENDMENTS.md).
 3. A definitively Sent per-PA `email_type='payslip'` status establishes settlement. Indeterminate delivery remains protected. P60/P45 per-document delivery does not settle payroll or complete a schedule; see [schema31 documents](DATABASE-SCHEMA.md#schema-31-cycle-independent-pa-payroll-documents). Settled history cannot be silently recalculated; deliberate saved amendments retain original evidence and do not mark email as sent.
 
 ## Payroll document history and corrections (schemas 31, 33 and 35)
@@ -67,13 +67,13 @@ Saving a historical internal shift displays an informational notice when its rec
 
 Post-submission evidence differences are not silently written into the original payroll. Pre-Stage-4 concrete audited changes retain their original automatic correction rules and existing obligations. New changes require reviewed source authorisation for protected cycles and explicit contextual financial correction/carry-forward; delivery uncertainty blocks source authorisation until audited resolution. A reviewed duplicate replacement against retained submitted evidence reconciles the difference rather than paying the replacement in full again.
 
-An aggregate negative estimate difference is only a proposal until the user explicitly confirms that actual evidence for the displayed aggregate portions is complete and chooses carry-forward. Missing imports/entries alone never create an aggregate negative correction. Confirmation is recorded with the discrepancy and submission relationship. Future weekly portions are not proposed as actual shortfalls. Historical aggregate reviews do not fabricate source membership or rates.
+An aggregate negative difference, including a source-less shortfall after an accepted amendment, is only a proposal until the user explicitly confirms that actual evidence for the displayed aggregate portions is complete and chooses carry-forward. A completed estimated week with zero actual hours can be confirmed as complete and carried forward. Missing imports or entries alone never post a deduction. Confirmation is recorded with the discrepancy and submission relationship. Future weekly portions are not proposed as actual shortfalls. Historical aggregate reviews do not fabricate source membership or rates.
 
 ## Corrections, totals and audit
 
-`payroll_corrections` retains separate signed components with origin, submission, decision, source/date/rate evidence when known, reason and timestamp. `payroll_correction_evidence` links actual source evidence covered by an aggregate reconciliation so it cannot also flow through as a full unpaid shift. `payroll_correction_applications` records current preparation reservations; immutable `payroll_submission_corrections` records their submitted applications. A correction is not consumed by merely opening a screen or generating a PDF.
+`payroll_corrections` retains separate signed components with origin, submission, decision, source/date/rate evidence when known, reason and timestamp. `payroll_correction_evidence` links actual source evidence covered by an aggregate reconciliation so it cannot also flow through as a full unpaid shift. `payroll_correction_applications` records current preparation reservations; immutable `payroll_submission_corrections` records their submitted applications. An open preparation or generated PDF leaves accepted applications unchanged. A claimed unresolved delivery reserves the correction against competing submissions until reviewed or finalised.
 
-Positive components are applied before negative components, in creation/ID order within each sign. Negative applications consume available worked hours across the four weeks without taking any week below zero. An unapplied negative remainder stays attached to its original correction. Reservations in another submitted/uncertain payroll prevent duplicate application; settlement confirms consumption. Detailed component records remain separate even though their visible effect is consolidated.
+For each PA, compare each submitted estimate week with eligible actuals using the configured payroll rounding. Apply the full signed corrections in Week 1 of the next payroll cycle. Week 1 can be negative when a deduction exceeds the current worked hours. The latest accepted submission records the applied amounts, and unresolved delivery temporarily reserves its claimed corrections. Detailed components remain separate in the ledger while their signed sum appears on the Week 1 information line.
 
 The PDF's bold worked-hours values already include applied corrections. The subordinate line is exactly the simple signed form `(Info only -3.00 hours)` or `(Info only +2.00 hours)`. This line is never added to totals. Reasons and history belong in preparation's audit/details view. Contracted-hours entitlement does not participate. Existing explicit historical backfill adjustments retain their information-only treatment and unknown historical rate evidence. The one-off startup repair and its repeated public-holiday synchronisation have been retired. Startup no longer requires that repair’s source dataset or writes its historical values. Existing adjustment rows remain supported through the exact legacy reason matcher in `src/historical_adjustment_compatibility.rs`; this compatibility code does not write or reinterpret stored records.
 
@@ -85,7 +85,7 @@ The PDF's bold worked-hours values already include applied corrections. The subo
 4. Reopen after resolving; confirm no repeated resolver. Change only notes, then materially edit an excluded shift to a separate interval. Both separate shifts should become eligible, with old decisions/audits retained.
 5. Enter genuinely forgotten work several periods back. With aggregate-only settled history, test each paid/unpaid decision; only unpaid work should carry. Confirm the historical date/rate and no rewriting of old totals.
 6. Email a timesheet through the existing confirmation workflow. Change evidence before sending the payslip. Check that original preparation is protected; test resubmission and carry-forward separately. Verify original/replacement submissions and attachments remain retained, with ordinary filenames.
-7. Test positive and negative carry-forward. For -3 hours with 2 current hours, expect zero payable and -1 still outstanding. Open a later period without consuming it, then verify it remains available. Inspect separate component history.
+7. Test positive and negative carry-forward. For -3 hours with 2 current hours in Week 1, expect -1 payable and an information line of `(Info only -3.00 hours)`. Submit the payroll and verify that the full deduction was applied and that no remainder appears in the following cycle.
 8. For aggregate shortfalls, verify no negative correction exists until evidence completeness is confirmed and carry-forward chosen. An audited individual shift correction should not require the blanket confirmation.
 9. Verify the PDF's bold hours include corrections once, and the signed Info only line is subordinate. Send one PA's payslip only; that PA must be settled while another PA in the same period remains open. Try editing/generating settled payroll and verify it is preserved.
 10. Generate a PDF, then add or materially edit a relevant shift before sending. Sending must refuse the stale candidate. A notes-only change should not produce that refusal.
@@ -128,7 +128,13 @@ script never infers this from historical work dates. Keep this sensitive invento
 with application data, not in source control. Back up the database and stage the
 file before starting the new build; do not use an unverified current inventory.
 
+### Historical payslip fallback
+
+When historical timesheet submission evidence is unavailable, an associated payslip can supply a cycle-level paid working-hours total. Explicit ordinary, public-holiday and previous-rate work quantities count towards this total. Annual leave, SSP and monetary totals remain separate. A missing, unreadable or ambiguous historical return leaves current preparation and submission available. The cycle total and available actuals can be shown without inferring an individual weekly allocation.
+
 ## Payable rounding
+
+When Payroll Settings saves a rounding change, the new rule applies from that local date based on the date worked. Earlier dates keep the previously configured rule. Existing configurations without saved history start from their configured rule. Accepted payable minutes remain authoritative where earlier rounding evidence is unavailable.
 
 Open payroll converts each selected imported or completed direct worked duration
 using the same configured Payroll Settings increment and Up/Down direction. For
@@ -139,7 +145,11 @@ boundary. Source start/end/break/minutes and duplicate fingerprints remain exact
 payable duration. Existing corrections and manual adjustments are already payable
 values and are not rounded again. Submitted/settled history is not recalculated
 when settings change, and unchanged raw evidence does not create a discrepancy
-merely because its submitted payable duration was rounded.
+merely because its submitted payable duration was rounded. For an edited
+retained duration, compare the newly rounded payable minutes with the
+accepted payable minutes. Compare totals only after calculating the payable
+minutes for each shift. A retained source keeps its historical paid membership
+when its date moves, so its destination week cannot claim it as new work.
 
 
 ## Production timesheet attempts and review (schema36)

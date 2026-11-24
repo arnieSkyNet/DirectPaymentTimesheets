@@ -191,6 +191,9 @@ pub struct PayrollConfig {
     #[serde(default = "default_rounding_direction")]
     pub rounding_direction: String,
 
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    rounding_history: Vec<RoundingChange>,
+
     #[serde(default = "default_workweek")]
     pub start_of_workweek: String,
 
@@ -248,6 +251,49 @@ fn deserialize_footer_font_size<'de, D: serde::Deserializer<'de>>(
     ))
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct RoundingChange {
+    effective_from: String,
+    previous_minutes: i64,
+    previous_direction: String,
+}
+
+impl PayrollConfig {
+    pub(crate) fn set_rounding(
+        &mut self,
+        minutes: i64,
+        direction: &str,
+        effective_from: chrono::NaiveDate,
+    ) {
+        if (self.rounding_minutes, self.rounding_direction.as_str()) == (minutes, direction) {
+            return;
+        }
+        // Store the rule in force before the first save on a date. Repeated
+        // saves on that date revise the rule for that date and later work.
+        let effective_from = effective_from.to_string();
+        if !self.rounding_history.iter().any(|change| change.effective_from == effective_from) {
+            self.rounding_history.push(RoundingChange {
+                effective_from,
+                previous_minutes: self.rounding_minutes,
+                previous_direction: self.rounding_direction.clone(),
+            });
+            self.rounding_history.sort_by(|a, b| a.effective_from.cmp(&b.effective_from));
+        }
+        self.rounding_minutes = minutes;
+        self.rounding_direction = direction.to_owned();
+    }
+
+    pub(crate) fn rounding_on(&self, date: chrono::NaiveDate) -> (i64, &str) {
+        self.rounding_history
+            .iter()
+            .find(|change| chrono::NaiveDate::parse_from_str(&change.effective_from, "%Y-%m-%d")
+                .is_ok_and(|effective| date < effective))
+            .map_or((self.rounding_minutes, self.rounding_direction.as_str()), |change| {
+                (change.previous_minutes, change.previous_direction.as_str())
+            })
+    }
+}
+
 fn default_rounding_direction() -> String {
     "Up".to_string()
 }
@@ -275,6 +321,7 @@ impl Default for PayrollConfig {
             frequency: "Every Four Weeks".to_string(),
             rounding_minutes: 15,
             rounding_direction: "Up".to_string(),
+            rounding_history: Vec::new(),
             start_of_workweek: "Monday".to_string(),
             email_subject_format: default_email_subject_format(),
             timesheet_email_body: default_timesheet_email_body(),

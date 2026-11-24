@@ -442,6 +442,7 @@ impl PayrollTimesheetScreen {
             }
             let preparation_dirty = self.has_unsaved_changes();
             let (record, _, name) = &self.weeks[record_index];
+            self.review_ui.show_manual(ui, application, record);
             if self.review_ui.show_pa(ui, application, record, name, preparation_dirty) {
                 review_changed = true;
             }
@@ -940,14 +941,24 @@ impl PayrollTimesheetScreen {
     fn blocked(&self, record: i64, pa: i64) -> bool {
         if self.review_ui.historical(record) {return false;}
         self.review_ui.blocks_preparation(record)
-            || self
-                .duplicate_ui
-                .pending
-                .iter()
-                .any(|g| g.candidates.iter().any(|e| e.pa == pa))
+            || self.bound_period.as_ref()
+                .and_then(|p| crate::models::parse_employment_date(&p.first_week_commencing))
+                .is_some_and(|start| self.current_duplicates(pa, start))
+    }
+
+    fn current_duplicates(&self, pa: i64, start: chrono::NaiveDate) -> bool {
+        let dates = start..=start + chrono::Duration::days(27);
+        self.duplicate_ui.pending.iter().any(|group| group.candidates.iter().any(|entry| {
+            entry.pa == pa && entry.date().is_ok_and(|date| dates.contains(&date))
+        }))
     }
 
     pub fn has_unsaved_changes(&self) -> bool {
+        if self.weeks.iter().any(|(record, _, _)| Some(record.personal_assistant_id) == self.selected_pa
+            && self.review_ui.manual_dirty(record.id))
+        {
+            return true;
+        }
         let Some((record, weeks, _)) = self
             .weeks
             .iter()
@@ -1009,6 +1020,9 @@ impl PayrollTimesheetScreen {
     }
 
     fn discard_current(&mut self) {
+        if let Some((record, _, _)) = self.weeks.iter().find(|(record, _, _)| Some(record.personal_assistant_id) == self.selected_pa) {
+            self.review_ui.discard_manual(record.id);
+        }
         if let Some((record, weeks, _)) = self
             .weeks
             .iter_mut()
@@ -1055,6 +1069,9 @@ impl PayrollTimesheetScreen {
             .iter()
             .position(|(r, _, _)| Some(r.personal_assistant_id) == self.selected_pa)
             .ok_or("No PA selected")?;
+        if self.review_ui.manual_dirty(self.weeks[index].0.id) {
+            return Err("Verify and save the manual totals in Manual preparation before leaving".into());
+        }
         let (record, weeks, name) = &mut self.weeks[index];
         let holidays = &mut self.public_holidays[index];
         let leave = self.annual_leave.entry(record.id).or_default();
@@ -1324,11 +1341,7 @@ impl PayrollTimesheetScreen {
                 self.snapshot_states.insert(record.id, state);
             }
 
-            let duplicates = self
-                .duplicate_ui
-                .pending
-                .iter()
-                .any(|g| g.candidates.iter().any(|e| e.pa == assistant.id));
+            let duplicates = self.current_duplicates(assistant.id, first_week);
             self.review_ui
                 .refresh_record(application, &record, duplicates, &evidence_preflight)?;
             if duplicates
@@ -1736,10 +1749,24 @@ fn save_preparation_record(
                 .get(&(record.id, week.week_number))
                 .copied()
                 .unwrap_or(final_minutes);
-            let reason = existing_adjustments
+            let existing = existing_adjustments
                 .iter()
-                .find(|adjustment| adjustment.week_number == week.week_number)
-                .and_then(|adjustment| adjustment.reason.clone());
+                .find(|adjustment| adjustment.week_number == week.week_number);
+            let delta = final_minutes - baseline_minutes;
+            let reason = if let Some(previous) = existing.filter(|previous|
+                previous.adjustment_minutes == delta
+                    || crate::historical_adjustment_compatibility::is_historical_adjustment_reason(previous.reason.as_deref())
+            ) {
+                previous.reason.clone()
+            } else if delta != 0 {
+                crate::models::parse_employment_date(&week.week_commencing).map(|date|
+                    crate::payroll_evidence::reconciliation::manual_hours_reason(
+                        date, crate::payroll_evidence::reconciliation::today(),
+                    ).to_owned()
+                )
+            } else {
+                None
+            };
             ManualHoursAdjustment {
                 week_number: week.week_number,
                 adjustment_minutes: final_minutes - baseline_minutes,
@@ -2220,6 +2247,13 @@ pub(crate) mod tests {
         let connection = crate::database::open(&database_path).unwrap();
         crate::database::create_schema(&connection).unwrap();
         drop(connection);
+        let application = reopen_test_application(&root);
+        (directory, application)
+    }
+
+    pub(crate) fn reopen_test_application(root: &std::path::Path) -> Application {
+        let root = root.canonicalize().unwrap();
+        let database_path = root.join("test.sqlite");
         let open = || crate::database::open(&database_path).unwrap();
         let environment = AppEnvironment {
             data_dir: root.clone(),
@@ -2231,7 +2265,7 @@ pub(crate) mod tests {
             templates_dir: root.join("templates"),
             cache_dir: root.join("cache"),
         };
-        let application = Application {
+        Application {
             annual_leave_settings_repository:
                 crate::annual_leave_settings_repository::AnnualLeaveSettingsRepository::new(
                     crate::database::open(&database_path).unwrap(),
@@ -2271,8 +2305,7 @@ pub(crate) mod tests {
                 crate::payroll_timesheet_email_repository::PayrollTimesheetEmailRepository::new(
                     open(),
                 ),
-        };
-        (directory, application)
+        }
     }
 
     include!("payroll_preparation_tests.rs");
@@ -3341,6 +3374,25 @@ pub(crate) mod tests {
                 assert!(error.to_string().contains("No generated candidate"));
             }
         };
+    }
+
+    #[test]
+    fn revised_stage2c_standard_preparation_saves_actual_and_estimate_reasons() {
+        let (_directory, application, schedule, mut screen) = load_active_record();
+        let record = screen.weeks[0].0.id;
+        let date = crate::models::parse_employment_date(&screen.weeks[0].1[1].week_commencing).unwrap();
+        crate::payroll_evidence::reconciliation::TEST_TODAY.with(|clock| clock.set(Some(date)));
+        for index in 0..=2 {
+            screen.weeks[0].1[index].worked_hours = 1.0;
+        }
+        save_current_row(&application, &schedule, &screen).unwrap();
+        crate::payroll_evidence::reconciliation::TEST_TODAY.with(|clock| clock.set(None));
+        let adjustments = application.payroll_worked_item_repository.get_manual_adjustments(record).unwrap();
+        assert_eq!(adjustments.iter().map(|a| a.reason.as_deref()).collect::<Vec<_>>(), [
+            Some("Manual confirmed worked hours"),
+            Some("Manual hours for a partly elapsed week"),
+            Some("Manual current-period estimate"),
+        ]);
     }
 
     #[test]

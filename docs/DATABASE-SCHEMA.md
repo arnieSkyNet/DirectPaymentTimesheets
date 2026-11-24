@@ -1,12 +1,12 @@
 # DirectPaymentTimesheets database schema
 
-Current development is unreleased application 1.0.7 on `security/v1.0.7-phase1`, schema42. Numbered
+The unreleased development package defined in [Cargo.toml](../Cargo.toml) uses SQLite schema 42. Numbered
 schema sections retain historical migration milestones; they do not identify
 separate current schemas or publicly downloadable builds.
 
 ## Scope and versioning
 
-This is the implemented SQLite schema at version 42 (development application version `1.0.7`). It is derived from `create_schema` and migrations in `src/database.rs`; those migrations are authoritative.
+This is the implemented SQLite schema at version 42. It is derived from `create_schema` and migrations in `src/database.rs`; those migrations are authoritative.
 
 `schema_version` contains the current integer version. A new database begins at version 1 and receives each ordered migration through `CURRENT_SCHEMA_VERSION` 42. Existing databases receive a verified pre-upgrade database/configuration backup and an isolated migration chain before transactional installation. Migration 23 removes the short-lived revision-only tables introduced by migration 22 while retaining the operational legacy snapshot tables. Migration 24 adds an explicit contracted/variable hours basis to effective-dated Personal Assistant contracted-hours history while preserving existing records as contracted.
 
@@ -404,7 +404,7 @@ The table checks `end_date >= start_date`; repository validation additionally re
 
 ## Schema 31: cycle-independent PA payroll documents
 
-Migration 31 creates the following table and index in one transaction and advances `schema_version` to 31. It does not read, rewrite or migrate `payroll_timesheet_email_status`: existing payslip/timesheet rows and settlement semantics remain unchanged. There are no historical P60/P45 delivery associations to invent or backfill. The current development application is 1.0.7/schema42; schema 31 is the introduction point for this table, subsequently extended by schemas 33 and 35 below.
+Migration 31 creates the following table and index in one transaction and advances `schema_version` to 31. It does not read, rewrite or migrate `payroll_timesheet_email_status`: existing payslip/timesheet rows and settlement semantics remain unchanged. There are no historical P60/P45 delivery associations to invent or backfill. The current development application uses schema 42. Schema 31 introduced this table, and schemas 33 and 35 extended it.
 
 ### `imported_payroll_documents`
 
@@ -604,7 +604,7 @@ is no automatic retention cleanup.
 
 ## Schema 37: sickness protection and historical information corrections
 
-Stage 2 introduced schema37; current development 1.0.7 uses schema42. The existing verified pre-upgrade backup and isolated migration-chain installation apply to 36→37 and earlier supported databases. Migration37 transactionally rebuilds `personal_assistant_sickness_periods` with `INTEGER PRIMARY KEY AUTOINCREMENT`, preserving existing IDs, dates, PA references and the date index. It does not deduplicate existing records, backfill missing historic sickness dates, change legacy weekly hours or modify payroll settlement/submission records.
+Stage 2 introduced schema 37. Current development uses schema 42. The existing verified pre-upgrade backup and isolated migration-chain installation apply to 36→37 and earlier supported databases. Migration37 transactionally rebuilds `personal_assistant_sickness_periods` with `INTEGER PRIMARY KEY AUTOINCREMENT`, preserving existing IDs, dates, PA references and the date index. It does not deduplicate existing records, backfill missing historic sickness dates, change legacy weekly hours or modify payroll settlement/submission records.
 
 New tables:
 
@@ -758,9 +758,10 @@ nullable `before_state`, required `after_state`, `recorded_at` and `actor`.
 Payloads retain preparation details and generated worked evidence, weekly totals,
 source fingerprints and correction applications. UPDATE/DELETE retention triggers
 and schema42 old-writer guards protect the audit. Original submission/document
-histories remain intact; saving invalidates the mutable PDF binding, and only
-successful regeneration advances generated authority. No new migration is part
-of this documentation update. See `src/timesheet_amendments.rs` and
+histories remain intact. Saving invalidates the mutable PDF binding. A generated
+version records the candidate and its comparison fingerprints. Accepted delivery
+persists the authoritative totals, items and applications in the submission
+ledger. The existing schema supports these rules. See `src/timesheet_amendments.rs` and
 [TIMESHEET-AMENDMENTS.md](TIMESHEET-AMENDMENTS.md).
 
 Payroll Settings' configuration/provider/annual-leave save ordering and remaining

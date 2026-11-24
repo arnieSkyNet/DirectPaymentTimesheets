@@ -1,6 +1,6 @@
 # DirectPaymentTimesheets conceptual data model
 
-Current scope is unreleased development 1.0.7 on `security/v1.0.7-phase1`, schema42. Historical
+This covers the unreleased development package defined in [Cargo.toml](../Cargo.toml), using SQLite schema 42. Historical
 schema references identify feature introductions; published package capabilities
 are separate from this model. See [downloads](../README.md#download).
 

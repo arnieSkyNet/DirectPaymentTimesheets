@@ -44,6 +44,7 @@ fn evidence(basis: HoursBasis) -> Evidence {
 fn cycle(number: i64, start: &str, items: Vec<WorkedItemSnapshot>) -> CycleEvidence {
     let start = date(start);
     CycleEvidence {
+        submitted_work_weeks: None,
         record: PayrollTimesheet {
             id: number,
             personal_assistant_id: 1,

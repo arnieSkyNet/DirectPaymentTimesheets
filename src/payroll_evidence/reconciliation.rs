@@ -23,36 +23,392 @@ pub struct Changes {
     pub changed: bool,
     pub components: Vec<Component>,
     pub requires_complete: bool,
+    pub blocked: bool,
 }
-fn period(app: &Application, record: &PayrollTimesheet) -> Result<(NaiveDate, NaiveDate)> {
+#[cfg(test)]
+thread_local! {
+    pub(crate) static TEST_TODAY: std::cell::Cell<Option<NaiveDate>> = const { std::cell::Cell::new(None) };
+}
+
+pub(crate) fn today() -> NaiveDate {
+    #[cfg(test)]
+    if let Some(date) = TEST_TODAY.with(std::cell::Cell::get) {
+        return date;
+    }
+    chrono::Local::now().date_naive()
+}
+
+pub(super) fn period(app: &Application, record: &PayrollTimesheet) -> Result<(NaiveDate, NaiveDate)> {
     let schedule = app
         .payroll_schedule_repository
-        .get_all()?
-        .into_iter()
-        .find(|s| s.payroll_year == record.payroll_year && s.cycle_number == record.cycle_number)
+        .get_for_year_and_cycle(&record.payroll_year, record.cycle_number)?
         .ok_or("Payroll schedule unavailable; cannot attribute evidence")?;
     let start = crate::models::parse_employment_date(&schedule.first_week_commencing)
         .ok_or("Invalid payroll date")?;
     Ok((start, start + chrono::Duration::days(27)))
 }
+const OVERLAP: &str = "Overlapping historical payroll periods cover the same dates. Resolve the period dates before carrying hours forward.";
+
+struct HistoricalPeriod {
+    record: PayrollTimesheet,
+    start: NaiveDate,
+    end: NaiveDate,
+    stage: Stage,
+    submission: Option<i64>,
+    version: Option<crate::timesheet_amendments::AcceptedAmendment>,
+    items: Vec<WorkedItemSnapshot>,
+    legacy_aggregate: bool,
+}
+
+fn historical_periods(
+    app: &Application,
+    db: &Connection,
+    pa: i64,
+) -> Result<Vec<HistoricalPeriod>> {
+    let mut history = Vec::new();
+    for record in app
+        .payroll_timesheet_repository
+        .get_all_for_personal_assistant(pa)?
+    {
+        let submission = lifecycle::latest(db, record.id)?;
+        let stage = match lifecycle::stage(db, &record)? {
+            Stage::Editable if submission.is_some() => Stage::Submitted,
+            Stage::Editable => continue,
+            stage => stage,
+        };
+        let (start, end) = match period(app, &record) {
+            Ok(dates) => dates,
+            Err(_) => {
+                let weeks = match submission {
+                    Some(id) => lifecycle::weeks(db, id)?,
+                    None => app.payroll_timesheet_repository.get_weeks(record.id)?,
+                };
+                let Some(start) = weeks.iter().find(|week| week.week_number == 1)
+                    .and_then(|week| crate::models::parse_employment_date(&week.week_commencing))
+                else { continue };
+                if weeks.len() != 4 || !weeks.iter().all(|week| {
+                    (1..=4).contains(&week.week_number)
+                        && crate::models::parse_employment_date(&week.week_commencing)
+                            == Some(start + chrono::Duration::weeks(week.week_number - 1))
+                }) {
+                    continue;
+                }
+                (start, start + chrono::Duration::days(27))
+            }
+        };
+        let version = match submission {
+            Some(id) => crate::timesheet_amendments::accepted_evidence(db, id)?,
+            None => None,
+        };
+        let items = lifecycle::retained_items(db, record.id, app, submission)?;
+        let legacy_aggregate =
+            stage == Stage::Settled && super::legacy_baseline::has_settlement(db, record.id)?;
+        history.push(HistoricalPeriod {
+            record,
+            start,
+            end,
+            stage,
+            submission,
+            version,
+            items,
+            legacy_aggregate,
+        });
+    }
+    Ok(history)
+}
+
+impl HistoricalPeriod {
+    fn overlaps(&self, other: &Self) -> bool {
+        self.record.id != other.record.id && self.start <= other.end && other.start <= self.end
+    }
+
+    fn contains(&self, date: NaiveDate) -> bool {
+        (self.start..=self.end).contains(&date)
+    }
+
+    fn has_estimate(&self, date: NaiveDate) -> bool {
+        let week = (date - self.start).num_days() / 7 + 1;
+        (self.version.is_some() || (self.submission.is_some() && !self.legacy_aggregate))
+            && estimate_minutes(&self.items, week, self.version.is_some()).is_some()
+    }
+}
+
 fn net_corrections(db: &Connection, origin: i64, key: &str) -> Result<i64> {
     Ok(db.query_row("SELECT COALESCE(SUM(minutes),0) FROM payroll_corrections WHERE origin_payroll_timesheet_id=?1 AND evidence_key LIKE ?2",params![origin,format!("{key}|%")],|r|r.get(0))?)
 }
 // An unchanged raw duration is not a discrepancy against its rounded submitted
 // duration. Never apply today's rounding configuration to historical submissions.
-fn retained_actual_minutes(item: &WorkedItemSnapshot, current: Option<&WorkEvidence>) -> i64 {
+fn retained_actual_minutes(
+    app: &Application,
+    item: &WorkedItemSnapshot,
+    current: Option<&WorkEvidence>,
+) -> Result<i64> {
     let Some(current) = current else {
-        return 0;
+        return Ok(0);
     };
     let raw = item
         .source_evidence
         .as_deref()
         .and_then(|s| toml::from_str::<WorkEvidence>(s).ok());
-    if raw.is_some_and(|raw| raw.minutes == current.minutes) {
-        item.worked_minutes
+    if raw.is_none_or(|raw| raw.minutes == current.minutes) {
+        Ok(item.worked_minutes)
     } else {
-        current.minutes
+        Ok(crate::pay_rate_allocation::payable_minutes_on(current.minutes, current.date()?, &app.context.config.payroll)?)
     }
+}
+
+// A retained shift remains associated with its paid week when its date is edited.
+// Individual reconciliation accounts for a duration change separately.
+fn retained_week(items: &[WorkedItemSnapshot], key: &str) -> Option<i64> {
+    items.iter().find_map(|item| {
+        (lifecycle::item_key(item).as_deref() == Some(key)).then_some(item.week_number)
+    })
+}
+
+pub(crate) fn manual_hours_reason(week: NaiveDate, entered_on: NaiveDate) -> &'static str {
+    if week > entered_on {
+        "Manual current-period estimate"
+    } else if week + chrono::Duration::days(6) < entered_on {
+        "Manual confirmed worked hours"
+    } else {
+        "Manual hours for a partly elapsed week"
+    }
+}
+
+// An amended week can retain dated actuals alongside its estimate. Require
+// a positive undated estimate balance and reject unrelated manual items or carry.
+fn estimate_minutes(items: &[WorkedItemSnapshot], week: i64, amended: bool) -> Option<i64> {
+    let mut estimate = 0i64;
+    let mut actual = 0i64;
+    for item in items.iter().filter(|item| item.week_number == week) {
+        if amended && item.work_date.is_some() && lifecycle::item_key(item).is_some() {
+            actual = actual.checked_add(item.worked_minutes)?;
+            continue;
+        }
+        let estimate_reason = item.reason.as_deref().is_some_and(|reason| {
+            // Retain the interpretation of previously accepted legacy
+            // amendments. New preparation carries an explicit date-based reason.
+            (amended && reason == "Employer amended saved timesheet total")
+                || reason.split_whitespace().any(|word| {
+                    word.eq_ignore_ascii_case("estimate") || word.eq_ignore_ascii_case("estimated")
+                })
+        });
+        if item.source_type != "manual_adjustment"
+            || item.work_date.is_some()
+            || lifecycle::item_key(item).is_some()
+            || !estimate_reason
+        {
+            return None;
+        }
+        estimate = estimate.checked_add(item.worked_minutes)?;
+    }
+    if estimate <= 0 {
+        return None;
+    }
+    let total = estimate.checked_add(actual)?;
+    (total > 0).then_some(total)
+}
+
+fn estimate_binding(key: &str) -> Option<(i64, i64)> {
+    let mut fields = key
+        .split('|')
+        .next()?
+        .strip_prefix("estimate:week:")?
+        .split(':');
+    Some((fields.next()?.parse().ok()?, fields.next()?.parse().ok()?))
+}
+
+// Versions created before Stage 2A could post corrections against an unsent
+// document. Retain those rows for audit, without offering their unused balance.
+fn correction_origin_accepted(db: &Connection, origin: i64, key: &str) -> rusqlite::Result<bool> {
+    let key = key.split('|').next().unwrap_or(key);
+    let key = key.strip_prefix("estimate:week:")
+        .and_then(|key| key.splitn(3, ':').nth(2))
+        .unwrap_or(key);
+    let Some(document) = key.strip_prefix("version:")
+        .and_then(|key| key.split(':').next())
+        .and_then(|value| value.parse::<i64>().ok())
+    else {
+        return Ok(true);
+    };
+    db.query_row(
+        "SELECT EXISTS(SELECT 1 FROM payroll_submissions WHERE payroll_timesheet_id=?1 AND document_id=?2)",
+        params![origin, document],
+        |row| row.get(0),
+    )
+}
+
+fn previous_week_correction(key: &str) -> Option<(i64, &str)> {
+    let (prefix, week) = key.split('|').next()?.rsplit_once(':')?;
+    let (baseline, kind) = prefix.rsplit_once(':')?;
+    match (baseline.split_once(':')?.0, kind) {
+        ("submission", "aggregate") | ("version", "week") => Some((week.parse().ok()?, baseline)),
+        _ => None,
+    }
+}
+
+fn previous_item_correction(key: &str) -> Option<&str> {
+    let (_, item) = key
+        .split('|')
+        .next()?
+        .strip_prefix("submission:")?
+        .split_once(':')?;
+    Some(item)
+}
+
+fn estimate_changes(
+    app: &Application,
+    db: &Connection,
+    record: &PayrollTimesheet,
+    items: &[WorkedItemSnapshot],
+    current: &[WorkEvidence],
+    start: NaiveDate,
+    baseline: &str,
+    version: Option<&crate::timesheet_amendments::AcceptedAmendment>,
+) -> Result<Vec<Component>> {
+    let mut recorded_by_week = BTreeMap::<i64, i64>::new();
+    if !(1..=4).any(|week| estimate_minutes(items, week, version.is_some()).is_some()) {
+        return Ok(Vec::new());
+    }
+    let mut corrections = db.prepare(
+        "SELECT id,evidence_key,minutes,work_date FROM payroll_corrections WHERE origin_payroll_timesheet_id=?1",
+    )?;
+    for row in corrections.query_map([record.id], |row| {
+        Ok((
+            row.get::<_, i64>(0)?,
+            row.get::<_, String>(1)?,
+            row.get::<_, i64>(2)?,
+            row.get::<_, Option<String>>(3)?,
+        ))
+    })? {
+        let (id, key, minutes, date) = row?;
+        let (week, active) = if let Some((week, estimated)) = estimate_binding(&key) {
+            (
+                week,
+                estimate_minutes(items, week, version.is_some()) == Some(estimated),
+            )
+        } else if let Some((week, source_baseline)) = previous_week_correction(&key) {
+            // The old amended calculation could post reductions without
+            // completeness confirmation. Only previously applied minutes count.
+            (
+                week,
+                source_baseline == baseline && !(version.is_some() && minutes < 0),
+            )
+        } else if version.is_some()
+            && previous_item_correction(&key).is_some_and(|key| {
+                items
+                    .iter()
+                    .any(|item| lifecycle::item_key(item).as_deref() == Some(key))
+            })
+        {
+            let Some(date) = date
+                .as_deref()
+                .and_then(crate::models::parse_employment_date)
+            else {
+                continue;
+            };
+            let day = (date - start).num_days();
+            if !(0..28).contains(&day) {
+                continue;
+            }
+            (day / 7 + 1, false)
+        } else {
+            continue;
+        };
+        // Retain unused balances for unchanged estimates across amendments.
+        // When an estimate changes, only the applied balance offsets it.
+        let accounted = if active && correction_origin_accepted(db, record.id, &key)? {
+            minutes
+        } else {
+            lifecycle::submitted_correction_minutes(db, id, Some(record.id))?
+        };
+        let recorded = recorded_by_week.entry(week).or_default();
+        *recorded = recorded
+            .checked_add(accounted)
+            .ok_or("Recorded correction overflow")?;
+    }
+    let mut components = Vec::new();
+    for week in 1..=4 {
+        let Some(estimated) = estimate_minutes(items, week, version.is_some()) else {
+            continue;
+        };
+        let ws = start + chrono::Duration::days((week - 1) * 7);
+        let we = ws + chrono::Duration::days(6);
+        if we >= today() {
+            continue;
+        }
+        let entries = estimate_evidence(app, db, record, ws, week, items, current)?;
+        // An empty completed week can be confirmed as zero worked hours.
+        // Evidence held by other payroll or excluded from this estimate is
+        // not equivalent to an empty week.
+        if entries.is_empty() && current.iter().any(|entry| {
+            entry.minutes > 0 && entry.date().is_ok_and(|date| (ws..=we).contains(&date))
+        }) {
+            continue;
+        }
+        let before: HashSet<_> = version
+            .into_iter()
+            .flat_map(|version| &version.evidence)
+            .filter(|(number, _, _)| *number == week)
+            .map(|(_, key, fingerprint)| (key.clone(), fingerprint.clone()))
+            .collect();
+        let after: HashSet<_> = entries
+            .iter()
+            .map(|entry| (entry.key(), entry.fingerprint()))
+            .collect();
+        let recorded = recorded_by_week.get(&week).copied().unwrap_or_default();
+        if !entries.is_empty() && before == after && recorded == 0 {
+            continue;
+        }
+        let mut actual = 0i64;
+        for entry in entries {
+            let key = entry.key();
+            let payable = match items.iter().find(|item| {
+                lifecycle::item_key(item).as_deref() == Some(key.as_str())
+            }) {
+                Some(item) => retained_actual_minutes(app, item, Some(entry))?,
+                None => crate::pay_rate_allocation::payable_minutes_on(entry.minutes, entry.date()?, &app.context.config.payroll)?,
+            };
+            actual = actual
+                .checked_add(payable)
+                .ok_or("Actual worked hours overflow")?;
+        }
+        let delta = actual
+            .checked_sub(estimated)
+            .and_then(|difference| difference.checked_sub(recorded))
+            .ok_or("Estimate reconciliation overflow")?;
+        if delta == 0 {
+            continue;
+        }
+        let rate = crate::pay_rate_allocation::select_manual_adjustment_rate(
+            &app.pay_rate_repository,
+            record.personal_assistant_id,
+            ws,
+            we,
+            delta,
+        )?;
+        components.push(Component {
+            key: format!("estimate:week:{week}:{estimated}:{baseline}"),
+            source: None,
+            source_id: None,
+            date: Some(ws.to_string()),
+            minutes: delta,
+            rate_id: rate.as_ref().map(|rate| rate.id),
+            rate_date: rate.as_ref().map(|rate| rate.effective_date.clone()),
+            rate: rate.map(|rate| rate.base_hourly_rate + rate.employer_top_up_rate),
+            aggregate: true,
+        });
+    }
+    Ok(components)
+}
+
+fn unresolved_in_period(
+    pre: &Preflight, pa: i64, start: NaiveDate, end: NaiveDate, items: &[WorkedItemSnapshot],
+) -> bool {
+    pre.unresolved.iter().any(|group| group.candidates.iter().any(|entry| {
+        entry.pa == pa && (entry.date().is_ok_and(|date| (start..=end).contains(&date))
+            || retained_week(items, &entry.key()).is_some())
+    }))
 }
 
 pub fn changes(app: &Application, record: &PayrollTimesheet) -> Result<Changes> {
@@ -68,12 +424,45 @@ pub(crate) fn changes_prepared(
     pre: &Preflight,
 ) -> Result<Changes> {
     let db = open(app)?;
-    let (start, end) = period(app, record)?;
-    if pre.unresolved.iter().any(|g| {
-        g.candidates
-            .iter()
-            .any(|e| e.pa == record.personal_assistant_id && e.date().is_ok_and(|d| d <= end))
-    }) {
+    changes_in_connection(app, &db, record, pre)
+}
+
+fn changes_in_connection(
+    app: &Application,
+    db: &Connection,
+    record: &PayrollTimesheet,
+    pre: &Preflight,
+) -> Result<Changes> {
+    let history = historical_periods(app, db, record.personal_assistant_id)?;
+    changes_with_history(app, db, record, pre, &history)
+}
+
+fn changes_with_history(
+    app: &Application,
+    db: &Connection,
+    record: &PayrollTimesheet,
+    pre: &Preflight,
+    history: &[HistoricalPeriod],
+) -> Result<Changes> {
+    let baseline = history.iter().find(|entry| entry.record.id == record.id);
+    if baseline.is_some_and(|entry| history.iter().any(|other| entry.overlaps(other))) {
+        return Ok(Changes {
+            source_signature: String::new(),
+            signature: String::new(),
+            changed: false,
+            description: OVERLAP.into(),
+            components: Vec::new(),
+            requires_complete: false,
+            blocked: true,
+        });
+    }
+    let (start, end) = match baseline {
+        Some(entry) => (entry.start, entry.end),
+        None => period(app, record)?,
+    };
+    if unresolved_in_period(pre, record.personal_assistant_id, start, end,
+        baseline.map_or(&[][..], |entry| entry.items.as_slice()))
+    {
         return Err("Resolve possible duplicates before reviewing payroll discrepancies".into());
     }
     let current = pre
@@ -82,23 +471,38 @@ pub(crate) fn changes_prepared(
         .filter(|e| e.pa == record.personal_assistant_id)
         .cloned()
         .collect::<Vec<_>>();
-    if let Some(version)=crate::timesheet_amendments::latest(&db,record.id)? {
-        return amended_changes(app,record,&version,&current,start);
+    if let Some(entry) = baseline {
+        if let Some(version) = &entry.version {
+            return amended_changes(app, db, entry, version, &current);
+        }
     }
-    let old = lifecycle::submitted_items(&db, record.id, app)?;
-    let sid = lifecycle::latest(&db, record.id)?.unwrap_or(0);
-    let authority=crate::timesheet_amendments::latest(&db,record.id)?;
-    let baseline_key=authority.as_ref().map_or_else(||format!("submission:{sid}"),|v|format!("version:{}",v.document));
-    let mut components = Vec::new();
+    let old = baseline.map_or(&[][..], |entry| entry.items.as_slice());
+    let sid = baseline.and_then(|entry| entry.submission).unwrap_or(0);
+    let baseline_key = format!("submission:{sid}");
+    let legacy_aggregate = baseline.is_some_and(|entry| entry.legacy_aggregate);
+    let mut components = if sid != 0 && !legacy_aggregate {
+        estimate_changes(app, db, record, old, &current, start, &baseline_key, None)?
+    } else {
+        Vec::new()
+    };
     let mut materially_changed = false;
-    for item in &old {
+    for item in old {
         let Some(key) = lifecycle::item_key(item) else {
             continue;
         };
         let current_item = current.iter().find(|e| e.key() == key);
-        let actual = retained_actual_minutes(item, current_item);
+        let actual = retained_actual_minutes(app, item, current_item)?;
         let prefix = format!("{baseline_key}:{key}");
-        let delta = actual - item.worked_minutes - net_corrections(&db, record.id, &prefix)?;
+        let mut delta = actual - item.worked_minutes - net_corrections(db, record.id, &prefix)?;
+        // Once a source correction is recorded, keep that payable result
+        // when the effective raw duration has not changed again.
+        if delta != 0 {
+            if let Some(entry) = current_item {
+                if latest_corrected_raw_minutes(db, record.id, &prefix)? == Some(entry.minutes) {
+                    delta = 0;
+                }
+            }
+        }
         materially_changed |= item
             .source_evidence
             .as_deref()
@@ -129,29 +533,23 @@ pub(crate) fn changes_prepared(
     }
     // Opaque weekly estimates cannot be inferred from absence of later evidence.
     // Their proposed difference is displayed for an explicit review only.
-    let mut weeks = app.payroll_timesheet_repository.get_weeks(record.id)?;
-    // The most recently regenerated saved version, not an old sent estimate or
-    // an unsaved/unregenerated draft, supplies the reconciliation baseline.
-    if let Some(version)=&authority {
-        for week in &mut weeks { week.worked_hours=version.totals[(week.week_number-1) as usize] as f64/60.0; }
-    } else if sid!=0 {
-        for week in &mut weeks {
-            if let Some(hours)=db.query_row("SELECT worked_hours FROM payroll_submission_weeks WHERE submission_id=?1 AND week_number=?2",params![sid,week.week_number],|r|r.get::<_,f64>(0)).optional()? {week.worked_hours=hours;}
-        }
-    }
-    let legacy_aggregate = lifecycle::stage(&db, record)? == Stage::Settled
-        && super::legacy_baseline::has_settlement(&db, record.id)?;
+    let weeks = if sid != 0 { lifecycle::weeks(db, sid)? } else { Vec::new() };
     for week in weeks {
         let ws = crate::models::parse_employment_date(&week.week_commencing)
             .ok_or("Invalid week date")?;
         let we = ws + chrono::Duration::days(6);
-        if we > chrono::Local::now().date_naive() {
+        if we > today() {
             continue;
         }
         let week_items = old
             .iter()
             .filter(|i| i.week_number == week.week_number)
             .collect::<Vec<_>>();
+        // A confirmed manual total already is actual evidence. Without dated
+        // membership, a later import may overlap it and cannot explain a delta.
+        if week_items.iter().any(|item| item.reason.as_deref() == Some("Manual confirmed worked hours")) {
+            continue;
+        }
         let opaque = week_items.is_empty()
             || week_items
                 .iter()
@@ -159,48 +557,36 @@ pub(crate) fn changes_prepared(
         // Cutover aggregates remain authoritative: source membership was never
         // established, so their comparison cannot establish an estimate correction.
         // New historical sources still receive their individual payment review.
-        if !opaque || (legacy_aggregate && authority.is_none()) {
+        if !opaque || legacy_aggregate
+            || (sid != 0 && estimate_minutes(old, week.week_number, false).is_some())
+        {
             continue;
         }
         let mut actual = 0i64;
-        for e in current
-            .iter()
-            .filter(|e| e.date().is_ok_and(|d| d >= ws && d <= we))
-        {
-            let retained_member = old
-                .iter()
-                .any(|i| lifecycle::item_key(i).as_deref() == Some(&e.key()));
-            if !retained_member
-                && (lifecycle::has_decision(&db, record.id, "unpaid", &e.fingerprint())?
-                    || consumed_elsewhere(app, &db, record, e)?)
+        for e in &current {
+            if retained_week(old, &e.key()).is_some()
+                || !e.date().is_ok_and(|d| (ws..=we).contains(&d))
             {
                 continue;
             }
-            actual = actual
-                .checked_add(
-                    old.iter()
-                        .find(|i| lifecycle::item_key(i).as_deref() == Some(&e.key()))
-                        .map_or(e.minutes, |i| retained_actual_minutes(i, Some(e))),
-                )
-                .ok_or("Actual worked hours overflow")?;
+            if lifecycle::has_decision(db, record.id, "unpaid", &e.fingerprint())?
+                || consumed_elsewhere(app, db, record, e)?
+            {
+                continue;
+            }
+            let payable = crate::pay_rate_allocation::payable_minutes_on(e.minutes, e.date()?, &app.context.config.payroll)?;
+            actual = actual.checked_add(payable).ok_or("Actual worked hours overflow")?;
         }
         let submitted = (week.worked_hours * 60.0).round() as i64;
         let prefix = format!("{baseline_key}:aggregate:{}", week.week_number);
-        // Remove the complete known-source difference, including differences
-        // already recorded in earlier individual corrections. Otherwise a later
-        // aggregate confirmation would deduct those same hours a second time.
-        let already_known: i64 = week_items
+        // Known items and their edits are accounted for by the individual
+        // corrections above. Compare only the unallocated portion here.
+        let known_paid: i64 = week_items
             .iter()
-            .filter_map(|i| lifecycle::item_key(i).map(|key| (i, key)))
-            .map(|(i, key)| {
-                current
-                    .iter()
-                    .find(|e| e.key() == key)
-                    .map_or(0, |e| retained_actual_minutes(i, Some(e)))
-                    - i.worked_minutes
-            })
+            .filter(|item| lifecycle::item_key(item).is_some())
+            .map(|item| item.worked_minutes)
             .sum();
-        let delta = actual - submitted - net_corrections(&db, record.id, &prefix)? - already_known;
+        let delta = actual - (submitted - known_paid) - net_corrections(db, record.id, &prefix)?;
         if delta != 0 {
             components.push(Component {
                 key: prefix,
@@ -226,8 +612,8 @@ pub(crate) fn changes_prepared(
         {
             continue;
         }
-        if lifecycle::stage(&db, record)? == Stage::Settled
-            && super::legacy_baseline::contains(&db, record.id, e)?
+        if lifecycle::stage(db, record)? == Stage::Settled
+            && super::legacy_baseline::contains(db, record.id, e)?
         {
             continue;
         }
@@ -239,12 +625,15 @@ pub(crate) fn changes_prepared(
         {
             continue;
         }
-        if consumed_elsewhere(app, &db, record, e)? {
+        if consumed_elsewhere(app, db, record, e)? {
             continue;
         }
         let prefix = format!("{baseline_key}:new:{}", e.key());
-        let delta = e.minutes - net_corrections(&db, record.id, &prefix)?;
-        if delta != 0 {
+        // A newly identified shift uses the same payable rounding as ordinary
+        // allocation. The accepted items in this week retain their paid minutes.
+        let payable = crate::pay_rate_allocation::payable_minutes_on(e.minutes, e.date()?, &app.context.config.payroll)?;
+        let delta = payable - net_corrections(db, record.id, &prefix)?;
+        if delta != 0 && latest_corrected_raw_minutes(db, record.id, &prefix)? != Some(e.minutes) {
             let rate = app
                 .pay_rate_repository
                 .get_for_personal_assistant_as_of(e.pa, e.date()?)?
@@ -266,18 +655,18 @@ pub(crate) fn changes_prepared(
     let source_signature = signature.clone();
     let mut prospective = false;
     for e in &current {
-        prospective |= crate::shift_changes::prospective(&db, &e.source, e.id)?;
+        prospective |= crate::shift_changes::prospective(db, &e.source, e.id)?;
     }
-    for item in &old {
+    for item in old {
         if let Some(key) = lifecycle::item_key(item) {
             if let Some((source, id)) = key.split_once(':') {
                 if let Ok(id) = id.parse::<i64>() {
-                    prospective |= crate::shift_changes::prospective(&db, source, id)?;
+                    prospective |= crate::shift_changes::prospective(db, source, id)?;
                 }
             }
         }
     }
-    if prospective {
+    if prospective || components.iter().any(|c| c.aggregate && c.minutes < 0) {
         signature = hash(&format!("{signature}:{components:?}"));
     }
 
@@ -318,55 +707,169 @@ pub(crate) fn changes_prepared(
         signature: signature.clone(),
         description,
         changed: (materially_changed
-            && lifecycle::stage(&db, record)? != Stage::Settled
-            && !lifecycle::has_decision(&db, record.id, "carry", &source_signature)?)
+            && lifecycle::stage(db, record)? != Stage::Settled
+            && !lifecycle::has_decision(db, record.id, "carry", &source_signature)?)
             || !components.is_empty(),
         components,
         requires_complete,
+        blocked: false,
     })
 }
 // Unchanged source exports are retained historical facts, not permission to
 // overwrite the employer's corrected total. Reconcile only later material source
-// changes against the latest generated version using the established carry engine.
-fn amended_changes(app:&Application,record:&PayrollTimesheet,version:&crate::timesheet_amendments::Version,current:&[WorkEvidence],start:NaiveDate)->Result<Changes> {
-    let db=open(app)?;
-    let mut components=Vec::new();
-    for index in 0..4 {
-        let ws=start+chrono::Duration::days(index*7);
-        let we=ws+chrono::Duration::days(6);
-        if we>chrono::Local::now().date_naive() {continue;}
-        let mut before=version.evidence.iter().filter(|(w,_,_)|*w==index+1).map(|(_,key,fp)|(key.clone(),fp.clone())).collect::<Vec<_>>();
-        let entries=current.iter().filter(|e|e.date().is_ok_and(|d|d>=ws && d<=we)).collect::<Vec<_>>();
-        let mut after=entries.iter().map(|e|(e.key(),e.fingerprint())).collect::<Vec<_>>();
-        before.sort();after.sort();
+// changes against the accepted version using the established carry engine.
+fn amended_changes(
+    app: &Application,
+    db: &Connection,
+    baseline: &HistoricalPeriod,
+    version: &crate::timesheet_amendments::AcceptedAmendment,
+    current: &[WorkEvidence],
+) -> Result<Changes> {
+    let record = &baseline.record;
+    let sid = baseline.submission.ok_or("Accepted amendment has no submission")?;
+    let mut components = estimate_changes(
+        app,
+        db,
+        record,
+        &baseline.items,
+        current,
+        baseline.start,
+        &format!("version:{}", version.document),
+        Some(version),
+    )?;
+    for week in lifecycle::weeks(db, sid)? {
+        if estimate_minutes(&baseline.items, week.week_number, true).is_some() {
+            continue;
+        }
+        if baseline.items.iter().any(|item| item.week_number == week.week_number
+            && item.reason.as_deref() == Some("Manual confirmed worked hours"))
+        {
+            continue;
+        }
+        let submitted = (week.worked_hours * 60.0).round() as i64;
+        let ws = crate::date_utils::parse_legacy(&week.week_commencing)?;
+        let we = ws + chrono::Duration::days(6);
+        if we > today() {
+            continue;
+        }
+        let mut before = version
+            .evidence
+            .iter()
+            .filter(|(w, key, _)| {
+                retained_week(&baseline.items, key).unwrap_or(*w) == week.week_number
+            })
+            .map(|(_, key, fp)| (key.clone(), fp.clone()))
+            .collect::<Vec<_>>();
+        let entries = current
+            .iter()
+            .filter(|e| {
+                let key = e.key();
+                retained_week(&baseline.items, &key)
+                    .or_else(|| {
+                        version.evidence.iter().find_map(|(week, source, _)| {
+                            (*source == key).then_some(*week)
+                        })
+                    })
+                    .map_or_else(
+                        || e.date().is_ok_and(|d| (ws..=we).contains(&d)),
+                        |retained| retained == week.week_number,
+                    )
+            })
+            .collect::<Vec<_>>();
+        let mut after = entries
+            .iter()
+            .map(|e| (e.key(), e.fingerprint()))
+            .collect::<Vec<_>>();
+        before.sort();
+        after.sort();
         // CSV import and clock-out both append source audit events. Their
         // presence is provenance, never a veto on newly acquired actual hours.
-        let actual=if before==after {version.totals[index as usize]} else {
-            let mut minutes=0i64;
-            for e in entries {
-                if !consumed_elsewhere(app,&db,record,e)? {
-                    minutes=minutes.checked_add(crate::pay_rate_allocation::payable_minutes(e.minutes,&app.context.config.payroll)?).ok_or("Worked hours overflow")?;
+        let actual = if before == after {
+            submitted
+        } else {
+            // Keep the accepted total intact when the only changes are new
+            // entries. The accepted total can include a manual downward amendment.
+            let mut original_unchanged = true;
+            for (key, fingerprint) in &before {
+                if after.iter().any(|fact| &fact.0 == key && &fact.1 == fingerprint) {
+                    continue;
+                }
+                let retained = baseline.items.iter().find(|item| {
+                    lifecycle::item_key(item).as_deref() == Some(key.as_str())
+                });
+                let current = entries.iter().find(|entry| &entry.key() == key);
+                match (retained, current) {
+                    (Some(item), Some(entry))
+                        if item.source_evidence.as_deref()
+                            .and_then(|raw| toml::from_str::<WorkEvidence>(raw).ok())
+                            .is_some_and(|raw| &raw.fingerprint() == fingerprint)
+                            && retained_actual_minutes(app, item, Some(entry))? == item.worked_minutes => {}
+                    _ => {
+                        original_unchanged = false;
+                        break;
+                    }
                 }
             }
-            // A saved downward correction remains authoritative for unchanged
-            // original facts when new, separate shifts arrive. Do not resurrect
-            // the old export's larger total merely because another row was added.
-            let original_unchanged=before.iter().all(|fact|after.contains(fact));
-            let offset=if original_unchanged {
-                let mut reference=0i64;
-                for e in current.iter().filter(|e|before.contains(&(e.key(),e.fingerprint()))) {
-                    reference=reference.checked_add(crate::pay_rate_allocation::payable_minutes(e.minutes,&app.context.config.payroll)?).ok_or("Worked hours overflow")?;
+            let mut minutes = if original_unchanged { submitted } else { 0 };
+            for e in entries {
+                let key = e.key();
+                let retained = baseline.items.iter().find(|item| {
+                    lifecycle::item_key(item).as_deref() == Some(key.as_str())
+                });
+                if (original_unchanged
+                    && (retained.is_some() || before.contains(&(key, e.fingerprint()))))
+                    || consumed_elsewhere(app, db, record, e)?
+                {
+                    continue;
                 }
-                (version.totals[index as usize]-reference).min(0)
-            } else {0};
-            minutes.checked_add(offset).ok_or("Worked hours overflow")?.max(0)
+                let payable = match retained {
+                    Some(item) => retained_actual_minutes(app, item, Some(e))?,
+                    None => crate::pay_rate_allocation::payable_minutes_on(e.minutes, e.date()?, &app.context.config.payroll)?,
+                };
+                minutes = minutes.checked_add(payable).ok_or("Worked hours overflow")?;
+            }
+            minutes
         };
-        let key=format!("version:{}:week:{}",version.document,index+1);
-        let delta=actual-version.totals[index as usize]-net_corrections(&db,record.id,&key)?;
-        if delta!=0 {components.push(Component{key,source:None,source_id:None,date:Some(ws.to_string()),minutes:delta,rate_id:None,rate_date:None,rate:None,aggregate:false});}
+        let key = format!("version:{}:week:{}", version.document, week.week_number);
+        let delta = actual - submitted - net_corrections(db, record.id, &key)?;
+        if delta != 0 {
+            components.push(Component {
+                key,
+                source: None,
+                source_id: None,
+                date: Some(ws.to_string()),
+                minutes: delta,
+                rate_id: None,
+                rate_date: None,
+                rate: None,
+                aggregate: delta < 0,
+            });
+        }
     }
-    let signature=hash(&format!("{}:{:?}:{:?}",version.document,lifecycle::fingerprint(current),components));
-    Ok(Changes{source_signature:signature.clone(),signature,changed:!components.is_empty(),description:format!("Latest regenerated saved timesheet document {} is authoritative; subsequent actual-hours difference: {:+.2} hours.",version.document,components.iter().map(|c|c.minutes).sum::<i64>() as f64/60.),components,requires_complete:false})
+    let signature = hash(&format!(
+        "{}:{:?}:{:?}",
+        version.document,
+        lifecycle::fingerprint(current),
+        components
+    ));
+    let requires_complete = components.iter().any(|c| c.aggregate && c.minutes < 0);
+    let description = components
+        .iter()
+        .map(|c| format!("{}: {:+.2} hours", c.key, c.minutes as f64 / 60.0))
+        .collect::<Vec<_>>()
+        .join("\n");
+    Ok(Changes {
+        source_signature: signature.clone(),
+        signature,
+        changed: !components.is_empty(),
+        description: format!(
+            "Accepted submission {sid} (document {}) supplies the baseline.\n{description}",
+            version.document
+        ),
+        components,
+        requires_complete,
+        blocked: false,
+    })
 }
 
 fn consumed_elsewhere(
@@ -375,15 +878,16 @@ fn consumed_elsewhere(
     record: &PayrollTimesheet,
     e: &WorkEvidence,
 ) -> Result<bool> {
+    if crate::timesheet_delivery::work_reserved(db, record.id, &e.source, e.id)? {
+        return Ok(true);
+    }
     for r in app
         .payroll_timesheet_repository
         .get_all_for_personal_assistant(e.pa)?
     {
         if r.id != record.id
-            && matches!(
-                lifecycle::stage(db, &r)?,
-                Stage::Submitted | Stage::Settled | Stage::Indeterminate
-            )
+            && (lifecycle::stage(db, &r)? != Stage::Editable
+                || lifecycle::latest(db, r.id)?.is_some())
             && lifecycle::submitted_items(db, r.id, app)?
                 .iter()
                 .any(|i| lifecycle::item_key(i).as_deref() == Some(&e.key()))
@@ -409,9 +913,113 @@ fn insert_component(
         [record.id],
         |r| r.get(0),
     )?;
-    db.execute("INSERT INTO payroll_corrections(personal_assistant_id,origin_payroll_timesheet_id,submission_id,decision_id,evidence_key,source,source_id,work_date,minutes,pay_rate_id,pay_rate_effective_date,total_hourly_rate,reason,created_at) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14)",params![record.personal_assistant_id,record.id,sid,decision,format!("{}|{signature}|{serial}",c.key),c.source,c.source_id,c.date,c.minutes,c.rate_id,c.rate_date,c.rate,if c.aggregate {"Confirmed aggregate estimate reconciliation"}else{"Audited submitted/actual evidence difference"},now()])?;
+    db.execute("INSERT INTO payroll_corrections(personal_assistant_id,origin_payroll_timesheet_id,submission_id,decision_id,evidence_key,source,source_id,work_date,minutes,pay_rate_id,pay_rate_effective_date,total_hourly_rate,reason,created_at) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14)",params![record.personal_assistant_id,record.id,sid,decision,format!("{}|{signature}|{serial}",c.key),c.source,c.source_id,c.date,c.minutes,c.rate_id,c.rate_date,c.rate,if estimate_binding(&c.key).is_some() && decision.is_none() {"Automatic estimate reconciliation"} else if c.aggregate {"Confirmed aggregate estimate reconciliation"} else {"Audited submitted/actual evidence difference"},now()])?;
     Ok(())
 }
+fn latest_corrected_raw_minutes(db: &Connection, origin: i64, key: &str) -> Result<Option<i64>> {
+    let evidence = db
+        .query_row(
+            "SELECT e.evidence FROM payroll_corrections c
+             LEFT JOIN payroll_correction_evidence e ON e.correction_id=c.id
+                 AND e.source=c.source AND e.source_id=c.source_id
+             WHERE c.origin_payroll_timesheet_id=?1 AND c.evidence_key LIKE ?2
+             ORDER BY c.id DESC LIMIT 1",
+            params![origin, format!("{key}|%")],
+            |row| row.get::<_, Option<String>>(0),
+        )
+        .optional()?
+        .flatten();
+    Ok(evidence
+        .as_deref()
+        .map(toml::from_str::<WorkEvidence>)
+        .transpose()?
+        .map(|entry| entry.minutes))
+}
+
+fn archive_source_correction(
+    db: &Connection,
+    correction: i64,
+    component: &Component,
+    eligible: &[WorkEvidence],
+) -> Result<()> {
+    if let Some(entry) = eligible.iter().find(|entry| {
+        component.source.as_deref() == Some(entry.source.as_str())
+            && component.source_id == Some(entry.id)
+    }) {
+        db.execute(
+            "INSERT INTO payroll_correction_evidence VALUES (?1,?2,?3,?4,?5)",
+            params![
+                correction,
+                entry.source,
+                entry.id,
+                entry.fingerprint(),
+                toml::to_string(entry)?
+            ],
+        )?;
+    }
+    Ok(())
+}
+
+fn estimate_evidence<'a>(
+    app: &Application,
+    db: &Connection,
+    record: &PayrollTimesheet,
+    start: NaiveDate,
+    week: i64,
+    items: &[WorkedItemSnapshot],
+    eligible: &'a [WorkEvidence],
+) -> Result<Vec<&'a WorkEvidence>> {
+    let end = start + chrono::Duration::days(6);
+    let mut actuals = Vec::new();
+    for entry in eligible.iter().filter(|entry| {
+        entry.pa == record.personal_assistant_id
+            && entry.minutes > 0
+            && retained_week(items, &entry.key()).map_or_else(
+                || entry.date().is_ok_and(|date| (start..=end).contains(&date)),
+                |retained| retained == week,
+            )
+    }) {
+        if !lifecycle::has_decision(db, record.id, "unpaid", &entry.fingerprint())?
+            && !consumed_elsewhere(app, db, record, entry)?
+        {
+            actuals.push(entry);
+        }
+    }
+    Ok(actuals)
+}
+
+fn archive_estimate_evidence(
+    app: &Application,
+    db: &Connection,
+    record: &PayrollTimesheet,
+    component: &Component,
+    correction: i64,
+    eligible: &[WorkEvidence],
+) -> Result<()> {
+    let start = crate::date_utils::parse_legacy(
+        component
+            .date
+            .as_deref()
+            .ok_or("Missing estimate week date")?,
+    )?;
+    let (week, _) = estimate_binding(&component.key).ok_or("Invalid estimate portion")?;
+    let submission = lifecycle::latest(db, record.id)?;
+    let items = lifecycle::retained_items(db, record.id, app, submission)?;
+    for entry in estimate_evidence(app, db, record, start, week, &items, eligible)? {
+        db.execute(
+            "INSERT INTO payroll_correction_evidence VALUES (?1,?2,?3,?4,?5)",
+            params![
+                correction,
+                entry.source,
+                entry.id,
+                entry.fingerprint(),
+                toml::to_string(entry)?
+            ],
+        )?;
+    }
+    Ok(())
+}
+
 pub fn carry(
     app: &Application,
     record: &PayrollTimesheet,
@@ -422,13 +1030,18 @@ pub fn carry(
     let _guard = crate::timesheet_delivery::production_lock(&db)?;
     let tx = db.unchecked_transaction()?;
     tx.execute("UPDATE schema_version SET version=version", [])?;
-    let change = changes(app, record)?;
+    let evidence = load_for_pa(&tx, record.personal_assistant_id)?;
+    let pre = preflight_for_pa(&tx, &evidence, record.personal_assistant_id)?;
+    let change = changes_in_connection(app, &tx, record, &pre)?;
 
     if !matches!(
         lifecycle::stage(&tx, record)?,
         Stage::Submitted | Stage::Settled
     ) {
         return Err("Only submitted/settled payroll can carry a correction".into());
+    }
+    if change.blocked {
+        return Err(change.description.into());
     }
     if expected != change.signature || !change.changed {
         return Err("Discrepancy changed; refresh before deciding".into());
@@ -458,12 +1071,16 @@ pub fn carry(
         &change.source_signature,
         &change.description,
     )?;
-    let evidence = load_for_pa(&db, record.personal_assistant_id)?;
     let (start, _) = period(app, record)?;
+    let items = lifecycle::retained_items(&tx, record.id, app, sid)?;
     for c in &change.components {
         insert_component(&tx, record, sid, Some(decision), c, expected)?;
         let correction = tx.last_insert_rowid();
-        if c.aggregate {
+        if c.source.is_some() {
+            archive_source_correction(&tx, correction, c, &pre.eligible)?;
+        } else if estimate_binding(&c.key).is_some() {
+            archive_estimate_evidence(app, &tx, record, c, correction, &pre.eligible)?;
+        } else if c.aggregate {
             let week = c
                 .key
                 .rsplit(':')
@@ -476,6 +1093,7 @@ pub fn carry(
                     && !e.deleted
                     && e.date()
                         .is_ok_and(|d| d >= ws && d <= ws + chrono::Duration::days(6))
+                    && retained_week(&items, &e.key()).is_none_or(|paid_week| paid_week == week)
             }) {
                 tx.execute(
                     "INSERT INTO payroll_correction_evidence VALUES (?1,?2,?3,?4,?5)",
@@ -496,22 +1114,31 @@ pub fn carry(
 #[derive(Clone)]
 pub struct HistoricalReview {
     pub record: PayrollTimesheet,
+    target: PayrollTimesheet,
+    submission: Option<i64>,
     pub evidence: WorkEvidence,
 }
+impl HistoricalReview {
+    pub(crate) fn same_evidence(&self, other: &Self) -> bool {
+        self.record.id == other.record.id
+            && self.submission == other.submission
+            && self.evidence.key() == other.evidence.key()
+            && self.evidence.fingerprint() == other.evidence.fingerprint()
+    }
+}
+
 pub fn historical_decision(app: &Application, review: &HistoricalReview, paid: bool) -> Result<()> {
     let db = open(app)?;
-    let tx = db.unchecked_transaction()?;
-    if lifecycle::stage(&tx, &review.record)? != Stage::Settled {
-        return Err("Historical payroll is no longer definitively settled".into());
-    }
-    let current = load_for_pa(&db, review.record.personal_assistant_id)?
-        .into_iter()
-        .find(|e| {
-            e.key() == review.evidence.key()
-                && e.fingerprint() == review.evidence.fingerprint()
-                && !e.deleted
-        })
-        .ok_or("Historical evidence changed; refresh review")?;
+    let tx = rusqlite::Transaction::new_unchecked(&db, rusqlite::TransactionBehavior::Immediate)?;
+    let evidence = load_for_pa(&tx, review.record.personal_assistant_id)?;
+    let pre = preflight_for_pa(&tx, &evidence, review.record.personal_assistant_id)?;
+    let fresh = plan_in_connection(app, &tx, &review.target, &pre)?;
+    let current = fresh
+        .historical_reviews
+        .iter()
+        .find(|candidate| candidate.same_evidence(review))
+        .map(|candidate| &candidate.evidence)
+        .ok_or("Historical payroll or evidence changed; refresh review")?;
     let key = current.fingerprint();
     if lifecycle::has_decision(
         &tx,
@@ -538,6 +1165,7 @@ pub struct Plan {
     pub work: Vec<WorkEvidence>,
     pub historical_reviews: Vec<HistoricalReview>,
     pub notices: Vec<String>,
+    pub overlap: bool,
 }
 pub fn plan(app: &Application, record: &PayrollTimesheet) -> Result<Plan> {
     let db = open(app)?;
@@ -552,140 +1180,214 @@ pub(crate) fn plan_prepared(
     pre: &Preflight,
 ) -> Result<Plan> {
     let db = open(app)?;
+    plan_in_connection(app, &db, record, pre)
+}
+
+fn plan_in_connection(
+    app: &Application,
+    db: &Connection,
+    record: &PayrollTimesheet,
+    pre: &Preflight,
+) -> Result<Plan> {
     let (start, end) = period(app, record)?;
-    if pre.unresolved.iter().any(|g| {
-        g.candidates
-            .iter()
-            .any(|e| e.pa == record.personal_assistant_id && e.date().is_ok_and(|d| d <= end))
-    }) {
+    if unresolved_in_period(pre, record.personal_assistant_id, start, end, &[]) {
         return Err("Unresolved possible duplicate shifts; open Payroll Timesheet Preparation to select candidates".into());
     }
-    let records = app
-        .payroll_timesheet_repository
-        .get_all_for_personal_assistant(record.personal_assistant_id)?;
-    // A period's retained history is immutable during this plan. Read each
-    // prior record once, rather than once for every source shift.
-    let mut history = std::collections::HashMap::new();
-    let mut periods = std::collections::HashMap::new();
-    let mut work = Vec::new();
-    let mut historical_reviews = Vec::new();
-    let mut notices = Vec::new();
+    let history = historical_periods(app, db, record.personal_assistant_id)?;
+    let mut plan = Plan {
+        work: Vec::new(),
+        historical_reviews: Vec::new(),
+        notices: Vec::new(),
+        overlap: false,
+    };
+    if pre.unresolved.iter().any(|group| group.candidates.iter().any(|entry| {
+        entry.pa == record.personal_assistant_id && entry.date().is_ok_and(|date| date < start)
+    })) {
+        plan.notices.push("Unresolved historical duplicate work is excluded from current preparation.".into());
+    }
+    let mut unmapped_history = false;
+    for prior in app.payroll_timesheet_repository.get_all_for_personal_assistant(record.personal_assistant_id)? {
+        if prior.id != record.id && history.iter().all(|entry| entry.record.id != prior.id)
+            && (lifecycle::latest(db, prior.id)?.is_some() || lifecycle::stage(db, &prior)? != Stage::Editable)
+        {
+            unmapped_history = true;
+            break;
+        }
+    }
+    if unmapped_history {
+        plan.notices.push("Some historical payroll dates could not be verified. Unattributed historical hours are excluded from current preparation.".into());
+    }
+    let mut payslip_cycles = BTreeMap::new();
     for e in pre
         .eligible
         .iter()
         .filter(|e| e.pa == record.personal_assistant_id && e.minutes > 0)
-        .cloned()
     {
         let date = e.date()?;
         if date > end {
             continue;
         }
-        let corrected:bool=db.query_row("SELECT EXISTS(SELECT 1 FROM payroll_corrections WHERE personal_assistant_id=?1 AND source=?2 AND source_id=?3)",params![e.pa,e.source,e.id],|r|r.get(0))?;
-        let covered:bool=db.query_row("SELECT EXISTS(SELECT 1 FROM payroll_correction_evidence WHERE source=?1 AND source_id=?2 AND fingerprint=?3)",params![e.source,e.id,e.fingerprint()],|r|r.get(0))?;
-        if corrected || covered {
+        let mut candidates = history
+            .iter()
+            .filter(|entry| entry.record.id != record.id && entry.contains(date));
+        let previous = candidates.next();
+        if candidates.next().is_some()
+            || previous.is_some_and(|entry| history.iter().any(|other| entry.overlaps(other)))
+            || (previous.is_some() && date >= start)
+        {
+            plan.overlap = true;
             continue;
         }
-        let mut held = false;
-        for previous in &records {
-            if previous.id == record.id {
-                continue;
-            }
-            if !history.contains_key(&previous.id) {
-                let stage = lifecycle::stage(&db, previous)?;
-                let stage =
-                    if stage == Stage::Editable && lifecycle::latest(&db, previous.id)?.is_some() {
-                        Stage::Submitted
-                    } else {
-                        stage
-                    };
-                let items = if stage == Stage::Editable {
-                    Vec::new()
-                } else {
-                    lifecycle::submitted_items(&db, previous.id, app)?
-                };
-                history.insert(previous.id, (stage, items));
-            }
-            let (stage, previous_items) = &history[&previous.id];
-            let stage = *stage;
-            if stage == Stage::Editable {
-                continue;
-            }
-            if previous_items
-                .iter()
-                .any(|i| lifecycle::item_key(i).as_deref() == Some(&e.key()))
+        let corrected:bool=db.query_row("SELECT EXISTS(SELECT 1 FROM payroll_corrections WHERE personal_assistant_id=?1 AND source=?2 AND source_id=?3)",params![e.pa,e.source,e.id],|r|r.get(0))?;
+        if corrected {
+            continue;
+        }
+        let mut coverage = db.prepare(
+            "SELECT c.id,c.origin_payroll_timesheet_id,c.evidence_key
+             FROM payroll_correction_evidence e JOIN payroll_corrections c ON c.id=e.correction_id
+             WHERE e.source=?1 AND e.source_id=?2 AND e.fingerprint=?3",
+        )?;
+        let mut covered = false;
+        for row in coverage.query_map(params![e.source, e.id, e.fingerprint()], |row| {
+            Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?, row.get::<_, String>(2)?))
+        })? {
+            let (id, origin, key) = row?;
+            if correction_origin_accepted(db, origin, &key)?
+                || lifecycle::submitted_correction_minutes(db, id, None)? != 0
             {
-                held = true;
+                covered = true;
                 break;
             }
-            if !periods.contains_key(&previous.id) {
-                periods.insert(previous.id, period(app, previous)?);
-            }
-            let (ps, pe) = periods[&previous.id];
-            if date < ps || date > pe {
-                continue;
-            }
-            if stage == Stage::Indeterminate {
-                notices.push(format!(
-                    "{}: historical delivery is indeterminate; evidence held",
-                    e.key()
+        }
+        if covered {
+            continue;
+        }
+        // A retained identity remains paid even if a later edit moves its date.
+        let key = e.key();
+        if history.iter().any(|entry| {
+            entry.record.id != record.id
+                && entry
+                    .items
+                    .iter()
+                    .any(|item| lifecycle::item_key(item).as_deref() == Some(key.as_str()))
+        }) {
+            continue;
+        }
+        if crate::timesheet_delivery::work_reserved(db, record.id, &e.source, e.id)? {
+            plan.notices.push(format!("{key}: work reserved by an unresolved delivery attempt"));
+            continue;
+        }
+        if date < start && previous.is_none_or(|entry| {
+            entry.submission.is_none() && entry.items.is_empty()
+                && entry.stage != Stage::Indeterminate
+        }) {
+            if let Ok(schedule) = app.payroll_schedule_repository.resolve_for_date(date) {
+                let key = (schedule.payroll_year.clone(), schedule.cycle_number);
+                let (paid, observed) = payslip_cycles.entry(key).or_insert_with(|| (
+                    super::payslip_hours::paid_hours(app, db, record.personal_assistant_id, &schedule), Some(0i64),
                 ));
-                held = true;
-                break;
-            }
-            if crate::timesheet_amendments::latest(&db,previous.id)?.is_some() {
-                held=true;
-                break;
-            }
-            if stage == Stage::Submitted {
-                notices.push(format!("{}: original timesheet was sent; amend, Save and regenerate its original preparation to use corrected hours",e.key()));
-                held = true;
-                break;
-            }
-            if stage == Stage::Settled {
-                if lifecycle::has_exact_intervals(previous_items)
-                    && crate::shift_changes::prospective(&db, &e.source, e.id)?
-                    && !lifecycle::has_decision(&db, previous.id, "unpaid", &e.fingerprint())?
-                {
-                    notices.push(format!("{}: new historical evidence requires reviewed Carry correction forward in its original payroll preparation", e.key()));
-                    held = true;
-                    break;
-                }
-                if super::legacy_baseline::contains(&db, previous.id, &e)? {
-                    held = true;
-                    break;
-                }
-                // Even a submitted item list may include undated estimates. Lack of
-                // exact paid intervals cannot establish that a new shift was unpaid.
-                let exact = lifecycle::has_exact_intervals(&previous_items);
-                if !exact {
-                    if lifecycle::has_decision(&db, previous.id, "already_paid", &e.fingerprint())?
-                    {
-                        held = true;
-                        break;
-                    }
-                    if !lifecycle::has_decision(&db, previous.id, "unpaid", &e.fingerprint())? {
-                        historical_reviews.push(HistoricalReview {
-                            record: previous.clone(),
-                            evidence: e.clone(),
-                        });
-                        held = true;
-                        break;
-                    }
+                if !matches!(paid, super::payslip_hours::Evidence::Missing) {
+                    *observed = observed.and_then(|sum| {
+                        let payable = crate::pay_rate_allocation::payable_minutes_on(
+                            e.minutes, date, &app.context.config.payroll,
+                        ).ok()?;
+                        sum.checked_add(payable)
+                    });
+                    continue;
                 }
             }
         }
-        // Work represented by a correction must not also be added as a full shift.
-        let corrected:bool=db.query_row("SELECT EXISTS(SELECT 1 FROM payroll_corrections WHERE personal_assistant_id=?1 AND source=?2 AND source_id=?3)",params![e.pa,e.source,e.id],|r|r.get(0))?;
-        if !held && !corrected {
-            work.push(e);
+        let Some(previous) = previous else {
+            if date < start && unmapped_history {
+                continue;
+            }
+            if date >= start && unmapped_history && consumed_elsewhere(app, db, record, e)? {
+                continue;
+            }
+            plan.work.push(e.clone());
+            continue;
+        };
+        let prior = &previous.record;
+        let fingerprint = e.fingerprint();
+        if previous.stage == Stage::Indeterminate {
+            plan.notices.push(format!(
+                "{key}: historical delivery is indeterminate; evidence held"
+            ));
+        } else if previous.version.is_some()
+            || (previous.has_estimate(date)
+                && !lifecycle::has_decision(db, prior.id, "unpaid", &fingerprint)?)
+        {
+            // These shifts are accounted for by the historical baseline.
+        } else if previous.stage == Stage::Submitted {
+            plan.notices.push(format!("{key}: original timesheet was sent; amend the original preparation and submit the replacement to use corrected hours"));
+        } else if previous.stage == Stage::Settled {
+            let unpaid = lifecycle::has_decision(db, prior.id, "unpaid", &fingerprint)?;
+            let exact = lifecycle::has_exact_intervals(&previous.items);
+            if exact && crate::shift_changes::prospective(db, &e.source, e.id)? && !unpaid {
+                plan.notices.push(format!("{key}: new historical evidence requires reviewed Carry correction forward in its original payroll preparation"));
+            } else if !super::legacy_baseline::contains(db, prior.id, e)?
+                && (exact || !lifecycle::has_decision(db, prior.id, "already_paid", &fingerprint)?)
+            {
+                if exact || unpaid {
+                    plan.work.push(e.clone());
+                } else {
+                    plan.historical_reviews.push(HistoricalReview {
+                        record: prior.clone(),
+                        target: record.clone(),
+                        submission: previous.submission,
+                        evidence: e.clone(),
+                    });
+                }
+            }
         }
     }
-    let _ = start;
-    Ok(Plan {
-        work,
-        historical_reviews,
-        notices,
-    })
+    for ((year, cycle), (paid, observed)) in payslip_cycles {
+        use super::payslip_hours::Evidence;
+        let message = match paid {
+            Evidence::PaidMinutes(paid) => {
+                let actual = observed.map_or_else(|| "unverified actual hours".to_string(),
+                    |minutes| format!("{:.2} hours in currently unmatched actual records", minutes as f64 / 60.0));
+                format!("Historical payslip for {year}, cycle {cycle}: {:.2} paid working hours and {actual}. The payslip supplies a cycle total. No weekly adjustment was inferred.", paid as f64 / 60.0)
+            },
+            Evidence::Unreadable => format!(
+                "Historical payslip for {year}, cycle {cycle}: paid working hours could not be verified. Those historical hours are excluded from current preparation.",
+            ),
+            Evidence::Missing => continue,
+        };
+        plan.notices.push(message);
+    }
+    if !plan.overlap {
+        let overlaps = history
+            .iter()
+            .filter(|entry| history.iter().any(|other| entry.overlaps(other)))
+            .map(|entry| entry.record.id)
+            .collect::<HashSet<_>>();
+        if !overlaps.is_empty() {
+            let mut statement = db.prepare(
+                "SELECT id,origin_payroll_timesheet_id,minutes FROM payroll_corrections WHERE personal_assistant_id=?1",
+            )?;
+            for row in statement.query_map([record.personal_assistant_id], |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, i64>(1)?,
+                    row.get::<_, i64>(2)?,
+                ))
+            })? {
+                let (id, origin, minutes) = row?;
+                if overlaps.contains(&origin)
+                    && origin != record.id
+                    && minutes != lifecycle::submitted_correction_minutes(db, id, Some(record.id))?
+                {
+                    plan.overlap = true;
+                    break;
+                }
+            }
+        }
+    }
+    if plan.overlap {
+        plan.notices.push(OVERLAP.into());
+    }
+    Ok(plan)
 }
 
 #[derive(Clone, Debug)]
@@ -704,70 +1406,52 @@ pub fn outstanding(
 ) -> Result<Vec<CorrectionApplication>> {
     let db = open(app)?;
     let rows=db.prepare("SELECT id,minutes,work_date,pay_rate_id,pay_rate_effective_date,total_hourly_rate,reason FROM payroll_corrections WHERE personal_assistant_id=?1 AND origin_payroll_timesheet_id<>?2 ORDER BY created_at,id")?.query_map(params![record.personal_assistant_id,record.id],|r|Ok(CorrectionApplication{id:r.get(0)?,minutes:r.get(1)?,date:r.get(2)?,rate_id:r.get(3)?,rate_date:r.get(4)?,rate:r.get(5)?,reason:r.get(6)?}))?.collect::<rusqlite::Result<Vec<_>>>()?;
-    let mut current=Vec::new();
-    for c in rows {
-        let (origin,key):(i64,String)=db.query_row("SELECT origin_payroll_timesheet_id,evidence_key FROM payroll_corrections WHERE id=?1",[c.id],|r|Ok((r.get(0)?,r.get(1)?)))?;
-        if let Some(version)=crate::timesheet_amendments::latest(&db,origin)? {
-            if !key.starts_with(&format!("version:{}:",version.document)) {continue;}
+    let (target_start, _) = period(app, record)?;
+    let history = historical_periods(app, &db, record.personal_assistant_id)?;
+    let mut current = Vec::new();
+    for mut correction in rows {
+        let (origin, key): (i64, String) = db.query_row(
+            "SELECT origin_payroll_timesheet_id,evidence_key FROM payroll_corrections WHERE id=?1",
+            [correction.id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )?;
+        if !correction_origin_accepted(&db, origin, &key)? {
+            continue;
         }
-        current.push(c);
-    }
-    let mut rows=current;
-    for c in &mut rows {
-        for r in app
-            .payroll_timesheet_repository
-            .get_all_for_personal_assistant(record.personal_assistant_id)?
-        {
-            if r.id == record.id {
+        let baseline = history.iter().find(|entry| entry.record.id == origin);
+        if baseline.is_some_and(|entry| history.iter().any(|other| entry.overlaps(other))) {
+            continue;
+        }
+        let version = baseline.and_then(|entry| entry.version.as_ref());
+        if let Some((week, estimated)) = estimate_binding(&key) {
+            let prior_items = baseline.map_or(&[][..], |entry| entry.items.as_slice());
+            if estimate_minutes(prior_items, week, version.is_some()) != Some(estimated)
+                || correction.date.as_deref().is_some_and(|date| {
+                    crate::models::parse_employment_date(date)
+                        .is_some_and(|date| date + chrono::Duration::days(6) >= target_start)
+                })
+            {
                 continue;
             }
-            if lifecycle::latest(&db, r.id)?.is_some()
-                || matches!(
-                    lifecycle::stage(&db, &r)?,
-                    Stage::Submitted | Stage::Settled | Stage::Indeterminate
-                )
+        } else if let Some(version) = &version {
+            if !key.starts_with(&format!("version:{}:", version.document))
+                || (correction.minutes < 0
+                    && previous_week_correction(&key).is_some_and(|(week, _)| {
+                        baseline.is_some_and(|entry| estimate_minutes(&entry.items, week, true).is_some())
+                    }))
             {
-                if let Some(version)=crate::timesheet_amendments::latest(&db,r.id)? {
-                    c.minutes -= version.applications.iter().filter(|(id,_)|*id==c.id).map(|(_,m)|m).sum::<i64>();
-                } else if let Some(sid) = lifecycle::latest(&db, r.id)? {
-                    let used:i64=db.query_row("SELECT COALESCE(SUM(minutes),0) FROM payroll_submission_corrections WHERE submission_id=?1 AND correction_id=?2",params![sid,c.id],|r|r.get(0))?;
-                    c.minutes -= used;
-                }
+                continue;
             }
         }
+        if crate::timesheet_delivery::correction_reserved(&db, record.id, correction.id)? {
+            continue;
+        }
+        correction.minutes -= lifecycle::submitted_correction_minutes(&db, correction.id, Some(record.id))?;
+        current.push(correction);
     }
+    let mut rows = current;
     rows.retain(|c| c.minutes != 0);
     Ok(rows)
-}
-/// Positive corrections supply capacity before negatives; negative remainders
-/// stay individually outstanding. No weekly payable total is allowed below zero.
-pub fn apply_corrections(
-    totals: &mut [i64; 4],
-    corrections: &[CorrectionApplication],
-) -> Result<Vec<(i64, i64)>> {
-    let mut applied = Vec::new();
-    for c in corrections.iter().filter(|c| c.minutes > 0) {
-        totals[0] = totals[0]
-            .checked_add(c.minutes)
-            .ok_or("Worked hours overflow")?;
-        applied.push((c.id, c.minutes));
-    }
-    if totals.iter().any(|n| *n < 0) {
-        return Err("Negative underlying payable hours require review".into());
-    }
-    for c in corrections.iter().filter(|c| c.minutes < 0) {
-        let mut left = c.minutes.checked_neg().ok_or("Correction overflow")?;
-        let original = left;
-        for total in totals.iter_mut() {
-            let used = left.min(*total);
-            *total -= used;
-            left -= used;
-        }
-        if original != left {
-            applied.push((c.id, -(original - left)));
-        }
-    }
-    Ok(applied)
 }
 pub fn calculate(
     app: &Application,
@@ -796,6 +1480,9 @@ pub fn calculate_for_generation(
     if crate::timesheet_amendments::saved(&*open(app)?,record.id)? {
         lifecycle::ensure_generatable(&*open(app)?,record.id)?;
         return crate::timesheet_amendments::hours(app,record);
+    }
+    if let Some(draft) = super::manual_preparation::latest(&*open(app)?, record.id)? {
+        return super::manual_preparation::generate(app, record, weeks, &draft);
     }
     if let Some(hours) = crate::sickness_service::historical_hours(&*open(app)?, record.id)? {
         lifecycle::ensure_generatable(&*open(app)?, record.id)?;
@@ -836,11 +1523,6 @@ fn calculate_plan(
     plan: &Plan,
 ) -> Result<crate::pay_rate_allocation::ReconciledPayrollHours> {
     let db = open(app)?;
-    if !plan.historical_reviews.is_empty() {
-        return Err(
-            "Historical payment status needs review in Payroll Timesheet Preparation".into(),
-        );
-    }
     // Preserve the established opaque historical-backfill path, not its old
     // previous-cycle-only membership scan. Dated late work is selected above.
     let empty: Vec<crate::models::TimesheetEntry> = Vec::new();
@@ -881,103 +1563,145 @@ fn calculate_plan(
         )?;
     }
     let corrections = outstanding(app, record)?;
+    let applications = apply_balances(&mut result, &corrections)?;
+    reserve_applications(&db, record.id, applications)?;
+    Ok(result)
+}
+
+pub(super) fn apply_balances(
+    result: &mut crate::pay_rate_allocation::ReconciledPayrollHours,
+    corrections: &[CorrectionApplication],
+) -> Result<Vec<(i64, i64)>> {
+    let credits = corrections.iter().filter(|correction| correction.minutes > 0);
+    let deductions = corrections.iter().filter(|correction| correction.minutes < 0);
+    // Preserve preparations where credits cover a signed manual edit. Only
+    // then allow approved deductions to take Week 1 below zero.
+    let week_one_with_credits = credits.clone()
+        .try_fold(result.week_totals_minutes[0], |total, correction| {
+            total.checked_add(correction.minutes)
+        })
+        .ok_or("Worked hours overflow")?;
+    if week_one_with_credits < 0 || result.week_totals_minutes[1..].iter().any(|minutes| *minutes < 0) {
+        return Err("Negative underlying worked hours require review".into());
+    }
     let mut applications = Vec::new();
-    for c in corrections
-        .iter()
-        .filter(|c| c.minutes > 0)
-        .chain(corrections.iter().filter(|c| c.minutes < 0))
-    {
-        let before = result.week_totals_minutes;
-        let applied = if c.minutes > 0 {
-            result.week_totals_minutes[0] = result.week_totals_minutes[0]
-                .checked_add(c.minutes)
-                .ok_or("Worked hours overflow")?;
-            vec![(c.id, c.minutes)]
-        } else {
-            apply_corrections(&mut result.week_totals_minutes, std::slice::from_ref(c))?
-        };
-        for (id, minutes) in applied {
-            applications.push((id, minutes));
-            result.previous_cycle_minutes += minutes;
-            for (week, previous) in before.into_iter().enumerate() {
-                let part = result.week_totals_minutes[week] - previous;
-                if part == 0 {
-                    continue;
-                }
-                result.snapshot_items.push(WorkedItemSnapshot {
-                    week_number: (week + 1) as i64,
-                    source_type: "carry_correction".into(),
-                    timesheet_id: None,
-                    direct_shift_id: None,
-                    source_evidence: None,
-                    work_date: c.date.clone(),
-                    worked_minutes: part,
-                    pay_rate_id: c.rate_id,
-                    pay_rate_effective_date: c.rate_date.clone(),
-                    total_hourly_rate: c.rate,
-                    reason: Some(format!("Correction {}: {}", c.id, c.reason)),
-                });
-                result.weeks[week].push(crate::pay_rate_allocation::PayRatePortion {
-                    worked_minutes: part,
-                    total_hourly_rate: c.rate,
-                    effective_date: c
-                        .rate_date
-                        .as_deref()
-                        .and_then(crate::models::parse_employment_date),
-                    rate_id: c.rate_id,
-                    is_previous_cycle: true,
-                    is_opaque_legacy: c.rate.is_none(),
-                });
-            }
-        }
+    for correction in credits.chain(deductions) {
+        let minutes = correction.minutes;
+        result.week_totals_minutes[0] = result.week_totals_minutes[0]
+            .checked_add(minutes)
+            .ok_or("Worked hours overflow")?;
+        result.previous_cycle_minutes = result.previous_cycle_minutes
+            .checked_add(minutes)
+            .ok_or("Previous-cycle hours overflow")?;
+        applications.push((correction.id, minutes));
+        result.snapshot_items.push(WorkedItemSnapshot {
+            week_number: 1,
+            source_type: "carry_correction".into(),
+            timesheet_id: None,
+            direct_shift_id: None,
+            source_evidence: None,
+            work_date: correction.date.clone(),
+            worked_minutes: minutes,
+            pay_rate_id: correction.rate_id,
+            pay_rate_effective_date: correction.rate_date.clone(),
+            total_hourly_rate: correction.rate,
+            reason: Some(format!("Correction {}: {}", correction.id, correction.reason)),
+        });
+        result.weeks[0].push(crate::pay_rate_allocation::PayRatePortion {
+            worked_minutes: minutes,
+            total_hourly_rate: correction.rate,
+            effective_date: correction.date.as_deref().and_then(crate::models::parse_employment_date),
+            rate_id: correction.rate_id,
+            is_previous_cycle: true,
+            is_opaque_legacy: correction.rate.is_none(),
+        });
     }
-    if result.week_totals_minutes.iter().any(|n| *n < 0) {
-        return Err("Negative final payable hours require review".into());
-    }
+    Ok(applications)
+}
+
+pub(super) fn reserve_applications(
+    db: &Connection,
+    record: i64,
+    applications: Vec<(i64, i64)>,
+) -> Result<()> {
     // Reservations are candidates, not consumption. Submitted applications are
     // copied into immutable history only after successful production send.
     let tx = db.unchecked_transaction()?;
-    let existing=tx.prepare("SELECT correction_id,minutes FROM payroll_correction_applications WHERE payroll_timesheet_id=?1 ORDER BY correction_id")?.query_map([record.id],|r|Ok((r.get::<_,i64>(0)?,r.get::<_,i64>(1)?)))?.collect::<rusqlite::Result<Vec<_>>>()?;
+    let existing=tx.prepare("SELECT correction_id,minutes FROM payroll_correction_applications WHERE payroll_timesheet_id=?1 ORDER BY correction_id")?.query_map([record],|r|Ok((r.get::<_,i64>(0)?,r.get::<_,i64>(1)?)))?.collect::<rusqlite::Result<Vec<_>>>()?;
     let mut ordered = applications;
     ordered.sort();
     if existing != ordered {
         tx.execute(
             "DELETE FROM payroll_correction_applications WHERE payroll_timesheet_id=?1",
-            [record.id],
+            [record],
         )?;
         for (id, minutes) in ordered {
             tx.execute(
                 "INSERT INTO payroll_correction_applications VALUES (?1,?2,?3)",
-                params![record.id, id, minutes],
+                params![record, id, minutes],
             )?;
         }
     }
     tx.commit()?;
-    Ok(result)
+    Ok(())
 }
 
 /// A concrete audited change to settled source evidence is its own authority.
-/// Aggregate estimates are deliberately excluded from this automatic path.
+/// A closed estimate week can generate an automatic credit from observed work.
+/// A deduction requires confirmation of complete actuals.
 pub fn sync_settled_corrections(app: &Application, pa: i64) -> Result<()> {
     let db = open(app)?;
-    for record in app
-        .payroll_timesheet_repository
-        .get_all_for_personal_assistant(pa)?
-    {
-        let authority=crate::timesheet_amendments::latest(&db,record.id)?;
-        let stage=lifecycle::stage(&db,&record)?;
-        if stage!=Stage::Settled && !(authority.is_some() && stage==Stage::Submitted) {
+    // Resolve periods and post differences under one writer transaction.
+    let tx = rusqlite::Transaction::new_unchecked(&db, rusqlite::TransactionBehavior::Immediate)?;
+    let history = historical_periods(app, &tx, pa)?;
+    let candidates = history
+        .iter()
+        .filter(|entry| {
+            !entry.items.is_empty()
+                && (entry.stage == Stage::Settled
+                    || (entry.stage == Stage::Submitted
+                        && entry.submission.is_some()
+                        && (entry.version.is_some()
+                            || (1..=4).any(|week| {
+                                estimate_minutes(&entry.items, week, false).is_some()
+                            }))))
+                && !history.iter().any(|other| entry.overlaps(other))
+        })
+        .collect::<Vec<_>>();
+    if candidates.is_empty() {
+        return Ok(());
+    }
+    let all = load_for_pa(&tx, pa)?;
+    let pre = preflight_for_pa(&tx, &all, pa)?;
+    for entry in candidates {
+        if unresolved_in_period(&pre, pa, entry.start, entry.end, &entry.items) {
             continue;
         }
-        let old = lifecycle::submitted_items(&db, record.id, app)?;
-        if old.is_empty() {
-            continue;
-        }
-        let changes = changes(app, &record)?;
-        let exact = lifecycle::has_exact_intervals(&old);
-        let all = load_for_pa(&db, record.personal_assistant_id)?;
-        let tx = db.unchecked_transaction()?;
-        for c in changes.components.iter().filter(|c| !c.aggregate || authority.is_some()) {
+        let record = &entry.record;
+        let authority = &entry.version;
+        let old = &entry.items;
+        let submission = entry.submission;
+        let stage = entry.stage;
+        let changes = changes_with_history(app, &tx, record, &pre, &history)?;
+        let exact = lifecycle::has_exact_intervals(old);
+        for c in &changes.components {
+            if estimate_binding(&c.key).is_some() {
+                if (submission.is_some() || authority.is_some()) && c.minutes > 0 {
+                    insert_component(&tx, record, submission, None, c, &changes.signature)?;
+                    archive_estimate_evidence(
+                        app,
+                        &tx,
+                        record,
+                        c,
+                        tx.last_insert_rowid(),
+                        &pre.eligible,
+                    )?;
+                }
+                continue;
+            }
+            if c.aggregate || (stage == Stage::Submitted && authority.is_none()) {
+                continue;
+            }
             let known_edit = c
                 .source
                 .as_ref()
@@ -998,18 +1722,14 @@ pub fn sync_settled_corrections(app: &Application, pa: i64) -> Result<()> {
                 _ => false,
             };
             if (exact || known_edit || authority.is_some()) && !prospective {
-                insert_component(
-                    &tx,
-                    &record,
-                    lifecycle::latest(&tx, record.id)?,
-                    None,
-                    c,
-                    &changes.signature,
-                )?;
+                insert_component(&tx, record, submission, None, c, &changes.signature)?;
+                if c.source.is_some() {
+                    archive_source_correction(&tx, tx.last_insert_rowid(), c, &pre.eligible)?;
+                }
             }
         }
-        tx.commit()?;
     }
+    tx.commit()?;
     Ok(())
 }
 
@@ -1019,13 +1739,14 @@ pub fn historical_save_notice(
     date: NaiveDate,
 ) -> Result<Option<String>> {
     let db = open(app)?;
-    for r in app
-        .payroll_timesheet_repository
-        .get_all_for_personal_assistant(pa)?
-    {
-        let (start, end) = period(app, &r)?;
-        if date >= start && date <= end && lifecycle::stage(&db, &r)? == Stage::Settled {
-            if crate::timesheet_amendments::latest(&db,r.id)?.is_some() {
+    let history = historical_periods(app, &db, pa)?;
+    let mut matches = history.iter().filter(|entry| entry.contains(date));
+    if let Some(entry) = matches.next() {
+        if matches.next().is_some() || history.iter().any(|other| entry.overlaps(other)) {
+            return Ok(Some(OVERLAP.into()));
+        }
+        if entry.stage == Stage::Settled {
+            if entry.version.is_some() {
                 return Ok(Some("Actual hours saved. Subsequent payroll reconciles against the latest corrected timesheet; the historical submission does not lock new hours.".into()));
             }
             return Ok(Some("This shift belongs to a payroll period whose payslip has already been sent. Review it against paid evidence in the original Payroll Timesheet Preparation and explicitly approve any correction to carry forward. Settled payroll remains unchanged.".into()));
@@ -1107,7 +1828,7 @@ pub fn audit_lines(app: &Application, record: &PayrollTimesheet) -> Result<Vec<S
         ))
     })? {
         let (id, origin, minutes, reason) = row?;
-        let reserved:i64=db.query_row("SELECT COALESCE(SUM(a.minutes),0) FROM payroll_submission_corrections a JOIN payroll_submissions s ON s.id=a.submission_id WHERE a.correction_id=?1 AND s.id=(SELECT MAX(id) FROM payroll_submissions WHERE payroll_timesheet_id=s.payroll_timesheet_id)",[id],|r|r.get(0))?;
+        let reserved = lifecycle::submitted_correction_minutes(&db, id, None)?;
         lines.push(format!("Correction {id}, original preparation {origin}: {:+.2} hours; remaining outside submitted payroll {:+.2} hours — {reason}",minutes as f64/60.0,(minutes-reserved) as f64/60.0));
     }
     let mut stmt=db.prepare("SELECT d.id,d.winner_source,d.winner_id,d.decided_at,d.invalidated_at,m.evidence FROM payroll_duplicate_decisions d JOIN payroll_duplicate_members m ON m.decision_id=d.id ORDER BY d.id,m.source,m.source_id")?;

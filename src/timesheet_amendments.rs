@@ -51,7 +51,7 @@ pub struct Version {
     pub evidence: Vec<(i64, String, String)>,
     pub details: serde_json::Value,
 }
-pub fn latest(db: &Connection, record: i64) -> Result<Option<Version>> {
+pub fn latest_generated(db: &Connection, record: i64) -> Result<Option<Version>> {
     if !available(db)? {
         return Ok(None);
     }
@@ -59,6 +59,30 @@ pub fn latest(db: &Connection, record: i64) -> Result<Option<Version>> {
     text.map(|text| serde_json::from_str(&text).map_err(Into::into))
         .transpose()
 }
+/// Comparison fingerprints belong to the document that was actually accepted.
+pub struct AcceptedAmendment {
+    pub document: i64,
+    pub evidence: Vec<(i64, String, String)>,
+}
+
+pub fn accepted_evidence(db: &Connection, submission: i64) -> Result<Option<AcceptedAmendment>> {
+    if !available(db)? {
+        return Ok(None);
+    }
+    let captured: Option<(i64, String)> = db.query_row(
+        "SELECT s.document_id,v.after_state
+         FROM payroll_submissions s JOIN timesheet_amendment_versions v
+           ON v.payroll_timesheet_id=s.payroll_timesheet_id AND v.document_id=s.document_id
+         WHERE s.id=?1 AND v.event='generated' ORDER BY v.id LIMIT 1",
+        [submission],
+        |row| Ok((row.get(0)?, row.get(1)?)),
+    ).optional()?;
+    captured.map(|(document, text)| {
+        let version: Version = serde_json::from_str(&text)?;
+        Ok(AcceptedAmendment { document, evidence: version.evidence })
+    }).transpose()
+}
+
 fn rows(db: &Connection, table: &str, record: i64) -> Result<serde_json::Value> {
     let mut stmt = db.prepare(&format!(
         "SELECT * FROM {table} WHERE payroll_timesheet_id=?1 ORDER BY rowid"
@@ -104,6 +128,15 @@ pub fn record_save(db: &Connection, record: i64, before: &serde_json::Value) -> 
     db.execute("UPDATE sickness_corrections SET retired_at=?1 WHERE payroll_timesheet_id=?2 AND retired_at IS NULL",params![payroll_evidence::now(),record])?;
     Ok(())
 }
+fn candidate_applications(db: &Connection, record: i64) -> rusqlite::Result<Vec<(i64, i64)>> {
+    let mut statement = db.prepare(
+        "SELECT correction_id,minutes FROM payroll_correction_applications
+         WHERE payroll_timesheet_id=?1 ORDER BY correction_id",
+    )?;
+    let rows = statement.query_map([record], |row| Ok((row.get(0)?, row.get(1)?)))?;
+    rows.collect()
+}
+
 pub fn record_generation(
     db: &Connection,
     record: i64,
@@ -135,7 +168,7 @@ pub fn record_generation(
         [record],
         |r| r.get(0),
     )?;
-    let applications=tx.prepare("SELECT correction_id,minutes FROM payroll_correction_applications WHERE payroll_timesheet_id=?1 ORDER BY correction_id")?.query_map([record],|r|Ok((r.get(0)?,r.get(1)?)))?.collect::<rusqlite::Result<Vec<_>>>()?;
+    let applications = candidate_applications(&tx, record)?;
     let version = Version {
         document,
         totals,
@@ -150,13 +183,16 @@ pub fn record_generation(
     Ok(())
 }
 pub fn verify_generated(db: &Connection, record: i64) -> Result<()> {
-    let version = latest(db, record)?.ok_or("Regenerate the saved amendment before sending")?;
+    let version = latest_generated(db, record)?.ok_or("Regenerate the saved amendment before sending")?;
     let document: i64 = db.query_row(
         "SELECT document_id FROM payroll_timesheet_snapshot_states WHERE payroll_timesheet_id=?1",
         [record],
         |r| r.get(0),
     )?;
-    if version.document != document || version.details != details(db, record)? {
+    if version.document != document
+        || version.details != details(db, record)?
+        || version.applications != candidate_applications(db, record)?
+    {
         return Err(
             "Saved timesheet differs from its generated version; regenerate before sending".into(),
         );
@@ -174,17 +210,25 @@ pub fn hours(
     if weeks.len() != 4 {
         return Err("Expected four saved payroll weeks".into());
     }
+    let mut items = payroll_evidence::lifecycle::submitted_items(&db, record.id, app)?;
+    let adjustments = app.payroll_worked_item_repository.get_manual_adjustments(record.id)?;
     let mut totals = [0; 4];
     for week in &weeks {
-        if !(1..=4).contains(&week.week_number)
-            || !week.worked_hours.is_finite()
-            || week.worked_hours < 0.0
-        {
+        if !(1..=4).contains(&week.week_number) || !week.worked_hours.is_finite() {
             return Err("Invalid saved worked hours".into());
         }
-        totals[(week.week_number - 1) as usize] = (week.worked_hours * 60.0).round() as i64;
+        let minutes = (week.worked_hours * 60.0).round() as i64;
+        if minutes < 0 {
+            let accepted_carry = items.iter()
+                .filter(|item| item.week_number == week.week_number && item.source_type == "carry_correction")
+                .try_fold(0i64, |sum, item| sum.checked_add(item.worked_minutes))
+                .ok_or("Previous-cycle hours overflow")?;
+            if minutes < accepted_carry {
+                return Err("Negative saved worked hours exceed the submitted carry deduction".into());
+            }
+        }
+        totals[(week.week_number - 1) as usize] = minutes;
     }
-    let mut items = payroll_evidence::lifecycle::submitted_items(&db, record.id, app)?;
     for (index, total) in totals.iter().enumerate() {
         let before: i64 = items
             .iter()
@@ -214,7 +258,10 @@ pub fn hours(
                 pay_rate_id: Some(rate.id),
                 pay_rate_effective_date: Some(rate.effective_date),
                 total_hourly_rate: Some(rate.base_hourly_rate + rate.employer_top_up_rate),
-                reason: Some("Employer amended saved timesheet total".into()),
+                reason: adjustments.iter()
+                    .find(|item| item.week_number == week.week_number)
+                    .and_then(|item| item.reason.clone())
+                    .or_else(|| Some("Employer amended saved timesheet total".into())),
             });
         }
     }

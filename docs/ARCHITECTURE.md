@@ -1,6 +1,6 @@
 # DirectPaymentTimesheets architecture
 
-This describes unreleased development 1.0.7 on `security/v1.0.7-phase1`, schema42. Stage/schema
+This describes the unreleased development package defined in [Cargo.toml](../Cargo.toml), using SQLite schema 42. Stage/schema
 headings identify historical introductions. Published v1.0.6 packages remain separate; see [downloads](../README.md#download).
 
 ## Shape of the application

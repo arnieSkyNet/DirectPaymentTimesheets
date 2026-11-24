@@ -1,7 +1,6 @@
 # DirectPaymentTimesheets domain guide
 
-This describes unreleased development 1.0.7 on `security/v1.0.7-phase1`, schema42, including Stages
-1–8. Historical schema references identify feature introductions, not the current
+This describes the unreleased development package defined in [Cargo.toml](../Cargo.toml), using SQLite schema 42 and including Stages 1–8. Historical schema references identify feature introductions, not the current
 schema. See [published downloads](../README.md#download) for Linux/Windows v1.0.4
 and macOS v1.0.5.
 
@@ -109,7 +108,7 @@ When all weeks share a value, the PDF retains `Contracted Weekly Hours: VALUE`. 
 
 ## Previous-cycle work
 
-Dated unpaid work remains outstanding across periods, with actual work dates and historical rates. Submitted membership reserves evidence and definitive per-PA payslip Sent state establishes settlement. Aggregate-only historical payment uncertainty requires an explicit paid/unpaid review. Separate signed corrections preserve estimate and actual-evidence differences; negative aggregate estimates require completeness confirmation, and negative applications cannot reduce worked hours below zero. Detailed rules and review gates are in [PAYROLL-EVIDENCE.md](PAYROLL-EVIDENCE.md).
+Dated unpaid work remains outstanding across periods, with actual work dates and historical rates. Submitted membership reserves evidence and definitive per-PA payslip Sent state establishes settlement. Aggregate-only historical payment uncertainty requires an explicit paid/unpaid review. Separate signed corrections preserve estimate and actual-evidence differences; negative aggregate estimates require completeness confirmation. Full signed corrections apply to Week 1 of the next payroll cycle, including when Week 1 becomes negative. Detailed rules and review gates are in [PAYROLL-EVIDENCE.md](PAYROLL-EVIDENCE.md).
 
 ## Preparation and submission states
 
@@ -211,10 +210,9 @@ never establishes inbox receipt. Server diagnostics retain only safe phase,
 error class and numeric status, omitting server text. Security changes invalidate
 existing send approvals; uncertain attempts retain their original evidence.
 
-Development v1.0.7 stores SMTP passwords and Microsoft access/refresh tokens in native Windows Credential Manager, macOS Keychain or persistent Linux Secret Service. Configuration and new configuration backup copies contain opaque references; the vault is not exported. Verified legacy-password migration precedes configuration replacement, while old entries and historical backup files are retained. A different account/computer or unavailable store needs re-entry/reconnection, with no plaintext/session fallback. These controls do not erase previously created plaintext copies. See [credential storage](SMTP-CREDENTIAL-STORAGE.md). Configuration Debug output
+The development application stores SMTP passwords and Microsoft access/refresh tokens in native Windows Credential Manager, macOS Keychain or persistent Linux Secret Service. Configuration and new configuration backup copies contain opaque references; the vault is not exported. Verified legacy-password migration precedes configuration replacement, while old entries and historical backup files are retained. A different account/computer or unavailable store needs re-entry/reconnection, with no plaintext/session fallback. These controls do not erase previously created plaintext copies. See [credential storage](SMTP-CREDENTIAL-STORAGE.md). Configuration Debug output
 redacts credentials. Unix configuration publication and restore staging use
-owner-only permissions; backup directories use mode 0700. Development 1.0.7
-adds creation-time private Windows ACLs for new managed files/directories and a
+owner-only permissions; backup directories use mode 0700. The development application uses creation-time private Windows ACLs for new managed files/directories and a
 read-only assessment for existing installations. Existing permissions and shared
 business directories are not silently repaired; replacements preserve their
 existing access policy. See [Phase 1 storage hardening](SECURITY-HARDENING.md). Database backups retain sensitive recipients,
