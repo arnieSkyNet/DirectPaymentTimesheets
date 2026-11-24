@@ -106,7 +106,11 @@ Thumbs.db
 /secrets.json
 /audit-reports/
 /privacy-evidence/
+# Private project material. Keep these directories out of Git and releases.
 /DPTS-Safety-Backups/
+/DPTS-Development-Evidence/
+/DPTS-Historical-Archive/
+/DPTS-Private-Workspaces/
 /source-preservation/
 
 # Required application schema; audited source, not a database export.

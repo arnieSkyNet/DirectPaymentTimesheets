@@ -22,6 +22,12 @@ The application creates `database.sqlite`, `config.toml` and its internal subdir
 
 Real runtime and payroll data must remain outside Git and must never be committed. This includes databases, configuration containing credentials or personal paths, imported/archived files, generated payroll documents, payslips and backups.
 
+### Private project housekeeping
+
+Keep temporary workspaces, local backups and development evidence in
+Git-ignored directories within the project rather than in sibling directories.
+Use `git check-ignore` to verify a destination before adding private material.
+
 ## Required validation
 
 For a normal Rust change, run:
